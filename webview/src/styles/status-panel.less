@@ -1,0 +1,342 @@
+/**
+ * 状态面板样式（对齐 cc-gui StatusPanel.less）
+ *
+ * 布局：消息列表与输入框之间的固定 tab 行（圆角 6px 边框卡片），
+ * 点击 tab 弹出详情列表（absolute 定位浮层）。
+ */
+
+.status-panel {
+  position: relative;
+  margin: 0 20px 8px 20px;
+  flex-shrink: 0;
+}
+
+/* ===== Tab 头（常驻一行）===== */
+.status-panel-tabs {
+  display: flex;
+  align-items: center;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-primary);
+  border-radius: 6px;
+  padding: 3px 6px;
+  font-size: 80%;
+  overflow-x: auto;
+  overflow-y: hidden;
+
+  &::-webkit-scrollbar {
+    height: 4px;
+  }
+  &::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  &::-webkit-scrollbar-thumb {
+    background: var(--scrollbar-thumb);
+    border-radius: 2px;
+  }
+}
+
+.status-panel-tab {
+  flex: 1 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  padding: 4px 8px;
+  font-weight: 500;
+  color: var(--text-muted);
+  cursor: pointer;
+  user-select: none;
+  border-radius: 4px;
+  background: transparent;
+  transition: color 0.15s ease, background-color 0.15s ease;
+  white-space: nowrap;
+
+  /* tab 间分割线 */
+  &:not(:last-child) {
+    border-right: 1px solid var(--border-primary);
+    border-radius: 4px 0 0 4px;
+    margin-right: -1px;
+  }
+  &:last-child {
+    border-radius: 0 4px 4px 0;
+  }
+
+  &:hover {
+    color: var(--text-primary);
+    background: var(--bg-hover);
+  }
+
+  &.active {
+    color: var(--text-primary);
+    background: var(--bg-tertiary);
+  }
+
+  .codicon {
+    font-size: 12px;
+    opacity: 0.8;
+  }
+  &.active .codicon {
+    opacity: 1;
+  }
+
+  .tab-label {
+    font-weight: 500;
+  }
+
+  .tab-progress {
+    font-size: 10px;
+    color: var(--text-tertiary);
+    font-family: var(--font-mono);
+  }
+  &.active .tab-progress {
+    color: var(--text-primary);
+  }
+
+  .tab-stats {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    font-size: 10px;
+    font-family: var(--font-mono);
+    font-weight: 600;
+
+    .stat-additions {
+      color: var(--status-success);
+    }
+    .stat-deletions {
+      color: var(--status-error);
+    }
+  }
+}
+
+.status-panel-tab-loading {
+  font-size: 11px;
+  animation: status-spin 1s linear infinite;
+}
+
+/* ===== 详情浮层（portal 到 body，fixed 定位由 inline style 设置）===== */
+.status-panel-popover {
+  max-height: 280px;
+  width: 360px;
+  overflow-y: auto;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-primary);
+  border-radius: 6px;
+  box-shadow: var(--shadow-md);
+  z-index: 1000;
+  padding: 6px;
+
+  &::-webkit-scrollbar {
+    width: 6px;
+  }
+  &::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  &::-webkit-scrollbar-thumb {
+    background: var(--scrollbar-thumb);
+    border-radius: 3px;
+  }
+}
+
+.status-panel-empty {
+  padding: 14px 10px;
+  text-align: center;
+  color: var(--text-tertiary);
+  font-size: 12px;
+}
+
+/* ===== 任务列表 ===== */
+.status-panel-todo-list {
+  display: flex;
+  flex-direction: column;
+}
+
+.status-panel-todo-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  padding: 5px 6px;
+  border-radius: 4px;
+  font-size: 12px;
+  color: var(--text-primary);
+
+  &:hover {
+    background: var(--bg-hover);
+  }
+
+  .status-panel-todo-icon {
+    font-size: 13px;
+    margin-top: 1px;
+    flex-shrink: 0;
+  }
+  .status-panel-todo-content {
+    line-height: 1.5;
+    word-break: break-word;
+  }
+
+  &.status-completed .status-panel-todo-icon {
+    color: var(--status-success);
+  }
+  &.status-completed .status-panel-todo-content {
+    color: var(--text-tertiary);
+  }
+  &.status-in_progress .status-panel-todo-icon {
+    color: var(--status-info);
+  }
+  &.status-error .status-panel-todo-icon {
+    color: var(--status-error);
+  }
+}
+
+/* ===== Agent 列表 ===== */
+.status-panel-agent-list {
+  display: flex;
+  flex-direction: column;
+}
+
+.status-panel-agent-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  padding: 5px 6px;
+  border-radius: 4px;
+  font-size: 12px;
+
+  &:hover {
+    background: var(--bg-hover);
+  }
+
+  .status-panel-agent-icon {
+    font-size: 13px;
+    margin-top: 1px;
+    flex-shrink: 0;
+  }
+
+  .status-panel-agent-body {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    min-width: 0;
+  }
+  .status-panel-agent-desc {
+    color: var(--text-primary);
+    line-height: 1.4;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+  }
+  .status-panel-agent-type {
+    align-self: flex-start;
+    font-size: 10px;
+    color: var(--text-tertiary);
+    background: var(--bg-tertiary);
+    border-radius: 3px;
+    padding: 1px 5px;
+  }
+  .status-panel-agent-summary {
+    color: var(--text-tertiary);
+    font-size: 11px;
+    line-height: 1.4;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    display: -webkit-box;
+    -webkit-line-clamp: 1;
+    -webkit-box-orient: vertical;
+  }
+
+  &.clickable {
+    cursor: pointer;
+  }
+  .status-panel-agent-arrow {
+    font-size: 12px;
+    color: var(--text-tertiary);
+    flex-shrink: 0;
+    margin-top: 2px;
+    opacity: 0;
+    transition: opacity 0.15s ease;
+  }
+  &:hover .status-panel-agent-arrow {
+    opacity: 1;
+  }
+
+  &.status-running .status-panel-agent-icon {
+    color: var(--status-info);
+  }
+  &.status-completed .status-panel-agent-icon {
+    color: var(--status-success);
+  }
+  &.status-error .status-panel-agent-icon {
+    color: var(--status-error);
+  }
+}
+
+/* ===== 文件改动列表 ===== */
+.status-panel-file-list {
+  display: flex;
+  flex-direction: column;
+}
+
+.status-panel-file-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 6px;
+  border-radius: 4px;
+  font-size: 12px;
+
+  &:hover {
+    background: var(--bg-hover);
+  }
+
+  .file-change-status {
+    font-size: 10px;
+    font-weight: 700;
+    width: 14px;
+    text-align: center;
+    flex-shrink: 0;
+    padding: 1px 0;
+    border-radius: 2px;
+  }
+  .file-change-status.status-modified {
+    color: var(--status-warning);
+    background: rgba(255, 152, 0, 0.15);
+  }
+
+  .file-change-name {
+    color: var(--text-primary);
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .file-change-stats {
+    display: flex;
+    gap: 4px;
+    font-family: var(--font-mono);
+    font-size: 11px;
+    font-weight: 600;
+    flex-shrink: 0;
+
+    .additions {
+      color: var(--status-success);
+    }
+    .deletions {
+      color: var(--status-error);
+    }
+  }
+}
+
+/* ===== loading 旋转动画 ===== */
+@keyframes status-spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
+.codicon.spin {
+  display: inline-block;
+  animation: status-spin 1s linear infinite;
+}

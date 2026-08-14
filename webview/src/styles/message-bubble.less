@@ -1,0 +1,95 @@
+/**
+ * 消息气泡样式
+ * 规划文档第四节：
+ *   user：右对齐蓝色气泡，圆角 12px 12px 2px 12px
+ *   assistant：左对齐无气泡，满宽
+ */
+
+.msg {
+  padding: 16px 0; /* cc-gui：整行 + 底部分隔线 */
+  border-bottom: 1px solid var(--color-message-divider, rgba(255, 255, 255, 0.04));
+  animation: msg-fade-in 0.2s ease;
+
+  &__time {
+    font-size: 11px;
+    color: var(--text-tertiary);
+    margin-bottom: 2px;
+  }
+
+  // ============ user 消息（右对齐气泡）============
+  &--user {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-end;
+
+    .msg__bubble {
+      max-width: 85%;
+      padding: 10px 14px;
+      background: var(--color-message-user-bg);
+      color: var(--color-message-user-text);
+      border-radius: 12px 12px 2px 12px; // 右下角小圆角（尾巴）
+      white-space: pre-wrap;
+      word-break: break-word;
+      line-height: 1.5;
+      font-size: 12px;
+    }
+  }
+
+  // ============ assistant 消息（左对齐满宽）============
+  &--assistant {
+    display: flex;
+    flex-direction: column;
+
+    .msg__content {
+      width: 100%;
+      padding: 4px 0;
+    }
+  }
+
+  // ============ 底部信息 ============
+  &__footer {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px;
+    margin-top: 6px;
+    font-size: 11px;
+    color: var(--text-muted);
+    opacity: 0.8;
+  }
+
+  &__footer-time {
+    color: var(--text-tertiary);
+  }
+
+  &__footer-model {
+    padding: 1px 6px;
+    /* info 半透明背景，变量无法表达半透明，保留 rgba */
+    background: rgba(100, 181, 246, 0.15);
+    color: var(--color-tool-name);
+    border-radius: 3px;
+  }
+
+  /* 轮次耗时（⏱ 工作中/已工作 X 秒），流式中随秒跳动 */
+  &__footer-duration {
+    color: var(--text-tertiary);
+    font-variant-numeric: tabular-nums; /* 等宽数字，跳动时不抖动 */
+
+    &--working {
+      color: var(--color-message-role-assistant);
+    }
+  }
+
+  &__footer-tokens {
+    color: var(--text-tertiary);
+  }
+
+  &__footer-cost {
+    color: var(--status-success);
+  }
+}
+
+@keyframes msg-fade-in {
+  from { opacity: 0; transform: translateY(4px); }
+  to { opacity: 1; transform: translateY(0); }
+}

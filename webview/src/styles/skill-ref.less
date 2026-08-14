@@ -1,0 +1,68 @@
+/**
+ * 技能引用 chip 样式
+ * 紫色调（区别于文件引用的蓝色），笔图标 + 技能名
+ */
+
+.skill-ref {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 8px;
+  background: rgba(179, 157, 219, 0.15);
+  border: 1px solid rgba(179, 157, 219, 0.3);
+  border-radius: 4px;
+  font-size: 12px;
+  color: #b39ddb;
+  max-width: 200px;
+  position: relative;
+
+  // CSS 自定义 tooltip（JCEF 原生 title 经常不显示）。
+  // width: max-content：避免 shrink-to-fit 被包含块（chip 宽度）压窄导致逐字换行
+  &:hover::after {
+    content: attr(data-tip);
+    position: absolute;
+    top: calc(100% + 6px);
+    left: 0; // 左对齐，避免 chip 靠左时 tooltip 溢出界面
+    width: max-content;
+    background: var(--bg-elevated);
+    border: 1px solid var(--border-primary);
+    border-radius: 4px;
+    padding: 4px 10px;
+    font-size: 11px;
+    color: var(--text-secondary);
+    white-space: normal;
+    word-break: break-word;
+    max-width: min(480px, 90vw);
+    z-index: 100;
+    pointer-events: none;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
+  }
+
+  &__icon {
+    font-size: 12px;
+    opacity: 0.85;
+  }
+
+  &__name {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-family: var(--font-mono);
+  }
+
+  &__remove {
+    background: none;
+    border: none;
+    color: #b39ddb;
+    cursor: pointer;
+    font-size: 11px;
+    padding: 0 0 0 2px;
+    opacity: 0.6;
+    line-height: 1;
+
+    &:hover {
+      opacity: 1;
+      color: var(--status-error);
+    }
+  }
+}

@@ -1,0 +1,37 @@
+/**
+ * 等待指示器样式
+ * 规划文档第四节：旋转圆环 spinner + 计时
+ * 阶段 2.6：改用 CSS 变量
+ */
+
+.waiting {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 4px;
+  font-size: 13px;
+  color: var(--text-tertiary);
+
+  &__spinner {
+    width: 16px;
+    height: 16px;
+    border: 2px solid var(--border-primary);
+    border-top-color: var(--accent-primary);
+    border-radius: 50%;
+    animation: waiting-spin 0.8s linear infinite;
+    flex-shrink: 0;
+  }
+
+  &__text {
+    color: var(--text-tertiary);
+  }
+
+  &__time {
+    color: var(--text-muted);
+    font-size: 11px;
+  }
+}
+
+@keyframes waiting-spin {
+  to { transform: rotate(360deg); }
+}

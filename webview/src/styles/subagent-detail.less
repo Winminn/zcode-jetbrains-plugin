@@ -1,0 +1,260 @@
+/**
+ * 子代理详情弹窗样式（原始过程查看）
+ * 结构参照 plan-approval-dialog.less，复用全局 CSS 变量。
+ * 弹窗比审批弹窗更宽（转录内容长），头部带元信息徽标，正文滚动。
+ */
+
+.subagent-detail-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: var(--bg-overlay);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 10000;
+}
+
+.subagent-detail-dialog {
+  width: 760px;
+  max-width: 92vw;
+  max-height: 82vh;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-primary);
+  border-radius: 8px;
+  box-shadow: var(--shadow-card);
+  display: flex;
+  flex-direction: column;
+}
+
+/* ===== 头部：图标 + 标题/元信息 + 操作按钮 ===== */
+.subagent-detail-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--border-primary);
+
+  &__icon {
+    font-size: 18px;
+    color: var(--text-secondary);
+  }
+
+  &__main {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+  }
+
+  &__title {
+    font-weight: 600;
+    font-size: 14px;
+    color: var(--text-primary);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  &__meta {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 11px;
+    color: var(--text-tertiary);
+  }
+}
+
+.subagent-detail-badge {
+  font-size: 10px;
+  padding: 1px 6px;
+  border-radius: 3px;
+  background: var(--bg-tertiary);
+  color: var(--text-secondary);
+
+  &.running {
+    color: var(--status-info);
+    background: rgba(33, 150, 243, 0.12);
+  }
+  &.completed {
+    color: var(--status-success);
+    background: rgba(76, 175, 80, 0.12);
+  }
+  &.error {
+    color: var(--status-error);
+    background: rgba(244, 67, 54, 0.12);
+  }
+  &.pending {
+    color: var(--text-tertiary);
+  }
+}
+
+.subagent-detail-meta-item {
+  font-family: var(--font-mono);
+}
+
+.subagent-detail-icon-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--text-secondary);
+  cursor: pointer;
+  flex-shrink: 0;
+
+  &:hover {
+    background: var(--bg-hover);
+    color: var(--text-primary);
+  }
+  &:disabled {
+    cursor: default;
+    opacity: 0.6;
+  }
+  .spin {
+    display: inline-block;
+    animation: subagent-detail-spin 1s linear infinite;
+  }
+}
+
+/* 停止子代理按钮：红色语义 */
+.subagent-detail-stop-btn {
+  color: var(--status-error);
+  &:hover:not(:disabled) {
+    background: rgba(244, 67, 54, 0.12);
+    color: var(--status-error);
+  }
+}
+
+/* ===== 正文：转录 / 实时工具 / 兜底 ===== */
+.subagent-detail-body {
+  flex: 1;
+  overflow-y: auto;
+  padding: 12px 16px;
+
+  &::-webkit-scrollbar {
+    width: 6px;
+  }
+  &::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  &::-webkit-scrollbar-thumb {
+    background: var(--scrollbar-thumb);
+    border-radius: 3px;
+  }
+}
+
+.subagent-detail-hint {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--text-tertiary);
+  padding: 4px 0 10px;
+
+  .spin {
+    display: inline-block;
+    animation: subagent-detail-spin 1s linear infinite;
+  }
+}
+
+.subagent-detail-error {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--status-error);
+  padding: 6px 10px;
+  margin-bottom: 8px;
+  border: 1px solid rgba(244, 67, 54, 0.3);
+  border-radius: 4px;
+  background: rgba(244, 67, 54, 0.06);
+}
+
+.subagent-detail-retry {
+  margin-left: auto;
+  padding: 2px 10px;
+  font-size: 11px;
+  border: 1px solid var(--border-primary);
+  border-radius: 4px;
+  background: transparent;
+  color: var(--text-secondary);
+  cursor: pointer;
+
+  &:hover {
+    background: var(--bg-hover);
+    color: var(--text-primary);
+  }
+}
+
+/* 完整转录：消息按角色分块 */
+.subagent-detail-transcript {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.subagent-detail-msg {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+
+  &-role {
+    font-size: 10px;
+    font-weight: 600;
+    color: var(--text-tertiary);
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+
+    &::before {
+      content: '› ';
+    }
+  }
+
+  &.role-user &-role {
+    color: var(--status-info);
+  }
+
+  &-body {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    padding-left: 10px;
+    border-left: 2px solid var(--border-primary);
+  }
+}
+
+/* 运行中实时工具列表 */
+.subagent-detail-tools {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.subagent-detail-fallback {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.subagent-detail-empty {
+  padding: 30px 10px;
+  text-align: center;
+  color: var(--text-tertiary);
+  font-size: 12px;
+
+  .subagent-detail-retry {
+    margin: 10px auto 0;
+  }
+}
+
+@keyframes subagent-detail-spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}

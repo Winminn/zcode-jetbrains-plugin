@@ -1,0 +1,124 @@
+/**
+ * 设置视图样式（对齐 cc-gui SettingsView：顶部标题栏 + 窄边栏 + 内容区）
+ */
+
+.settings-view {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+
+  /* 顶部标题栏 */
+  &__header {
+    display: flex;
+    align-items: center;
+    padding: 10px 16px;
+    border-bottom: 1px solid var(--border-primary);
+    background: var(--bg-secondary);
+    flex-shrink: 0;
+  }
+
+  &__header-left {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+
+  &__back {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 28px;
+    height: 28px;
+    border: none;
+    border-radius: 4px;
+    background: transparent;
+    color: var(--text-tertiary);
+    cursor: pointer;
+
+    .codicon {
+      font-size: 16px;
+    }
+
+    &:hover {
+      background: var(--bg-hover, rgba(128, 128, 128, 0.12));
+      color: var(--text-primary);
+    }
+  }
+
+  &__title {
+    font-size: 16px;
+    font-weight: 600;
+    margin: 0;
+    color: var(--text-primary);
+  }
+
+  /* 主体：窄边栏 + 内容区 */
+  &__main {
+    flex: 1;
+    min-height: 0;
+    display: flex;
+  }
+
+  /* 左侧窄边栏：纯图标，hover title tooltip 显示文字（对齐 cc-gui collapsed 态）*/
+  &__sidebar {
+    width: 48px;
+    flex-shrink: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    padding: 8px 0;
+    background: var(--bg-secondary);
+    border-right: 1px solid var(--border-primary);
+  }
+
+  &__nav-item {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 32px;
+    height: 32px;
+    margin: 0 8px;
+    border: none;
+    border-radius: 6px;
+    background: transparent;
+    color: var(--text-secondary);
+    cursor: pointer;
+    position: relative;
+
+    .codicon {
+      font-size: 13px; /* 与 Header 图标按钮同档，避免撑满按钮 */
+    }
+
+    &:hover {
+      background: var(--bg-hover, rgba(128, 128, 128, 0.12));
+      color: var(--text-primary);
+    }
+
+    &.active {
+      background: var(--bg-active, rgba(53, 116, 240, 0.18));
+      color: var(--text-primary);
+
+      &::before {
+        content: '';
+        position: absolute;
+        left: -8px;
+        top: 0;
+        bottom: 0;
+        width: 3px;
+        border-radius: 0 2px 2px 0;
+        background: var(--accent-primary, #3574f0);
+      }
+    }
+  }
+
+  /* 右侧内容区 */
+  &__content {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    padding: 16px 20px 0;
+    overflow: hidden; /* UsageView 内部自己滚动 */
+  }
+}

@@ -1,0 +1,307 @@
+/**
+ * 欢迎页样式（cc-gui welcome.less 简化版）
+ *
+ * 动效分层（transform 动画同元素会互相覆盖，故拆到不同层）：
+ *   - wrapper：弹性入场（一次性）
+ *   - logo-box：悬浮呼吸（持续）+ overflow 裁剪扫光条
+ *   - logo(svg)：辉光呼吸（filter，持续）+ hover 放大（transform transition）
+ *   - path:Z 笔画延迟落版（一次性）
+ *   - ping：光圈扩散（持续，box 外层不被裁剪）
+ *   - version-tag：滑入（一次性，transform+opacity）+ 辉光呼吸（box-shadow，持续）
+ *   - hint-char：逐字打字机入场（一次性）
+ *   - hint-icon：弹入（一次性）+ 发光脉动（box-shadow，持续）
+ *   - hint-caret：光标闪烁（持续）
+ */
+
+.welcome {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  color: var(--text-muted);
+  gap: 16px;
+
+  &__logo-wrapper {
+    position: relative;
+    display: inline-block;
+    animation: welcome-logo-entry 0.9s cubic-bezier(0.34, 1.56, 0.64, 1) both;
+  }
+
+  &__logo-box {
+    position: relative;
+    border-radius: 14%;
+    overflow: hidden;
+    animation: welcome-logo-float 4s ease-in-out 1s infinite;
+  }
+
+  /* Zai 品牌图标：固定品牌底色 #2D2D2D（Zai.svg 原色，不跟随主题） */
+  &__logo {
+    display: block;
+    color: #2d2d2d;
+    border-radius: 14%;
+    animation: welcome-logo-glow 3.2s ease-in-out 1s infinite;
+    transition: transform 0.3s ease;
+  }
+
+  &__logo-box:hover &__logo {
+    transform: scale(1.08);
+  }
+
+  /* Z 笔画在底板弹入后再落版 */
+  &__logo path:last-of-type {
+    animation: welcome-z-in 0.5s ease-out 0.45s both;
+  }
+
+  /* 扫光高光条（斜向白光周期性扫过方块） */
+  &__logo-shine {
+    position: absolute;
+    inset: 0;
+    background: linear-gradient(
+      105deg,
+      transparent 35%,
+      rgba(255, 255, 255, 0.38) 50%,
+      transparent 65%
+    );
+    transform: translateX(-160%) skewX(-12deg);
+    animation: welcome-logo-shine 3.6s ease-in-out 1.6s infinite;
+    pointer-events: none;
+  }
+
+  /* 光圈扩散（紫色描边圈从方块边缘荡开） */
+  &__logo-ping {
+    position: absolute;
+    inset: 0;
+    border-radius: 14%;
+    border: 1px solid rgba(139, 92, 246, 0.55);
+    animation: welcome-logo-ping 2.6s cubic-bezier(0, 0.55, 0.45, 1) 1.2s infinite;
+    pointer-events: none;
+
+    &--delay {
+      animation-delay: 2.5s;
+    }
+  }
+
+  /* 版本徽章：Logo 右侧（cc-gui .version-tag 紫色方角 + 辉光） */
+  &__version-tag {
+    position: absolute;
+    top: -2px;
+    left: 100%;
+    margin-left: 10px;
+    background: rgba(139, 92, 246, 0.1);
+    border: 1px solid rgba(139, 92, 246, 0.5);
+    color: #ddd6fe;
+    font-size: 10px;
+    padding: 2px 8px;
+    border-radius: 4px;
+    font-weight: 500;
+    white-space: nowrap;
+    box-shadow: 0 0 10px rgba(139, 92, 246, 0.15);
+    backdrop-filter: blur(4px);
+    z-index: 10;
+    cursor: pointer;
+    user-select: none;
+    animation:
+      welcome-badge-in 0.5s cubic-bezier(0.34, 1.56, 0.64, 1) 0.55s both,
+      welcome-badge-glow 3s ease-in-out 1.2s infinite;
+  }
+
+  &__hint {
+    font-size: 14px;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+
+  /* 逐字入场的单字（配合 inline-box 的 translateY/blur 动画） */
+  &__hint-char {
+    display: inline-block;
+    opacity: 0;
+    animation: welcome-char-in 0.45s cubic-bezier(0.22, 1, 0.36, 1) both;
+  }
+
+  /* 无会话提示的 + 图标（右上角按钮的示意） */
+  &__hint-icon {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 18px;
+    height: 18px;
+    border-radius: 4px;
+    background: var(--bg-hover);
+    border: 1px solid var(--border-primary);
+    color: var(--text-secondary);
+    font-size: 12px;
+    font-weight: 600;
+    flex-shrink: 0;
+    animation:
+      welcome-hint-icon-in 0.5s cubic-bezier(0.34, 1.56, 0.64, 1) 0.75s both,
+      welcome-hint-pulse 1.8s ease-in-out 1.4s infinite;
+  }
+
+  /* 终端式闪烁光标（提示语打完字后出现） */
+  &__hint-caret {
+    display: inline-block;
+    width: 2px;
+    height: 1.1em;
+    background: var(--text-secondary);
+    opacity: 0;
+    animation: welcome-caret-blink 1.1s linear 2s infinite;
+  }
+}
+
+/* ---------- 入场动画（一次性） ---------- */
+
+@keyframes welcome-logo-entry {
+  0% {
+    opacity: 0;
+    transform: scale(0.3) rotate(-10deg);
+  }
+  60% {
+    opacity: 1;
+    transform: scale(1.08) rotate(2deg);
+  }
+  100% {
+    opacity: 1;
+    transform: scale(1) rotate(0deg);
+  }
+}
+
+@keyframes welcome-z-in {
+  0% {
+    opacity: 0;
+    transform: translateY(60px);
+  }
+  100% {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes welcome-badge-in {
+  0% {
+    opacity: 0;
+    transform: translateX(-12px) scale(0.8);
+  }
+  100% {
+    opacity: 1;
+    transform: translateX(0) scale(1);
+  }
+}
+
+@keyframes welcome-char-in {
+  0% {
+    opacity: 0;
+    transform: translateY(10px);
+    filter: blur(4px);
+  }
+  100% {
+    opacity: 1;
+    transform: translateY(0);
+    filter: blur(0);
+  }
+}
+
+@keyframes welcome-hint-icon-in {
+  0% {
+    opacity: 0;
+    transform: scale(0);
+  }
+  70% {
+    transform: scale(1.2);
+  }
+  100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+/* ---------- 持续动画 ---------- */
+
+@keyframes welcome-logo-float {
+  0%,
+  100% {
+    transform: translateY(0);
+  }
+  50% {
+    transform: translateY(-5px);
+  }
+}
+
+@keyframes welcome-logo-glow {
+  0%,
+  100% {
+    filter: drop-shadow(0 0 3px rgba(139, 92, 246, 0));
+  }
+  50% {
+    filter: drop-shadow(0 0 10px rgba(139, 92, 246, 0.35));
+  }
+}
+
+@keyframes welcome-logo-shine {
+  0% {
+    transform: translateX(-160%) skewX(-12deg);
+  }
+  45%,
+  100% {
+    transform: translateX(160%) skewX(-12deg);
+  }
+}
+
+@keyframes welcome-logo-ping {
+  0% {
+    opacity: 0.9;
+    transform: scale(1);
+  }
+  70%,
+  100% {
+    opacity: 0;
+    transform: scale(1.75);
+  }
+}
+
+@keyframes welcome-badge-glow {
+  0%,
+  100% {
+    box-shadow: 0 0 6px rgba(139, 92, 246, 0.18);
+  }
+  50% {
+    box-shadow: 0 0 16px rgba(139, 92, 246, 0.5);
+  }
+}
+
+@keyframes welcome-hint-pulse {
+  0%,
+  100% {
+    box-shadow: 0 0 0 rgba(139, 92, 246, 0);
+    border-color: var(--border-primary);
+  }
+  50% {
+    box-shadow: 0 0 10px rgba(139, 92, 246, 0.45);
+    border-color: rgba(139, 92, 246, 0.65);
+  }
+}
+
+@keyframes welcome-caret-blink {
+  0%,
+  49% {
+    opacity: 1;
+  }
+  50%,
+  100% {
+    opacity: 0;
+  }
+}
+
+/* ---------- 无障碍：偏好减弱动效时全部静止到最终态 ---------- */
+
+@media (prefers-reduced-motion: reduce) {
+  .welcome,
+  .welcome *,
+  .welcome *::before,
+  .welcome *::after {
+    animation-duration: 0.01ms !important;
+    animation-delay: 0s !important;
+    animation-iteration-count: 1 !important;
+  }
+}

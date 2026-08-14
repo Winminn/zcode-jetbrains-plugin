@@ -1,0 +1,42 @@
+.line-chart {
+  width: 100%;
+
+  &--empty {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    height: 110px;
+    color: var(--text-secondary, #888);
+    font-size: 12px;
+  }
+
+  &__svg {
+    display: block;
+    overflow: visible; /* 防止边缘数据点/标签被裁剪 */
+  }
+}
+
+.lc-grid {
+  stroke: var(--chart-grid);
+  stroke-width: 1;
+  stroke-dasharray: 2 3;
+}
+
+.lc-y-label,
+.lc-x-label {
+  fill: var(--chart-axis);
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+  user-select: none;
+}
+
+.lc-area {
+  stroke: none;
+}
+
+.lc-line {
+  fill: none;
+  stroke-width: 1.5;
+  stroke-linejoin: round;
+  stroke-linecap: round;
+}

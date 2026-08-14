@@ -1,0 +1,191 @@
+/**
+ * 聊天视图样式（cc-gui message.less 布局移植）
+ *
+ * 结构：
+ *   .messages-shell（flex:1 容器，relative 定位锚点 rail）
+ *     ├─ .messages-anchor-rail（左侧锚点导航，绝对定位）
+ *     ├─ .messages-container（可滚动区）
+ *     │    └─ .chat-view__inner（消息流 + 欢迎页）
+ */
+
+.messages-shell {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  position: relative;
+}
+
+.messages-container {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  background: var(--bg-chat);
+}
+
+.chat-view__inner {
+  max-width: 900px;
+  margin: 0 auto;
+  padding: 8px 20px 24px;
+  /* 有锚点 rail 时预留左侧空间（cc-gui 26px）*/
+  padding-left: 46px;
+}
+
+.chat-view__loading {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  color: var(--text-tertiary);
+  padding: 40px;
+
+  /* 三点弹跳（typing dots），与文案同色系 */
+  &-dots {
+    display: inline-flex;
+    gap: 4px;
+    align-items: center;
+
+    span {
+      width: 5px;
+      height: 5px;
+      border-radius: 50%;
+      background: currentColor;
+      animation: loading-dot-bounce 1.2s ease-in-out infinite;
+
+      &:nth-child(2) { animation-delay: 0.15s; }
+      &:nth-child(3) { animation-delay: 0.3s; }
+    }
+  }
+}
+
+@keyframes loading-dot-bounce {
+  0%, 60%, 100% { transform: translateY(0); opacity: 0.4; }
+  30% { transform: translateY(-4px); opacity: 1; }
+}
+
+/* ===== 锚点导航（cc-gui messages-anchor-rail）===== */
+.messages-anchor-rail {
+  position: absolute;
+  left: 4px;
+  top: 48px;
+  bottom: 24px;
+  width: 20px;
+  pointer-events: none;
+  z-index: 5;
+}
+
+.messages-anchor-track {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 2px;
+  background: var(--border-primary);
+  border-radius: 1px;
+}
+
+.messages-anchor-dot {
+  position: absolute;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-primary);
+  pointer-events: auto;
+  cursor: pointer;
+  transition: all 0.15s;
+
+  &:hover {
+    transform: translate(-50%, -50%) scale(1.3);
+    background: var(--accent-primary);
+    border-color: var(--accent-primary);
+  }
+
+  &.is-active {
+    background: var(--accent-primary);
+    border-color: var(--accent-primary);
+    box-shadow: 0 0 6px var(--accent-primary);
+  }
+}
+
+/* 锚点预览 tooltip（cc-gui .anchor-tooltip 同款）*/
+.anchor-tooltip {
+  position: absolute;
+  left: calc(100% + 8px);
+  top: 50%;
+  transform: translateY(-50%);
+  background: var(--bg-elevated);
+  color: var(--text-primary);
+  border: 1px solid var(--border-secondary);
+  box-shadow: var(--shadow-sm);
+  padding: 6px 10px;
+  border-radius: 6px;
+  font-size: 10px;
+  line-height: 1.4;
+  max-width: 400px;
+  width: max-content; /* 宽度由内容决定（避免被挤压逐字换行）*/
+  white-space: pre-wrap;
+  word-break: break-word; /* 仅按需断行，不用 break-all */
+  pointer-events: none;
+  z-index: 100;
+  animation: anchor-tooltip-fade-in 0.15s ease;
+
+  /* 左侧箭头（cc-gui 同款）*/
+  &::before {
+    content: '';
+    position: absolute;
+    right: 100%;
+    top: 50%;
+    transform: translateY(-50%);
+    border: 5px solid transparent;
+    border-right-color: var(--border-secondary);
+  }
+
+  &::after {
+    content: '';
+    position: absolute;
+    right: 100%;
+    top: 50%;
+    transform: translateY(-50%);
+    border: 4px solid transparent;
+    border-right-color: var(--bg-elevated);
+  }
+}
+
+@keyframes anchor-tooltip-fade-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+/* 面板太窄时隐藏 rail（cc-gui @media max-width 400px）*/
+@media (max-width: 400px) {
+  .messages-anchor-rail {
+    display: none;
+  }
+  .chat-view__inner {
+    padding-left: 20px;
+  }
+}
+
+/* 滚动条 */
+.messages-container::-webkit-scrollbar {
+  width: 8px;
+}
+.messages-container::-webkit-scrollbar-track {
+  background: transparent;
+}
+.messages-container::-webkit-scrollbar-thumb {
+  background: var(--scrollbar-thumb);
+  border-radius: 4px;
+  &:hover { background: var(--scrollbar-thumb-hover); }
+}

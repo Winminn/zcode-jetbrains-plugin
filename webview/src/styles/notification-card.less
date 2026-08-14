@@ -1,0 +1,122 @@
+/**
+ * 子 agent / 任务回调通知卡片样式
+ *
+ * 视觉定位：区别于
+ *   - 用户消息（右对齐蓝色气泡）
+ *   - assistant 消息（左对齐无背景 markdown）
+ *   - 工具卡片 tool-card（过程记录，窄行）
+ * 通知卡片是「子代理成果」，左对齐 + 左边框强调 + 卡片背景。
+ */
+
+.notif-card {
+  position: relative;
+  margin: 10px 0;
+  border: 1px solid var(--border-secondary);
+  /* 子代理是 assistant 衍生，用角色橙色作左边框强调 */
+  border-left: 3px solid var(--color-message-role-assistant);
+  border-radius: 6px;
+  background: var(--bg-elevated);
+  overflow: hidden;
+
+  &--err {
+    border-left-color: var(--status-error);
+    border-color: rgba(244, 67, 54, 0.4);
+  }
+
+  &__header {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 8px 12px;
+    cursor: pointer;
+    user-select: none;
+    font-size: 12px;
+
+    &:hover {
+      background: rgba(255, 255, 255, 0.04);
+    }
+  }
+
+  &__icon {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 16px;
+    height: 16px;
+    flex-shrink: 0;
+    line-height: 1;
+    color: var(--color-message-role-assistant);
+
+    .codicon {
+      font-size: 14px;
+    }
+  }
+
+  &__label {
+    color: var(--color-message-role-assistant);
+    font-weight: 600;
+    flex-shrink: 0;
+    font-size: 11px;
+  }
+
+  &__title {
+    color: var(--text-secondary);
+    font-weight: 500;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    flex: 1;
+    min-width: 0;
+  }
+
+  &__badge {
+    font-size: 11px;
+    flex-shrink: 0;
+    padding: 1px 6px;
+    border-radius: 3px;
+
+    &--ok {
+      color: var(--status-success);
+      background: var(--color-button-success-bg);
+    }
+    &--err {
+      color: var(--status-error);
+      background: var(--color-button-danger-hover-bg);
+    }
+    &--info {
+      color: var(--status-info);
+      background: var(--color-button-accent-hover-bg);
+    }
+  }
+
+  &__meta {
+    color: var(--text-tertiary);
+    font-size: 10px;
+    flex-shrink: 0;
+    font-family: var(--font-mono);
+  }
+
+  &__time {
+    color: var(--text-muted);
+    font-size: 10px;
+    flex-shrink: 0;
+    margin-left: auto;
+  }
+
+  &__toggle {
+    color: var(--text-tertiary);
+    font-size: 10px;
+    flex-shrink: 0;
+  }
+
+  // ============ 展开的成果正文（markdown）============
+  &__body {
+    padding: 4px 12px 12px;
+    border-top: 1px solid var(--border-secondary);
+
+    /* 正文用 MarkdownBlock 渲染，缩小一点字号与消息正文区分 */
+    .markdown-body {
+      font-size: 13px;
+    }
+  }
+}

@@ -1,0 +1,231 @@
+/**
+ * 历史视图样式（cc-gui history.less 简化版）
+ */
+
+.history-view {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  overflow: hidden;
+  background: var(--bg-chat);
+
+  /* 顶部搜索 */
+  &__placeholder {
+    display: none;
+  }
+}
+
+.history-header {
+  flex-shrink: 0;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border-secondary);
+  background: var(--bg-secondary);
+}
+
+/* header-main：信息条 + 工具栏（cc-gui .history-header-main）*/
+.history-header-main {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+/* 信息条「共 N 个会话」（cc-gui .history-info）*/
+.history-info {
+  font-size: 12px;
+  color: var(--text-tertiary);
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 多选摘要「已选择 N 个会话」（cc-gui .history-selection-summary）*/
+.history-selection-summary {
+  font-size: 12px;
+  color: var(--accent-secondary);
+  font-weight: 500;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 工具栏（cc-gui .history-toolbar-btn）*/
+.history-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-shrink: 0;
+}
+
+.history-toolbar-btn {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 8px;
+  font-size: 12px;
+  color: var(--text-secondary);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  cursor: pointer;
+  transition: all 0.15s;
+
+  .codicon {
+    font-size: 14px;
+  }
+
+  &:hover:not(:disabled) {
+    background: var(--bg-hover);
+    color: var(--text-primary);
+  }
+
+  &:disabled {
+    opacity: 0.4;
+    cursor: not-allowed;
+  }
+}
+
+.history-toolbar-danger {
+  color: var(--color-danger);
+
+  &:hover:not(:disabled) {
+    background: var(--color-button-danger-hover-bg);
+    border-color: rgba(211, 47, 47, 0.3);
+  }
+}
+
+.history-search-container {
+  position: relative;
+}
+
+.history-search-input {
+  width: 100%;
+  padding: 6px 10px 6px 30px;
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  border: 1px solid var(--border-primary);
+  border-radius: 4px;
+  font-size: 12px;
+  outline: none;
+
+  &::placeholder {
+    color: var(--text-placeholder);
+  }
+
+  &:focus {
+    border-color: var(--accent-primary);
+  }
+}
+
+.history-search-icon {
+  position: absolute;
+  left: 9px;
+  top: 50%;
+  transform: translateY(-50%);
+  font-size: 13px;
+  color: var(--text-tertiary);
+  pointer-events: none;
+}
+
+.history-list {
+  flex: 1;
+  overflow-y: auto;
+  padding: 4px 0;
+}
+
+.history-items {
+  list-style: none;
+}
+
+.history-empty {
+  padding: 40px 16px;
+  text-align: center;
+  color: var(--text-muted);
+  font-size: 13px;
+}
+
+/* 滚动条 */
+.history-list::-webkit-scrollbar {
+  width: 8px;
+}
+.history-list::-webkit-scrollbar-track {
+  background: transparent;
+}
+.history-list::-webkit-scrollbar-thumb {
+  background: var(--scrollbar-thumb);
+  border-radius: 4px;
+  &:hover {
+    background: var(--scrollbar-thumb-hover);
+  }
+}
+
+/* ===== 删除确认 modal（cc-gui modal-overlay/modal-content）===== */
+.modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.5);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+}
+
+.modal-content {
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-primary);
+  border-radius: 8px;
+  padding: 20px;
+  min-width: 320px;
+  max-width: 420px;
+  box-shadow: var(--shadow-lg, var(--shadow-card));
+
+  h3 {
+    font-size: 15px;
+    color: var(--text-secondary);
+    margin-bottom: 10px;
+  }
+
+  p {
+    font-size: 13px;
+    color: var(--text-tertiary);
+    line-height: 1.6;
+    margin-bottom: 16px;
+  }
+}
+
+.modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.modal-btn {
+  padding: 6px 16px;
+  border-radius: 4px;
+  font-size: 13px;
+  cursor: pointer;
+  transition: all 0.15s;
+  border: 1px solid transparent;
+}
+
+.modal-btn-cancel {
+  background: var(--bg-tertiary);
+  color: var(--text-primary);
+  border-color: var(--border-secondary);
+
+  &:hover {
+    background: var(--bg-hover);
+  }
+}
+
+.modal-btn-danger {
+  background: var(--color-danger);
+  color: #fff;
+
+  &:hover {
+    background: #c62b2b;
+  }
+}

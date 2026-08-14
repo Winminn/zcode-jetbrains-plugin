@@ -1,0 +1,48 @@
+<idea-plugin>
+    <id>com.zcode.ideaplugin.zcode-assistant</id>
+    <name>ZC GUI</name>
+    <vendor email="zcode-assistant@example.com" url="https://github.com/zcode-assistant">ZC GUI</vendor>
+
+    <description><![CDATA[
+        <h3>ZC GUI</h3>
+        在 IDEA 里管理 ZCode 会话：列表、查看历史、对话、流式输出。
+        <br/><br/>
+        基于 ZCode Protocol（app-server）实现，协议客户端独立可测。
+    ]]></description>
+
+    <!-- 兼容的 IDE 版本范围：2024.1+ 全支持（含 2026.x EAP/正式版） -->
+    <idea-version since-build="241" until-build="261.*"/>
+
+    <!-- 依赖 JCEF（嵌入式 Chromium，用于渲染 React UI） -->
+    <depends>com.intellij.modules.platform</depends>
+
+    <extensions defaultExtensionNs="com.intellij">
+        <!-- 注册 ToolWindow（右侧工具栏）；canCloseContents 开启多标签关闭按钮（cc-gui 同款） -->
+        <toolWindow id="ZCode"
+                    anchor="right"
+                    factoryClass="com.zcode.ideaplugin.ui.ZCodeToolWindowFactory"
+                    icon="com.zcode.ideaplugin.ZCodeIcons.Zai"
+                    secondary="false"
+                    canCloseContents="true"/>
+    </extensions>
+
+    <actions>
+        <!-- 右键发送文件/选中代码到输入框（对齐 cc-gui SendFilePathToInputAction / SendSelectionToTerminalAction） -->
+        <action id="ZCode.SendFileToInput"
+                class="com.zcode.ideaplugin.action.SendFileToInputAction"
+                icon="com.zcode.ideaplugin.ZCodeIcons.Zai"
+                text="发送到 ZC GUI 输入框"
+                description="把选中的文件引用发送到 ZC GUI 输入框">
+            <add-to-group group-id="ProjectViewPopupMenu" anchor="first"/>
+            <add-to-group group-id="EditorTabPopupMenu" anchor="first"/>
+        </action>
+        <action id="ZCode.SendSelectionToInput"
+                class="com.zcode.ideaplugin.action.SendSelectionToInputAction"
+                icon="com.zcode.ideaplugin.ZCodeIcons.Zai"
+                text="发送选中代码到 ZC GUI 输入框"
+                description="把选中代码的行号引用发送到 ZC GUI 输入框">
+            <add-to-group group-id="EditorPopupMenu" anchor="first"/>
+            <keyboard-shortcut keymap="$default" first-keystroke="ctrl alt K"/>
+        </action>
+    </actions>
+</idea-plugin>

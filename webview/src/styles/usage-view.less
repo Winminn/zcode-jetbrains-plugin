@@ -1,0 +1,224 @@
+/**
+ * 用量查询面板样式（设置页「用量查询」条目）
+ */
+
+.usage-view {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  padding: 4px 4px 24px;
+  overflow-y: auto;
+
+  &::-webkit-scrollbar {
+    width: 6px;
+  }
+  &::-webkit-scrollbar-thumb {
+    background: var(--scrollbar-thumb);
+    border-radius: 3px;
+  }
+
+  &__section {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+  }
+
+  &__section-head {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+
+  &__section-title {
+    flex: 1;
+    font-size: 14px;
+    font-weight: 600;
+    color: var(--text-primary);
+    margin: 0;
+  }
+
+  &__refresh-time {
+    font-size: 11px;
+    color: var(--text-muted);
+    font-variant-numeric: tabular-nums;
+    flex-shrink: 0;
+  }
+
+  &__icon-btn {
+    background: transparent;
+    border: 1px solid var(--border-primary);
+    border-radius: 6px;
+    width: 26px;
+    height: 26px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+    color: var(--text-secondary);
+
+    &:hover:not(:disabled) {
+      color: var(--text-primary);
+      border-color: var(--text-tertiary);
+    }
+    &:disabled {
+      cursor: default;
+      opacity: 0.6;
+    }
+  }
+
+  &__divider {
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--text-secondary);
+    margin: 4px 0 0;
+    padding-bottom: 6px;
+    border-bottom: 1px solid var(--border-primary);
+  }
+
+  &__range-bar {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    flex-wrap: wrap;
+  }
+
+  &__range-tabs {
+    display: inline-flex;
+    gap: 4px;
+  }
+
+  &__range-tab {
+    background: transparent;
+    border: 1px solid var(--border-primary);
+    border-radius: 6px;
+    padding: 4px 10px;
+    font-size: 12px;
+    color: var(--text-secondary);
+    cursor: pointer;
+    transition: all 0.15s;
+
+    &:hover {
+      color: var(--text-primary);
+      border-color: var(--text-tertiary);
+    }
+    &.active {
+      background: var(--accent-primary, #3574f0);
+      border-color: var(--accent-primary, #3574f0);
+      color: #fff;
+    }
+  }
+
+  &__range-dates {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+  }
+
+  &__date-input {
+    background: var(--bg-secondary);
+    border: 1px solid var(--border-primary);
+    border-radius: 6px;
+    padding: 4px 8px;
+    font-size: 12px;
+    color: var(--text-primary);
+    width: 130px;
+    color-scheme: light dark; /* 让原生日历控件适配主题 */
+
+    &:focus {
+      outline: none;
+      border-color: var(--accent-primary, #3574f0);
+    }
+  }
+
+  &__date-sep {
+    color: var(--text-muted);
+    font-size: 12px;
+  }
+
+  &__chart-section {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+
+  &__chart-head {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+  }
+
+  &__chart-title {
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--text-primary);
+  }
+
+  &__chart-summary {
+    font-size: 12px;
+    color: var(--text-tertiary);
+    font-variant-numeric: tabular-nums;
+  }
+
+  &__loading,
+  &__empty {
+    color: var(--text-tertiary);
+    font-size: 12px;
+    padding: 16px 4px;
+    line-height: 1.6;
+  }
+
+  &__error {
+    color: var(--status-error-text);
+    font-size: 12px;
+    padding: 8px 12px;
+    background: var(--status-error-bg, rgba(244, 67, 54, 0.1));
+    border-radius: 6px;
+    line-height: 1.6;
+  }
+}
+
+/* 用量明细表 */
+.usage-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+
+  th {
+    text-align: left;
+    font-weight: 500;
+    color: var(--text-tertiary);
+    padding: 6px 8px;
+    border-bottom: 1px solid var(--border-primary);
+  }
+
+  td {
+    padding: 5px 8px;
+    border-bottom: 1px solid var(--border-lighter, rgba(128, 128, 128, 0.15));
+    color: var(--text-secondary);
+  }
+
+  &__name {
+    color: var(--text-primary);
+  }
+
+  &__num {
+    text-align: right;
+    font-variant-numeric: tabular-nums;
+  }
+}
+
+.codicon.spin {
+  display: inline-block;
+  animation: usage-spin 1s linear infinite;
+}
+
+@keyframes usage-spin {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
+}

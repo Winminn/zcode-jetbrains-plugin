@@ -1,0 +1,1678 @@
+package com.zcode.ideaplugin.ui
+
+import com.intellij.openapi.application.ApplicationManager
+import com.intellij.openapi.Disposable
+import com.intellij.openapi.diagnostic.Logger
+import com.intellij.openapi.project.Project
+import com.intellij.openapi.fileEditor.FileEditorManager
+import com.intellij.openapi.fileChooser.FileChooser
+import com.intellij.openapi.fileChooser.FileChooserDescriptor
+import com.intellij.openapi.vfs.LocalFileSystem
+import com.intellij.openapi.vfs.VirtualFile
+import com.intellij.diff.DiffManager
+import com.intellij.diff.contents.DiffContent
+import com.intellij.diff.requests.SimpleDiffRequest
+import com.intellij.diff.DiffContentFactory
+import com.intellij.ui.JBColor
+import com.intellij.ui.content.Content
+import com.intellij.ui.jcef.JBCefApp
+import com.intellij.ui.jcef.JBCefBrowser
+import com.intellij.ui.jcef.JBCefJSQuery
+import com.intellij.openapi.util.Disposer
+import com.intellij.util.ui.JBUI
+import com.zcode.ideaplugin.ZCodeService
+import com.zcode.ideaplugin.zCodeService
+import com.zcode.ideaplugin.protocol.ZCodeProtocolException
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
+import kotlinx.serialization.json.contentOrNull
+import kotlinx.serialization.json.put
+import java.awt.BorderLayout
+import javax.swing.JComponent
+import javax.swing.JLabel
+import javax.swing.JPanel
+import javax.swing.SwingUtilities
+
+/**
+ * ZCode ToolWindow 面板：JCEF 容器 + Java↔JS 双向 IPC
+ *
+ * 架构（参考 ccgui）：
+ *   React UI (webview)
+ *     ↕ JBCefJSQuery（JS→Java，官方推荐 API）
+ *     ↕ executeJavaScript（Java→JS，直接推）
+ *   JCEF (JBCefBrowser)
+ *     ↕
+ *   ZCodeService → ZCodeProtocolClient → ZCode app-server
+ *
+ * 消息协议（JS↔Java）：
+ *   JS→Java: window.sendToJava(jsonStr) → JBCefJSQuery → handleJsMessage
+ *   Java→JS: executeJavaScript("window.zcodeBridge.onMessage(jsonStr)")
+ */
+class ZCodeToolWindowPanel(
+    private val project: Project,
+    /** 重启恢复时绑定的会话 id（注入 webview 作初始会话）；null = 新标签，前端自动建会话 */
+    private val initialSessionId: String? = null,
+) : JPanel(BorderLayout()), Disposable {
+
+    private val log = Logger.getInstance("ZCodePlugin")
+    private val json = Json { ignoreUnknownKeys = true }
+    private lateinit var jbCefBrowser: JBCefBrowser
+    private lateinit var jsQuery: JBCefJSQuery
+
+    // ============ 多标签页状态 ============
+    // 所属 Content（标签标题更新用，Factory 创建后注入）
+    @Volatile
+    private var attachedContent: Content? = null
+    // 标签基础标题（不含「●」生成中后缀）；跟随前端推送的会话标题
+    @Volatile
+    private var baseTabTitle: String = ""
+    // 本标签当前会话是否生成中（displayName 后缀 ●）
+    @Volatile
+    private var tabStreaming: Boolean = false
+
+    // ============ 流式订阅状态 ============
+    // 当前选中的 sessionId（标签持久化 + 生成中状态归属判断）
+    @Volatile
+    private var currentSessionId: String? = null
+    // 已 subscribe 过的会话集合（每个会话只 subscribe 一次，不 unsubscribe）。
+    // 多标签下事件按此集合过滤：本面板只推自己订阅会话的事件，与其他标签互不影响
+    private val subscribedSessions = java.util.concurrent.CopyOnWriteArraySet<String>()
+    // 全局监听器是否已注册
+    @Volatile
+    private var globalListenerRegistered = false
+
+    // ============ 释放状态 ============
+    @Volatile
+    private var disposed = false
+    // 主题监听连接（dispose 时断开）
+    private var themeBusConn: com.intellij.util.messages.MessageBusConnection? = null
+
+    // ============ 流式推送节流缓冲 ============
+    // 高频 delta 事件先缓冲，每 16ms（60fps）合并成一批推送，避免 executeJavaScript 积压
+    private val streamBuffer = java.util.concurrent.ConcurrentLinkedQueue<Pair<String, JsonObject>>()
+    @Volatile
+    private var streamFlusherRunning = false
+    private val streamFlushLock = Any()
+
+    init {
+        border = JBUI.Borders.empty()
+        background = JBColor.background()
+
+        if (JBCefApp.isSupported()) {
+            initJcef()
+            registerThemeListener()
+        } else {
+            add(createUnsupportedPanel(), BorderLayout.CENTER)
+        }
+    }
+
+    private fun initJcef() {
+        log.info("初始化 JCEF 面板")
+        jbCefBrowser = JBCefBrowser()
+
+        // ============ JS → Java：用 JBCefJSQuery（官方推荐，签名稳定）============
+        jsQuery = JBCefJSQuery.create(jbCefBrowser)
+        log.info("JBCefJSQuery 创建成功，funcName=${jsQuery.funcName}")
+        jsQuery.addHandler { request ->
+            log.info("收到 JS 消息: ${request.take(200)}")
+            handleJsMessage(request)
+            JBCefJSQuery.Response("ok")
+        }
+
+        // ============ 加载 webview（dev 优先 → 生产 → fallback）============
+        loadWebview()
+        // AskUser/ExitPlanMode 协调器在 Service 层注册（多标签共享一个协议 handler）
+        project.zCodeService().ensureUserInputHandler()
+
+        // 开启 JCEF 外部链接（开发期）
+        jbCefBrowser.setOpenLinksInExternalBrowser(true)
+
+        add(jbCefBrowser.component, BorderLayout.CENTER)
+        log.info("JCEF 面板初始化完成")
+    }
+
+    /**
+     * 注册 IDE 主题变化监听（阶段 2.6）
+     *
+     * IDE 主题切换时（用户改 Darcula/Light），通过 onIdeThemeChanged 推给前端。
+     * 延迟推送：JCEF 页面可能还没 load 完，用定时重试确保前端收到。
+     */
+    private fun registerThemeListener() {
+        val busConn = project.messageBus.connect()
+        themeBusConn = busConn
+        busConn.subscribe(
+            com.intellij.ide.ui.LafManagerListener.TOPIC,
+            com.intellij.ide.ui.LafManagerListener {
+                // 主题变了，推给前端
+                log.info("IDE 主题变化，推送给前端")
+                pushTheme()
+            }
+        )
+    }
+
+    /** 推送当前 IDE 主题给前端（通过 executeJavaScript 调 onIdeThemeChanged）*/
+    private fun pushTheme() {
+        val isDark = !JBColor.isBright()
+        val js = "if (window.onIdeThemeChanged) window.onIdeThemeChanged($isDark);"
+        SwingUtilities.invokeLater {
+            try {
+                jbCefBrowser.cefBrowser.executeJavaScript(js, "zcode-theme", 0)
+            } catch (e: Exception) {
+                log.warn("推送主题失败: ${e.message}")
+            }
+        }
+    }
+
+    /**
+     * 加载 webview 内容
+     *
+     * 加载策略（按优先级）：
+     * 1. dev 模式：探测 localhost:5173（vite dev server），通了就 loadURL（带 HMR）
+     * 2. 生产模式：从 resources/webview/index.html 读（vite singlefile 构建产物）
+     * 3. fallback：旧的 inline HTML（保证没构建产物时也能用）
+     *
+     * 加载完成后注入桥变量 window.__ZCODE_CEF_QUERY__，供 React 的 bridge.ts 使用
+     */
+    private fun loadWebview() {
+        val devUrl = "http://localhost:5173"
+
+        if (isDevServerAlive(devUrl)) {
+            // dev 模式：连 vite dev server
+            log.info("检测到 dev server，加载 $devUrl（dev 模式，HMR）")
+            jbCefBrowser.loadURL(devUrl)
+            injectBridgeAfterLoad()
+            return
+        }
+
+        // 生产模式：读打包的单 HTML
+        val bundledHtml = readBundledWebview()
+        if (bundledHtml != null) {
+            log.info("加载 resources/webview/index.html（生产模式，长度=${bundledHtml.length}）")
+            // 把桥变量注入到 HTML 的 <head> 最前面（DOMContentLoaded 前可用）
+            val htmlWithBridge = injectBridgeIntoHtml(bundledHtml)
+            jbCefBrowser.loadHTML(htmlWithBridge)
+            injectBridgeAfterLoad()
+            return
+        }
+
+        // fallback：旧的 inline HTML（内含自己的 sendToJava 定义）
+        log.info("无打包产物且无 dev server，使用 fallback inline HTML")
+        val fallbackHtml = buildInitialHtml(jsQuery)
+        jbCefBrowser.loadHTML(fallbackHtml)
+    }
+
+    /** 探测 dev server 是否存活（localhost:5173）*/
+    private fun isDevServerAlive(url: String): Boolean {
+        return try {
+            val uri = java.net.URI(url)
+            java.net.Socket().use { s ->
+                s.connect(java.net.InetSocketAddress(uri.host, uri.port), 300)
+                s.isConnected
+            }
+        } catch (e: Exception) {
+            false
+        }
+    }
+
+    /** 从 resources/webview/index.html 读取打包产物（生产模式）*/
+    private fun readBundledWebview(): String? {
+        return try {
+            javaClass.getResourceAsStream("/webview/index.html")?.bufferedReader()?.use { it.readText() }
+        } catch (e: Exception) {
+            log.warn("读取 resources/webview/index.html 失败: ${e.message}")
+            null
+        }
+    }
+
+    /**
+     * 把桥变量注入到 HTML 的 <head> 之后（生产模式用）。
+     * React 的 bridge.ts 读 window.__ZCODE_CEF_QUERY__ 发消息。
+     *
+     * JBCefJSQuery 注入的函数名是运行时生成的（如 cefQuery_1015760238_1），
+     * 我们把它赋给固定名 __ZCODE_CEF_QUERY__，React 端就不用关心动态名。
+     */
+    private fun injectBridgeIntoHtml(html: String): String {
+        val bridgeScript = "<script>\n${buildBridgeJs()}\n</script>"
+        // 插到 <head> 之后（第一个 script 之前执行）
+        return if (html.contains("<head>")) {
+            html.replaceFirst("<head>", "<head>$bridgeScript")
+        } else {
+            bridgeScript + html
+        }
+    }
+
+    /**
+     * 页面 load 完成后注入桥变量（dev 模式 + 生产模式兜底）。
+     * 用 JCEF 的 setLoadEnd 监听，或定时重试注入（更简单可靠）。
+     */
+    private fun injectBridgeAfterLoad() {
+        val injectJs = buildBridgeJs()
+        // 页面 load 后注入（executeJavaScript 必须在 UI 线程）
+        SwingUtilities.invokeLater {
+            try {
+                // JBCefBrowser 的 JBCefClient 可以加 JBCefLoadHandler，但定时重试更简单
+                Thread({
+                    Thread.sleep(800) // 等 React 渲染
+                    SwingUtilities.invokeLater {
+                        try {
+                            jbCefBrowser.cefBrowser.executeJavaScript(injectJs, "zcode-bridge", 0)
+                            log.info("桥变量已注入（funcName=${jsQuery.funcName}）")
+                        } catch (e: Exception) {
+                            log.warn("注入桥变量失败: ${e.message}")
+                        }
+                    }
+                }, "zcode-bridge-inject").apply { isDaemon = true }.start()
+            } catch (_: Exception) {}
+        }
+    }
+
+    /**
+     * 生成注入给前端的桥变量 JS（CEF_QUERY + IDE_THEME + WORKSPACE + INITIAL_SESSION）
+     * workspacePath 来自当前项目，供前端做会话过滤；
+     * initialSessionId 是多标签恢复绑定的会话（前端 init 优先用它做 selectSession）
+     */
+    private fun buildBridgeJs(): String {
+        val funcName = jsQuery.funcName
+        val isDark = !JBColor.isBright()
+        val theme = if (isDark) "dark" else "light"
+        val workspace = (project.basePath ?: "").replace("\\", "\\\\").replace("'", "\\'")
+        val initialSession = (initialSessionId ?: "").replace("\\", "\\\\").replace("'", "\\'")
+        return """
+window.__ZCODE_CEF_QUERY__ = window['$funcName'];
+window.__INITIAL_IDE_THEME__ = '$theme';
+window.__ZCODE_WORKSPACE__ = '$workspace';
+window.__ZCODE_INITIAL_SESSION__ = '$initialSession';
+        """.trimIndent()
+    }
+
+    /**
+     * 处理来自 JS 的消息（在 JCEF 后台线程触发）
+     * 用 pooled thread 跑协议调用，避免阻塞 JCEF
+     */
+    private fun handleJsMessage(request: String) {
+        try {
+            val msg = json.parseToJsonElement(request).jsonObject
+            val op = msg["op"]?.jsonPrimitive?.content ?: run {
+                log.warn("JS 消息缺少 op 字段")
+                sendToJs(errorResponse("缺少 op")); return
+            }
+            log.info("处理 op=$op")
+
+            ApplicationManager.getApplication().executeOnPooledThread {
+                try {
+                    val result = when (op) {
+                        "listSessions" -> handleListSessions(msg)
+                        "send" -> handleSend(msg)
+                        "messages" -> handleMessages(msg)
+                        "subagents" -> handleSubagents(msg)
+                        "subagentMessages" -> handleSubagentMessages(msg)
+                        "stopSubagent" -> handleStopSubagent(msg)
+                        "createSession" -> handleCreateSession(msg)
+                        "subscribe" -> handleSubscribe(msg)
+                        "stop" -> handleStop(msg)
+                        "listFiles" -> handleListFiles(msg)
+                        "listCommands" -> handleListCommands(msg)
+                        "askUserResponse" -> handleAskUserResponse(msg)
+                        "deleteSession" -> handleDeleteSession(msg)
+                        "listModels" -> handleListModels(msg)
+                        "setModel" -> handleSetModel(msg)
+                        "getSettings" -> handleGetSettings(msg)
+                        "setThoughtLevel" -> handleSetThoughtLevel(msg)
+                        "setMode" -> handleSetMode(msg)
+                        "pickFiles" -> handlePickFiles(msg)
+                        "getUsage" -> handleGetUsage(msg)
+                        "getQuota" -> handleGetQuota(msg)
+                        "getModelUsage" -> handleGetModelUsage(msg)
+                        "getToolUsage" -> handleGetToolUsage(msg)
+                        "openFile" -> handleOpenFile(msg)
+                        "showDiff" -> handleShowDiff(msg)
+                        "refreshFile" -> handleRefreshFile(msg)
+                        "createTab" -> handleCreateTab()
+                        "setTabTitle" -> handleSetTabTitle(msg)
+                        else -> errorResponse("未知 op: $op")
+                    }
+                    log.info("op=$op 处理完成，发送回 JS")
+                    sendToJs(result)
+                } catch (e: Exception) {
+                    log.error("op=$op 处理失败", e)
+                    sendToJs(errorResponse("处理失败: ${e.message}"))
+                }
+            }
+        } catch (e: Exception) {
+            log.error("JS 消息解析失败: ${request.take(100)}", e)
+            sendToJs(errorResponse("解析失败: ${e.message}"))
+        }
+    }
+
+    // ============ 多标签页生命周期 ============
+
+    /** Factory 创建 Content 后注入引用（标签标题更新 + 持久化用）*/
+    fun attachContent(content: Content) {
+        attachedContent = content
+        if (baseTabTitle.isBlank()) baseTabTitle = content.displayName ?: ""
+    }
+
+    /** 标签基础标题（不含生成中后缀），持久化用 */
+    fun getBaseTabTitle(): String = baseTabTitle
+
+    /** 当前会话 id（重启恢复的绑定来源）*/
+    fun getCurrentSessionIdForPersist(): String? = currentSessionId
+
+    /** 本面板是否订阅了指定会话（Service 层 askUser 弹窗路由用）*/
+    fun isSubscribedTo(sessionId: String): Boolean = sessionId in subscribedSessions
+
+    /**
+     * 前端推送会话标题 → 更新标签 tooltip（悬停显示会话名）。
+     * 标签名保持固定的「会话N」（cc-gui 编号风格，避免长标题撑爆标签栏）。
+     */
+    private fun handleSetTabTitle(msg: JsonObject): JsonObject {
+        val title = msg["title"]?.jsonPrimitive?.content?.trim()?.take(200)
+        val content = attachedContent
+        if (!title.isNullOrBlank() && content != null) {
+            SwingUtilities.invokeLater {
+                if (!disposed) content.description = title
+            }
+        }
+        return buildJsonObject { put("op", "tabTitleSet") }
+    }
+
+    /** 更新标签 displayName：baseTitle + 生成中后缀（EDT）*/
+    private fun applyTabDisplayName() {
+        val content = attachedContent ?: return
+        val display = if (tabStreaming) "$baseTabTitle ●" else baseTabTitle
+        SwingUtilities.invokeLater {
+            if (!disposed) content.displayName = display
+        }
+    }
+
+    /** 本标签生成中状态变化（turn.started/completed/failed 驱动）*/
+    private fun setTabStreaming(active: Boolean) {
+        if (tabStreaming == active) return
+        tabStreaming = active
+        applyTabDisplayName()
+    }
+
+    /** 本标签当前会话是否生成中（关闭二次确认的提示增强用）*/
+    fun isTabStreaming(): Boolean = tabStreaming
+
+    /** 本面板状态变化后同步 TabState（订阅会话/标题变化）*/
+    private fun persistSelfTabState() {
+        val content = attachedContent ?: return
+        SwingUtilities.invokeLater {
+            if (disposed) return@invokeLater
+            val cm = content.manager ?: return@invokeLater
+            ZCodeToolWindowFactory.persistTabs(project, cm)
+        }
+    }
+
+    /** Content 销毁时释放 JCEF 资源（content.setDisposer(panel) 绑定）*/
+    override fun dispose() {
+        if (disposed) return
+        disposed = true
+        log.info("释放标签面板（sessionId=$currentSessionId）")
+        try {
+            themeBusConn?.dispose()
+        } catch (e: Exception) {
+            log.warn("断开主题监听失败: ${e.message}")
+        }
+        try {
+            if (::jsQuery.isInitialized) Disposer.dispose(jsQuery)
+        } catch (e: Exception) {
+            log.warn("释放 jsQuery 失败: ${e.message}")
+        }
+        try {
+            if (::jbCefBrowser.isInitialized) Disposer.dispose(jbCefBrowser)
+        } catch (e: Exception) {
+            log.warn("释放 JCEF browser 失败: ${e.message}")
+        }
+    }
+
+    /**
+     * 公开入口：从 IDE 外部（右键菜单等，经 ZCodeService）推送消息到前端。
+     * 与内部 sendToJs 同链路（invokeLater + executeJavaScript）。
+     */
+    fun pushToWebview(msg: JsonObject) {
+        sendToJs(msg)
+    }
+
+    /** Java → JS：把消息推给前端 */
+    private fun sendToJs(msg: JsonObject) {
+        val jsonStr = Json.encodeToString(JsonObject.serializer(), msg)
+        log.info("sendToJs 准备发送，JSON 长度=${jsonStr.length}, 前 80 字符=${jsonStr.take(80)}")
+        // 用 JSON.parse 传字符串，避免转义地狱
+        // 关键：executeJavaScript 的 JS 代码里，我们构造一个 JS 字符串字面量
+        // 用 JSON.stringify 风格转义（双引号字符串）
+        val escapedForJs = jsonStr
+            .replace("\\", "\\\\")
+            .replace("\"", "\\\"")
+            .replace("\n", "\\n")
+            .replace("\r", "\\r")
+            .replace("\t", "\\t")
+            .replace("\u2028", "\\u2028")
+            .replace("\u2029", "\\u2029")
+        val js = "try { var __m = JSON.parse(\"$escapedForJs\"); window.zcodeBridge.onMessage(__m); } catch(e) { document.getElementById('status').innerHTML = '<span style=\"color:#f44\">SEND ERR: ' + e.message + '</span>'; }"
+        SwingUtilities.invokeLater {
+            try {
+                jbCefBrowser.cefBrowser.executeJavaScript(js, "about:blank", 0)
+                log.info("sendToJs executeJavaScript 调用成功")
+            } catch (e: Exception) {
+                log.warn("sendToJs 失败（JCEF 可能未就绪）: ${e.message}")
+            }
+        }
+    }
+
+    private fun handleListSessions(msg: JsonObject): JsonObject {
+        log.info("开始获取会话列表")
+        val service = project.zCodeService()
+        log.info("ZCodeService 获取成功: ${service.javaClass.name}")
+        val client = service.getClient()
+        log.info("ZCodeProtocolClient 获取成功, isAlive=${client.isAlive()}")
+        val sessions = client.listSessions()
+        log.info("listSessions 返回 ${sessions.size} 个会话（全量）")
+
+        // workspace 过滤：只显示当前项目的会话（差异化优势，cc-gui 不做）
+        // 前端传 workspacePath；没传则用 project.basePath；空串表示不过滤（返回全部）
+        val workspacePath = msg["workspacePath"]?.jsonPrimitive?.content
+            ?: project.basePath
+            ?: ""
+        val filtered = if (workspacePath.isEmpty()) {
+            sessions
+        } else {
+            val normalized = normalizePath(workspacePath)
+            sessions.filter { s ->
+                val ws = s.workspace?.workspacePath
+                ws != null && normalizePath(ws) == normalized
+            }
+        }
+        log.info("workspace=$workspacePath 过滤后 ${filtered.size} 个会话")
+
+        val sessionsJson = JsonArray(filtered.map { s ->
+            buildJsonObject {
+                put("sessionId", s.sessionId)
+                put("title", s.title)
+                put("status", s.status)
+                put("mode", s.mode)
+                put("workspacePath", s.workspace?.workspacePath ?: "")
+                put("workspaceKey", s.workspace?.workspaceKey ?: "")
+                put("createdAt", s.createdAt)
+                put("updatedAt", s.updatedAt)
+            }
+        })
+        return buildJsonObject {
+            put("op", "listSessions")
+            put("sessions", sessionsJson)
+        }
+    }
+
+    private fun handleCreateSession(msg: JsonObject): JsonObject {
+        val workspacePath = msg["workspacePath"]?.jsonPrimitive?.content
+            ?: project.basePath
+            ?: System.getProperty("user.dir")
+        val client = project.zCodeService().getClient()
+        val sid = client.createSession(
+            com.zcode.ideaplugin.protocol.model.Workspace(workspacePath),
+            com.zcode.ideaplugin.protocol.model.PermissionMode.YOLO
+        )
+        return buildJsonObject {
+            put("op", "createSession")
+            put("sessionId", sid)
+        }
+    }
+
+    /** session/close — 删除会话 */
+    private fun handleDeleteSession(msg: JsonObject): JsonObject {
+        val sessionId = msg["sessionId"]?.jsonPrimitive?.content
+            ?: return errorResponse("缺少 sessionId")
+        val client = project.zCodeService().getClient()
+        try {
+            client.closeSession(sessionId)
+            log.info("删除会话成功: $sessionId")
+        } catch (e: Exception) {
+            log.warn("删除会话失败: ${e.message}")
+            return errorResponse("删除失败: ${e.message}")
+        }
+        // 从已 subscribe 集合中移除
+        subscribedSessions.remove(sessionId)
+        return buildJsonObject {
+            put("op", "sessionDeleted")
+            put("sessionId", sessionId)
+        }
+    }
+
+    /** op=listModels — 读取 ~/.zcode/v2/config.json 的 provider 注册表，返回可切换的模型列表 */
+    private fun handleListModels(msg: JsonObject): JsonObject {
+        val configPath = System.getProperty("user.home") + "/.zcode/v2/config.json"
+        val configFile = java.io.File(configPath)
+        if (!configFile.exists()) {
+            log.warn("config.json 不存在: $configPath")
+            return buildJsonObject {
+                put("op", "models")
+                put("models", JsonArray(emptyList()))
+            }
+        }
+        val providers = try {
+            json.parseToJsonElement(configFile.readText()).jsonObject["provider"]?.jsonObject
+        } catch (e: Exception) {
+            log.warn("解析 config.json 失败: ${e.message}")
+            null
+        } ?: return buildJsonObject {
+            put("op", "models")
+            put("models", JsonArray(emptyList()))
+        }
+
+        val models = JsonArray(providers.mapNotNull { (providerId, providerEl) ->
+            val pv = providerEl.jsonObject
+            // enabled 缺省视为启用（config.json 现状：DeepSeek 无 enabled 字段但已启用）
+            val enabled = pv["enabled"]?.jsonPrimitive?.content?.toBoolean() ?: true
+            if (!enabled) return@mapNotNull null
+            val options = pv["options"]?.jsonObject ?: return@mapNotNull null
+            val baseURL = options["baseURL"]?.jsonPrimitive?.content ?: return@mapNotNull null
+            val providerName = pv["name"]?.jsonPrimitive?.content ?: providerId
+            val modelsObj = pv["models"]?.jsonObject ?: return@mapNotNull null
+            modelsObj.mapNotNull { (modelId, modelEl) ->
+                val modelObj = modelEl.jsonObject
+                val modelName = modelObj["name"]?.jsonPrimitive?.content ?: modelId
+                // limit.context / limit.output：模型真实上下文窗口与最大输出（config.json）
+                // 例：GLM-5.2 context=1000000 / GLM-5-Turbo context=204800
+                val limit = modelObj["limit"]?.jsonObject
+                buildJsonObject {
+                    put("providerId", providerId)
+                    put("providerName", providerName)
+                    put("modelId", modelId)
+                    put("modelName", modelName)
+                    limit?.get("context")?.jsonPrimitive?.content?.toLongOrNull()?.let { put("contextWindow", it) }
+                    limit?.get("output")?.jsonPrimitive?.content?.toLongOrNull()?.let { put("maxOutput", it) }
+                }
+            }
+        }.flatten().distinctBy { it["modelId"]?.jsonPrimitive?.content })  // 跨 provider 按 modelId 去重（同模型多个 provider 变体只留第一个）
+        log.info("listModels 返回 ${models.size} 个模型（${providers.size} 个 provider）")
+        return buildJsonObject {
+            put("op", "models")
+            put("models", models)
+        }
+    }
+
+    /**
+     * op=getQuota — 查询 GLM Coding Plan 额度（5小时/每周/MCP每月）
+     *
+     * 凭证：config.json 的 builtin:bigmodel-coding-plan provider（baseURL + apiKey）
+     * 端点：{baseDomain}/api/monitor/usage/quota/limit，Authorization: <apiKey>
+     * 逻辑移植自 glm-plan-usage-idea 的 GlmUsageClient
+     */
+    /** 额度查询凭证（baseDomain + 裸 apiKey），三路 monitor HTTP 共用 */
+    private data class QuotaCredentials(val baseDomain: String, val apiKey: String)
+
+    /**
+     * 从 config.json 读额度查询凭证（baseDomain + 裸 apiKey）。
+     * 复用于 quota/limit、model-usage、tool-usage 三路 HTTP。
+     * @return Pair(凭证?, 错误信息) —— 凭证非空即成功
+     */
+    private fun loadQuotaCredentials(): Pair<QuotaCredentials?, String> {
+        val configPath = System.getProperty("user.home") + "/.zcode/v2/config.json"
+        val configFile = java.io.File(configPath)
+        if (!configFile.exists()) return null to "config.json 不存在"
+        val providers = try {
+            json.parseToJsonElement(configFile.readText()).jsonObject["provider"]?.jsonObject
+        } catch (e: Exception) {
+            return null to "解析 config.json 失败: ${e.message}"
+        } ?: return null to "config.json 无 provider"
+
+        // 找第一个有 apiKey 的启用 provider（优先 bigmodel-coding-plan）
+        var baseURL: String? = null
+        var apiKey: String? = null
+        for ((providerId, providerEl) in providers) {
+            val pv = providerEl.jsonObject
+            val enabled = pv["enabled"]?.jsonPrimitive?.content?.toBoolean() ?: true
+            if (!enabled) continue
+            val options = pv["options"]?.jsonObject ?: continue
+            val url = options["baseURL"]?.jsonPrimitive?.content ?: continue
+            val key = options["apiKey"]?.jsonPrimitive?.content ?: continue
+            // 优先 bigmodel-coding-plan，其他有 key 的也行
+            if (providerId == "builtin:bigmodel-coding-plan") {
+                baseURL = url; apiKey = key; break
+            }
+            if (baseURL == null) { baseURL = url; apiKey = key }
+        }
+        if (baseURL == null || apiKey == null) {
+            return null to "未找到带 apiKey 的启用 provider（oauth 模式不支持用量查询）"
+        }
+
+        // baseDomain：取 scheme://host[:port]，丢弃 path（如 /api/anthropic）
+        val baseDomain = try {
+            val uri = java.net.URI(baseURL)
+            val port = if (uri.port == -1) "" else ":${uri.port}"
+            "${uri.scheme}://${uri.host}$port"
+        } catch (e: Exception) {
+            return null to "baseURL 格式非法: $baseURL"
+        }
+        return QuotaCredentials(baseDomain, apiKey) to ""
+    }
+
+    /** 用量查询的局部错误响应（带 op，不污染全局 error）*/
+    private fun usageErrorResponse(op: String, msg: String): JsonObject = buildJsonObject {
+        put("op", op)
+        put("error", msg)
+    }
+
+    /**
+     * 通用：GET {baseDomain}/api/monitor/usage/{endpoint}?startTime=&endTime=
+     * 透传响应 data 字段。startTime/endTime 格式 yyyy-MM-dd HH:mm:ss。
+     */
+    private fun queryUsageEndpoint(
+        creds: QuotaCredentials, endpoint: String, startTime: String, endTime: String, op: String
+    ): JsonObject {
+        return try {
+            val url = buildString {
+                append(creds.baseDomain).append("/api/monitor/usage/").append(endpoint)
+                append("?startTime=").append(java.net.URLEncoder.encode(startTime, Charsets.UTF_8))
+                append("&endTime=").append(java.net.URLEncoder.encode(endTime, Charsets.UTF_8))
+            }
+            val client = java.net.http.HttpClient.newBuilder()
+                .connectTimeout(java.time.Duration.ofSeconds(15)).build()
+            val req = java.net.http.HttpRequest.newBuilder()
+                .uri(java.net.URI(url))
+                .timeout(java.time.Duration.ofSeconds(20))
+                .header("Authorization", creds.apiKey)
+                .header("Content-Type", "application/json")
+                .header("Accept-Language", "en-US,en")
+                .GET().build()
+            val resp = client.send(req, java.net.http.HttpResponse.BodyHandlers.ofString())
+            if (resp.statusCode() != 200) return usageErrorResponse(op, "查询失败: HTTP ${resp.statusCode()}")
+            buildJsonObject {
+                put("op", op)
+                val rawData = json.parseToJsonElement(resp.body()).jsonObject
+                rawData["data"]?.let { put("data", it) }
+            }
+        } catch (e: Exception) {
+            usageErrorResponse(op, "查询异常: ${e.message}")
+        }
+    }
+
+    /** op=getQuota — 查询额度（每5小时/每周/MCP 进度）*/
+    private fun handleGetQuota(msg: JsonObject): JsonObject {
+        val (creds, err) = loadQuotaCredentials()
+        if (creds == null) return usageErrorResponse("quota", err)
+        return try {
+            val client = java.net.http.HttpClient.newBuilder()
+                .connectTimeout(java.time.Duration.ofSeconds(15)).build()
+            val req = java.net.http.HttpRequest.newBuilder()
+                .uri(java.net.URI("${creds.baseDomain}/api/monitor/usage/quota/limit"))
+                .timeout(java.time.Duration.ofSeconds(20))
+                .header("Authorization", creds.apiKey)
+                .header("Content-Type", "application/json")
+                .header("Accept-Language", "en-US,en")
+                .GET().build()
+            val resp = client.send(req, java.net.http.HttpResponse.BodyHandlers.ofString())
+            if (resp.statusCode() != 200) return usageErrorResponse("quota", "额度查询失败: HTTP ${resp.statusCode()}")
+            buildJsonObject {
+                put("op", "quota")
+                val rawData = json.parseToJsonElement(resp.body()).jsonObject
+                rawData["data"]?.let { put("data", it) }
+            }
+        } catch (e: Exception) {
+            usageErrorResponse("quota", "额度查询异常: ${e.message}")
+        }
+    }
+
+    /** op=getModelUsage — 查询模型用量曲线（startTime/endTime: yyyy-MM-dd HH:mm:ss）*/
+    private fun handleGetModelUsage(msg: JsonObject): JsonObject {
+        val (creds, err) = loadQuotaCredentials()
+        if (creds == null) return usageErrorResponse("modelUsage", err)
+        val startTime = msg["startTime"]?.jsonPrimitive?.content ?: ""
+        val endTime = msg["endTime"]?.jsonPrimitive?.content ?: ""
+        return queryUsageEndpoint(creds, "model-usage", startTime, endTime, "modelUsage")
+    }
+
+    /** op=getToolUsage — 查询工具用量曲线（startTime/endTime: yyyy-MM-dd HH:mm:ss）*/
+    private fun handleGetToolUsage(msg: JsonObject): JsonObject {
+        val (creds, err) = loadQuotaCredentials()
+        if (creds == null) return usageErrorResponse("toolUsage", err)
+        val startTime = msg["startTime"]?.jsonPrimitive?.content ?: ""
+        val endTime = msg["endTime"]?.jsonPrimitive?.content ?: ""
+        return queryUsageEndpoint(creds, "tool-usage", startTime, endTime, "toolUsage")
+    }
+
+    /** op=openFile — 在 IDEA 编辑器打开文件（支持行号定位）*/
+    private fun handleOpenFile(msg: JsonObject): JsonObject {
+        val filePath = msg["filePath"]?.jsonPrimitive?.content
+            ?: return errorResponse("缺少 filePath")
+        val line = msg["line"]?.jsonPrimitive?.content?.toIntOrNull()
+        com.intellij.openapi.application.invokeLater {
+            val vfile = LocalFileSystem.getInstance().findFileByPath(filePath)
+            if (vfile != null) {
+                val editor = FileEditorManager.getInstance(project).openFile(vfile, true)
+                // 行号定位（caret 移到指定行）
+                if (line != null && line > 0) {
+                    val selected = FileEditorManager.getInstance(project).selectedTextEditor
+                    if (selected != null) {
+                        val offset = selected.document.getLineStartOffset(
+                            minOf(line - 1, selected.document.lineCount - 1)
+                        )
+                        selected.caretModel.moveToOffset(offset)
+                    }
+                }
+            } else {
+                log.warn("打开文件失败：文件不存在 $filePath")
+            }
+        }
+        return buildJsonObject { put("op", "fileOpened") }
+    }
+
+    /** op=showDiff — 弹出 IDEA 原生 diff 窗口（old vs new）*/
+    private fun handleShowDiff(msg: JsonObject): JsonObject {
+        val filePath = msg["filePath"]?.jsonPrimitive?.content ?: return errorResponse("缺少 filePath")
+        val oldContent = msg["oldContent"]?.jsonPrimitive?.content ?: ""
+        val newContent = msg["newContent"]?.jsonPrimitive?.content ?: ""
+        val title = msg["title"]?.jsonPrimitive?.content ?: "Diff: ${filePath.substringAfterLast('/')}"
+        com.intellij.openapi.application.invokeLater {
+            try {
+                val factory = DiffContentFactory.getInstance()
+                val left: DiffContent = factory.create(project, oldContent)
+                val right: DiffContent = factory.create(project, newContent)
+                val request = SimpleDiffRequest(
+                    title,
+                    left, right,
+                    "修改前", "修改后"
+                )
+                DiffManager.getInstance().showDiff(project, request)
+            } catch (e: Exception) {
+                log.warn("Diff 显示失败: ${e.message}")
+            }
+        }
+        return buildJsonObject { put("op", "diffShown") }
+    }
+
+    /** op=refreshFile — 刷新 IDEA 编辑器中的文件（从磁盘重载）*/
+    private fun handleRefreshFile(msg: JsonObject): JsonObject {
+        val filePath = msg["filePath"]?.jsonPrimitive?.content
+            ?: return errorResponse("缺少 filePath")
+        com.intellij.openapi.application.invokeLater {
+            val vfile = LocalFileSystem.getInstance().refreshAndFindFileByPath(filePath)
+            if (vfile != null) {
+                vfile.refresh(false, false)
+            } else {
+                log.warn("刷新文件失败：文件不存在 $filePath")
+            }
+        }
+        return buildJsonObject { put("op", "fileRefreshed") }
+    }
+
+    /** op=setModel — 会话级切换模型（session/setModel + runtimeModel 注册 provider）*/
+    private fun handleSetModel(msg: JsonObject): JsonObject {
+        val sessionId = msg["sessionId"]?.jsonPrimitive?.content
+            ?: return errorResponse("缺少 sessionId")
+        val modelId = msg["modelId"]?.jsonPrimitive?.content
+            ?: return errorResponse("缺少 modelId")
+        val providerId = msg["providerId"]?.jsonPrimitive?.content
+            ?: return errorResponse("缺少 providerId")
+        val client = project.zCodeService().getClient()
+        try {
+            // 带 runtimeModel：服务端先把 provider 注册进 workspace（绕过"可选模型"校验）
+            // 普通 setModel 只能切 main/lite/available 里的模型（当前只有 anthropic/GLM-5.2）
+            val runtimeModel = buildRuntimeModel(providerId, modelId)
+            if (runtimeModel == null) {
+                log.warn("config.json 中找不到 provider $providerId，退回普通 setModel（可能失败）")
+            }
+            client.setModel(sessionId, modelId, providerId, runtimeModel)
+            log.info("切换模型成功: $sessionId → $providerId/$modelId")
+        } catch (e: Exception) {
+            log.warn("切换模型失败: ${e.message}")
+            return errorResponse("切换模型失败: ${e.message}")
+        }
+        return buildJsonObject {
+            put("op", "modelSet")
+            put("sessionId", sessionId)
+            put("modelId", modelId)
+            put("providerId", providerId)
+        }
+    }
+
+    /**
+     * op=getSettings — 读会话运行时设置（session/read → settings）
+     *
+     * 返回 mode（权限模式当前值）+ thoughtLevel（思考级别：available 因模型而异，
+     * 如 GLM-5.2=off/high/max、GLM-4.x/qwen=enabled/off，前端级别选择器的数据源）
+     */
+    private fun handleGetSettings(msg: JsonObject): JsonObject {
+        val sessionId = msg["sessionId"]?.jsonPrimitive?.content
+            ?: return errorResponse("缺少 sessionId")
+        val client = project.zCodeService().getClient()
+        return try {
+            val settings = client.readSettings(sessionId)
+            buildJsonObject {
+                put("op", "settings")
+                put("sessionId", sessionId)
+                put("mode", settings["mode"]?.jsonObject ?: JsonObject(emptyMap()))
+                put("thoughtLevel", settings["thoughtLevel"]?.jsonObject ?: JsonObject(emptyMap()))
+            }
+        } catch (e: Exception) {
+            log.warn("读取会话设置失败: ${e.message}")
+            errorResponse("读取设置失败: ${e.message}")
+        }
+    }
+
+    /** op=setThoughtLevel — 会话级切换思考级别（session/setThoughtLevel）*/
+    private fun handleSetThoughtLevel(msg: JsonObject): JsonObject {
+        val sessionId = msg["sessionId"]?.jsonPrimitive?.content
+            ?: return errorResponse("缺少 sessionId")
+        val thoughtLevel = msg["thoughtLevel"]?.jsonPrimitive?.content
+            ?: return errorResponse("缺少 thoughtLevel")
+        val client = project.zCodeService().getClient()
+        return try {
+            client.setThoughtLevel(sessionId, thoughtLevel)
+            log.info("切换思考级别成功: $sessionId → $thoughtLevel")
+            buildJsonObject {
+                put("op", "thoughtLevelSet")
+                put("sessionId", sessionId)
+                put("thoughtLevel", thoughtLevel)
+            }
+        } catch (e: Exception) {
+            log.warn("切换思考级别失败: ${e.message}")
+            errorResponse("切换思考级别失败: ${e.message}")
+        }
+    }
+
+    /** op=setMode — 会话级切换权限模式（session/setMode，build/edit/plan/yolo）*/
+    private fun handleSetMode(msg: JsonObject): JsonObject {
+        val sessionId = msg["sessionId"]?.jsonPrimitive?.content
+            ?: return errorResponse("缺少 sessionId")
+        val modeStr = msg["mode"]?.jsonPrimitive?.content
+            ?: return errorResponse("缺少 mode")
+        val mode = com.zcode.ideaplugin.protocol.model.PermissionMode.fromValue(modeStr)
+            ?: return errorResponse("未知模式: $modeStr（可选 build/edit/plan/yolo）")
+        val client = project.zCodeService().getClient()
+        return try {
+            client.setMode(sessionId, mode)
+            log.info("切换权限模式成功: $sessionId → $mode")
+            buildJsonObject {
+                put("op", "modeSet")
+                put("sessionId", sessionId)
+                put("mode", modeStr)
+            }
+        } catch (e: Exception) {
+            log.warn("切换权限模式失败: ${e.message}")
+            errorResponse("切换权限模式失败: ${e.message}")
+        }
+    }
+
+    /**
+     * op=pickFiles — 附件按钮：弹 IDEA 原生文件选择器，选中项以 @绝对路径 推给输入框
+     *
+     * 不用 webview 原生 <input type=file>：Chromium fakepath 拿不到绝对路径，
+     * 而 ZCode 的 @引用 必须绝对路径（与 SendFileToInputAction 的 filesToInput 推送同款格式）。
+     */
+    private fun handlePickFiles(msg: JsonObject): JsonObject {
+        var picked: List<VirtualFile> = emptyList()
+        // FileChooser 必须在 EDT 弹出（模态，阻塞到用户关闭）
+        ApplicationManager.getApplication().invokeAndWait {
+            // (chooseFiles, chooseFolders, chooseJars, chooseJARContents, chooseJarsAsLibraries, multipleSelection)
+            val descriptor = FileChooserDescriptor(true, true, false, false, false, true)
+                .withTitle("添加附件")
+            picked = FileChooser.chooseFiles(descriptor, project, null).toList()
+        }
+        if (picked.isEmpty()) {
+            return buildJsonObject { put("op", "filesPicked"); put("count", 0) }
+        }
+        // 目录尾加 /（与 SendFileToInputAction 一致，前端 FileRef 靠它判定目录图标）
+        val refs = picked.map { f ->
+            val p = f.presentableUrl ?: f.path
+            if (f.isDirectory && !p.endsWith("/")) "$p/" else p
+        }.map { "@$it" }
+        log.info("附件选择 ${refs.size} 个: $refs")
+        // 复用 filesToInput 推送链路（InputBox 已监听，自动加入 fileRefs chips）
+        pushToWebview(buildJsonObject {
+            put("op", "filesToInput")
+            put("refs", JsonArray(refs.map { JsonPrimitive(it) }))
+        })
+        return buildJsonObject { put("op", "filesPicked"); put("count", refs.size) }
+    }
+
+    /** 获取会话上下文用量（session/read → runtime.contextUsage）*/
+    private fun handleGetUsage(msg: JsonObject): JsonObject {
+        val sessionId = msg["sessionId"]?.jsonPrimitive?.content
+            ?: return errorResponse("缺少 sessionId")
+        val client = project.zCodeService().getClient()
+        return try {
+            val runtime = client.contextUsage(sessionId)
+            val ctx = runtime["contextUsage"]?.jsonObject ?: JsonObject(emptyMap())
+            buildJsonObject {
+                put("op", "usage")
+                // 响应回带会话 id：流式轮询期间切会话，前端靠它丢弃旧会话的迟到响应
+                put("sessionId", sessionId)
+                put("used", ctx["used"]?.jsonPrimitive?.content?.toLongOrNull() ?: 0L)
+                put("size", ctx["size"]?.jsonPrimitive?.content?.toLongOrNull() ?: 0L)
+                val cache = ctx["cache"]?.jsonObject
+                put("hitRate", cache?.get("hitRate")?.jsonPrimitive?.content?.toDoubleOrNull() ?: 0.0)
+                // 构成明细：runtime 顶层 breakdown（CLI turn 后构建，重命名自 contextUsageBreakdown）
+                val breakdownEl = runtime["breakdown"] ?: ctx["breakdown"]
+                if (breakdownEl != null) put("breakdown", breakdownEl)
+            }
+        } catch (e: Exception) {
+            log.warn("获取上下文用量失败: ${e.message}")
+            errorResponse("获取用量失败: ${e.message}")
+        }
+    }
+
+    /**
+     * 构造协议 runtimeModel（provider 完整定义取自 ~/.zcode/v2/config.json）。
+     * 委派给 protocol 模块的 RuntimeModels——与 -32031 恢复路径共用同一构造器，
+     * 保证 UI 手动切模型与 send 自愈发出去的 runtimeModel 结构完全一致。
+     */
+    private fun buildRuntimeModel(providerId: String, modelId: String): JsonObject? =
+        com.zcode.ideaplugin.protocol.RuntimeModels.buildRuntimeModel(providerId, modelId)
+
+    private fun handleSend(msg: JsonObject): JsonObject {
+        val sessionId = msg["sessionId"]?.jsonPrimitive?.content
+            ?: return errorResponse("缺少 sessionId")
+        val text = msg["text"]?.jsonPrimitive?.content
+            ?: return errorResponse("缺少 text")
+        val workspacePath = msg["workspacePath"]?.jsonPrimitive?.content
+            ?: project.basePath
+            ?: System.getProperty("user.dir")
+
+        val client = project.zCodeService().getClient()
+
+        val accepted = try {
+            client.send(sessionId, text, workspacePath)
+        } catch (e: ZCodeProtocolException) {
+            log.error("send 失败", e)
+            return errorResponse("发送失败: ${e.message}")
+        }
+
+        return buildJsonObject {
+            put("op", "sendAccepted")
+            put("sessionId", sessionId)
+            put("accepted", "true")
+            accepted["cliResponse"]?.let { put("cliResponse", it) }
+        }
+    }
+
+    private fun handleMessages(msg: JsonObject): JsonObject {
+        val sessionId = msg["sessionId"]?.jsonPrimitive?.content
+            ?: return errorResponse("缺少 sessionId")
+        // JS 传过来的会话原始 workspace（来自 session/list 的 workspace 字段）
+        val workspacePath = msg["workspacePath"]?.jsonPrimitive?.content
+            ?: project.basePath
+            ?: System.getProperty("user.dir")
+
+        val messages = resumeAndReadMessages(sessionId, workspacePath)
+        log.info("messages 返回 ${messages.size} 条")
+        return buildJsonObject {
+            put("op", "messages")
+            put("sessionId", sessionId)
+            put("messages", messages)
+        }
+    }
+
+    /**
+     * resume（若需）+ 读指定会话消息（主/子会话通用）。
+     *
+     * ⚠️ 关键：session/messages 要求会话是 active 的
+     * 冷会话（其他进程创建的、或本进程没 resume 过的）会报 -32004 Session is not active
+     * 解法：先 resume（带原始 workspace），再读 messages
+     */
+    private fun resumeAndReadMessages(sessionId: String, workspacePath: String): JsonArray {
+        val client = project.zCodeService().getClient()
+        try {
+            val ws = com.zcode.ideaplugin.protocol.model.Workspace(workspacePath)
+            client.resume(sessionId, ws)
+            log.info("resume 会话成功: $sessionId (workspace=$workspacePath)")
+        } catch (e: Exception) {
+            log.info("resume 会话失败（可能已 active）: ${e.message}")
+        }
+        return client.messages(sessionId)
+    }
+
+    /**
+     * session/subagents — 当前会话的子代理列表（running + ended，含 childSessionId）。
+     * 走持久化存储无需 resume；失败静默返回空数据（前端底部栏有解析兜底，不打全局错误）。
+     */
+    private fun handleSubagents(msg: JsonObject): JsonObject {
+        val sessionId = msg["sessionId"]?.jsonPrimitive?.content
+            ?: return errorResponse("缺少 sessionId")
+        val client = project.zCodeService().getClient()
+        return try {
+            val data = client.subagents(sessionId)
+            log.info("subagents 返回 childSessionIds=${data["childSessionIds"]}")
+            buildJsonObject {
+                put("op", "subagents")
+                put("sessionId", sessionId)
+                put("data", data)
+            }
+        } catch (e: Exception) {
+            log.warn("subagents 查询失败: ${e.message}")
+            buildJsonObject {
+                put("op", "subagents")
+                put("sessionId", sessionId)
+                put("data", buildJsonObject {
+                    put("revision", 0)
+                    put("childSessionIds", JsonArray(emptyList()))
+                    put("running", JsonArray(emptyList()))
+                    put("ended", buildJsonObject {
+                        put("total", 0)
+                        put("items", JsonArray(emptyList()))
+                    })
+                })
+                put("error", e.message ?: "查询失败")
+            }
+        }
+    }
+
+    /**
+     * 子会话完整消息（子代理详情弹窗"原始过程"）。
+     * 与 messages op 分开（响应 op 不同），避免前端 case 'messages' 的
+     * currentSessionId 过滤把子会话消息丢弃；失败带 error 字段就地提示。
+     */
+    private fun handleSubagentMessages(msg: JsonObject): JsonObject {
+        val sessionId = msg["sessionId"]?.jsonPrimitive?.content
+            ?: return errorResponse("缺少 sessionId")
+        val workspacePath = msg["workspacePath"]?.jsonPrimitive?.content
+            ?: project.basePath
+            ?: System.getProperty("user.dir")
+        return try {
+            val messages = resumeAndReadMessages(sessionId, workspacePath)
+            log.info("subagentMessages($sessionId) 返回 ${messages.size} 条")
+            buildJsonObject {
+                put("op", "subagentMessages")
+                put("sessionId", sessionId)
+                put("messages", messages)
+            }
+        } catch (e: Exception) {
+            log.warn("subagentMessages($sessionId) 读取失败: ${e.message}")
+            buildJsonObject {
+                put("op", "subagentMessages")
+                put("sessionId", sessionId)
+                put("messages", JsonArray(emptyList()))
+                put("error", e.message ?: "读取失败")
+            }
+        }
+    }
+
+    /**
+     * 订阅会话的流式事件（阶段 2.4 核心）
+     *
+     * 调 client.subscribe() 注册事件监听器，把每个 session/event 透传给 JS。
+     * 切换会话时先取消旧的监听器，避免串台。
+     *
+     * 协议要求：先 subscribe 再 send，否则丢事件（规格书 §4）。
+     */
+    private fun handleSubscribe(msg: JsonObject): JsonObject {
+        val sessionId = msg["sessionId"]?.jsonPrimitive?.content
+            ?: return errorResponse("缺少 sessionId")
+        val workspacePath = msg["workspacePath"]?.jsonPrimitive?.content
+            ?: project.basePath
+            ?: System.getProperty("user.dir")
+        val client = project.zCodeService().getClient()
+
+        // 记录当前会话（标签持久化 + 生成中状态归属判断）+ 同步 TabState
+        currentSessionId = sessionId
+        persistSelfTabState()
+
+        // 注册全局监听器（只注册一次，所有会话的事件都通过它推给前端）
+        if (!globalListenerRegistered) {
+            client.addGlobalEventListener { event ->
+                pushStreamEvent(event.sessionId, event)
+            }
+            globalListenerRegistered = true
+            log.info("全局事件监听器已注册")
+        }
+
+        // 每个 session 只 subscribe 一次（不 unsubscribe，避免切回时丢事件）
+        if (sessionId in subscribedSessions) {
+            log.info("session $sessionId 已 subscribe 过，跳过")
+            return buildJsonObject {
+                put("op", "subscribed")
+                put("sessionId", sessionId)
+            }
+        }
+
+        // subscribe 要求会话 active，先 resume
+        try {
+            val ws = com.zcode.ideaplugin.protocol.model.Workspace(workspacePath)
+            client.resume(sessionId, ws)
+            log.info("resume 会话成功: $sessionId")
+        } catch (e: Exception) {
+            log.info("resume 失败（可能已 active）: ${e.message}")
+        }
+
+        // subscribe（全局监听器已在 app-server 层面接收所有事件）
+        try {
+            client.subscribe(sessionId, onEvent = null)
+            subscribedSessions.add(sessionId)
+            log.info("subscribe session $sessionId 成功（全局监听器接收事件）")
+        } catch (e: Exception) {
+            log.error("subscribe session $sessionId 失败", e)
+            return errorResponse("订阅失败: ${e.message}")
+        }
+
+        return buildJsonObject {
+            put("op", "subscribed")
+            put("sessionId", sessionId)
+        }
+    }
+
+    /**
+     * 把一个 session/event 推给前端（Java → JS 流式推送）
+     * 包装成 {op:"streamEvent", sessionId, event:{type, payload, ...}}
+     *
+     * 节流策略：高频 delta 进缓冲队列，每 16ms 合并成一批推送。
+     * 关键事件（turn.started/completed/failed）立即 flush，保证生命周期即时。
+     */
+    private fun pushStreamEvent(sessionId: String, event: com.zcode.ideaplugin.protocol.model.SessionEvent) {
+        // 多标签隔离：只推本面板订阅过的会话（其他标签的事件由各自的监听器推送）
+        if (sessionId !in subscribedSessions) return
+
+        // 本标签当前会话的 turn 生命周期 → 标签「●」生成中状态
+        if (sessionId == currentSessionId) {
+            when (event.type) {
+                "turn.started" -> setTabStreaming(true)
+                "turn.completed", "turn.failed" -> setTabStreaming(false)
+            }
+        }
+
+        log.info("[stream] 收到事件 type=${event.type} seq=${event.seq}（推送给前端）")
+        val eventJson = buildJsonObject {
+            put("type", event.type)
+            put("seq", event.seq)
+            put("sessionId", event.sessionId)
+            event.turnId?.let { put("turnId", it) }
+            put("timestamp", event.timestamp)
+            put("payload", event.payload)
+        }
+
+        // 关键事件：立即 flush 缓冲 + 直接推送（保证 turn 生命周期即时响应）
+        // state.updated（模式/思考级别/模型变化，含 ZCode 自动进出计划模式）也单推——低频且即时性重要
+        val isLifecycle = event.type == "turn.started" ||
+            event.type == "turn.completed" || event.type == "turn.failed" || event.type == "state.updated"
+        if (isLifecycle) {
+            flushStreamBuffer() // 先把积压的 delta 推掉
+            sendToJsDirect(buildJsonObject {
+                put("op", "streamEvent")
+                put("sessionId", sessionId)
+                put("event", eventJson)
+            })
+            return
+        }
+
+        // 普通 delta：进缓冲，启动节流 flusher
+        streamBuffer.add(sessionId to eventJson)
+        startStreamFlusher()
+    }
+
+    /** 启动节流 flusher（16ms 后合并推送，保证只有一个定时器在跑）*/
+    private fun startStreamFlusher() {
+        synchronized(streamFlushLock) {
+            if (streamFlusherRunning) return
+            streamFlusherRunning = true
+        }
+        Thread({
+            Thread.sleep(16) // 60fps 节流窗口
+            flushStreamBuffer()
+            synchronized(streamFlushLock) { streamFlusherRunning = false }
+        }, "zcode-stream-flush").apply { isDaemon = true }.start()
+    }
+
+    /** 把缓冲区所有事件合并成一批推送 */
+    private fun flushStreamBuffer() {
+        val batch = mutableListOf<Pair<String, JsonObject>>()
+        while (true) {
+            val item = streamBuffer.poll() ?: break
+            batch.add(item)
+        }
+        if (batch.isEmpty()) return
+
+        // 按 sessionId 分组，每组一个 streamBatch 消息
+        val grouped = batch.groupBy({ it.first }, { it.second })
+        for ((sid, events) in grouped) {
+            sendToJsDirect(buildJsonObject {
+                put("op", "streamBatch")
+                put("sessionId", sid)
+                put("events", JsonArray(events))
+            })
+        }
+    }
+
+    /**
+     * 直接推送（流式专用）。
+     * 必须在 EDT 线程调 executeJavaScript（JCEF 要求），但合并后调用频率已降到 60fps，可接受。
+     */
+    private fun sendToJsDirect(msg: JsonObject) {
+        val jsonStr = Json.encodeToString(JsonObject.serializer(), msg)
+        val escapedForJs = jsonStr
+            .replace("\\", "\\\\")
+            .replace("\"", "\\\"")
+            .replace("\n", "\\n")
+            .replace("\r", "\\r")
+            .replace("\t", "\\t")
+            .replace("\u2028", "\\u2028")
+            .replace("\u2029", "\\u2029")
+        val op = msg["op"]?.jsonPrimitive?.content ?: "?"
+        val js = "try { var __m = JSON.parse(\"$escapedForJs\"); if(window.zcodeBridge) window.zcodeBridge.onMessage(__m); else console.error('[JCEF] zcodeBridge 未定义'); } catch(e) { console.error('[JCEF] push err:', e.message); }"
+        SwingUtilities.invokeLater {
+            try {
+                jbCefBrowser.cefBrowser.executeJavaScript(js, "zcode-stream", 0)
+            } catch (e: Exception) {
+                log.warn("[stream] sendToJsDirect 失败 op=$op: ${e.message}")
+            }
+        }
+    }
+
+    /** 停止当前 turn（session/stop） */
+    /**
+     * 手动停止运行中的子代理。两条路径（zcode.cjs 实测确认）：
+     * 1. session/cancelBackgroundTask(主会话, taskId=agentId)——协议级取消，
+     *    runtime 分发 subagentPort.stopTask 停 local_agent（前台子代理也走此分发）；
+     * 2. 兜底 session/stop(主会话)——停主 turn，Agent 工具 abort 级联终止子代理
+     *    （副作用：主代理本轮同时中断）。子会话不在协议 active 表里，
+     *    直接 stop(childSessionId) 会 -32004 Session is not active。
+     */
+    private fun handleStopSubagent(msg: JsonObject): JsonObject {
+        val childSessionId = msg["childSessionId"]?.jsonPrimitive?.content
+            ?: return errorResponse("缺少 childSessionId")
+        val parentSessionId = msg["parentSessionId"]?.jsonPrimitive?.content
+            ?: return errorResponse("缺少 parentSessionId")
+        val agentId = msg["agentId"]?.jsonPrimitive?.content
+        val client = project.zCodeService().getClient()
+
+        // 1) 协议取消通道（taskId = agentId）
+        if (agentId != null) {
+            try {
+                client.cancelBackgroundTask(parentSessionId, agentId)
+                log.info("cancelBackgroundTask 成功: 子代理 $agentId ($childSessionId)")
+                return buildJsonObject {
+                    put("op", "subagentStopped")
+                    put("sessionId", childSessionId)
+                    put("stopped", true)
+                    put("via", "cancel")
+                }
+            } catch (e: Exception) {
+                log.info("cancelBackgroundTask 失败（可能前台任务不在表里），回退停主 turn: ${e.message}")
+            }
+        }
+
+        // 2) 兜底：停主 turn（Agent 工具 abort → 子代理级联终止）
+        return try {
+            client.stop(parentSessionId)
+            log.info("已停止主 turn（子代理 $childSessionId 随之中断）")
+            buildJsonObject {
+                put("op", "subagentStopped")
+                put("sessionId", childSessionId)
+                put("stopped", true)
+                put("via", "stopTurn")
+            }
+        } catch (e: Exception) {
+            log.warn("stopSubagent($childSessionId) 失败: ${e.message}")
+            buildJsonObject {
+                put("op", "subagentStopped")
+                put("sessionId", childSessionId)
+                put("stopped", false)
+                put("error", e.message ?: "停止失败")
+            }
+        }
+    }
+
+    private fun handleStop(msg: JsonObject): JsonObject {
+        val sessionId = msg["sessionId"]?.jsonPrimitive?.content
+            ?: return errorResponse("缺少 sessionId")
+        val client = project.zCodeService().getClient()
+        try {
+            client.stop(sessionId)
+            log.info("停止 session $sessionId 的当前 turn")
+        } catch (e: Exception) {
+            log.warn("stop 失败: ${e.message}")
+            return errorResponse("停止失败: ${e.message}")
+        }
+        return buildJsonObject {
+            put("op", "stopped")
+            put("sessionId", sessionId)
+        }
+    }
+
+    private fun errorResponse(msg: String): JsonObject = buildJsonObject {
+        put("op", "error")
+        put("message", msg)
+    }
+
+    /** 新建标签页（前端「新标签页」按钮）：切 EDT 创建新 Content 并选中 */
+    private fun handleCreateTab(): JsonObject {
+        SwingUtilities.invokeLater {
+            try {
+                val toolWindow = ZCodeToolWindowFactory.getToolWindow(project)
+                if (toolWindow == null) {
+                    log.warn("createTab 失败：找不到 ZCode ToolWindow")
+                    return@invokeLater
+                }
+                ZCodeToolWindowFactory.createNewTab(project, toolWindow)
+                log.info("createTab 成功")
+            } catch (e: Exception) {
+                log.error("createTab 失败", e)
+            }
+        }
+        return buildJsonObject { put("op", "tabCreating") }
+    }
+
+    /** 处理前端的 askUserResponse（用户选择后回传，转发 Service 层协调器）*/
+    private fun handleAskUserResponse(msg: JsonObject): JsonObject {
+        val requestId = msg["requestId"]?.jsonPrimitive?.content
+            ?: return errorResponse("缺少 requestId")
+        val action = msg["action"]?.jsonPrimitive?.content ?: "accept"
+        val answer = msg["answer"]?.jsonPrimitive?.content
+        return project.zCodeService().completeUserInput(requestId, action, answer)
+    }
+
+    /**
+     * 文件列表（@文件补全用）
+     *
+     * 扫描项目目录下的代码文件，按 query 过滤，限 50 个。
+     * 用 VFS（虚拟文件系统）递归扫，跳过 node_modules/.git/build 等。
+     */
+    private fun handleListFiles(msg: JsonObject): JsonObject {
+        val query = msg["query"]?.jsonPrimitive?.content?.lowercase() ?: ""
+        val basePath = project.basePath
+            ?: return buildJsonObject { put("op", "files"); put("files", JsonArray(emptyList())) }
+
+        val files = mutableListOf<String>()
+        val ignoredDirs = setOf("node_modules", ".git", "build", "dist", "out", ".gradle", ".idea", "target", "__pycache__")
+        // 常见代码文件扩展名
+        val codeExts = setOf(
+            "kt", "java", "py", "ts", "tsx", "js", "jsx", "json", "yaml", "yml",
+            "xml", "html", "css", "less", "scss", "md", "sql", "go", "rs", "c", "cpp", "h",
+            "sh", "bat", "gradle", "properties", "toml"
+        )
+
+        try {
+            val baseVfs = com.intellij.openapi.vfs.LocalFileSystem.getInstance().findFileByPath(basePath)
+            if (baseVfs != null && baseVfs.isDirectory) {
+                // 递归扫描（BFS，限深度 5 层）
+                val queue = ArrayDeque<Pair<com.intellij.openapi.vfs.VirtualFile, Int>>()
+                queue.add(baseVfs to 0)
+                while (queue.isNotEmpty() && files.size < 50) {
+                    val (dir, depth) = queue.removeFirst()
+                    if (depth > 5) continue
+                    for (child in dir.children) {
+                        if (files.size >= 50) break
+                        val name = child.name
+                        if (child.isDirectory) {
+                            if (name !in ignoredDirs && !name.startsWith(".")) {
+                                queue.add(child to depth + 1)
+                            }
+                        } else {
+                            val ext = name.substringAfterLast('.', "").lowercase()
+                            if (ext in codeExts) {
+                                // 相对路径（更短，补全更友好）
+                                val relPath = child.path.removePrefix(basePath).replace('\\', '/').trimStart('/')
+                                if (query.isEmpty() || relPath.lowercase().contains(query) || name.lowercase().contains(query)) {
+                                    files.add(relPath)
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        } catch (e: Exception) {
+            log.warn("扫描文件失败: ${e.message}")
+        }
+
+        files.sortBy { it.length } // 短路径优先（通常更相关）
+        return buildJsonObject {
+            put("op", "files")
+            put("files", JsonArray(files.take(50).map { JsonPrimitive(it) }))
+        }
+    }
+
+    /**
+     * 斜杠命令列表（输入框 / 快捷选择用）
+     *
+     * 磁盘扫描（SlashCommandScanner）：用户级 + 工作区级 skills/commands + 插件贡献。
+     * query 过滤在前端做（数据量小），这里返回全量。
+     */
+    private fun handleListCommands(msg: JsonObject): JsonObject {
+        val commands = SlashCommandScanner.scan(project.basePath)
+        log.info("斜杠命令扫描完成，共 ${commands.size} 条")
+        return buildJsonObject {
+            put("op", "commands")
+            put("commands", JsonArray(commands.map { c ->
+                buildJsonObject {
+                    put("name", c.name)
+                    c.description?.let { put("description", it) }
+                    put("kind", c.kind)
+                    put("source", c.source)
+                }
+            }))
+        }
+    }
+
+    /** 路径归一化：统一分隔符 + 去尾部分隔符，用于 workspace 匹配 */
+    private fun normalizePath(p: String): String {
+        return p.replace('\\', '/').trimEnd('/')
+    }
+
+    /** 初始 HTML（后续替换为打包的 React UI） */
+    private fun buildInitialHtml(jsQuery: JBCefJSQuery): String {
+        // JBCefJSQuery 注入的 JS 函数名（如 cefQuery_1015760238_1）
+        // 这个函数接受一个对象 {request: "...", persistent: false, onSuccess: fn, onFailure: fn}
+        // 它会触发 Java 端 addHandler 注册的回调，request 字符串就是传给 Java 的内容
+        val funcName = jsQuery.funcName
+        log.info("使用的 JS 函数名: $funcName")
+
+        return """
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<style>
+  body { font-family: -apple-system, 'Segoe UI', sans-serif; margin: 8px; color: #ddd; background: #2b2b2b; font-size: 13px; }
+  h2 { font-size: 14px; margin: 8px 0; color: #bbb; }
+  button { padding: 4px 10px; cursor: pointer; background: #2d4f8f; color: #fff; border: none; border-radius: 3px; }
+  button:disabled { background: #555; cursor: not-allowed; }
+  #sessions { list-style:none; padding:0; margin:0; }
+  #sessions li { padding:6px 8px; border-bottom: 1px solid #3a3a3a; cursor:pointer; }
+  #sessions li:hover { background: #3a3a3a; }
+  #sessions li.active { background: #2d4f8f; }
+  .meta { font-size:11px; color:#888; margin-top:2px; }
+  #detail { flex:1; overflow:auto; padding: 8px; border:1px solid #3a3a3a; margin-top:8px; min-height:200px; background: #1e1e1e;}
+  .msg { margin: 6px 0; padding:8px; border-radius:4px; white-space: pre-wrap; word-wrap: break-word; }
+  .msg.user { background:#1e3a5f; }
+  .msg.assistant { background:#2a2a2a; }
+  #input { display:flex; gap:4px; margin-top:8px; }
+  #input input { flex:1; padding:6px 8px; background:#1e1e1e; color:#ddd; border:1px solid #3a3a3a; border-radius:3px;}
+  #status { font-size:11px; color:#888; margin-top:4px; min-height: 16px; }
+  .header { display:flex; justify-content:space-between; align-items:center; }
+  .header button { padding: 2px 8px; font-size: 11px; }
+</style>
+</head>
+<body>
+  <div class="header">
+    <h2>ZCode Sessions</h2>
+    <button id="newBtn" onclick="createSession()">+ New</button>
+  </div>
+  <ul id="sessions"><li class="meta">loading...</li></ul>
+  <div id="detail"></div>
+  <div id="input">
+    <input id="text" placeholder="发消息（先选会话）..." disabled/>
+    <button id="sendBtn" disabled onclick="sendMessage()">Send</button>
+  </div>
+  <div id="status"></div>
+
+<script>
+  // === JS→Java 桥 ===
+  // JBCefJSQuery 注入的函数名（如 cefQuery_1015760238_1），是 window 的属性
+  var CEF_QUERY = window['$funcName'];
+
+  window.sendToJava = function(msg) {
+    if (typeof CEF_QUERY !== 'function') {
+      console.error('CEF_QUERY 函数不可用: $funcName', typeof window['$funcName']);
+      document.getElementById('status').textContent = 'ERROR: CEF bridge not ready';
+      return;
+    }
+    try {
+      CEF_QUERY({
+        request: JSON.stringify(msg),
+        persistent: false,
+        onSuccess: function(response) { /* Java 端的 Response，这里不用 */ },
+        onFailure: function(err) { console.error('query failed', err); }
+      });
+    } catch(e) {
+      console.error('sendToJava 异常', e);
+    }
+  };
+
+  // Java→JS 回调（通过 executeJavaScript 调用）
+  window.zcodeBridge = {
+    onMessage: function(msg) {
+      try {
+        // msg 可能是字符串（旧路径）或对象（新路径）
+        if (typeof msg === 'string') msg = JSON.parse(msg);
+        handleJavaMessage(msg);
+      } catch(e) {
+        console.error('onMessage error', e);
+        document.getElementById('status').innerHTML = '<span style="color:#f44">JS ERROR: ' + escapeHtml(e.message) + '</span>';
+      }
+    }
+  };
+
+  // 调试：把所有错误显示到页面上
+  window.onerror = function(msg, url, line, col, error) {
+    document.getElementById('status').innerHTML = '<span style="color:#f44">JS ERROR: ' + escapeHtml(String(msg)) + ' (line ' + line + ')</span>';
+    return false;
+  };
+
+  var currentSession = null;
+  var currentWorkspace = '';
+
+  function setStatus(s) { document.getElementById('status').textContent = s; }
+
+  function loadSessions() {
+    setStatus('loading sessions...');
+    window.sendToJava({ op: 'listSessions' });
+  }
+
+  function createSession() {
+    setStatus('creating session...');
+    window.sendToJava({ op: 'createSession' });
+  }
+
+  function handleJavaMessage(msg) {
+    if (msg.op === 'listSessions') {
+      renderSessions(msg.sessions || []);
+      setStatus('loaded ' + (msg.sessions||[]).length + ' sessions');
+    } else if (msg.op === 'createSession') {
+      setStatus('created: ' + msg.sessionId);
+      loadSessions();
+    } else if (msg.op === 'messages') {
+      renderMessages(msg.messages || []);
+      setStatus('');
+    } else if (msg.op === 'sendAccepted') {
+      setStatus('sent, accepted=' + msg.accepted + ', waiting for reply...');
+      setTimeout(function(){ loadMessages(msg.sessionId, currentWorkspace); }, 3000);
+    } else if (msg.op === 'error') {
+      setStatus('ERROR: ' + msg.message);
+    }
+  }
+
+  function renderSessions(sessions) {
+    var ul = document.getElementById('sessions');
+    ul.innerHTML = '';
+    if (sessions.length === 0) {
+      ul.innerHTML = '<li class="meta">no sessions, click +New</li>';
+      return;
+    }
+    sessions.forEach(function(s) {
+      var li = document.createElement('li');
+      li.innerHTML = '<div>' + escapeHtml(s.title || s.sessionId.slice(0,12)) + '</div>' +
+                     '<div class="meta">' + escapeHtml(s.status) + ' · ' + escapeHtml((s.workspace||'').slice(-30)) + '</div>';
+      li.onclick = function() {
+        currentSession = s.sessionId;
+        currentWorkspace = s.workspace || '';
+        document.querySelectorAll('#sessions li').forEach(function(x){ x.classList.remove('active'); });
+        li.classList.add('active');
+        document.getElementById('text').disabled = false;
+        document.getElementById('sendBtn').disabled = false;
+        loadMessages(s.sessionId, currentWorkspace);
+      };
+      ul.appendChild(li);
+    });
+  }
+
+  function loadMessages(sessionId, workspacePath) {
+    setStatus('loading messages...');
+    window.sendToJava({ op: 'messages', sessionId: sessionId, workspacePath: workspacePath || '' });
+  }
+
+  function renderMessages(messages) {
+    var d = document.getElementById('detail');
+    d.innerHTML = '';
+    messages.forEach(function(m) {
+      // ZCode 消息结构：{ info: { role, ... }, parts: [{ type, text }, ...] }
+      // 兼容旧格式：{ role, content }
+      var role = (m.info && m.info.role) || m.role || 'assistant';
+      var parts = m.parts || m.content || [];
+      var text = '';
+      if (typeof parts === 'string') {
+        text = parts;
+      } else if (Array.isArray(parts)) {
+        text = parts.map(function(b){
+          if (!b || typeof b !== 'object') return '';
+          if (b.type === 'text') return b.text || '';
+          if (b.type === 'tool_use' || b.type === 'tool-call') return '[🔧 ' + (b.name || b.toolName || 'tool') + ']';
+          if (b.type === 'tool_result' || b.type === 'tool-result') {
+            var c = b.content || b.result || '';
+            return '[结果] ' + (typeof c === 'string' ? c.slice(0,200) : JSON.stringify(c).slice(0,200));
+          }
+          if (b.type === 'thinking') return '[思考] ' + (b.text || b.thinking || '').slice(0,200);
+          return '';
+        }).join('\n');
+      }
+      var div = document.createElement('div');
+      div.className = 'msg ' + role;
+      div.textContent = (text || '(empty)').slice(0, 3000);
+      d.appendChild(div);
+    });
+    d.scrollTop = d.scrollHeight;
+  }
+
+  function sendMessage() {
+    if (!currentSession) return;
+    var t = document.getElementById('text');
+    if (!t.value.trim()) return;
+    window.sendToJava({ op: 'send', sessionId: currentSession, text: t.value, workspacePath: currentWorkspace });
+    t.value = '';
+  }
+  document.getElementById('text').addEventListener('keydown', function(e){
+    if (e.key === 'Enter') sendMessage();
+  });
+
+  function escapeHtml(s) {
+    return String(s||'').replace(/[&<>"]/g, function(c){
+      return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c];
+    });
+  }
+
+  // 启动
+  setTimeout(loadSessions, 500);
+</script>
+</body>
+</html>
+        """.trimIndent()
+    }
+
+    private fun createUnsupportedPanel(): JComponent {
+        val panel = JPanel(BorderLayout())
+        panel.background = JBColor.background()
+        val label = JLabel(
+            "<html><div style='padding:20px;text-align:center;'>" +
+            "<b>JCEF 不支持</b><br/><br/>" +
+            "当前 IDE 或环境不支持 JCEF（嵌入式 Chromium）。<br/>" +
+            "请使用官方版 IntelliJ IDEA Community / Ultimate。<br/><br/>" +
+            "如果你用的是自定义 JBR，请确认带 JCEF。" +
+            "</div></html>"
+        )
+        panel.add(label, BorderLayout.CENTER)
+        return panel
+    }
+}

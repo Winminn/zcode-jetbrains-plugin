@@ -1,0 +1,247 @@
+/**
+ * CSS 变量定义（暗+亮双主题）
+ *
+ * 配色来源：cc-gui variables.less（规划文档第三节）
+ * 切换机制：document.documentElement.setAttribute('data-theme', 'dark'|'light')
+ *
+ * 用法：在任意 .less 里写 `background: var(--bg-primary);`
+ */
+
+/* ============ 默认：暗色主题 ============ */
+:root {
+  /* 背景层级 */
+  --bg-primary: #1e1e1e;     /* 主背景 */
+  --bg-chat: var(--bg-primary); /* 聊天区背景（cc-gui：用户可自定义）*/
+  --bg-secondary: #252526;   /* 次背景（侧栏、输入区） */
+  --bg-tertiary: #2b2d31;    /* 三级背景 */
+  --bg-elevated: #2d2d2d;    /* 凸起卡片 */
+  --bg-hover: #35373c;
+  --bg-active: #37373d;
+  --bg-overlay: rgba(0, 0, 0, 0.4);
+
+  /* 边框 */
+  --border-primary: #3a3a3a;
+  --border-secondary: #2d2d2d;
+  --border-hover: #4a4a4f;   /* cc-gui：按钮/输入框 hover 边框 */
+  --border-focus: #007fd4;
+
+  /* 文字层级 */
+  --text-primary: #cccccc;
+  --text-secondary: #e0e0e0;
+  --text-tertiary: #858585;
+  --text-muted: #666666;
+  --text-placeholder: #6e6e6e;
+
+  /* 强调色 */
+  --accent-primary: #007fd4;   /* VSCode 蓝 */
+  --accent-primary-hover: #026ec1; /* cc-gui */
+  --accent-primary-active: #0060a0; /* cc-gui */
+  --accent-hover: #1a8de4;
+  --accent-secondary: #4a90e2; /* cc-gui：新会话按钮 hover 边框 */
+
+  /* 消息角色色 */
+  --color-message-user-bg: #005fb8;
+  --color-message-user-text: #ffffff;
+  --color-message-role-assistant: #d97757; /* Claude 橙 */
+
+  /* 状态色 */
+  --status-success: #4caf50;
+  --status-warning: #ff9800;
+  --status-error: #f44336;
+  --status-error-text: #f48f8f; /* error 区块文字（柔化红）*/
+  --status-info: #64b5f6;
+  --color-success: #4caf50; /* cc-gui */
+  --color-danger: #d32f2f;  /* cc-gui */
+
+  /* 用量图表调色板（暗色，对齐 glm LineChart）*/
+  --chart-line-1: #6B9BFF;
+  --chart-fill-1: rgba(107, 155, 255, 0.22);
+  --chart-line-2: #FF9E5E;
+  --chart-fill-2: rgba(255, 158, 94, 0.22);
+  --chart-line-3: #66BB6A;
+  --chart-fill-3: rgba(102, 187, 106, 0.22);
+  --chart-grid: #3c3f41;
+  --chart-axis: #888;
+
+  /* 工具调用配色 */
+  --color-tool-bg: rgba(0, 0, 0, 0.2);
+  --color-tool-icon: #64b5f6;
+  --color-tool-name: #90caf9;
+  --color-tool-key: #78909c;
+  --color-tool-value: #cfd8dc;
+
+  /* 代码高亮（暗色用 highlight.js github-dark 主题，这里只定义背景）*/
+  --code-bg: #1e1e1e;
+  --color-code-block-bg: #1e1e1e; /* cc-gui */
+  --color-code-block-border: #333; /* cc-gui */
+  --code-inline-bg: rgba(110, 118, 129, 0.4);
+  --code-inline-text: #f0883e;
+
+  /* 滚动条 */
+  --scrollbar-thumb: #3a3a3a;
+  --scrollbar-thumb-hover: #4a4a4a;
+
+  /* 链接 */
+  --link-color: #64b5f6;
+
+  /* 阴影 */
+  --shadow-sm: 0 2px 4px rgba(0, 0, 0, 0.1); /* cc-gui */
+  --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.3); /* cc-gui */
+  --shadow-dropdown: 0 -4px 12px rgba(0, 0, 0, 0.4);
+  --shadow-card: 0 2px 8px rgba(0, 0, 0, 0.3);
+
+  /* 按钮（cc-gui ChatInputBox variables.css）*/
+  --button-bg: transparent;
+  --button-hover: rgba(255, 255, 255, 0.1);
+  --button-primary: #007fd4;
+  --button-disabled: #555;
+  --error-color: #f44336;
+  --color-button-text: #ffffff;
+  --color-button-accent-hover-bg: rgba(0, 127, 212, 0.15);
+  --color-button-success-bg: rgba(76, 175, 80, 0.15);
+  --color-button-success-border: rgba(76, 175, 80, 0.5);
+  --color-button-success-hover-bg: rgba(76, 175, 80, 0.25);
+  --color-button-danger-hover-bg: rgba(211, 47, 47, 0.15);
+
+  /* 输入框（cc-gui，作用域 .chat-input-box）*/
+  --input-bg: var(--bg-chat, #1e1e1e);
+  --input-border: #3e3e42;
+  --input-focus-border: #007fd4;
+  --input-placeholder: #666;
+
+  /* 字体 */
+  --font-sans: -apple-system, 'Segoe UI', 'Microsoft YaHei', sans-serif;
+  --font-mono: 'Consolas', 'Monaco', 'Courier New', monospace;
+}
+
+/* ============ 亮色主题 ============ */
+[data-theme='light'] {
+  /* 背景层级 */
+  --bg-primary: #ffffff;
+  --bg-chat: var(--bg-primary);
+  --bg-secondary: #f3f3f3;
+  --bg-tertiary: #ececec;
+  --bg-elevated: #ffffff;
+  --bg-hover: #e8e8e8;
+  --bg-active: #dcdcdc;
+  --bg-overlay: rgba(0, 0, 0, 0.1);
+
+  /* 边框 */
+  --border-primary: #d4d4d4;
+  --border-secondary: #e0e0e0;
+  --border-hover: #a0a0a0;
+  --border-focus: #0078d4;
+
+  /* 文字层级 */
+  --text-primary: #333333;
+  --text-secondary: #1e1e1e;
+  --text-tertiary: #616161;
+  --text-muted: #999999;
+  --text-placeholder: #a0a0a0;
+
+  /* 强调色 */
+  --accent-primary: #0066b8;
+  --accent-primary-hover: #106ebe;
+  --accent-primary-active: #005a9e;
+  --accent-hover: #0078d4;
+  --accent-secondary: #2b88d8;
+
+  /* 消息角色色 */
+  --color-message-user-bg: #0078d4;
+  --color-message-user-text: #ffffff;
+  --color-message-role-assistant: #c2410c;
+
+  /* 状态色（亮色下加深一点保证对比度）*/
+  --status-success: #2e7d32;
+  --status-warning: #e65100;
+  --status-error: #c62828;
+  --status-error-text: #c62828;
+  --status-info: #1565c0;
+  --color-success: #107c10;
+  --color-danger: #c50f1f;
+
+  /* 用量图表调色板（亮色，对齐 glm LineChart）*/
+  --chart-line-1: #134CFF;
+  --chart-fill-1: rgba(19, 76, 255, 0.18);
+  --chart-line-2: #FF7C1E;
+  --chart-fill-2: rgba(255, 124, 30, 0.18);
+  --chart-line-3: #2E7D32;
+  --chart-fill-3: rgba(46, 125, 50, 0.18);
+  --chart-grid: #dddddd;
+  --chart-axis: #888;
+
+  /* 工具调用配色 */
+  --color-tool-bg: rgba(0, 0, 0, 0.03);
+  --color-tool-icon: #1565c0;
+  --color-tool-name: #0d47a1;
+  --color-tool-key: #546e7a;
+  --color-tool-value: #37474f;
+
+  /* 代码高亮 */
+  --code-bg: #f6f8fa;
+  --color-code-block-bg: #f5f5f5;
+  --color-code-block-border: #d0d0d0;
+  --code-inline-bg: rgba(175, 184, 193, 0.2);
+  --code-inline-text: #d6336c;
+
+  /* 滚动条 */
+  --scrollbar-thumb: #c1c1c1;
+  --scrollbar-thumb-hover: #a8a8a8;
+
+  /* 链接 */
+  --link-color: #0969da;
+
+  /* 阴影 */
+  --shadow-sm: 0 2px 4px rgba(0, 0, 0, 0.08);
+  --shadow-dropdown: 0 -4px 12px rgba(0, 0, 0, 0.12);
+  --shadow-card: 0 2px 8px rgba(0, 0, 0, 0.1);
+
+  /* 按钮 */
+  --button-bg: transparent;
+  --button-hover: rgba(0, 0, 0, 0.05);
+  --button-primary: #0078d4;
+  --button-disabled: #cccccc;
+  --error-color: #e81123;
+  --color-button-text: #ffffff;
+  --color-button-accent-hover-bg: rgba(0, 120, 212, 0.15);
+  --color-button-success-bg: rgba(16, 124, 16, 0.1);
+  --color-button-success-border: rgba(16, 124, 16, 0.5);
+  --color-button-success-hover-bg: rgba(16, 124, 16, 0.2);
+  --color-button-danger-hover-bg: rgba(209, 52, 56, 0.15);
+
+  /* 输入框 */
+  --input-bg: var(--bg-chat, #ffffff);
+  --input-border: #d0d0d0;
+  --input-focus-border: #0078d4;
+  --input-placeholder: #999999;
+}
+
+/* 显式暗色（和默认 :root 一致，用于 JS 设置 data-theme="dark" 时）*/
+[data-theme='dark'] {
+  /* 继承 :root 的值，这里不需要重复定义 */
+}
+
+/* ============ 全局滚动条（含横向） ============
+ * 未被容器级样式覆盖的滚动区域（如表格、工具卡展开内容等横向溢出处）
+ * 会回落到 JCEF/Chromium 默认滚动条——白底宽边，与主题化细滚动条反差极大。
+ * 这里全局统一为主题样式（参考 messages-container 纵向滚动条），
+ * width 管纵向、height 管横向；容器级 6px 细定义特异性更高，不受影响。
+ */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: var(--scrollbar-thumb);
+  border-radius: 4px;
+
+  &:hover {
+    background: var(--scrollbar-thumb-hover);
+  }
+}
+::-webkit-scrollbar-corner {
+  background: transparent;
+}

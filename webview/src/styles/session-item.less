@@ -1,0 +1,141 @@
+/**
+ * 历史列表项样式（cc-gui history.less 简化版）
+ */
+
+.session-item {
+  padding: 10px 16px;
+  cursor: pointer;
+  border-bottom: 1px solid var(--color-message-divider, rgba(255, 255, 255, 0.04));
+  position: relative;
+  transition: background 0.15s;
+
+  &:hover {
+    background: var(--bg-hover);
+  }
+
+  &--active {
+    background: color-mix(in srgb, var(--accent-primary) 10%, transparent);
+
+    &:hover {
+      background: color-mix(in srgb, var(--accent-primary) 14%, var(--bg-hover));
+    }
+  }
+
+  /* 多选模式：行样式 + 选中高亮（cc-gui .history-item.selection-mode）*/
+  &.selection-mode {
+    cursor: pointer;
+
+    &:hover {
+      background: var(--bg-hover);
+    }
+
+    &.selected {
+      background: color-mix(in srgb, var(--accent-primary) 10%, transparent);
+
+      &:hover {
+        background: color-mix(in srgb, var(--accent-primary) 14%, var(--bg-hover));
+      }
+    }
+  }
+
+  &__checkbox {
+    display: flex;
+    align-items: center;
+    flex-shrink: 0;
+  }
+
+  &__checkbox-input {
+    width: 15px;
+    height: 15px;
+    accent-color: var(--accent-primary);
+    cursor: pointer;
+  }
+
+  &__header {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    min-width: 0;
+  }
+
+  &__title {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    font-weight: 600;
+    font-size: 13px;
+    color: var(--text-secondary);
+    white-space: nowrap;
+    overflow: hidden;
+  }
+
+  &__dot {
+    color: var(--accent-primary);
+    font-size: 10px;
+    flex-shrink: 0;
+  }
+
+  &__title-text {
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  &__time {
+    font-size: 11px;
+    color: var(--text-tertiary);
+    flex-shrink: 0;
+  }
+
+  /* 删除按钮：默认透明，hover 显现（cc-gui history-action-buttons）*/
+  &__delete {
+    background: transparent;
+    border: none;
+    color: var(--text-tertiary);
+    width: 26px;
+    height: 26px;
+    border-radius: 4px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+    opacity: 0;
+    transition: all 0.15s;
+    flex-shrink: 0;
+
+    .codicon {
+      font-size: 15px;
+    }
+
+    &:hover {
+      background: var(--color-button-danger-hover-bg);
+      color: var(--color-danger);
+    }
+
+    &--confirming {
+      opacity: 1;
+      background: var(--color-button-danger-hover-bg);
+      color: var(--color-danger);
+      border: 1px solid rgba(211, 47, 47, 0.3);
+    }
+  }
+
+  &:hover &__delete {
+    opacity: 1;
+  }
+
+  &__meta {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-top: 2px;
+    padding-left: 14px; /* 与标题文字对齐（蓝点之后）*/
+    font-size: 11px;
+    color: var(--text-muted);
+  }
+
+  &__status {
+    color: var(--status-info);
+  }
+}

@@ -1,0 +1,115 @@
+/**
+ * 粘贴文本 chip + 预览弹窗样式
+ * 中性灰色调（区别于文件引用蓝 / 技能紫）
+ */
+
+.pasted-text-ref {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 8px;
+  background: rgba(158, 158, 158, 0.15);
+  border: 1px solid rgba(158, 158, 158, 0.35);
+  border-radius: 4px;
+  font-size: 12px;
+  color: var(--text-secondary);
+  max-width: 220px;
+  position: relative;
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s;
+
+  &:hover {
+    background: rgba(158, 158, 158, 0.25);
+    border-color: rgba(158, 158, 158, 0.55);
+  }
+
+  // CSS tooltip（与 file-ref 同款：max-content 防窄容器压缩换行）
+  &:hover::after {
+    content: attr(data-tip);
+    position: absolute;
+    top: calc(100% + 6px);
+    left: 0;
+    width: max-content;
+    background: var(--bg-elevated);
+    border: 1px solid var(--border-primary);
+    border-radius: 4px;
+    padding: 4px 10px;
+    font-size: 11px;
+    color: var(--text-secondary);
+    white-space: normal;
+    word-break: break-word;
+    max-width: min(480px, 90vw);
+    z-index: 100;
+    pointer-events: none;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
+  }
+
+  &__icon {
+    font-size: 12px;
+    opacity: 0.8;
+  }
+
+  &__name {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  &__remove {
+    background: none;
+    border: none;
+    color: var(--text-secondary);
+    cursor: pointer;
+    font-size: 11px;
+    padding: 0 0 0 2px;
+    opacity: 0.6;
+    line-height: 1;
+
+    &:hover {
+      opacity: 1;
+      color: var(--status-error);
+    }
+  }
+}
+
+/* ===== 预览弹窗（壳复用全局 .modal-overlay/.modal-content）===== */
+.pasted-text-preview {
+  max-width: 640px;
+  width: min(640px, 92vw);
+  display: flex;
+  flex-direction: column;
+
+  &__body {
+    background: var(--code-bg);
+    border: 1px solid var(--border-secondary);
+    border-radius: 4px;
+    padding: 10px;
+    margin: 0 0 16px;
+    font-family: var(--font-mono);
+    font-size: 12px;
+    color: var(--color-tool-value);
+    white-space: pre-wrap;
+    word-break: break-word;
+    max-height: 50vh;
+    overflow-y: auto;
+
+    // 暗色细滚动条
+    &::-webkit-scrollbar {
+      width: 6px;
+    }
+    &::-webkit-scrollbar-thumb {
+      background: var(--scrollbar-thumb);
+      border-radius: 3px;
+    }
+  }
+}
+
+/* 关闭按钮主色（.modal-btn 基类在 history-view.less）*/
+.modal-btn-primary {
+  background: var(--accent-primary);
+  color: #fff;
+
+  &:hover {
+    background: var(--accent-primary-hover);
+  }
+}

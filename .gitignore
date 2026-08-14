@@ -1,0 +1,50 @@
+# ===== 构建产物 =====
+build/
+out/
+dist/
+
+# Gradle
+.gradle/
+gradle-app.setting
+!gradle/wrapper/gradle-wrapper.jar
+!gradle/wrapper/gradle-wrapper.properties
+
+# ===== IDE =====
+.idea/
+*.iml
+*.iws
+*.ipr
+.vscode/
+*.swp
+*.swo
+
+# ===== webview (Node/前端) =====
+webview/node_modules/
+webview/dist/
+webview/.vite/
+webview/*.local
+webview/tsconfig.tsbuildinfo
+
+# webview 构建产物（打进 intellij-plugin resources，不单独存）
+# 注意：intellij-plugin/src/main/resources/webview/ 是构建产物，但不忽略
+# 因为没装 webview 依赖时 Java 端也要能加载
+
+# ===== 开发期诊断/抓包脚本与产物（含本机路径，不入库；仅根目录，勿伤 webview/scripts）=====
+/scripts/
+
+# ===== 开发过程文档（缺陷回归报告/里程碑记录/UI重构实施规划，仅本地留档）=====
+/docs/计划与里程碑/
+/docs/缺陷与回归/
+
+# ===== OS =====
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ===== 日志 =====
+*.log
+npm-debug.log*
+.zcode/
+
+# ===== GUI 测试截图（临时验收产物）=====
+gui-test-screenshots/

@@ -1,0 +1,107 @@
+package com.zcode.ideaplugin.protocol
+
+import kotlinx.serialization.json.*
+import java.nio.file.Path
+import kotlin.io.path.exists
+import kotlin.io.path.readText
+
+/**
+ * 从 ~/.zcode/v2/config.json 构造协议 runtimeModel 参数。
+ *
+ * 背景（2026-08-14 真机实测）：
+ * -32031 = app-server 的 restoreWarning——resume 时不带 runtimeModel 且会话待还原模型
+ * 不在当前工作区目录，send/compact 会被直接拒绝。**普通 session/setModel 即便切到
+ * 有效模型也清不掉该标记**；唯一可靠的清除方式是 send/compact 请求自身携带 runtimeModel
+ * （zcode.cjs 应用模型时会置 restoreWarning=void 0）。
+ *
+ * runtimeModel 携带完整 provider 定义（含 apiKey），服务端先把 provider 注册进
+ * workspace 目录再切换模型，从而绕过"可选模型"校验。
+ */
+object RuntimeModels {
+
+    private val json = Json { ignoreUnknownKeys = true }
+
+    /**
+     * 取第一个 enabled 的 anthropic provider（与 Credentials.load 同一选取规则，
+     * 即 app-server 启动时 ZCODE_MODEL 环境变量的来源），构造其第一个模型的 runtimeModel。
+     *
+     * @return config 缺失/无 enabled provider/无模型时返回 null（调用方走兜底路径）
+     */
+    fun defaultRuntimeModel(configPath: Path = Credentials.defaultConfigPath()): JsonObject? {
+        val providers = readProviders(configPath) ?: return null
+        for ((providerId, providerEl) in providers) {
+            val pv = try { providerEl.jsonObject } catch (e: Exception) { continue }
+            if (!isEnabledAnthropic(pv)) continue
+            val options = pv["options"]?.jsonObject ?: continue
+            if (options["baseURL"]?.jsonPrimitive?.contentOrNull == null) continue
+            val modelId = pv["models"]?.jsonObject?.keys?.firstOrNull() ?: continue
+            return build(providerId, modelId, pv)
+        }
+        return null
+    }
+
+    /**
+     * 按 providerId + modelId 构造 runtimeModel（provider 定义取自 config.json）。
+     * 结构对应协议 schema：{revision, generatedAt(毫秒), model, provider{providerId,kind,label,
+     * source,baseURL,apiKey{source,value},models[]}}
+     *
+     * @return provider 不存在或无模型时返回 null
+     */
+    fun buildRuntimeModel(providerId: String, modelId: String, configPath: Path = Credentials.defaultConfigPath()): JsonObject? {
+        val pv = readProviders(configPath)?.get(providerId)?.jsonObject ?: return null
+        if (pv["models"]?.jsonObject?.keys.isNullOrEmpty()) return null
+        return build(providerId, modelId, pv)
+    }
+
+    /** config 缺失/解析失败返回 null */
+    private fun readProviders(configPath: Path): JsonObject? {
+        if (!configPath.exists()) return null
+        return try {
+            json.parseToJsonElement(configPath.readText()).jsonObject["provider"]?.jsonObject
+        } catch (e: Exception) {
+            null
+        }
+    }
+
+    /** enabled 缺省视为启用（config.json 现状：DeepSeek 无 enabled 字段但已启用） */
+    private fun isEnabledAnthropic(pv: JsonObject): Boolean {
+        val enabled = pv["enabled"]?.jsonPrimitive?.contentOrNull?.toBoolean() ?: true
+        return enabled && pv["kind"]?.jsonPrimitive?.contentOrNull == "anthropic"
+    }
+
+    private fun build(providerId: String, modelId: String, pv: JsonObject): JsonObject = buildJsonObject {
+        put("revision", "0")
+        put("generatedAt", System.currentTimeMillis())
+        put("model", buildJsonObject {
+            put("providerId", providerId)
+            put("modelId", modelId)
+        })
+        put("provider", buildJsonObject {
+            put("providerId", providerId)
+            put("kind", pv["kind"]?.jsonPrimitive?.contentOrNull ?: "anthropic")
+            pv["name"]?.jsonPrimitive?.contentOrNull?.takeIf { it.isNotBlank() }?.let { put("label", it) }
+            put("source", pv["source"]?.jsonPrimitive?.contentOrNull ?: "custom")
+            val options = pv["options"]?.jsonObject
+            options?.get("baseURL")?.jsonPrimitive?.contentOrNull
+                ?.takeIf { it.isNotBlank() }
+                ?.let { put("baseURL", it) }
+            // apiKey 空（oauth 等走凭据存储）时不传该字段——schema 可选，服务端自行解析
+            options?.get("apiKey")?.jsonPrimitive?.contentOrNull
+                ?.takeIf { it.isNotBlank() }
+                ?.let {
+                    put("apiKey", buildJsonObject {
+                        put("source", "inline")
+                        put("value", it)
+                    })
+                }
+            // 该 provider 的全部模型都注册（后续切换同一 provider 的模型不再需要 runtimeModel）
+            put("models", JsonArray(pv["models"]?.jsonObject?.keys?.map { mid ->
+                buildJsonObject { put("modelId", mid) }
+            } ?: emptyList()))
+        })
+    }
+}
+
+/** JsonObject 工具：安全取字符串（与 ZCodeProtocolClient.kt 中同名的 file-private 扩展等价）*/
+private val JsonPrimitive.contentOrNull: String?
+    get() = if (this.isString) this.content else this.content.takeIf { it != "null" }

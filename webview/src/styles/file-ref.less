@@ -1,0 +1,96 @@
+/**
+ * 文件引用 chip 样式
+ *
+ * 两个形态共用视觉：
+ *   .file-ref          顶部 chip 列表（React FileRef 组件）
+ *   .file-ref--inline  contenteditable 输入框内的内联 chip（纯 DOM，InputBox 生成）
+ */
+
+.file-ref {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 8px;
+  background: rgba(0, 127, 212, 0.15);
+  border: 1px solid rgba(0, 127, 212, 0.3);
+  border-radius: 4px;
+  font-size: 12px;
+  color: var(--color-tool-name);
+  max-width: 200px;
+  position: relative;
+
+  // CSS 自定义 tooltip（JCEF 原生 title 经常不显示）。
+  // width: max-content：默认 shrink-to-fit 会被包含块（chip 自身宽度）压窄，
+  // 导致长路径逐字换行成多行；显式 max-content 让它按内容撑开、超上限才折行
+  &:hover::after {
+    content: attr(data-tip);
+    position: absolute;
+    top: calc(100% + 6px);
+    left: 0; // 左对齐，避免 chip 靠左时 tooltip 溢出界面
+    width: max-content;
+    background: var(--bg-elevated);
+    border: 1px solid var(--border-primary);
+    border-radius: 4px;
+    padding: 4px 10px;
+    font-size: 11px;
+    font-family: var(--font-mono);
+    color: var(--text-secondary);
+    white-space: normal; // 超过 max-width 允许换行
+    word-break: break-word;
+    max-width: min(480px, 90vw);
+    z-index: 100;
+    pointer-events: none;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
+  }
+
+  &__icon {
+    font-size: 12px;
+    opacity: 0.9;
+  }
+
+  &__name {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-family: var(--font-mono);
+  }
+
+  /* 行号引用后缀（@path#L10-20 → :L10-20，IDE 右键发送选中代码） */
+  &__lines {
+    color: var(--text-muted);
+    font-family: var(--font-mono);
+    font-size: 11px;
+    flex-shrink: 0;
+  }
+
+  &__remove {
+    background: none;
+    border: none;
+    color: var(--color-tool-name);
+    cursor: pointer;
+    font-size: 11px;
+    padding: 0 0 0 2px;
+    opacity: 0.6;
+    line-height: 1;
+
+    &:hover {
+      opacity: 1;
+      color: var(--status-error);
+    }
+  }
+}
+
+/* ===== 内联变体（contenteditable 文本流中）===== */
+.file-ref--inline {
+  // 文本基线对齐（顶部版在 flex 容器内不需要，内联版必须）
+  vertical-align: middle;
+  user-select: none;
+  margin: 0 1px;
+
+  // 禁用继承的 CSS ::after tooltip：编辑区 wrapper overflow:auto 会把伸出的
+  // ::after 裁剪掉（上下都可能超出）。内联 chip 的 tooltip 由 InputBox 用
+  // JS 挂到 document.body + position:fixed（脱离裁剪容器），见 .inline-chip-tip
+  &:hover::after {
+    display: none;
+  }
+}

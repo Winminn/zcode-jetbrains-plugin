@@ -1,0 +1,69 @@
+/**
+ * ExitPlanMode 计划审批弹窗
+ *
+ * plan 模式下 AI 调用 ExitPlanMode 工具时，服务端通过 interaction/requestUserInput
+ * 反向请求用户审批计划（params = {toolName:"ExitPlanMode", input:{plan:"markdown"}}）。
+ * Java 端识别后推 {op:"exitPlanApproval", requestId, plan} 给前端，此组件渲染计划全文，
+ * 用户批准（accept）或拒绝（decline）后通过 {op:"askUserResponse"} 回传。
+ *
+ * 应答复用 askUserResponse 通道（Java 端按 requestId 找 future 应答服务器）：
+ * 批准 = {action:"accept", answer:"approve"}，拒绝 = {action:"decline"}。
+ *
+ * ⚠️ answer 必须是小写 "approve"（zcode.cjs 常量 S7t，严格相等比较）：
+ * 大写 "Approve" 会落入"有答案但≠approve"分支被判为反馈式拒绝
+ * （The plan was not approved by the user.）。AskUserQuestion 的 answer 只要求非空，
+ * 两者不能复用同一应答值。
+ */
+
+import { sendToJava } from '@/ipc/bridge'
+import { MarkdownBlock } from './MarkdownBlock'
+import '../styles/plan-approval-dialog.less'
+
+interface Props {
+  requestId: string
+  plan: string
+  onClose: () => void
+}
+
+export function PlanApprovalDialog({ requestId, plan, onClose }: Props) {
+  const handleApprove = () => {
+    sendToJava({
+      op: 'askUserResponse',
+      requestId,
+      action: 'accept',
+      answer: 'approve',
+    })
+    onClose()
+  }
+
+  const handleDecline = () => {
+    sendToJava({ op: 'askUserResponse', requestId, action: 'decline' })
+    onClose()
+  }
+
+  return (
+    <div className="plan-approval-overlay" onClick={handleDecline}>
+      <div className="plan-approval-dialog" onClick={(e) => e.stopPropagation()}>
+        <div className="plan-approval-dialog__header">
+          <span className="plan-approval-dialog__icon codicon codicon-tasklist" />
+          <span className="plan-approval-dialog__title">计划审批</span>
+          <span className="plan-approval-dialog__hint">批准后将退出规划模式并开始执行</span>
+        </div>
+
+        <div className="plan-approval-dialog__body">
+          <MarkdownBlock markdown={plan || '_（计划内容为空）_'} />
+        </div>
+
+        <div className="plan-approval-dialog__footer">
+          <span className="plan-approval-dialog__tip">点击遮罩或"继续规划"可拒绝并留在规划模式</span>
+          <button className="plan-approval-dialog__btn plan-approval-dialog__btn--decline" onClick={handleDecline}>
+            继续规划
+          </button>
+          <button className="plan-approval-dialog__btn plan-approval-dialog__btn--approve" onClick={handleApprove}>
+            批准并执行
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
