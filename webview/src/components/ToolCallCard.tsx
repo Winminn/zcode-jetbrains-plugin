@@ -13,8 +13,10 @@
  */
 
 import { useState } from 'react'
+import { useTranslation } from 'react-i18next'
+import type { TFunction } from 'i18next'
 import type { ToolPart } from '@/types/messages'
-import { relativeTime } from '@/utils/time'
+import { relativeTime, formatToolDuration } from '@/utils/time'
 import { sendToJava } from '@/ipc/bridge'
 import { useStore } from '@/store/useStore'
 import { FileIcon } from './FileIcon'
@@ -49,32 +51,13 @@ function toolIcon(tool: string): string {
   return map[tool] || 'codicon-tools'
 }
 
-/** 工具 → 中文名（对齐 cc-gui zh.json tools.*）*/
-function toolDisplayName(tool: string): string {
-  const map: Record<string, string> = {
-    Read: '读取文件',
-    Edit: '编辑文件',
-    Write: '写入文件',
-    Bash: '运行命令',
-    Agent: '子代理',
-    Task: '任务',
-    Grep: '搜索',
-    Glob: '文件匹配',
-    WebFetch: '网页获取',
-    WebSearch: '网页搜索',
-    TodoWrite: '任务列表',
-    Skill: '技能',
-    AskUserQuestion: '询问用户',
-    EnterPlanMode: '进入规划',
-    ExitPlanMode: '退出规划',
-    TaskStop: '停止任务',
-    TaskOutput: '查看输出',
-  }
+/** 工具 → 显示名（对齐 cc-gui zh.json tools.*；文案经 i18n，未收录工具回退原名）*/
+function toolDisplayName(tool: string, t: TFunction): string {
   if (tool.startsWith('mcp__')) {
     // mcp__server__tool → MCP·server__tool
-    return `MCP·${tool.slice(4)}`
+    return t('tool.mcpToolName', { name: tool.slice(4) })
   }
-  return map[tool] || tool
+  return t(`tool.names.${tool}`, { defaultValue: tool })
 }
 
 /**
@@ -132,6 +115,7 @@ function statusBadge(status: ToolPart['state']['status']): { text: string; cls: 
 }
 
 export function ToolCallCard({ part }: Props) {
+  const { t } = useTranslation()
   const [expanded, setExpanded] = useState(false)
   const { tool, state } = part
   // Agent/Task 卡片的子代理摘要（实时聚合活动 + RPC 状态），点击查看原始过程。
@@ -139,6 +123,8 @@ export function ToolCallCard({ part }: Props) {
   // snapshot 引用稳定性 → Maximum update depth exceeded（React 整树卸载）
   const isAgentTool = tool === 'Agent' || tool === 'Task' || tool === 'subagent'
   const openSubagentDetail = useStore((s) => s.openSubagentDetail)
+  const openSubagentReport = useStore((s) => s.openSubagentReport)
+  const openMarkdownPreview = useStore((s) => s.openMarkdownPreview)
   const subCount = useStore((s) =>
     isAgentTool ? (s.subagentActivities.find((a) => a.key === part.callID)?.tools.length ?? 0) : 0)
   const subStatus = useStore((s): string => {
@@ -177,7 +163,7 @@ export function ToolCallCard({ part }: Props) {
     e.stopPropagation()
     if (filePath) {
       const fileName = filePath.replace(/\\/g, '/').split('/').pop() || filePath
-      sendToJava({ op: 'showDiff', filePath, oldContent, newContent, title: `编辑文件：${fileName}` })
+      sendToJava({ op: 'showDiff', filePath, oldContent, newContent, title: t('tool.editFileTitle', { name: fileName }) })
     }
   }
   const handleRefreshFile = (e: React.MouseEvent) => {
@@ -185,14 +171,18 @@ export function ToolCallCard({ part }: Props) {
     if (filePath) sendToJava({ op: 'refreshFile', filePath })
   }
 
-  // Read 工具不需要展开（只有文件名 + 点击打开，不渲染 output）
-  const expandable = tool !== 'Read'
+  // Read 工具不需要展开（只有文件名 + 点击打开，不渲染 output）；
+  // Skill 输入/输出全在头部 📖 弹窗，展开区仅流式原始输入/出错时有内容；
+  // ExitPlanMode 同款：plan 全文走 📖 弹窗，完成后无展开区（流式中仍可看原始片段）
+  const expandable = tool !== 'Read' &&
+    !(tool === 'Skill' && !rawInput && !state.error) &&
+    !(tool === 'ExitPlanMode' && !rawInput && !state.error)
 
   return (
     <div className={`tool-card tool-card--${badge.cls}`}>
       <div className="tool-card__header" onClick={() => expandable && setExpanded(!expanded)}>
         <span className="tool-card__icon"><span className={`codicon ${toolIcon(tool)}`} /></span>
-        <span className="tool-card__name">{toolDisplayName(tool)}</span>
+        <span className="tool-card__name">{toolDisplayName(tool, t)}</span>
         {summary && (
           isFileTool ? (
             <span
@@ -209,24 +199,77 @@ export function ToolCallCard({ part }: Props) {
         )}
         {/* Edit/Write 的 diff + 刷新按钮（cc-gui EditToolBlock）*/}
         {hasDiff && (
-          <button className="tool-card__action" onClick={handleShowDiff} title="查看 Diff" aria-label="diff">
+          <button className="tool-card__action" onClick={handleShowDiff} title={t('tool.viewDiff')} aria-label={t('tool.viewDiff')}>
             <span className="codicon codicon-diff" />
           </button>
         )}
         {isFileTool && (
-          <button className="tool-card__action" onClick={handleRefreshFile} title="在编辑器中刷新" aria-label="刷新">
+          <button className="tool-card__action" onClick={handleRefreshFile} title={t('tool.refreshInEditor')} aria-label={t('tool.refreshInEditor')}>
             <span className="codicon codicon-refresh" />
           </button>
         )}
+        {/* 子代理最终报告弹窗阅读（报告不在展开区渲染，这是唯一查看入口）*/}
+        {isAgentTool && hasOutput && (
+          <button
+            className="tool-card__action"
+            title={t('tool.viewSubagentReport')}
+            aria-label={t('tool.viewSubagentReport')}
+            onClick={(e) => {
+              e.stopPropagation()
+              openSubagentReport({
+                callID: part.callID,
+                title: summary || t('tool.subagentReport'),
+                markdown: state.output!,
+              })
+            }}
+          >
+            <span className="codicon codicon-book" />
+          </button>
+        )}
+        {/* 技能加载内容弹窗阅读（output = SKILL.md 全文，md 渲染；技能卡无展开区内容，唯一查看入口）*/}
+        {tool === 'Skill' && hasOutput && (
+          <button
+            className="tool-card__action"
+            title={t('tool.viewSkillContent')}
+            aria-label={t('tool.viewSkillContent')}
+            onClick={(e) => {
+              e.stopPropagation()
+              openMarkdownPreview({
+                title: `/${summary || 'skill'}`,
+                meta: t('tool.skillDoc'),
+                markdown: state.output!,
+              })
+            }}
+          >
+            <span className="codicon codicon-book" />
+          </button>
+        )}
+        {/* 计划详情弹窗阅读（ExitPlanMode 的 plan 全文 md 渲染；完成后无展开区，这是唯一查看入口）*/}
+        {tool === 'ExitPlanMode' && typeof input?.plan === 'string' && input.plan.trim() && (
+          <button
+            className="tool-card__action"
+            title={t('tool.viewPlan')}
+            aria-label={t('tool.viewPlan')}
+            onClick={(e) => {
+              e.stopPropagation()
+              openMarkdownPreview({
+                title: t('tool.planTitle'),
+                markdown: String(input.plan),
+              })
+            }}
+          >
+            <span className="codicon codicon-book" />
+          </button>
+        )}
         <span className={`tool-card__badge tool-card__badge--${badge.cls}`}>{badge.text}</span>
-        {durMs != null && <span className="tool-card__dur">{Math.round(durMs)}ms</span>}
+        {durMs != null && <span className="tool-card__dur">{formatToolDuration(durMs)}</span>}
         {expandable && <span className="tool-card__toggle">{expanded ? '▼' : '▶'}</span>}
       </div>
       {/* 子代理摘要行（Agent/Task）：实时工具数 + 状态，点击查看原始过程 */}
       {isAgentTool && subStatus && (
         <div
           className="tool-card__subagent-line"
-          title="查看子代理执行过程"
+          title={t('tool.viewSubagentProcess')}
           onClick={(e) => {
             e.stopPropagation()
             openSubagentDetail(part.callID)
@@ -236,10 +279,10 @@ export function ToolCallCard({ part }: Props) {
             ? 'codicon-loading subagent-line-spin' : 'codicon-chevron-right'}`}
           />
           <span className="tool-card__subagent-status">
-            {subStatus === 'running' ? '运行中' : subStatus === 'error' ? '失败' : subStatus === 'completed' ? '已完成' : '已派生'}
-            {subCount > 0 && ` · ${subCount} 个工具`}
+            {subStatus === 'running' ? t('tool.status.running') : subStatus === 'error' ? t('tool.status.error') : subStatus === 'completed' ? t('tool.status.completed') : t('tool.status.spawned')}
+            {subCount > 0 && ` · ${t('tool.toolsCount', { count: subCount })}`}
           </span>
-          <span className="tool-card__subagent-view">查看过程</span>
+          <span className="tool-card__subagent-view">{t('tool.viewProcess')}</span>
         </div>
       )}
       {expandable && expanded && (
@@ -247,7 +290,7 @@ export function ToolCallCard({ part }: Props) {
           {/* 流式中的原始输入（缺陷F）：解析版 input 未到时展示累积 JSON 片段 */}
           {rawInput && (
             <div className="tool-card__section">
-              <div className="tool-card__label">输入（流式）</div>
+              <div className="tool-card__label">{t('tool.inputStreaming')}</div>
               <pre className="tool-card__code">{rawInput}</pre>
             </div>
           )}
@@ -270,30 +313,38 @@ export function ToolCallCard({ part }: Props) {
             <>
               {oldContent && (
                 <div className="tool-card__section">
-                  <div className="tool-card__label tool-card__label--del">修改前</div>
+                  <div className="tool-card__label tool-card__label--del">{t('tool.beforeChange')}</div>
                   <pre className="tool-card__code">{oldContent}</pre>
                 </div>
               )}
               {newContent && (
                 <div className="tool-card__section">
-                  <div className="tool-card__label tool-card__label--add">修改后</div>
+                  <div className="tool-card__label tool-card__label--add">{t('tool.afterChange')}</div>
                   <pre className="tool-card__code">{newContent}</pre>
                 </div>
               )}
             </>
           )}
-          {/* 其他工具：保持 JSON 输入/输出 */}
-          {tool !== 'Bash' && tool !== 'Write' && tool !== 'Edit' && (
+          {/* 其他工具：JSON 输入/输出。Skill 无展开区内容（技能名在头部摘要、
+              技能文档走 📖 弹窗）；Agent 类输出（最终报告）同样只走头部弹窗按钮；
+              ExitPlanMode 的 plan 全文走 📖 弹窗，展开区不渲染 input JSON */}
+          {tool !== 'Bash' && tool !== 'Write' && tool !== 'Edit' && tool !== 'Skill' && tool !== 'ExitPlanMode' && (
             <>
               {state.input && Object.keys(state.input).length > 0 && (
                 <div className="tool-card__section">
-                  <div className="tool-card__label">输入</div>
-                  <pre className="tool-card__code">{JSON.stringify(state.input, null, 2)}</pre>
+                  <div className="tool-card__label">{isAgentTool ? t('tool.prompt') : t('tool.input')}</div>
+                  {/* Agent 输入只展示 prompt（description/subagent_type 已在卡片头部），
+                      其余字段对读者是噪音；无 prompt 的回退 JSON */}
+                  {isAgentTool && typeof input?.prompt === 'string' && input.prompt.trim() ? (
+                    <pre className="tool-card__code tool-card__prompt">{String(input.prompt)}</pre>
+                  ) : (
+                    <pre className="tool-card__code">{JSON.stringify(state.input, null, 2)}</pre>
+                  )}
                 </div>
               )}
-              {hasOutput && (
+              {hasOutput && !isAgentTool && (
                 <div className="tool-card__section">
-                  <div className="tool-card__label">输出</div>
+                  <div className="tool-card__label">{t('tool.output')}</div>
                   <pre className="tool-card__code">{state.output}</pre>
                 </div>
               )}
@@ -301,7 +352,7 @@ export function ToolCallCard({ part }: Props) {
           )}
           {state.error && tool !== 'Bash' && (
             <div className="tool-card__section tool-card__section--err">
-              <div className="tool-card__label">错误</div>
+              <div className="tool-card__label">{t('tool.error')}</div>
               <pre className="tool-card__code">{state.error.message}</pre>
             </div>
           )}

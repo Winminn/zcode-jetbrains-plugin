@@ -3,6 +3,7 @@ package com.zcode.ideaplugin.protocol
 import com.zcode.ideaplugin.protocol.model.*
 import kotlinx.serialization.json.*
 import java.io.BufferedReader
+import java.io.File
 import java.io.IOException
 import java.io.PrintWriter
 import java.nio.file.Path
@@ -71,9 +72,30 @@ class ZCodeProtocolClient private constructor(
     @Volatile
     var userInputRequestHandler: ((serverRequestId: String, params: JsonObject) -> JsonObject)? = null
 
+    /**
+     * 宿主浏览器清单（interaction/browserList）：返回 {browsers:[...]}；
+     * null / 未注册时自动应答空列表（app-server 侧 browser-use 优雅降级为不可用）。
+     * 详见 docs/设计与调研/browser-use宿主协议接入设计.md
+     */
+    var browserListHandler: (() -> JsonObject)? = null
+
+    /**
+     * 宿主浏览器命令执行（interaction/browserExecute）：params 为请求参数
+     * （含 command），返回 execute result。在独立线程调用，可安全阻塞（截图/导航有耗时）。
+     */
+    var browserExecuteHandler: ((params: JsonObject) -> JsonObject)? = null
+
     // -32031 恢复用的 runtimeModel 构造器（默认读 config.json 的 enabled provider；测试可注入）
     @Volatile
     var runtimeModelFactory: () -> JsonObject? = { RuntimeModels.defaultRuntimeModel() }
+
+    /**
+     * 后端模型 API 错误回调（stderr 的 APICallError dump 解析结果，见 BackendErrorDetector）。
+     * 场景：429 配额超限等被 app-server 按可重试分类持续退避，turn 终止帧迟迟不发，
+     * 事件流上无错误迹象——stderr 是唯一的第一现场。在 stderr 线程调用。
+     */
+    @Volatile
+    var backendErrorHandler: ((BackendErrorDetector.BackendApiError) -> Unit)? = null
 
     // 进程是否还活着
     @Volatile
@@ -111,9 +133,18 @@ class ZCodeProtocolClient private constructor(
             // 无人读 → node 永久阻塞在写 stderr → 整个 app-server 事件循环停摆，
             // 症状为所有协议请求超时（进程 alive 但不响应）。
             val stderr = process.errorStream.bufferedReader()
+            val backendErrorDetector = BackendErrorDetector()
             Thread({
                 try {
-                    stderr.forEachLine { line -> System.err.println("[app-server stderr] $line") }
+                    stderr.forEachLine { line ->
+                        System.err.println("[app-server stderr] $line")
+                        // 模型 API 错误兜底：429 配额超限等被 app-server 按可重试分类退避重试，
+                        // turn 终止帧迟迟不发（UI 无限转圈无提示），stderr dump 是错误第一现场
+                        backendErrorDetector.feed(line)?.let { err ->
+                            println("[ZCodeProtocolClient] 检测到后端 API 错误: statusCode=${err.statusCode} code=${err.code}")
+                            client.backendErrorHandler?.invoke(err)
+                        }
+                    }
                 } catch (e: IOException) {
                     // 进程退出时管道关闭，属正常
                 }
@@ -242,6 +273,39 @@ class ZCodeProtocolClient private constructor(
             } else {
                 println("[ZCodeProtocolClient] 无 userInputRequestHandler，自动 decline")
                 respondToServer(id, buildJsonObject { put("action", "decline") })
+            }
+        }
+        // 宿主浏览器反向请求（browser-use）：异步执行——navigate/screenshot 可能秒级耗时，
+        // 与 requestUserInput 同理禁止阻塞 reader 线程
+        else if (method == "interaction/browserList") {
+            val handler = browserListHandler
+            if (handler != null) {
+                Thread({
+                    try {
+                        respondToServer(id, handler())
+                    } catch (e: Exception) {
+                        println("[ZCodeProtocolClient] browserList handler 异常(${e.javaClass.simpleName}): ${e.message}")
+                        respondToServer(id, error = ProtocolError(ErrorCodes.INTERNAL_ERROR, "browserList 失败: ${e.message}"))
+                    }
+                }, "zcode-browser-list").apply { isDaemon = true }.start()
+            } else {
+                // 无宿主浏览器能力：空列表（协议允许，browser-use 按不可用降级）
+                respondToServer(id, buildJsonObject { put("browsers", JsonArray(emptyList())) })
+            }
+        }
+        else if (method == "interaction/browserExecute") {
+            val handler = browserExecuteHandler
+            if (handler != null) {
+                Thread({
+                    try {
+                        respondToServer(id, handler(params))
+                    } catch (e: Exception) {
+                        println("[ZCodeProtocolClient] browserExecute handler 异常(${e.javaClass.simpleName}): ${e.message}")
+                        respondToServer(id, error = ProtocolError(ErrorCodes.INTERNAL_ERROR, "browserExecute 失败: ${e.message}"))
+                    }
+                }, "zcode-browser-exec").apply { isDaemon = true }.start()
+            } else {
+                respondToServer(id, error = ProtocolError(ErrorCodes.METHOD_NOT_FOUND, "宿主未注册 browserExecuteHandler"))
             }
         }
         // 其他未知反向请求：回 -32601 避免空等
@@ -387,9 +451,36 @@ class ZCodeProtocolClient private constructor(
 
     // ============ 高层 API：session 方法族 ============
 
-    /** session/list — 列所有会话（读类幂等，初始化并发易超时 → 走重试）*/
-    fun listSessions(timeoutMs: Long = 10000): List<SessionInfo> {
-        val r = requestWithRetry("session/list", JsonObject(emptyMap()), timeoutMs, maxAttempts = 2, backoffMs = longArrayOf(500))
+    /**
+     * session/list — 列会话（读类幂等，初始化并发易超时 → 走重试）
+     *
+     * 不传 workspacePath 时 app-server 的默认行为是"全库维度、排除子代理、按更新
+     * 时间倒序取 limit=50"——历史项目多的机器上，当前项目的会话会被其他项目的
+     * 活跃会话挤出前 50 名窗口（表现为历史会话"丢失"）。传 workspacePath 让服务
+     * 端按项目过滤，limit 放大取全量。
+     *
+     * 注意：服务端底层是 SQL `directory = ?` 精确匹配，DB 记录的是 CLI 写入的原生
+     * 分隔符形态（Windows 反斜杠），而 IDE basePath 是 VFS 正斜杠形态——这里统一
+     * 转成原生形态再传，否则 0 命中。
+     */
+    fun listSessions(
+        workspacePath: String? = null,
+        includeArchived: Boolean = false,
+        limit: Int = 500,
+        timeoutMs: Long = 10000
+    ): List<SessionInfo> {
+        val params = buildJsonObject {
+            if (!workspacePath.isNullOrBlank()) {
+                val nativePath = workspacePath.replace('/', File.separatorChar)
+                put("workspace", buildJsonObject {
+                    put("workspacePath", nativePath)
+                    put("workspaceKey", nativePath)
+                })
+            }
+            put("includeArchived", includeArchived)
+            put("limit", limit)
+        }
+        val r = requestWithRetry("session/list", params, timeoutMs, maxAttempts = 2, backoffMs = longArrayOf(500))
         r["error"]?.let { throw ZCodeProtocolException.fromError(it) }
 
         val sessionsArray = r["result"]?.jsonObject?.get("sessions")?.jsonArray ?: return emptyList()
@@ -605,6 +696,69 @@ class ZCodeProtocolClient private constructor(
         request("session/setMode", params, timeoutMs)
     }
 
+    /**
+     * mcp/list — 列 MCP 服务器及连接状态
+     *
+     * 响应（zcode.cjs LNe/mU schema）：{statuses: {<name>: {status, transport,
+     * toolCount, updatedAt, error?, protocolEra, authorization?}}}
+     * 注意：响应不含 command/url/来源 scope——配置详情由 McpConfigReader 从磁盘配置补齐。
+     *
+     * @param mode status=只报状态不连接（快）；connect=真实连接（每服务器起子进程，
+     *             慢且有副作用 → 不重试，调用方传长超时）
+     */
+    fun listMcpServers(workspacePath: String, mode: String = "status", timeoutMs: Long = 30000): JsonObject {
+        val params = buildJsonObject {
+            put("workspace", buildJsonObject {
+                put("workspacePath", workspacePath)
+                put("workspaceKey", workspacePath) // 本地场景 key = path（同 Workspace 默认值）
+            })
+            put("mode", mode)
+        }
+        return rawMcpList(params, timeoutMs, mode)
+    }
+
+    /**
+     * plugins/list — 已安装插件清单（MCP 列表「宿主内置」条目来源）
+     *
+     * 响应（zcode.cjs mVn/fVn 构造）：{plugins: [{id, name, description?,
+     * version?, enabled, source, marketplace, skillCount, skillRootCount,
+     * commandRootCount, components, declaredMcpServerNames, mcpServerNames,
+     * hostMcpServerNames?, hookDetails, rootPath, ...}], diagnostics: [...]}
+     *
+     * hostMcpServerNames：CLI 内置注册表（browser-use@0.2.1 → ["node_repl"]）
+     * 声明的「宿主提供 MCP server」名——不在任何磁盘配置里，会话启动时由
+     * CLI 按 `node zcode.cjs __zcode-plugin-host <rootPath>/dist/mcp/server.js`
+     * 自动拉起，磁盘配置扫描天然读不到。
+     */
+    fun listPlugins(workspacePath: String, timeoutMs: Long = 15000): JsonObject {
+        val params = buildJsonObject {
+            put("workspace", buildJsonObject {
+                put("workspacePath", workspacePath)
+                put("workspaceKey", workspacePath)
+            })
+        }
+        val r = requestWithRetry("plugins/list", params, timeoutMs, maxAttempts = 2, backoffMs = longArrayOf(500))
+        r["error"]?.let { throw ZCodeProtocolException.fromError(it) }
+        return r["result"]?.jsonObject ?: JsonObject(emptyMap())
+    }
+
+    /**
+     * mcp/list 原始请求（完整 params 由调用方构造）。
+     * 调用方可通过 params.mcpServers 显式传入服务器定义（磁盘扫描的配置转
+     * 协议 schema）——插件 spawn 的 app-server 不会自己发现插件贡献的 MCP
+     * 配置（statuses 恒空），显式传参是获取真实连接状态的唯一途径。
+     */
+    fun rawMcpList(params: JsonObject, timeoutMs: Long = 30000, modeForRetry: String = "status"): JsonObject {
+        val r = if (modeForRetry == "status") {
+            // status 只读幂等 → 可重试；connect 有真实连接副作用 → 单次
+            requestWithRetry("mcp/list", params, timeoutMs, maxAttempts = 2, backoffMs = longArrayOf(500))
+        } else {
+            request("mcp/list", params, timeoutMs)
+        }
+        r["error"]?.let { throw ZCodeProtocolException.fromError(it) }
+        return r["result"]?.jsonObject ?: JsonObject(emptyMap())
+    }
+
     /** session/usage — 用量查询（累计 token 统计，读类幂等 → 走重试）*/
     fun usage(sessionId: String, timeoutMs: Long = 5000): JsonObject {
         val params = buildJsonObject { put("sessionId", sessionId) }
@@ -733,6 +887,76 @@ class ZCodeProtocolClient private constructor(
         }
     }
 
+    // 会话统计缓存：db 文件指纹（mtime:size，主库+WAL）→ 统计结果（见 getSessionStats）
+    @Volatile
+    private var sessionStatsCache: Pair<String, Map<String, SessionStat>>? = null
+
+    /**
+     * 会话统计（历史列表展示）：sessionId → (消息数, 内容字节数)
+     *
+     * ZCode 主会话存 SQLite（~/.zcode/cli/db/db.sqlite，WAL 模式）而非 jsonl，
+     * cc-gui 的 lite-read jsonl 方案不适用；message/part 表均有 session_id 列，
+     * 两条 GROUP BY 精确统计（实测 204 会话 <100ms）。大小 = message.data +
+     * part.data 的字节和（CAST AS BLOB 后 LENGTH 按 UTF-8 字节数计）。
+     * WAL 下只读不与 CLI 写入竞争；失败/超时降级空 map，不阻塞会话列表主流程。
+     */
+    fun getSessionStats(): Map<String, SessionStat> {
+        val dbPath = Path.of(System.getProperty("user.home"), ".zcode", "cli", "db", "db.sqlite")
+        if (!java.nio.file.Files.exists(dbPath)) return emptyMap()
+
+        // 指纹未变直接复用（WAL 追加写必变 size，空闲时稳定命中），免去 node 子进程开销
+        val fp = fileFingerprint(dbPath) + "|" + fileFingerprint(Path.of(dbPath.toString() + "-wal"))
+        sessionStatsCache?.let { if (it.first == fp) return it.second }
+
+        return try {
+            val pb = ProcessBuilder(nodePath, "-e", SESSION_STATS_JS)
+            pb.environment()["ZCODE_STATS_DB"] = dbPath.toString()
+            // stderr 只有 ExperimentalWarning，丢弃防止与统计输出混流
+            pb.redirectError(ProcessBuilder.Redirect.DISCARD)
+            val p = pb.start()
+            // 先读输出再 waitFor（输出超过管道缓冲时先等会死锁）；脚本恒退出，readText 不致久阻塞
+            val out = p.inputStream.bufferedReader().readText()
+            if (!p.waitFor(10, TimeUnit.SECONDS)) {
+                p.destroyForcibly()
+                println("[ZCodeProtocolClient] 会话统计查询超时，降级为空")
+                return emptyMap()
+            }
+            if (p.exitValue() != 0) {
+                println("[ZCodeProtocolClient] 会话统计查询失败(exit=${p.exitValue()})，降级为空")
+                return emptyMap()
+            }
+            val stats = parseSessionStats(out)
+            sessionStatsCache = fp to stats
+            stats
+        } catch (e: Exception) {
+            println("[ZCodeProtocolClient] 会话统计异常: ${e.message}")
+            emptyMap()
+        }
+    }
+
+    private fun parseSessionStats(out: String): Map<String, SessionStat> = try {
+        Json.parseToJsonElement(out.trim()).jsonObject.mapNotNull { (sid, v) ->
+            try {
+                val o = v.jsonObject
+                sid to SessionStat(
+                    messageCount = o["cnt"]?.jsonPrimitive?.intOrNull ?: 0,
+                    sizeBytes = o["bytes"]?.jsonPrimitive?.longOrNull ?: 0L,
+                )
+            } catch (e: Exception) {
+                null
+            }
+        }.toMap()
+    } catch (e: Exception) {
+        emptyMap()
+    }
+
+    private fun fileFingerprint(path: Path): String = try {
+        val attr = java.nio.file.Files.readAttributes(path, java.nio.file.attribute.BasicFileAttributes::class.java)
+        "${attr.lastModifiedTime().toMillis()}:${attr.size()}"
+    } catch (e: Exception) {
+        "missing"
+    }
+
     /**
      * session/setModel — 会话级切换模型
      *
@@ -842,3 +1066,20 @@ private val DELETE_SESSION_JS = """
     try { del(sid); db.exec('COMMIT'); console.log('deleted'); }
     catch (e) { try { db.exec('ROLLBACK'); } catch(_){} console.error('ERR: ' + e.message); process.exit(1); }
 """.trimIndent()
+
+/** node:sqlite 内联脚本：按会话统计消息数与内容字节数（只读，表名硬编码，无注入）。
+ * 输出 {sid: {cnt, bytes}} 单行 JSON；参数经环境变量传入（同上的 Windows 命令行参数坑）*/
+private val SESSION_STATS_JS = """
+    const {DatabaseSync} = require('node:sqlite');
+    const db = new DatabaseSync(process.env.ZCODE_STATS_DB);
+    db.exec('PRAGMA busy_timeout = 15000');
+    const msgs = db.prepare('SELECT session_id AS sid, COUNT(*) AS cnt FROM message GROUP BY session_id').all();
+    const parts = db.prepare('SELECT session_id AS sid, SUM(LENGTH(CAST(data AS BLOB))) AS bytes FROM part GROUP BY session_id').all();
+    const map = {};
+    for (const r of msgs) map[r.sid] = { cnt: r.cnt, bytes: 0 };
+    for (const r of parts) { (map[r.sid] || (map[r.sid] = { cnt: 0, bytes: 0 })).bytes = r.bytes; }
+    console.log(JSON.stringify(map));
+""".trimIndent()
+
+/** 会话统计（历史列表展示）：消息数 + message/part 内容字节和 */
+data class SessionStat(val messageCount: Int, val sizeBytes: Long)

@@ -7,7 +7,7 @@
  * 基于 2026-08-13 抓包确认的事件结构。
  */
 
-import type { ZCodeMessage, MessagePart, StreamEvent, StreamEventPayload, ToolPart, SubagentActivity, ToolUpdatedPayload } from '@/types/messages'
+import type { ZCodeMessage, MessagePart, StreamEvent, StreamEventPayload, ToolPart, SubagentActivity, ToolUpdatedPayload, TurnFailedPayload } from '@/types/messages'
 
 /**
  * 把一个流式事件应用到消息数组，返回新的消息数组（不可变更新）。
@@ -20,11 +20,36 @@ import type { ZCodeMessage, MessagePart, StreamEvent, StreamEventPayload, ToolPa
 /** 归约结果附带的模式推断事件（缺陷E修复）：EnterPlanMode 成功 / ExitPlanMode 批准 */
 export type ModeEvent = 'enter_plan' | 'exit_plan'
 
+/** turn.failed 提取的展示用错误信息（message 为空 = 服务端未带详情，由 store 兜底文案） */
+export interface TurnErrorInfo {
+  message: string
+  type?: string
+  code?: string | number
+}
+
+/** turn.failed payload → 错误信息（payload.error 缺失时返回空 message） */
+function extractTurnError(payload: StreamEventPayload): TurnErrorInfo {
+  const p = (payload || {}) as Partial<TurnFailedPayload>
+  const e = p.error
+  return {
+    message: typeof e?.message === 'string' ? e.message : '',
+    ...(e?.type ? { type: e.type } : {}),
+    ...(e?.code !== undefined ? { code: e.code } : {}),
+  }
+}
+
+/** 是否配额类错误（token_quota_exceeded 等）：确定性失败，重试不会成功，配专门文案 */
+export function looksLikeQuotaError(code?: string | number, message?: string): boolean {
+  const c = code !== undefined ? String(code).toLowerCase() : ''
+  const m = (message || '').toLowerCase()
+  return c.includes('quota') || m.includes('quota_exceeded') || m.includes('token_quota')
+}
+
 export function applyStreamEvent(
   messages: ZCodeMessage[],
   event: StreamEvent,
   streamingMessageId: string | null,
-): { messages: ZCodeMessage[]; streamingMessageId: string | null; turnEnded: boolean; modeEvent?: ModeEvent } {
+): { messages: ZCodeMessage[]; streamingMessageId: string | null; turnEnded: boolean; modeEvent?: ModeEvent; turnError?: TurnErrorInfo } {
   const { type, payload } = event
 
   switch (type) {
@@ -38,12 +63,21 @@ export function applyStreamEvent(
       return handleToolUpdated(messages, streamingMessageId, event.timestamp, payload)
 
     case 'turn.completed':
-    case 'turn.failed':
+    case 'turn.failed': {
+      // turn.failed 读取 payload.error 供 UI 展示（此前错误信息被整体丢弃，
+      // 失败只表现为"转圈停了"）；turn.completed 无错误
+      const turnError = type === 'turn.failed' ? extractTurnError(payload) : undefined
       // 兜底：turn 结束时把所有还在 pending/running 的工具标记为已完成。
       // 真实场景：ExitPlanMode/AskUserQuestion 等控制流工具不发 tool.updated(kind:result)，
       // 只发 batch（streamReducer 内处理）或 permission.resolved；若 batch 也丢失，
       // turn 结束时这些工具会永远停在 pending/running，表现为"工具卡住"。
-      return { messages: finalizePendingTools(messages, event.timestamp), streamingMessageId, turnEnded: true }
+      return {
+        messages: finalizePendingTools(messages, event.timestamp),
+        streamingMessageId,
+        turnEnded: true,
+        ...(turnError ? { turnError } : {}),
+      }
+    }
 
     default:
       // session.updated / session.titleUpdated / streamRecovery.updated 等暂不处理
@@ -61,24 +95,38 @@ function handleTurnStarted(
   const p = payload as { messageId?: string; input?: string }
   const msgId = p.messageId || `stream_${event.turnId || event.seq}`
 
-  // 避免重复创建（turn.started 可能重发）
-  if (messages.some((m) => m.info.id === msgId)) {
-    return { messages, streamingMessageId: msgId, turnEnded: false }
+  // 避免重复创建（turn.started 可能重发）；命中 user 消息不算重发——
+  // 协议的 messageId 是触发 turn 的 user 消息 id，与重拉后的服务端 user 消息
+  // 同 id，直接复用会让后续 delta 叠进用户气泡（排队消息过期重拉竞态），
+  // 换独立命名空间 id 新建流式消息
+  const hit = messages.find((m) => m.info.id === msgId)
+  if (hit) {
+    if (hit.info.role === 'assistant') {
+      return { messages, streamingMessageId: msgId, turnEnded: false }
+    }
+    return {
+      messages: [...messages, createAssistantMessage(event, `stream_${msgId}`)],
+      streamingMessageId: `stream_${msgId}`,
+      turnEnded: false,
+    }
   }
 
-  const newMsg: ZCodeMessage = {
+  return {
+    messages: [...messages, createAssistantMessage(event, msgId)],
+    streamingMessageId: msgId,
+    turnEnded: false,
+  }
+}
+
+function createAssistantMessage(event: StreamEvent, id: string): ZCodeMessage {
+  return {
     info: {
       role: 'assistant',
       time: { created: event.timestamp },
-      id: msgId,
+      id,
       sessionID: event.sessionId,
     },
     parts: [],
-  }
-  return {
-    messages: [...messages, newMsg],
-    streamingMessageId: msgId,
-    turnEnded: false,
   }
 }
 
@@ -119,7 +167,11 @@ function handleModelStreaming(
   }
 
   const idx = messages.findIndex((m) => m.info.id === streamingMessageId)
-  if (idx < 0) return { messages, streamingMessageId, turnEnded: false }
+  // role 防护：流式目标必须是 assistant 消息（user 气泡把 text part 直接拼接显示，
+  // 一旦叠入 AI delta 即"用户消息里长出 AI 回复"），异常定位宁可丢 delta 也不写错
+  if (idx < 0 || messages[idx].info.role !== 'assistant') {
+    return { messages, streamingMessageId, turnEnded: false }
+  }
 
   const msg = messages[idx]
   const parts = [...msg.parts]
@@ -174,7 +226,10 @@ function handleToolInputStreaming(
   if (!callId) return { messages, streamingMessageId, turnEnded: false }
 
   const idx = messages.findIndex((m) => m.info.id === streamingMessageId)
-  if (idx < 0) return { messages, streamingMessageId, turnEnded: false }
+  // role 防护：同 handleModelStreaming，流式目标必须是 assistant 消息
+  if (idx < 0 || messages[idx].info.role !== 'assistant') {
+    return { messages, streamingMessageId, turnEnded: false }
+  }
 
   const msg = messages[idx]
   const parts = [...msg.parts]
@@ -261,7 +316,10 @@ function handleToolUpdated(
     const idx = streamingMessageId
       ? messages.findIndex((m) => m.info.id === streamingMessageId)
       : findLastAssistantIdx(messages)
-    if (idx < 0) return { messages, streamingMessageId, turnEnded: false }
+    // role 防护：同上，streamingMessageId 定位到的必须是 assistant 消息
+    if (idx < 0 || messages[idx].info.role !== 'assistant') {
+      return { messages, streamingMessageId, turnEnded: false }
+    }
 
     const msg = messages[idx]
     const parts = [...msg.parts]
@@ -303,7 +361,10 @@ function handleToolUpdated(
   const idx = targetId
     ? messages.findIndex((m) => m.info.id === targetId)
     : findLastAssistantIdx(messages)
-  if (idx < 0) return { messages, streamingMessageId, turnEnded: false }
+  // role 防护：streamingMessageId 定位到的必须是 assistant 消息（同 handleModelStreaming）
+  if (idx < 0 || messages[idx].info.role !== 'assistant') {
+    return { messages, streamingMessageId, turnEnded: false }
+  }
 
   const msg = messages[idx]
   const parts = [...msg.parts]
@@ -441,7 +502,7 @@ export function applySubagentToolEvent(
   const idx = activities.findIndex((a) => a.key === key)
   const cur: SubagentActivity = idx >= 0
     ? activities[idx]
-    : { key, status: 'running', tools: [], lastUpdate: timestamp }
+    : { key, status: 'running', tools: [], lastUpdate: timestamp, startedAt: timestamp }
 
   // 补齐归属元信息（任意事件都可能首次携带）
   const merged: SubagentActivity = {
@@ -515,7 +576,7 @@ export function markActivityOutcome(
   timestamp: number,
 ): SubagentActivity[] {
   return activities.map((a) => a.key === key && a.status === 'running'
-    ? { ...a, status: failed ? 'failed' : 'completed', lastUpdate: timestamp }
+    ? { ...a, status: failed ? 'failed' : 'completed', lastUpdate: timestamp, endedAt: timestamp }
     : a)
 }
 

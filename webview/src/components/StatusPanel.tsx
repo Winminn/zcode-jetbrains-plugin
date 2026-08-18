@@ -10,13 +10,15 @@
  * 数据从消息历史解析（utils/parseStatus.ts），由 useStore 维护。
  *
  * 简化（与 cc-gui 差异）：
- * - 文件改动只展示统计，无 diff/undo（Java 端无对应能力）
- * - 文件状态统一 M（ZCode 无 git 状态数据）
+ * - 文件状态统一 M（ZCode 无 git 状态数据）；无 undo
+ * - 文件项点击在 IDEA 编辑器打开；行尾 diff 按钮弹该文件编辑内容的前后对比
  */
 
 import { useEffect, useRef, useState } from 'react'
+import { useTranslation } from 'react-i18next'
 import { createPortal } from 'react-dom'
 import { useStore } from '@/store/useStore'
+import { sendToJava } from '@/ipc/bridge'
 import '../styles/status-panel.less'
 
 type TabType = 'todo' | 'agent' | 'files'
@@ -33,6 +35,7 @@ function statusIcon(status: string): { icon: string; spin?: boolean } {
 }
 
 export function StatusPanel() {
+  const { t } = useTranslation()
   const todos = useStore((s) => s.todos)
   const agents = useStore((s) => s.agents)
   const fileChanges = useStore((s) => s.fileChanges)
@@ -94,7 +97,7 @@ export function StatusPanel() {
           onClick={() => toggleTab('todo')}
         >
           <span className="codicon codicon-checklist" />
-          <span className="tab-label">任务</span>
+          <span className="tab-label">{t('app.status.todoTab')}</span>
           {todos.length > 0 && (
             <span className="tab-progress">{todoCompleted}/{todos.length}</span>
           )}
@@ -109,7 +112,7 @@ export function StatusPanel() {
           onClick={() => toggleTab('agent')}
         >
           <span className="codicon codicon-hubot" />
-          <span className="tab-label">子代理</span>
+          <span className="tab-label">{t('app.status.agentTab')}</span>
           {agents.length > 0 && (
             <span className="tab-progress">{agentCompleted}/{agents.length}</span>
           )}
@@ -124,7 +127,7 @@ export function StatusPanel() {
           onClick={() => toggleTab('files')}
         >
           <span className="codicon codicon-edit" />
-          <span className="tab-label">文件</span>
+          <span className="tab-label">{t('app.status.fileTab')}</span>
           {fileChanges.length > 0 && (
             <span className="tab-stats">
               {totalAdd > 0 && <span className="stat-additions">+{totalAdd}</span>}
@@ -143,7 +146,7 @@ export function StatusPanel() {
         >
           {openTab === 'todo' && (
             todos.length === 0 ? (
-              <div className="status-panel-empty">暂无任务</div>
+              <div className="status-panel-empty">{t('app.status.noTodos')}</div>
             ) : (
               <div className="status-panel-todo-list">
                 {todos.map((todo, i) => {
@@ -161,7 +164,7 @@ export function StatusPanel() {
 
           {openTab === 'agent' && (
             agents.length === 0 ? (
-              <div className="status-panel-empty">暂无子任务</div>
+              <div className="status-panel-empty">{t('app.status.noAgents')}</div>
             ) : (
               <div className="status-panel-agent-list">
                 {agents.map((a) => {
@@ -170,7 +173,7 @@ export function StatusPanel() {
                     <div
                       key={a.callID}
                       className={`status-panel-agent-item status-${a.status} clickable`}
-                      title="点击查看子代理执行过程"
+                      title={t('app.status.viewSubagentDetail')}
                       onClick={() => openSubagentDetail(a.callID)}
                     >
                       <span className={`codicon ${icon} ${spin ? 'spin' : ''} status-panel-agent-icon`} />
@@ -189,21 +192,49 @@ export function StatusPanel() {
 
           {openTab === 'files' && (
             fileChanges.length === 0 ? (
-              <div className="status-panel-empty">暂无文件改动</div>
+              <div className="status-panel-empty">{t('app.status.noFiles')}</div>
             ) : (
               <div className="status-panel-file-list">
-                {fileChanges.map((f) => (
-                  <div key={f.filePath} className="status-panel-file-item">
-                    <span className="file-change-status status-modified">M</span>
-                    <span className="file-change-name" title={f.filePath}>{f.fileName}</span>
-                    {(f.additions > 0 || f.deletions > 0) && (
-                      <span className="file-change-stats">
-                        {f.additions > 0 && <span className="additions">+{f.additions}</span>}
-                        {f.deletions > 0 && <span className="deletions">-{f.deletions}</span>}
-                      </span>
-                    )}
-                  </div>
-                ))}
+                {fileChanges.map((f) => {
+                  const edits = f.edits ?? []
+                  const hasDiffContent = edits.some((e) => e.oldContent || e.newContent)
+                  return (
+                    <div
+                      key={f.filePath}
+                      className="status-panel-file-item clickable"
+                      title={t('app.status.openInEditor', { path: f.filePath })}
+                      onClick={() => sendToJava({ op: 'openFile', filePath: f.filePath })}
+                    >
+                      <span className="file-change-status status-modified">M</span>
+                      <span className="file-change-name" title={f.filePath}>{f.fileName}</span>
+                      {(f.additions > 0 || f.deletions > 0) && (
+                        <span className="file-change-stats">
+                          {f.additions > 0 && <span className="additions">+{f.additions}</span>}
+                          {f.deletions > 0 && <span className="deletions">-{f.deletions}</span>}
+                        </span>
+                      )}
+                      {hasDiffContent && (
+                        <span
+                          className="codicon codicon-diff status-panel-file-diff"
+                          title={t('app.status.viewDiff')}
+                          onClick={(e) => {
+                            e.stopPropagation()
+                            // 同文件多次编辑依次拼接（段间空行分隔，避免相邻片段被 diff 对齐混淆）
+                            const oldContent = edits.map((x) => x.oldContent).join('\n\n')
+                            const newContent = edits.map((x) => x.newContent).join('\n\n')
+                            sendToJava({
+                              op: 'showDiff',
+                              filePath: f.filePath,
+                              oldContent,
+                              newContent,
+                              title: t('app.status.diffTitle', { name: f.fileName }),
+                            })
+                          }}
+                        />
+                      )}
+                    </div>
+                  )
+                })}
               </div>
             )
           )}

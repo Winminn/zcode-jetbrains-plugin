@@ -12,7 +12,8 @@
  * 纯函数、幂等，每次 messages 变化（全量拉取 / 流式增量）后重新解析。
  */
 
-import type { AgentItem, FileChangeItem, SubagentActivity, SubagentInfo, TodoItem, ZCodeMessage } from '@/types/messages'
+import i18n from '@/i18n/config'
+import type { AgentItem, FileChangeItem, FileEditContent, SubagentActivity, SubagentInfo, TodoItem, ZCodeMessage } from '@/types/messages'
 
 /** 工具 part 的 input 字段名兼容（实测 Edit 用 file_path，Write 用 path）*/
 function getFilePath(input?: Record<string, unknown>): string {
@@ -71,7 +72,10 @@ export function parseAgents(messages: ZCodeMessage[]): AgentItem[] {
       const input = part.state?.input ?? {}
       // description 为空也要展示（流式早期 input 还没解析完），回退 prompt → 占位
       const description = String(input.description ?? input.prompt ?? '').slice(0, 200)
-        || '子代理任务'
+        || i18n.t('utils.subagentTask')
+      // 起止时间与工具命令卡同源（state.time），子代理耗时以此为准——
+      // session/subagents RPC 的起止由服务端多级兜底链拼装，完成后可能相等/倒挂
+      const time = part.state?.time
       const item: AgentItem = {
         description,
         status: String(part.state?.status ?? 'pending'),
@@ -79,6 +83,8 @@ export function parseAgents(messages: ZCodeMessage[]): AgentItem[] {
           ? { subagentType: input.subagent_type }
           : {}),
         callID: part.callID,
+        ...(time?.start ? { startedAt: time.start } : {}),
+        ...(time?.end ? { endedAt: time.end } : {}),
       }
       byCall.set(part.callID, item) // 后出现的状态覆盖（流式时 pending → running → completed）
     }
@@ -87,10 +93,21 @@ export function parseAgents(messages: ZCodeMessage[]): AgentItem[] {
 }
 
 /**
+ * 有效耗时对：起止齐且 end > start 才可用。
+ * RPC 的 startedAt/endedAt 实测完成后可能返回相等/倒挂的一对（兜底链取自不同
+ * 层级），直接作差会被钳成 0 —— 子代理耗时显示 "0s" 的根源。
+ */
+export function validSpan(s?: number, e?: number): { startedAt: number; endedAt: number } | undefined {
+  return s && e && e > s ? { startedAt: s, endedAt: e } : undefined
+}
+
+/**
  * 合并三个子代理数据源成 StatusPanel 列表（按 callID/toolCallId/parentToolCallId 关联）：
- * 1. parseAgents（消息历史，兜底——覆盖 RPC/流式都还没看到的早期阶段）
- * 2. subagentActivities（流式实时累积，运行中最准）
- * 3. subagents RPC（权威——turn 结束/会话加载后，含 summary/时间）
+ * 1. parseAgents（消息历史，兜底——覆盖 RPC/流式都还没看到的早期阶段；起止时间
+ *    取 Agent part 的 state.time，与工具命令卡同源，是耗时的首选来源）
+ * 2. subagentActivities（流式实时累积，运行中最准；本地计时兜底 part.time 缺失）
+ * 3. subagents RPC（权威——turn 结束/会话加载后，含 summary/childSessionId；
+ *    起止时间可能相等/倒挂，仅在本地无有效耗时对时采纳，见 validSpan）
  */
 export function mergeAgentItems(
   parsed: AgentItem[],
@@ -100,38 +117,57 @@ export function mergeAgentItems(
   const byCall = new Map<string, AgentItem>()
   // 兜底先入（会被后两个源覆盖）
   for (const p of parsed) byCall.set(p.callID, p)
-  // 流式活动：状态与 childSessionId 更及时
+  // 流式活动：状态与 childSessionId 更及时；本地计时（startedAt/endedAt）作
+  // 消息 part.time 缺失时的耗时兜底
   for (const a of activities) {
     const prev = byCall.get(a.key)
     const status = a.status === 'running' ? 'running'
       : a.status === 'failed' ? 'error' : 'completed'
+    // 后台子代理：Agent 工具立即返回（part.time 只是调度往返），本地收尾时间
+    // 也会被提前触发——起点只认流式首事件，终点留给 RPC 的后台任务 completedAt
+    const bg = a.background || prev?.background
+    const span = bg ? undefined
+      : validSpan(prev?.startedAt, prev?.endedAt) ?? validSpan(a.startedAt, a.endedAt)
+    const startedAt = span?.startedAt
+      ?? (bg ? a.startedAt ?? prev?.startedAt : prev?.startedAt ?? a.startedAt)
+    const endedAt = bg ? undefined : span?.endedAt ?? prev?.endedAt
     byCall.set(a.key, {
-      description: a.description || prev?.description || '子代理任务',
+      description: a.description || prev?.description || i18n.t('utils.subagentTask'),
       status,
       ...(a.agentType || prev?.subagentType ? { subagentType: a.agentType || prev?.subagentType } : {}),
       ...(a.childSessionId || prev?.childSessionId
         ? { childSessionId: a.childSessionId || prev?.childSessionId }
         : {}),
+      ...(bg ? { background: true } : {}),
       ...(prev?.summary ? { summary: prev.summary } : {}),
-      ...(prev?.startedAt ? { startedAt: prev.startedAt } : {}),
-      ...(prev?.endedAt ? { endedAt: prev.endedAt } : {}),
+      ...(startedAt ? { startedAt } : {}),
+      ...(endedAt ? { endedAt } : {}),
       callID: a.key,
     })
   }
-  // RPC 权威值最后覆盖（status/summary/时间/childSessionId）
+  // RPC 权威值最后覆盖（status/summary/childSessionId）；起止时间例外——
+  // 前台本地（part.time / 流式计时）已有有效耗时对时不采纳 RPC 的（可能相等/倒挂）；
+  // 后台则相反：RPC 的后台任务 completedAt 是唯一可靠终点
   for (const r of rpc) {
     const prev = byCall.get(r.toolCallId)
     const rpcStatus = normalizeRpcStatus(r.status, prev?.status)
+    const bg = prev?.background
+    const span = bg
+      ? validSpan(r.startedAt, r.endedAt)
+      : validSpan(prev?.startedAt, prev?.endedAt) ?? validSpan(r.startedAt, r.endedAt)
+    const startedAt = span?.startedAt ?? prev?.startedAt ?? r.startedAt
+    const endedAt = span?.endedAt ?? prev?.endedAt
     byCall.set(r.toolCallId, {
-      description: r.title || prev?.description || '子代理任务',
+      description: r.title || prev?.description || i18n.t('utils.subagentTask'),
       status: rpcStatus,
       ...(r.subagentType || prev?.subagentType
         ? { subagentType: r.subagentType || prev?.subagentType }
         : {}),
       childSessionId: r.childSessionId,
+      ...(bg ? { background: true } : {}),
       ...(r.summary ? { summary: r.summary } : {}),
-      ...(r.startedAt ? { startedAt: r.startedAt } : {}),
-      ...(r.endedAt ? { endedAt: r.endedAt } : {}),
+      ...(startedAt ? { startedAt } : {}),
+      ...(endedAt ? { endedAt } : {}),
       callID: r.toolCallId,
     })
   }
@@ -148,16 +184,20 @@ function normalizeRpcStatus(rpcStatus: string, prev?: string): string {
   return prev ?? 'pending'
 }
 
-/** 从消息列表解析文件改动（Edit/Write/MultiEdit 按路径聚合增删行数）*/
+/**
+ * 从消息列表解析文件改动（Edit/Write/MultiEdit 按路径聚合增删行数）。
+ * 同时保留每次编辑的 old/new 内容（edits，底部文件栏弹前后对比用）。
+ */
 export function parseFileChanges(messages: ZCodeMessage[]): FileChangeItem[] {
   const byPath: Map<string, FileChangeItem> = new Map()
 
-  const add = (path: string, additions: number, deletions: number) => {
+  const add = (path: string, additions: number, deletions: number, edit?: FileEditContent) => {
     const key = path.replace(/\\/g, '/') // 统一分隔符避免同一文件重复统计
     const cur = byPath.get(key)
     if (cur) {
       cur.additions += additions
       cur.deletions += deletions
+      if (edit && cur.edits) cur.edits.push(edit)
     } else {
       const parts = key.split('/')
       byPath.set(key, {
@@ -165,6 +205,7 @@ export function parseFileChanges(messages: ZCodeMessage[]): FileChangeItem[] {
         fileName: parts[parts.length - 1] || key,
         additions,
         deletions,
+        edits: edit ? [edit] : [],
       })
     }
   }
@@ -179,15 +220,28 @@ export function parseFileChanges(messages: ZCodeMessage[]): FileChangeItem[] {
       if (!path) continue
 
       if (tool === 'Write') {
-        // Write = 整文件写入 → 全部算新增
-        const n = lineCount(getNewContent(input))
-        add(path, n, 0)
+        // Write = 整文件写入 → 全部算新增（oldContent 为空，diff 显示为全新文件）
+        const content = getNewContent(input)
+        add(path, lineCount(content), 0, { oldContent: '', newContent: content })
+      } else if (tool === 'MultiEdit') {
+        // MultiEdit = edits 数组，逐项按 Edit 口径统计与收集
+        const edits = input?.edits
+        if (Array.isArray(edits)) {
+          for (const e of edits) {
+            if (!e || typeof e !== 'object') continue
+            const rec = e as Record<string, unknown>
+            const oldC = getOldContent(rec)
+            const newC = getNewContent(rec)
+            const diff = lineCount(newC) - lineCount(oldC)
+            add(path, Math.max(0, diff), Math.max(0, -diff), { oldContent: oldC, newContent: newC })
+          }
+        }
       } else {
-        // Edit / MultiEdit = 替换 → 行数差
-        const oldLines = lineCount(getOldContent(input))
-        const newLines = lineCount(getNewContent(input))
-        const diff = newLines - oldLines
-        add(path, Math.max(0, diff), Math.max(0, -diff))
+        // Edit = 替换 → 行数差
+        const oldC = getOldContent(input)
+        const newC = getNewContent(input)
+        const diff = lineCount(newC) - lineCount(oldC)
+        add(path, Math.max(0, diff), Math.max(0, -diff), { oldContent: oldC, newContent: newC })
       }
     }
   }

@@ -1,13 +1,15 @@
 /**
- * 技能引用 chip 样式
- * 紫色调（区别于文件引用的蓝色），笔图标 + 技能名
+ * 技能/命令引用 chip 样式
+ * 默认紫色调笔图标（技能），--command 变体绿色调终端图标（命令），
+ * 均区别于文件引用的蓝色
  */
 
 .skill-ref {
   display: inline-flex;
   align-items: center;
   gap: 4px;
-  padding: 3px 8px;
+  /* 上下 6px：内容行盒收到 12px（line-height:1），图标与文字上下缝隙精确 6px */
+  padding: 6px 8px;
   background: rgba(179, 157, 219, 0.15);
   border: 1px solid rgba(179, 157, 219, 0.3);
   border-radius: 4px;
@@ -15,6 +17,14 @@
   color: #b39ddb;
   max-width: 200px;
   position: relative;
+
+  /* codicon 基础样式 .codicon[class*='codicon-'] 的 font 简写(16px/1) 优先级 (0,2,0)
+     压过单类 __icon 的 font-size（同 a72f4ba 消息队列按钮图标问题），
+     后代选择器提到同级、源码顺序在后生效 */
+  .codicon {
+    font-size: 12px;
+    line-height: 1;
+  }
 
   // CSS 自定义 tooltip（JCEF 原生 title 经常不显示）。
   // width: max-content：避免 shrink-to-fit 被包含块（chip 宽度）压窄导致逐字换行
@@ -39,7 +49,6 @@
   }
 
   &__icon {
-    font-size: 12px;
     opacity: 0.85;
   }
 
@@ -48,6 +57,7 @@
     text-overflow: ellipsis;
     white-space: nowrap;
     font-family: var(--font-mono);
+    line-height: 1;
   }
 
   &__remove {
@@ -63,6 +73,17 @@
     &:hover {
       opacity: 1;
       color: var(--status-error);
+    }
+  }
+
+  /* 命令变体：终端图标绿色调（VSCode 终端绿），区别于技能紫、文件蓝 */
+  &--command {
+    background: rgba(78, 201, 176, 0.12);
+    border-color: rgba(78, 201, 176, 0.3);
+    color: #4ec9b0;
+
+    .skill-ref__remove {
+      color: #4ec9b0;
     }
   }
 }

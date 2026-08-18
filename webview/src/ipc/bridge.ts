@@ -14,7 +14,7 @@
  *   走 mock 响应，方便纯前端调试。
  */
 
-import type { JavaRequest, JavaResponse, StreamEvent } from '@/types/messages'
+import type { JavaRequest, JavaResponse, StreamEvent, EnvStatus } from '@/types/messages'
 
 // ============ 全局类型声明 ============
 
@@ -39,6 +39,8 @@ declare global {
     __ZCODE_WORKSPACE__?: string
     /** Java 注入的多标签初始会话 id（标签恢复绑定；空串表示新标签自动建会话） */
     __ZCODE_INITIAL_SESSION__?: string
+    /** Java 推送环境状态变化的回调（envSave 保存后 IDE 广播多标签同步）*/
+    onEnvStatusChanged?: (status: EnvStatus) => void
   }
 }
 
@@ -251,6 +253,58 @@ const mockSessions = [
 function mockRespond(req: JavaRequest): void {
   console.log('[bridge:mock] 收到请求', req.op)
 
+  // send 文本 "#plan"：模拟 plan 模式下 ExitPlanMode 审批弹窗（验收 PlanApprovalDialog）
+  if (req.op === 'send' && req.text.trim() === '#plan') {
+    setTimeout(() => {
+      listeners.forEach((fn) =>
+        fn({
+          op: 'exitPlanApproval',
+          requestId: `mock_plan_${Date.now()}`,
+          plan: '## 实施计划（mock）\n\n1. 第一步：读取配置文件\n2. 第二步：修改 provider 节点\n3. 第三步：验证并提交',
+        }),
+      )
+    }, 300)
+    return
+  }
+
+  // send 文本 "#fail"：模拟 turn.failed（验收失败回合的顶栏错误提示）
+  if (req.op === 'send' && req.text.trim() === '#fail') {
+    const turnId = `turn_fail_${Date.now()}`
+    const mk = (type: string, payload: Record<string, unknown>) =>
+      ({ type, seq: 0, sessionId: req.sessionId, turnId, timestamp: Date.now(), payload })
+    setTimeout(() => {
+      streamListeners.forEach((fn) => fn(req.sessionId, mk('turn.started', { turnNumber: 1, messageId: `msg_fail_${Date.now()}` }) as unknown as StreamEvent))
+    }, 300)
+    setTimeout(() => {
+      streamListeners.forEach((fn) => fn(req.sessionId, mk('turn.failed', {
+        error: { type: 'api_error', code: 'internal_error', message: 'Error code: 500 - {\'error\': {\'message\': \'mock 内部错误\'}}' },
+      }) as unknown as StreamEvent))
+    }, 900)
+    return
+  }
+
+  // send 文本 "#quota"：模拟 429 配额超限（stderr 兜底通道 backendError + turn 持续重试不终止，
+  // 验收"转圈中顶栏出现配额提示"）
+  if (req.op === 'send' && req.text.trim() === '#quota') {
+    const turnId = `turn_quota_${Date.now()}`
+    setTimeout(() => {
+      streamListeners.forEach((fn) => fn(req.sessionId, {
+        type: 'turn.started', seq: 0, sessionId: req.sessionId, turnId, timestamp: Date.now(),
+        payload: { turnNumber: 1, messageId: `msg_quota_${Date.now()}` },
+      } as unknown as StreamEvent))
+    }, 300)
+    setTimeout(() => {
+      listeners.forEach((fn) => fn({
+        op: 'backendError',
+        statusCode: 429,
+        code: 'token_quota_exceeded',
+        message: 'Token Plan Person monthly quota limit exceeded',
+      }))
+    }, 900)
+    // 不推 turn.failed：模拟 app-server 对 429 按可重试分类持续退避（转圈不停止）
+    return
+  }
+
   // send：触发流式事件模拟（验收阶段 2.4 用）
   if (req.op === 'send') {
     // 先回 sendAccepted
@@ -275,6 +329,15 @@ function mockRespond(req: JavaRequest): void {
     setTimeout(() => {
       listeners.forEach((fn) => fn({ op: 'stopped', sessionId: req.sessionId }))
     }, 100)
+    return
+  }
+
+  // mcpServerTools：延迟 1.2s 响应（浏览器验收 loading spin 态）
+  if (req.op === 'mcpServerTools') {
+    setTimeout(() => {
+      const resp = mockResponse(req)
+      if (resp) listeners.forEach((fn) => fn(resp))
+    }, 1200)
     return
   }
 
@@ -470,21 +533,89 @@ function mockStreamTurn(sessionId: string): void {
   }, 50)
 }
 
+/** 模型管理 mock 状态（可变）：模拟 config.json 的 provider 注册表，切换写回后就地翻转 enabled */
+let _mockProviders: import('../types/messages').ModelManageProvider[] | null = null
+function mockModelProviders(): import('../types/messages').ModelManageProvider[] {
+  if (!_mockProviders) {
+    _mockProviders = [
+      {
+        providerId: 'builtin:bigmodel-coding-plan',
+        providerName: 'BigModel - Coding Plan',
+        plan: 'personal',
+        baseURL: 'https://open.bigmodel.cn/api/anthropic',
+        enabled: true,
+        models: [
+          { modelId: 'GLM-5.3', modelName: 'GLM-5.3', contextWindow: 1000000, maxOutput: 128000 },
+          { modelId: 'GLM-5-Turbo', modelName: 'glm-5-turbo', contextWindow: 204800, maxOutput: 128000 },
+        ],
+      },
+      {
+        providerId: 'builtin:bigmodel-start-plan',
+        providerName: 'BigModel - Coding Plan',
+        plan: 'trial',
+        baseURL: 'https://zcode.z.ai/api/v1/zcode-plan/anthropic',
+        enabled: false,
+        models: [
+          { modelId: 'glm-5.3', modelName: 'glm-5.3', contextWindow: 1000000, maxOutput: 128000 },
+          { modelId: 'glm-5-turbo', modelName: 'glm-5-turbo', contextWindow: 204800, maxOutput: 128000 },
+        ],
+      },
+      {
+        providerId: '27d2ecde-5da2-43bd-b2d8-dae985bfaf8f',
+        providerName: 'DeepSeek',
+        baseURL: 'https://api.deepseek.com/anthropic',
+        enabled: true,
+        models: [
+          { modelId: 'deepseek-v4-flash', modelName: 'deepseek-v4-flash', contextWindow: 1000000, maxOutput: 384000 },
+        ],
+      },
+    ]
+  }
+  return _mockProviders
+}
+
 function mockResponse(req: JavaRequest): JavaResponse | null {
   switch (req.op) {
     case 'listSessions':
       return { op: 'listSessions', sessions: mockSessions }
     case 'listModels':
-      // 模拟 ~/.zcode/v2/config.json 的 provider 注册表（验收模型下拉用）
+      // 模拟 ~/.zcode/v2/config.json 的 provider 注册表（验收模型下拉用；内置套餐带 plan 标记）
       return {
         op: 'models',
         models: [
-          { providerId: 'builtin:bigmodel-coding-plan', providerName: 'BigModel - Coding Plan', modelId: 'GLM-5.2', modelName: 'GLM-5.2' },
-          { providerId: 'builtin:bigmodel-coding-plan', providerName: 'BigModel - Coding Plan', modelId: 'GLM-5-Turbo', modelName: 'glm-5-turbo' },
-          { providerId: 'builtin:zai-coding-plan', providerName: 'ZAI - Coding Plan', modelId: 'glm-5.1', modelName: 'glm-5.1' },
+          { providerId: 'builtin:bigmodel-coding-plan', providerName: 'BigModel - Coding Plan', plan: 'personal', modelId: 'GLM-5.3', modelName: 'GLM-5.3' },
+          { providerId: 'builtin:bigmodel-coding-plan', providerName: 'BigModel - Coding Plan', plan: 'personal', modelId: 'GLM-5-Turbo', modelName: 'glm-5-turbo' },
+          { providerId: 'builtin:bigmodel-start-plan', providerName: 'BigModel - Coding Plan', plan: 'trial', modelId: 'glm-5.3', modelName: 'glm-5.3' },
           { providerId: '27d2ecde-5da2-43bd-b2d8-dae985bfaf8f', providerName: 'DeepSeek', modelId: 'deepseek-v4-flash', modelName: 'deepseek-v4-flash' },
-          { providerId: '27d2ecde-5da2-43bd-b2d8-dae985bfaf8f', providerName: 'DeepSeek', modelId: 'deepseek-v3.2', modelName: 'deepseek-v3.2' },
         ],
+      }
+    case 'modelToggleProvider': {
+      // mock：启用内置套餐时模拟互斥联动（真实链路备份+原子写回 config.json）
+      const changes: { providerId: string; enabled: boolean }[] = [
+        { providerId: req.providerId, enabled: req.enabled },
+      ]
+      if (req.enabled && req.providerId.startsWith('builtin:')) {
+        const cur = mockModelProviders()
+        cur.forEach((p) => {
+          if (p.providerId !== req.providerId && p.providerId.startsWith('builtin:') && p.enabled) {
+            changes.push({ providerId: p.providerId, enabled: false })
+          }
+        })
+      }
+      // mock 状态就地翻转（模拟 config.json 写回后的读取结果）
+      mockModelProviders().forEach((p) => {
+        const c = changes.find((x) => x.providerId === p.providerId)
+        if (c) p.enabled = c.enabled
+      })
+      return { op: 'modelToggled', changes }
+    }
+    case 'modelManageList':
+      // 模拟设置页「模型管理」的全量 provider→models 结构（含 disabled + 套餐标记，验收展示与切换；
+      // mockModelProviders 可变，切换写回后重新读取反映变更）
+      return {
+        op: 'modelManage',
+        configPath: 'C:\\Users\\dev\\.zcode\\v2\\config.json',
+        providers: JSON.parse(JSON.stringify(mockModelProviders())),
       }
     case 'getUsage':
       // mock：27.9% 上下文使用率（与真实场景接近）
@@ -580,11 +711,11 @@ function mockResponse(req: JavaRequest): JavaResponse | null {
     case 'pickFiles':
       // mock：模拟 FileChooser 选了 1 个文件（走 filesToInput 推送链路，InputBox 加 chip）
       return { op: 'filesToInput', refs: ['@mock/README.md'] } as any
-    case 'stopSubagent':
-      // mock：直接回 ack（真实环境停止后事件链自然收尾：turn 终止→Agent 中断结果→stopped）
-      return { op: 'subagentStopped', sessionId: req.childSessionId, stopped: true }
     case 'createSession':
       return { op: 'createSession', sessionId: 'sess_mock_' + Date.now() }
+    case 'clearTabSession':
+      // mock：TabState 在 Java 侧，前端待命态无需处理，直接 ack
+      return { op: 'tabSessionCleared' }
     case 'subagents':
       // mock：session/subagents RPC（历史 Agent 工具 → 权威子代理列表，含 childSessionId）
       return {
@@ -735,6 +866,18 @@ function mockResponse(req: JavaRequest): JavaResponse | null {
                   time: { start: Date.now() - 54000, end: Date.now() - 53500 },
                 },
               },
+              // （mock）Read —— 第二个读取（与上面 Read 聚成「批量读取文件」组）
+              {
+                type: 'tool',
+                callID: 'call_mock_read2',
+                tool: 'Read',
+                state: {
+                  status: 'completed',
+                  input: { file_path: 'package.json', limit: 20 },
+                  output: '{\n  "name": "zcode-webview",\n  "version": "0.1.0",\n  ...',
+                  time: { start: Date.now() - 53400, end: Date.now() - 53300 },
+                },
+              },
               // （mock）Bash —— 运行命令样例
               {
                 type: 'tool',
@@ -745,6 +888,30 @@ function mockResponse(req: JavaRequest): JavaResponse | null {
                   input: { command: 'npm run build:single', description: '构建 webview 生产包' },
                   output: '> zcode-webview@0.1.0 build:single\n> tsc -b && vite build --config vite.singlefile.config.ts\n\n✓ built in 15.26s',
                   time: { start: Date.now() - 53800, end: Date.now() - 53600 },
+                },
+              },
+              // （mock）Bash —— 连续命令样例（与上一条聚成「批量运行命令」组）
+              {
+                type: 'tool',
+                callID: 'call_mock_bash2',
+                tool: 'Bash',
+                state: {
+                  status: 'completed',
+                  input: { command: './gradlew build -x test', description: '构建插件发行包' },
+                  output: 'BUILD SUCCESSFUL in 42s\n3 actionable tasks: 3 executed',
+                  time: { start: Date.now() - 53500, end: Date.now() - 53400 },
+                },
+              },
+              {
+                type: 'tool',
+                callID: 'call_mock_bash3',
+                tool: 'Bash',
+                state: {
+                  status: 'error',
+                  input: { command: 'git push origin master', description: '推送构建产物' },
+                  output: '',
+                  error: { message: "fatal: Authentication failed for 'https://github.com/'" },
+                  time: { start: Date.now() - 53400, end: Date.now() - 53300 },
                 },
               },
               {
@@ -817,6 +984,28 @@ function mockResponse(req: JavaRequest): JavaResponse | null {
                   time: { start: Date.now() - 13000, end: Date.now() - 12000 },
                 },
               },
+              // （mock）Grep/Glob —— 与上面 Edit/Write 分别聚成「批量编辑」「批量搜索」组
+              {
+                type: 'tool',
+                callID: 'call_mock_grep',
+                tool: 'Grep',
+                state: {
+                  status: 'completed',
+                  input: { pattern: 'sendToJava\\(', path: 'webview/src', output_mode: 'content' },
+                  output: 'webview/src/App.tsx:95:  sendToJava({ op: \'setTabTitle\', ... })\nwebview/src/components/InputBox.tsx:364:      sendToJava({ op: \'listFiles\', query })',
+                  time: { start: Date.now() - 11000, end: Date.now() - 10900 },
+                },
+              },
+              {
+                type: 'tool',
+                callID: 'call_mock_glob',
+                tool: 'Glob',
+                state: {
+                  status: 'running',
+                  input: { pattern: '**/*.less', path: 'webview/src/styles' },
+                  time: { start: Date.now() - 10000 },
+                },
+              },
             ],
           },
           // （mock）子代理 task-notification —— 验收 AgentNotificationCard 渲染
@@ -852,6 +1041,41 @@ function mockResponse(req: JavaRequest): JavaResponse | null {
                   '<summary>Agent general-purpose task &quot;审查 application.yml 配置安全性&quot; completed.</summary>\n' +
                   '<result>## 配置安全审查结果\n\n发现 **3 个中危** 问题：\n\n| 严重程度 | 问题 | 位置 |\n|---|---|---|\n| 中 | 日志级别写死 `debug` | application.yml:36 |\n| 中 | Nacos 缺少 namespace 隔离 | application.yml:10 |\n| 低 | Actuator 端点无认证 | application.yml:21 |\n\n**修复建议**：\n\n```yaml\nlogging:\n  level:\n    com.example: ${LOG_LEVEL:info}\n```\n\n> 生产环境务必关闭 import-check 强校验。</result>\n' +
                   '<usage><subagent_tokens>28025</subagent_tokens><tool_uses>1</tool_uses><duration_ms>36254</duration_ms></usage>\n' +
+                  '</task-notification>',
+              },
+            ],
+          },
+          // （mock）后台 bash 命令 task-notification —— 与子代理共用 background_task
+          // 通道，靠 task-id 前缀 / summary 区分，应渲染为"后台命令"而非"子代理"
+          {
+            info: {
+              role: 'user',
+              time: { created: Date.now() - 43500 },
+              id: 'msg_mock_notif1b',
+              sessionID: req.sessionId,
+              synthetic: true,
+              source: 'background_task',
+              visibility: 'model-only',
+              semantics: { origin: 'agent_runtime', kind: 'background_notification', uiVisibility: 'hidden' },
+              metadata: {
+                originMeta: {
+                  title: '执行完整清理并重建插件',
+                  workId: 'exec_mock_1',
+                },
+              },
+            },
+            parts: [
+              {
+                type: 'text',
+                synthetic: true,
+                text:
+                  '<task-notification>\n' +
+                  '<task-id>exec_mock_1</task-id>\n' +
+                  '<tool-use-id>call_mock_bash_notif</tool-use-id>\n' +
+                  '<output-file>C:\\Users\\mock\\.zcode\\exec\\sess_mock\\call_mock_bash_notif-stdout.log</output-file>\n' +
+                  '<status>completed</status>\n' +
+                  '<summary>Background command &quot;执行完整清理并重建插件&quot; completed (exit code 0)</summary>\n' +
+                  '<result>✅ 构建完成：intellij-plugin/build/distributions/ZC-GUI-0.1.0.zip</result>\n' +
                   '</task-notification>',
               },
             ],
@@ -977,12 +1201,35 @@ flowchart LR
     case 'createTab':
       // 多标签由 IDE 原生 Content 管理，浏览器 mock 无标签概念
       return { op: 'tabCreating' }
+    case 'toggleBrowserPane':
+      // 分栏开关由 IDE 侧处理，mock 模式无意义，返回固定态
+      return { op: 'browserPaneToggled', visible: false }
     case 'setTabTitle':
       return { op: 'tabTitleSet' }
+    case 'appearanceSave':
+      // mock 模式 localStorage 即权威源，保存仅回执
+      return { op: 'appearanceSave' }
+    case 'kvSave':
+      return { op: 'kvSave' }
+    case 'askUserResponse':
+      // mock：无服务端可应答，仅回执关闭弹窗
+      return { op: 'askUserAck' }
+    case 'checkEnv':
+    case 'envSave':
+      // mock：环境恒健康（dev 浏览器无 IDE 侧检测；banner UI 验收可临时改 allOk 为 false）
+      return {
+        op: 'envStatus',
+        status: {
+          node: { configured: false, path: '/usr/local/bin/node', found: true, version: 'v20.11.1', versionTooLow: false, minVersion: 18 },
+          cli: { configured: false, path: 'C:\\Users\\mock\\AppData\\Local\\Programs\\ZCode\\resources\\glm\\zcode.cjs', found: true },
+          credentials: { ok: true, model: 'glm-4.7' },
+          allOk: true,
+        } satisfies EnvStatus,
+      }
     case 'listFiles':
       return { op: 'files', files: ['README.md', 'package.json', 'src/main.tsx'] }
     case 'listCommands':
-      // mock：技能 + 命令混合列表（skill/command 两种 kind）
+      // mock：技能 + 命令混合列表（skill/command 两种 kind，builtin=CLI 内置命令）
       return {
         op: 'commands',
         commands: [
@@ -991,10 +1238,130 @@ flowchart LR
           { name: 'handoff', description: '压缩会话生成交接文档', kind: 'skill', source: 'user' },
           { name: 'research', description: '调研问题并落盘 Markdown 发现', kind: 'skill', source: 'user' },
           { name: 'diagnosing-bugs', description: '硬 bug 与性能回归的诊断循环', kind: 'skill', source: 'user' },
+          { name: 'init', description: 'Create or update workspace AGENTS.md instructions.', kind: 'command', source: 'builtin' },
           { name: 'compact', description: '压缩当前会话上下文', kind: 'command', source: 'builtin' },
+          { name: 'goal', description: 'Show or set the current session goal.', kind: 'command', source: 'builtin' },
           { name: 'review:code', description: '评审代码（嵌套目录命令）', kind: 'command', source: 'user' },
         ],
       }
+    case 'listMemoryFiles':
+      // mock：全局存在 + 项目未创建 + 两条自动记忆（验收三种形态的条目）
+      return {
+        op: 'memoryFiles',
+        files: [
+          {
+            name: 'AGENTS.md',
+            scope: 'global',
+            kind: 'instructions',
+            path: 'C:\\Users\\mock\\.zcode\\AGENTS.md',
+            exists: true,
+            sizeBytes: 2048,
+            lastModified: Date.now() - 86400_000,
+            description: '所有项目的 ZCode 会话自动读取',
+          },
+          {
+            name: 'AGENTS.md',
+            scope: 'project',
+            kind: 'instructions',
+            path: 'G:\\mock\\AGENTS.md',
+            exists: false,
+            description: '当前项目的 ZCode 会话自动读取',
+          },
+          {
+            name: 'MEMORY.md',
+            scope: 'project',
+            kind: 'auto',
+            path: 'C:\\Users\\mock\\.zcode\\cli\\memories\\projects\\mock-abc123\\memory\\MEMORY.md',
+            exists: true,
+            sizeBytes: 512,
+            lastModified: Date.now() - 3600_000,
+            description: '记忆索引（每条记忆一行，指向同目录事实文件）',
+          },
+          {
+            name: 'conversation-search-feature.md',
+            scope: 'project',
+            kind: 'auto',
+            path: 'C:\\Users\\mock\\.zcode\\cli\\memories\\projects\\mock-abc123\\memory\\conversation-search-feature.md',
+            exists: true,
+            sizeBytes: 1180,
+            lastModified: Date.now() - 7200_000,
+            description: '自动记忆：用户偏好用 Ctrl+F 做会话内搜索',
+          },
+        ],
+      }
+    case 'createMemoryFile':
+      return { op: 'memoryFileCreated', path: req.path }
+    case 'listSkills':
+      // mock：三来源 + 启用/禁用/插件名/whenToUse 各形态（浏览器验收用）
+      return {
+        op: 'skills',
+        skills: [
+          { name: 'code-review', description: '按标准和规格评审代码改动', whenToUse: '用户要求 review 变更时', path: 'C:\\Users\\mock\\.zcode\\skills\\code-review\\SKILL.md', directory: 'C:\\Users\\mock\\.zcode\\skills\\code-review', scope: 'user', source: 'zcode', enabled: true },
+          { name: 'git-commit-format', description: '规范化 Git 提交信息格式', path: 'C:\\Users\\mock\\.zcode\\skills\\git-commit-format\\SKILL.md', directory: 'C:\\Users\\mock\\.zcode\\skills\\git-commit-format', scope: 'user', source: 'zcode', enabled: false },
+          { name: 'deploy-helper', description: '项目部署辅助（mock 项目级技能）', path: 'G:\\mock\\project\\.zcode\\skills\\deploy-helper\\SKILL.md', directory: 'G:\\mock\\project\\.zcode\\skills\\deploy-helper', scope: 'project', source: 'zcode', enabled: true },
+          { name: 'control-browser', description: '浏览器自动化主代理技能', path: 'C:\\Users\\mock\\.zcode\\cli\\plugins\\cache\\official\\browser-use\\0.2.1\\skills\\control-browser\\SKILL.md', directory: 'C:\\Users\\mock\\.zcode\\cli\\plugins\\cache\\official\\browser-use\\0.2.1\\skills\\control-browser', scope: 'plugin', source: 'plugin', pluginName: 'browser-use', enabled: true },
+        ],
+      }
+    case 'toggleSkill':
+      return { op: 'skillToggled', path: req.path, enabled: req.enabled }
+    case 'listMcpServers':
+      // mock：stdio/http、connected/failed/disconnected/disabled、runtime 来源各形态
+      return {
+        op: 'mcpServers',
+        mode: req.mode ?? 'status',
+        servers: [
+          { name: 'context7', scope: 'user', transport: 'stdio', command: 'npx', args: ['-y', '@upstash/context7-mcp'], envKeys: ['DEFAULT_MINIMUM_TOKENS'], enabled: true, configPath: 'C:\\Users\\mock\\.zcode\\cli\\config.json', status: 'connected', toolCount: 2, updatedAt: new Date().toISOString() },
+          { name: 'web-reader', scope: 'user', transport: 'http', url: 'https://mcp.example.com/web-reader', enabled: true, configPath: 'C:\\Users\\mock\\.zcode\\cli\\config.json', status: 'failed', toolCount: 0, statusError: 'connect ETIMEDOUT 1.2.3.4:443', updatedAt: new Date().toISOString() },
+          { name: 'legacy-search', scope: 'project', transport: 'sse', url: 'https://mcp.example.com/sse', enabled: false, configPath: 'G:\\mock\\project\\zcode.json', status: 'disabled', toolCount: 0, updatedAt: new Date().toISOString() },
+          { name: 'browser-tools', scope: 'plugin', transport: 'stdio', command: 'node', args: ['server.js'], enabled: true, configPath: 'C:\\Users\\mock\\.zcode\\cli\\plugins\\cache\\official\\browser-use\\0.2.1\\.mcp.json', pluginName: 'browser-use', status: 'connected', toolCount: 0 },
+          { name: 'rpc-count-stale', scope: 'user', transport: 'http', url: 'https://mcp.example.com/stale', enabled: true, configPath: 'C:\\Users\\mock\\.zcode\\cli\\config.json', status: 'connected', toolCount: 0 },
+        ],
+      }
+    case 'mcpServerTools':
+      // mock：context7 正常返回；browser-tools 已连接但 0 工具（黄色警告态）；其余报错
+      if (req.name === 'context7') {
+        return {
+          op: 'mcpServerTools',
+          name: req.name,
+          toolCount: 2,
+          tools: [
+            { name: 'resolve-library-id', description: '将通用库/框架名称解析为 Context7 兼容的库 ID（支持模糊匹配）' },
+            { name: 'get-library-docs', description: '按 Context7 库 ID 拉取最新文档片段，用于回答库/框架使用问题' },
+          ],
+        }
+      }
+      if (req.name === 'browser-tools') {
+        return { op: 'mcpServerTools', name: req.name, toolCount: 0, tools: [] }
+      }
+      // RPC toolCount=0 但直连拿到 3 个（验收头部徽章数以直连为准）
+      if (req.name === 'rpc-count-stale') {
+        return {
+          op: 'mcpServerTools',
+          name: req.name,
+          toolCount: 3,
+          tools: [
+            { name: 'fetch_page', description: '抓取指定 URL 的页面内容并转为 Markdown' },
+            { name: 'search_web', description: '全网搜索，返回带摘要的结果列表。这条描述特别长，用来验收工具详情两行截断 + hover title 看全文的效果，超出部分应该被 line-clamp 裁掉而不撑开布局。' },
+            { name: 'read_file', description: '读取服务器侧文件内容' },
+          ],
+        }
+      }
+      return { op: 'mcpServerTools', name: req.name, error: 'mock：连接超时（ETIMEDOUT 1.2.3.4:443）' }
+    case 'getMcpLogs':
+      // mock：完整连接生命周期样例（started→connected / failed 带 stderr / 启动汇总）
+      return {
+        op: 'mcpLogs',
+        logs: [
+          { timestamp: new Date(Date.now() - 90_000).toISOString(), level: 'info', event: 'mcp.server.connect.started', serverName: 'context7', message: '开始连接（stdio，超时 600000ms）' },
+          { timestamp: new Date(Date.now() - 88_000).toISOString(), level: 'info', event: 'mcp.server.connected', serverName: 'context7', message: '连接成功 · 连接耗时 1520ms · 工具枚举 840ms · 2 个工具', durationMs: 2360 },
+          { timestamp: new Date(Date.now() - 60_000).toISOString(), level: 'info', event: 'mcp.server.connect.started', serverName: 'web-reader', message: '开始连接（http，超时 600000ms）' },
+          { timestamp: new Date(Date.now() - 57_000).toISOString(), level: 'warn', event: 'mcp.server.failed', serverName: 'web-reader', message: '连接失败 · connect ETIMEDOUT 1.2.3.4:443', durationMs: 3000 },
+          { timestamp: new Date(Date.now() - 56_000).toISOString(), level: 'info', event: 'mcp.startup.completed', serverName: '', message: 'MCP 启动完成 · 2 台 · {"connected":1,"failed":1} · 共 2 个工具' },
+        ],
+      }
+    case 'subscribeChild':
+      // mock：子会话订阅 ack（无真实事件流，弹窗实时数据走 mock 消息/转发事件）
+      return { op: 'subscribedChild', sessionId: req.sessionId }
     default:
       return { op: 'error', message: `mock 不支持 op: ${(req as { op: string }).op}` }
   }

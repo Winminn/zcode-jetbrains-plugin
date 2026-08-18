@@ -8,19 +8,24 @@
  * part 渲染策略（基于抓包）：
  *   text     → MarkdownBlock（连续的 text part 合并）
  *   reasoning → ThinkingBlock（折叠）
- *   tool     → ToolCallCard（折叠）
+ *   tool     → ToolCallCard（折叠）；连续同类聚组（见 utils/groupParts.ts）：
+ *              Bash → BashCommandGroupCard（批量运行命令）
+ *              Read/Edit/Write/Grep/Glob → FileToolGroupCard（批量读/编/搜）
  *   step-start / step-finish → 不渲染（边界标记）
  *
- * 规划文档第二节第 3 点（工具分组）：连续同类 tool part 合并成一个组。
- * 这里先逐个渲染（分组是视觉优化，阶段 2.4 流式时再细化）。
+ * 规划文档第二节第 3 点（工具分组）：连续同类 tool part 合并成一个组（cc-gui 规则）。
  */
 
-import { memo, useRef } from 'react'
+import { memo, useMemo, useRef } from 'react'
+import { useTranslation } from 'react-i18next'
 import type { ZCodeMessage, MessagePart, TextPart } from '@/types/messages'
 import { MarkdownBlock } from './MarkdownBlock'
 import { ToolCallCard } from './ToolCallCard'
 import { ThinkingBlock } from './ThinkingBlock'
 import { AgentNotificationCard } from './AgentNotificationCard'
+import { BashCommandGroupCard } from './BashCommandGroupCard'
+import { FileToolGroupCard } from './FileToolGroupCard'
+import { groupParts } from '@/utils/groupParts'
 import { isAgentNotification } from '@/utils/parseNotification'
 import { clockTime, formatDuration } from '@/utils/time'
 import { useTick } from '@/hooks/useTick'
@@ -51,10 +56,11 @@ export const MessageBubble = memo(function MessageBubble({ message, streaming, a
 
 /** user 消息：纯文本，右对齐蓝色气泡 */
 function UserBubble({ text, time, anchorAttr }: { text: string; time: string; anchorAttr?: string }) {
+  const { t } = useTranslation()
   return (
     <div className="msg msg--user" data-anchor-msg={anchorAttr}>
       <div className="msg__time">{time}</div>
-      <div className="msg__bubble">{text || '(空)'}</div>
+      <div className="msg__bubble">{text || t('chat.message.emptyText')}</div>
     </div>
   )
 }
@@ -78,18 +84,30 @@ function AssistantBubble({ message, time, streaming }: { message: ZCodeMessage; 
   // 流式时最后一个 part 是正在增长的
   const lastPartIdx = parts.length - 1
 
+  // 连续 Bash 命令聚组（cc-gui groupBlocks 规则）：压缩批量命令的消息区长度。
+  // 分组保留原始 part 下标，reasoning 自动展开/流式判定的 index 语义不变
+  const units = useMemo(() => groupParts(parts), [parts])
+
   return (
     <div className="msg msg--assistant">
       <div className="msg__content">
-        {parts.map((part, i) => (
-          <PartRenderer
-            key={i}
-            part={part}
-            // reasoning 自动展开：是最后一个 reasoning + 后面还没有正文
-            autoExpandReasoning={i === lastReasoningIdx && !hasTextAfterLastReasoning}
-            streaming={!!streaming && i === lastPartIdx}
-          />
-        ))}
+        {units.map((unit) =>
+          unit.kind === 'toolGroup' ? (
+            unit.group === 'bash' ? (
+              <BashCommandGroupCard key={`bash-${unit.startIndex}`} parts={unit.parts} />
+            ) : (
+              <FileToolGroupCard key={`${unit.group}-${unit.startIndex}`} kind={unit.group} parts={unit.parts} />
+            )
+          ) : (
+            <PartRenderer
+              key={unit.index}
+              part={unit.part}
+              // reasoning 自动展开：是最后一个 reasoning + 后面还没有正文
+              autoExpandReasoning={unit.index === lastReasoningIdx && !hasTextAfterLastReasoning}
+              streaming={!!streaming && unit.index === lastPartIdx}
+            />
+          ),
+        )}
       </div>
       <MessageFooter info={info} time={time} streaming={streaming} />
     </div>
@@ -144,6 +162,7 @@ function collectUserText(parts: MessagePart[]): string {
  *   - turn 结束 → 重拉消息之间有短暂窗口缺 completed，用最后一次跳动值冻结过渡
  */
 function MessageFooter({ info, time, streaming }: { info: ZCodeMessage['info']; time: string; streaming?: boolean }) {
+  const { t } = useTranslation()
   const tokens = info.tokens
   const model = info.modelID
 
@@ -170,13 +189,13 @@ function MessageFooter({ info, time, streaming }: { info: ZCodeMessage['info']; 
       {model && <span className="msg__footer-model">{model}</span>}
       {durationMs != null && (
         <span className={`msg__footer-duration${working ? ' msg__footer-duration--working' : ''}`}>
-          ⏱ {working ? '工作中' : '已工作'} {formatDuration(durationMs)}
+          ⏱ {working ? t('chat.message.working') : t('chat.message.worked')} {formatDuration(durationMs)}
         </span>
       )}
       {tokens && (
         <span className="msg__footer-tokens">
           💡 {tokens.input.toLocaleString()} in / {tokens.output.toLocaleString()} out
-          {tokens.cache?.read ? ` · 缓存 ${Math.round((tokens.cache.read / tokens.input) * 100)}%` : ''}
+          {tokens.cache?.read ? ` · ${t('chat.message.cachePercent', { percent: Math.round((tokens.cache.read / tokens.input) * 100) })}` : ''}
         </span>
       )}
       {info.cost ? <span className="msg__footer-cost">${info.cost.toFixed(4)}</span> : null}
