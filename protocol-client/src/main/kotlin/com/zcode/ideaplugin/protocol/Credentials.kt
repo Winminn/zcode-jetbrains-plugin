@@ -7,6 +7,7 @@ import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import java.nio.file.Path
 import kotlin.io.path.exists
+import kotlin.io.path.isRegularFile
 import kotlin.io.path.readText
 
 /**
@@ -67,20 +68,66 @@ object Credentials {
         throw IllegalStateException("config.json 没有找到 enabled 的 anthropic provider")
     }
 
-    /** 默认配置路径：~/.zcode/v2/config.json */
-    fun defaultConfigPath(): Path {
-        val home = System.getProperty("user.home")
-        return Path.of(home, ".zcode", "v2", "config.json")
+    /**
+     * 默认配置路径：~/.zcode/v2/config.json。
+     *
+     * ZCode 客户端支持配置数据目录（setting.json 的 dataBaseDir）：配置后凭证等 v2
+     * 数据只在新位置演进（GUI 写入流整体切换，旧位置冻结为拷贝快照），插件读取须
+     * 跟随最新指向。实测入口 setting.json 恒在 user home 不随迁移（两次迁移验证），
+     * 故从它探测总能拿到当前 dataBaseDir；新位置文件缺失（迁移中途/异常）回退
+     * 旧位置，保证探测失败不误伤默认场景。
+     */
+    fun defaultConfigPath(): Path = configPathFor(System.getProperty("user.home"))
+
+    /** 同 [defaultConfigPath]，home 参数化便于单测（真实 home 无法在测试内替换） */
+    internal fun configPathFor(home: String): Path {
+        val legacy = Path.of(home, ".zcode", "v2", "config.json")
+        val redirected = readDataBaseDir(home)?.let { Path.of(it, ".zcode", "v2", "config.json") }
+        return if (redirected?.isRegularFile() == true) redirected else legacy
+    }
+
+    /** 读 setting.json 的 dataBaseDir；未配置/文件缺失/解析失败均返回 null（按未配置处理） */
+    private fun readDataBaseDir(home: String): String? {
+        return try {
+            val setting = Path.of(home, ".zcode", "v2", "setting.json")
+            if (!setting.isRegularFile()) return null
+            val dir = json.parseToJsonElement(setting.readText()).jsonObject["dataBaseDir"]
+                ?.jsonPrimitive?.content?.trim()
+            dir?.takeIf { it.isNotEmpty() }
+        } catch (e: Exception) {
+            // setting.json 是 GUI 高频写文件，可能撞上写一半的瞬间；失败即回退旧位置
+            null
+        }
     }
 }
 
-/** 默认的 zcode.cjs 路径（Windows 标准 Electron 安装位置） */
+/** 默认的 zcode.cjs 路径（按操作系统探测标准 Electron 安装位置） */
 object ZCodeLocator {
-    /** 标准 Windows 安装路径 */
-    fun windowsDefault(): Path = Path.of(
-        System.getenv("LOCALAPPDATA") ?: "C:\\Users\\Public",
-        "Programs", "ZCode", "resources", "glm", "zcode.cjs"
-    )
+
+    private val GLM_SUFFIX = arrayOf("resources", "glm", "zcode.cjs")
+
+    /**
+     * Windows 候选安装路径（按命中概率排序）：
+     * - %LOCALAPPDATA%\Programs\ZCode\... — NSIS 单用户安装（默认）
+     * - %ProgramFiles%\ZCode\... — NSIS 全局安装（all users，64 位）
+     * - %ProgramFiles(x86)%\ZCode\... — 全局安装 32 位兜底
+     *
+     * Electron app 的 resources/glm/zcode.cjs 路径结构三处一致，仅安装根不同；
+     * 用环境变量而非硬编码盘符，系统盘非 C: 也覆盖。
+     */
+    fun windowsCandidates(): List<Path> {
+        val localAppData = System.getenv("LOCALAPPDATA") ?: "C:\\Users\\Public"
+        val programFiles = System.getenv("ProgramFiles") ?: "C:\\Program Files"
+        val programFilesX86 = System.getenv("ProgramFiles(x86)") ?: "C:\\Program Files (x86)"
+        return listOf(
+            Path.of(localAppData, "Programs", "ZCode", *GLM_SUFFIX),
+            Path.of(programFiles, "ZCode", *GLM_SUFFIX),
+            Path.of(programFilesX86, "ZCode", *GLM_SUFFIX),
+        )
+    }
+
+    /** 标准 Windows 安装路径（向后兼容，返回首个候选） */
+    fun windowsDefault(): Path = windowsCandidates().first()
 
     /** 标准 macOS 安装路径 */
     fun macDefault(): Path = Path.of(
@@ -92,17 +139,30 @@ object ZCodeLocator {
         "/opt/ZCode/app/resources/glm/zcode.cjs"
     )
 
-    /** 自动按操作系统探测 */
+    /**
+     * 自动按操作系统探测：Windows 遍历全部候选取首个存在，其余系统单路径。
+     * 仅做文件存在性检查（[Path.exists]，微秒级），不 spawn 子进程。
+     */
     fun detect(): Path {
         val os = System.getProperty("os.name").lowercase()
-        val candidate = when {
-            os.contains("win") -> windowsDefault()
-            os.contains("mac") || os.contains("darwin") -> macDefault()
-            else -> linuxDefault()
+        return when {
+            os.contains("win") -> {
+                val hit = windowsCandidates().firstOrNull { it.exists() }
+                requireNotNull(hit) {
+                    "ZCode CLI 未找到，已检查：${windowsCandidates().joinToString("、")}"
+                }
+                hit
+            }
+            os.contains("mac") || os.contains("darwin") -> {
+                val p = macDefault()
+                require(p.exists()) { "ZCode CLI 未找到：$p（请确认 ZCode 已安装）" }
+                p
+            }
+            else -> {
+                val p = linuxDefault()
+                require(p.exists()) { "ZCode CLI 未找到：$p（请确认 ZCode 已安装）" }
+                p
+            }
         }
-        require(candidate.exists()) {
-            "ZCode CLI 未找到：$candidate（请确认 ZCode 已安装）"
-        }
-        return candidate
     }
 }

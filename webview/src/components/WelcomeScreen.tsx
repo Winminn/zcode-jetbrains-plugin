@@ -4,10 +4,11 @@
  * 动效（见 welcome.less）：Logo 弹性入场/悬浮/扫光/光圈扩散、徽章滑入/辉光呼吸、提示语逐字打字机 + 光标
  */
 
+import { useTranslation } from 'react-i18next'
 import { ZaiIcon } from './ZaiIcon'
 import '../styles/welcome.less'
 
-const APP_VERSION = '0.1.0'
+const APP_VERSION = '0.2.0'
 
 /**
  * 逐字打字机入场：把文本拆成 span，按序号递增 animation-delay
@@ -29,7 +30,8 @@ function StaggeredText({ text, startDelay = 0, step = 0.05 }: { text: string; st
   )
 }
 
-export function WelcomeScreen({ noSession = false }: { noSession?: boolean }) {
+export function WelcomeScreen() {
+  const { t } = useTranslation()
   return (
     <div className="welcome">
       <div className="welcome__logo-wrapper">
@@ -42,20 +44,12 @@ export function WelcomeScreen({ noSession = false }: { noSession?: boolean }) {
           {/* 扫光高光条 */}
           <span className="welcome__logo-shine" />
         </div>
-        <span className="welcome__version-tag" title="ZCode 版本">v{APP_VERSION}</span>
+        <span className="welcome__version-tag" title={t('chat.welcome.version')}>v{APP_VERSION}</span>
       </div>
       <div className="welcome__hint">
-        {noSession ? (
-          <>
-            <span className="welcome__hint-icon">+</span>
-            <StaggeredText text="请点击右上方 + 号新建会话" startDelay={0.9} />
-          </>
-        ) : (
-          <>
-            <StaggeredText text="给 ZCode 发送消息" startDelay={0.9} />
-            <span className="welcome__hint-caret" />
-          </>
-        )}
+        {/* 无会话（懒创建待命态）与空会话一致：直接输入即开始对话（首条消息触发建会话） */}
+        <StaggeredText text={t('chat.welcome.sendMsg')} startDelay={0.9} />
+        <span className="welcome__hint-caret" />
       </div>
     </div>
   )

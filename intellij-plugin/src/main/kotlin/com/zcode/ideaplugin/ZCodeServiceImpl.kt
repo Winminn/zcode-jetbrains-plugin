@@ -5,7 +5,9 @@ import com.intellij.openapi.components.service
 import com.intellij.openapi.project.Project
 import com.zcode.ideaplugin.protocol.ZCodeProtocolClient
 import com.zcode.ideaplugin.ui.ZCodeToolWindowPanel
+import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.jsonPrimitive
@@ -22,7 +24,7 @@ import kotlin.concurrent.withLock
  * 用 @Service 注解（现代方式），不在 plugin.xml 里声明。
  */
 @Service(Service.Level.PROJECT)
-class ZCodeServiceImpl(private val project: Project) : ZCodeService {
+class ZCodeServiceImpl(private val project: Project) : ZCodeService, com.intellij.openapi.Disposable {
 
     private val log = com.intellij.openapi.diagnostic.Logger.getInstance("ZCodePlugin")
 
@@ -37,6 +39,14 @@ class ZCodeServiceImpl(private val project: Project) : ZCodeService {
     /** 当前激活面板（标签切换时更新；外部推送与 askUser fallback 的目标）*/
     @Volatile
     private var activePanel: ZCodeToolWindowPanel? = null
+
+    // ============ 全局共享内嵌浏览器（跨会话标签，协议单一 idea-iab）============
+    @Volatile
+    private var sharedBrowserPanel: com.zcode.ideaplugin.ui.ZCodeBrowserPanel? = null
+
+    /** 浏览器当前挂载（分栏展开）的面板；收起时保留 owner（实例与页面常驻）*/
+    @Volatile
+    private var embeddedBrowserOwner: ZCodeToolWindowPanel? = null
 
     // ============ AskUserQuestion / ExitPlanMode 协调（跨标签共享）============
     // 协议客户端的 userInputRequestHandler 是单例，必须全局只注册一次。
@@ -60,7 +70,14 @@ class ZCodeServiceImpl(private val project: Project) : ZCodeService {
         client?.let { if (it.isAlive()) return it }
         return lock.withLock {
             client?.let { if (it.isAlive()) return it }
-            val newClient = ZCodeProtocolClient.start()
+            // 环境三件套（node/zcode.cjs/凭证）由 EnvChecker 解析：配置路径优先 → 自动探测；
+            // 失败抛 EnvCheckException（带 EnvStatus），Panel 层转成前端可识别的环境错误
+            val env = com.zcode.ideaplugin.env.ZCodeEnvChecker.resolveForStart()
+            val newClient = ZCodeProtocolClient.start(
+                zcodePath = env.zcodePath,
+                credentials = env.credentials,
+                nodePath = env.nodePath,
+            )
             client = newClient
             newClient
         }
@@ -91,6 +108,43 @@ class ZCodeServiceImpl(private val project: Project) : ZCodeService {
         activePanel = panel
     }
 
+    override fun getActivePanel(): ZCodeToolWindowPanel? = activePanel
+
+    override fun getSharedBrowserPanel(): com.zcode.ideaplugin.ui.ZCodeBrowserPanel? = sharedBrowserPanel
+
+    override fun getOrCreateSharedBrowserPanel(): com.zcode.ideaplugin.ui.ZCodeBrowserPanel? {
+        sharedBrowserPanel?.let { return it }
+        return synchronized(this) {
+            sharedBrowserPanel?.let { return it }
+            // 收起按钮作用于「当前挂载 owner」——闭包读实时状态，跨标签迁移后仍然正确
+            val panel = com.zcode.ideaplugin.ui.ZCodeBrowserPanel(project, onClose = {
+                embeddedBrowserOwner?.hideEmbeddedBrowser()
+            })
+            sharedBrowserPanel = panel
+            log.info("[browser-use] 全局共享浏览器面板已创建（跨会话标签）")
+            panel
+        }
+    }
+
+    override fun getEmbeddedBrowserOwner(): ZCodeToolWindowPanel? = embeddedBrowserOwner
+
+    override fun setEmbeddedBrowserOwner(panel: ZCodeToolWindowPanel?) {
+        embeddedBrowserOwner = panel
+    }
+
+    override fun dispose() {
+        // 项目级服务销毁：释放共享浏览器实例（所有标签共用这一个）
+        sharedBrowserPanel?.let {
+            try {
+                com.intellij.openapi.util.Disposer.dispose(it)
+            } catch (e: Exception) {
+                log.warn("释放共享浏览器面板失败: ${e.message}")
+            }
+        }
+        sharedBrowserPanel = null
+        embeddedBrowserOwner = null
+    }
+
     override fun findPanelForSession(sessionId: String): ZCodeToolWindowPanel? =
         panels.firstOrNull { it.isSubscribedTo(sessionId) }
 
@@ -114,6 +168,31 @@ class ZCodeServiceImpl(private val project: Project) : ZCodeService {
             log.info("[askUser] userInputRequestHandler 已在 Service 层注册（多标签共享）")
         }
     }
+
+    // ============ browser-use 宿主执行器（AI 浏览器工具 → JCEF 面板）============
+
+    @Volatile
+    private var browserExecutor: com.zcode.ideaplugin.ui.ZCodeBrowserExecutor? = null
+
+    @Volatile
+    private var browserHandlerRegistered = false
+    private val browserHandlerLock = Any()
+
+    override fun ensureBrowserExecutor() {
+        if (browserHandlerRegistered) return
+        synchronized(browserHandlerLock) {
+            if (browserHandlerRegistered) return
+            val executor = com.zcode.ideaplugin.ui.ZCodeBrowserExecutor(project)
+            browserExecutor = executor
+            val c = getClient()
+            c.browserListHandler = { executor.listBrowsers() }
+            c.browserExecuteHandler = { params -> executor.execute(params) }
+            browserHandlerRegistered = true
+            log.info("[browser-use] 宿主 handler 已注册（interaction/browserList + browserExecute）")
+        }
+    }
+
+    override fun getBrowserExecutor(): com.zcode.ideaplugin.ui.ZCodeBrowserExecutor? = browserExecutor
 
     /**
      * 收到 interaction/requestUserInput：解析问题、推弹窗到目标面板、阻塞等用户应答。
@@ -195,7 +274,12 @@ class ZCodeServiceImpl(private val project: Project) : ZCodeService {
         }
     }
 
-    override fun completeUserInput(requestId: String, action: String, answer: String?): JsonObject {
+    override fun completeUserInput(
+        requestId: String,
+        action: String,
+        answer: JsonElement?,
+        answers: JsonObject?,
+    ): JsonObject {
         val pending = pendingUserInputs.remove(requestId)
             ?: return buildJsonObject {
                 put("op", "error")
@@ -204,23 +288,36 @@ class ZCodeServiceImpl(private val project: Project) : ZCodeService {
         val future = pending.future
 
         // 构建应答 result（格式：interaction/requestUserInput 的 result）
-        // ExitPlanMode 审批的 accept：answer 必须是小写 "approve"（zcode.cjs 常量，严格相等比较），
-        // 大写或其他值都会被判为"反馈式拒绝"。这里强制归一化兜底（批准按钮语义唯一）。
+        // ExitPlanMode 审批的 answer 语义（zcode.cjs 常量，严格相等比较）：
+        // - 小写 "approve" = 批准退出计划模式
+        // - 有值但 ≠ "approve" = 反馈式拒绝：AI 留在计划模式按意见文本继续修改
+        //   （审批弹窗「继续规划」按钮的通道）
+        // - 空 = 兜底按批准处理（保持旧行为，防 undefined 误判）
         val isPlanApproval = pending.contentKey.startsWith("ExitPlanMode|")
-        val normalizedAnswer = if (isPlanApproval && action != "decline" && action != "cancel") {
-            "approve"
+        val normalizedAnswer = if (isPlanApproval && action != "decline" && action != "cancel"
+            && (answer == null || (answer is JsonPrimitive && answer.contentOrNull.isNullOrBlank()))
+        ) {
+            JsonPrimitive("approve")
         } else {
-            answer // optionId 或自由文本
+            answer // "approve"、意见文本、optionId 或自由文本，原样透传
         }
 
         val result = if (action == "decline" || action == "cancel") {
             buildJsonObject { put("action", "decline") }
         } else {
-            // accept + content.answer = 用户选择的 optionId 或自由文本
+            // accept + content：AskUserQuestion 答案（zcode.cjs normalizeAskUserQuestionAnswers）
+            // - 多问题：content.answers = {问题文本: 值}（按问题文本回填，丢 key 即答案全失）
+            // - 单问题：content.answer = 原始值（字符串 trim；数组服务端 join(", ") 后回填）。
+            //   旧版把答案整体 JSON.stringify 成字符串塞 answer——多问题场景服务端匹配不到
+            //   任何 key，answers 丢失（AI 认为用户没选）；数组也被当作字面量字符串
             buildJsonObject {
                 put("action", "accept")
                 put("content", buildJsonObject {
-                    put("answer", normalizedAnswer ?: "")
+                    if (answers != null && !answers.isEmpty()) {
+                        put("answers", answers)
+                    } else {
+                        put("answer", normalizedAnswer ?: JsonPrimitive(""))
+                    }
                 })
             }
         }
