@@ -7,6 +7,7 @@
  * - @文件引用（FileRef chip + 补全下拉）
  * - /斜杠命令技能选择（行首 / 触发，磁盘扫描 skill/command）
  * - 输入历史导航（useInputHistory：空输入 ArrowUp 回溯、ArrowDown 前进）
+ * - 历史前缀幽灵补全（findHistorySuggestion：输入匹配历史前缀显示灰色后缀，Tab 采纳/Esc 关闭）
  * - 发送/停止 28×28 互斥（isStreaming ? codicon-debug-stop : codicon-send）
  * - 排队消息列表（卡片顶部，MessageQueue 组件：序号+预览+立即发送+删除）
  * - 引用 chips 区（技能+文件，对齐 cc-gui：MessageQueue 之下、ContextBar 之上，不贴输入框）
@@ -21,8 +22,9 @@
  */
 
 import { useEffect, useRef, useState, useCallback } from 'react'
+import { useTranslation } from 'react-i18next'
 import { useKeyboard } from '@/hooks/useKeyboard'
-import { useInputHistory } from '@/hooks/useInputHistory'
+import { useInputHistory, findHistorySuggestion } from '@/hooks/useInputHistory'
 import { useStore } from '@/store/useStore'
 import { FileRef } from './FileRef'
 import { SkillRef } from './SkillRef'
@@ -66,12 +68,13 @@ interface Props {
 }
 
 export function InputBox({ onSend, isStreaming = false, onStop, disabled = false, placeholder, currentModel, onModelSelect }: Props) {
+  const { t } = useTranslation()
   const editorRef = useRef<HTMLDivElement>(null)
   const wrapperRef = useRef<HTMLDivElement>(null)
   /** 当前 tooltip 宿主的内联 chip（删除 chip 后清理残留 tooltip 用）*/
   const tipChipRef = useRef<HTMLElement | null>(null)
   const [fileRefs, setFileRefs] = useState<string[]>([])
-  const [skillRefs, setSkillRefs] = useState<string[]>([])
+  const [skillRefs, setSkillRefs] = useState<SlashCommand[]>([])
   /** 折叠的粘贴长文本（≥10 行或 ≥500 字符），发送时拼到正文末尾 */
   const [pastedTexts, setPastedTexts] = useState<PastedTextItem[]>([])
   /** 正在预览的粘贴文本 id（null = 弹窗关闭）*/
@@ -92,6 +95,9 @@ export function InputBox({ onSend, isStreaming = false, onStop, disabled = false
   /** 首次加载缓存（会话切换不重复请求磁盘）*/
   const slashCacheRef = useRef<SlashCommand[] | null>(null)
 
+  /** 历史前缀幽灵补全后缀（cc-gui data-completion-suffix 同款，Tab 采纳）*/
+  const [ghostSuffix, setGhostSuffix] = useState('')
+
   const { handleKeyDown, handleCompositionEnd } = useKeyboard({
     onSend: doSend,
     // streaming 中不禁用：Enter 走 sendMessage 入队（回合结束自动发送）
@@ -107,10 +113,11 @@ export function InputBox({ onSend, isStreaming = false, onStop, disabled = false
     if (!el) return
     el.innerText = text
     setHasText(!!text.trim())
-    // 回填不算输入行为，直接关闭 @ / / 补全
+    // 回填不算输入行为，直接关闭 @ / / 补全与幽灵建议（程序赋值不触发 onInput）
     setMentionQuery(null)
     setMentionFiles([])
     setSlashQuery(null)
+    setGhostSuffix('')
     // 历史文本里的 @绝对路径 回显为内联 chip（includeTrailing：回填内容已完整）
     convertCompletedPaths(el, true)
     placeCursorEnd(el)
@@ -121,10 +128,11 @@ export function InputBox({ onSend, isStreaming = false, onStop, disabled = false
     setText: setTextFromHistory,
   })
 
-  // 历史跨会话共享（localStorage），切会话仅重置导航位置
+  // 历史跨会话共享（persist 通道），切会话仅重置导航位置
   const sessionId = useStore((s) => s.currentSessionId)
   useEffect(() => {
     resetNav()
+    setGhostSuffix('')
   }, [sessionId, resetNav])
 
   // ============ 发送 ============
@@ -139,7 +147,7 @@ export function InputBox({ onSend, isStreaming = false, onStop, disabled = false
     // 折叠的粘贴文本按粘贴顺序拼到正文末尾（CLI 收到完整原文）
     const parts: string[] = []
     if (skillRefs.length > 0) {
-      parts.push(skillRefs.map((s) => `/${s}`).join(' '))
+      parts.push(skillRefs.map((s) => `/${s.name}`).join(' '))
     }
     if (fileRefs.length > 0) {
       parts.push(fileRefs.map((f) => `@${f}`).join(' '))
@@ -165,6 +173,7 @@ export function InputBox({ onSend, isStreaming = false, onStop, disabled = false
       editorRef.current.textContent = ''
       setHasText(false)
     }
+    setGhostSuffix('')
   }
 
   /** 队列消息回填输入框（编辑）：非空时换行追加，光标移到末尾并聚焦 */
@@ -208,32 +217,57 @@ export function InputBox({ onSend, isStreaming = false, onStop, disabled = false
     }
 
     // 检测 / 斜杠命令（行首），命中时 @ 不触发（互斥）
-    if (!checkSlashTrigger(el)) {
-      checkMentionTrigger(el)
-    }
+    const slashOpen = checkSlashTrigger(el)
+    const mentionOpen = !slashOpen && checkMentionTrigger(el)
+    // 历史前缀幽灵建议（@ / / 补全打开时不显示，方向键归下拉）
+    updateGhostSuggestion(el, slashOpen, mentionOpen)
   }, [])
 
   /**
-   * 粘贴处理：
+   * 粘贴处理（一律以纯文本落地，杜绝富文本样式污染）：
    *   超阈值（≥PASTE_COLLAPSE_LINES 行或 ≥PASTE_COLLAPSE_CHARS 字符）→ 阻止默认粘贴，
    *   折叠为顶部 chip（点击预览），避免长文本撑爆输入框；
-   *   未超阈值 → 走默认粘贴，落地后扫描完整路径转内联 chip（末尾路径也算完成）
+   *   未超阈值 → 同样阻止默认粘贴（contenteditable 默认会解析剪贴板 text/html，
+   *   网页/Word 复制的颜色、字号等内联样式会原样落进编辑器），改 execCommand
+   *   以纯文本插入光标处（Chromium 把 \n 落地为 <br>，与 serializeEditor 对齐，
+   *   且保留 undo 撤销栈），落地后扫描完整路径转内联 chip（末尾路径也算完成）
    */
   const handlePaste = useCallback((e: React.ClipboardEvent) => {
     const pasted = e.clipboardData.getData('text/plain')
-    if (pasted) {
-      const lines = pasted.split('\n').length
-      if (lines >= PASTE_COLLAPSE_LINES || pasted.length >= PASTE_COLLAPSE_CHARS) {
-        e.preventDefault()
-        setPastedTexts((prev) => [
-          ...prev,
-          {
-            id: `paste_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
-            text: pasted,
-            chars: pasted.length,
-          },
-        ])
-        return
+    if (!pasted) return // 无纯文本（如纯图片复制）时不干预默认行为
+    e.preventDefault()
+    const lines = pasted.split('\n').length
+    if (lines >= PASTE_COLLAPSE_LINES || pasted.length >= PASTE_COLLAPSE_CHARS) {
+      setPastedTexts((prev) => [
+        ...prev,
+        {
+          id: `paste_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+          text: pasted,
+          chars: pasted.length,
+        },
+      ])
+      return
+    }
+    if (!document.execCommand('insertText', false, pasted)) {
+      // 兜底：execCommand 失效（极罕见）时手动插纯文本节点，宁可绕过 undo 也不丢粘贴
+      const el = editorRef.current
+      const sel = window.getSelection()
+      if (el && sel && sel.rangeCount > 0 && el.contains(sel.anchorNode)) {
+        const range = sel.getRangeAt(0)
+        range.deleteContents()
+        const frag = document.createDocumentFragment()
+        pasted.split('\n').forEach((seg, i) => {
+          if (i > 0) frag.appendChild(document.createElement('br'))
+          if (seg) frag.appendChild(document.createTextNode(seg))
+        })
+        const last = frag.lastChild
+        range.insertNode(frag)
+        if (last) {
+          range.setStartAfter(last)
+          range.collapse(true)
+          sel.removeAllRanges()
+          sel.addRange(range)
+        }
       }
     }
     setTimeout(() => {
@@ -339,20 +373,62 @@ export function InputBox({ onSend, isStreaming = false, onStop, disabled = false
     return () => window.removeEventListener('keydown', onKey)
   }, [previewPasteId])
 
-  /** 检测光标前是否有未完成的 @xxx，触发文件补全（textBeforeCaret 跳过内联 chip）*/
-  function checkMentionTrigger(el: HTMLDivElement) {
+  /** 检测光标前是否有未完成的 @xxx，触发文件补全（textBeforeCaret 跳过内联 chip）；返回是否命中 */
+  function checkMentionTrigger(el: HTMLDivElement): boolean {
     const sel = window.getSelection()
-    if (!sel || sel.rangeCount === 0) return
+    if (!sel || sel.rangeCount === 0) return false
     const beforeCursor = textBeforeCaret(el, sel.getRangeAt(0))
     const atMatch = beforeCursor.match(/@([^\s@]*)$/)
     if (atMatch) {
       const query = atMatch[1]
       setMentionQuery(query)
       requestFiles(query)
-    } else {
-      setMentionQuery(null)
-      setMentionFiles([])
+      return true
     }
+    setMentionQuery(null)
+    setMentionFiles([])
+    return false
+  }
+
+  /**
+   * 光标是否在编辑器内容末尾（幽灵建议只在末尾输入时显示，中间编辑不提示）。
+   * 不能用 compareBoundaryPoints 与 selectNodeContents(el) 的末 range 比较：
+   * 打字后光标在文本节点内 (text, len)，而容器末 range 是 (el, childNodes.length)，
+   * DOM 边界点比较对这两个等价位置返回 -1 而非 0，导致恒判 false。
+   * 改判：光标 offset 在其所在节点末尾，且该节点在 el 的 lastChild 链上（或就是 el）。
+   */
+  function isCaretAtEnd(el: HTMLDivElement): boolean {
+    const sel = window.getSelection()
+    if (!sel || sel.rangeCount === 0) return false
+    const node = sel.focusNode
+    if (!node || !el.contains(node)) return false
+    const endOffset =
+      node.nodeType === Node.TEXT_NODE ? (node.textContent ?? '').length : node.childNodes.length
+    if (sel.focusOffset !== endOffset) return false
+    let cur: Node | null = node
+    while (cur && cur !== el) {
+      const parent: Node | null = cur.parentNode
+      if (!parent || parent.lastChild !== cur) return false
+      cur = parent
+    }
+    return cur === el
+  }
+
+  /**
+   * 历史前缀幽灵建议（cc-gui useInlineHistoryCompletion 简化版）：
+   * 单行、≥2 字符、光标在末尾、@ / / 补全未打开时，从输入历史找前缀匹配，
+   * 命中则把建议的剩余部分作为灰色后缀显示（data-completion-suffix，Tab 采纳）。
+   * 内存数组 ≤200 条同步扫描，无需防抖。
+   */
+  function updateGhostSuggestion(el: HTMLDivElement, slashOpen: boolean, mentionOpen: boolean) {
+    const text = el.innerText.replace(/\n$/, '')
+    if (slashOpen || mentionOpen || text.length < 2 || text.includes('\n') || !isCaretAtEnd(el)) {
+      setGhostSuffix('')
+      return
+    }
+    const suggestion = findHistorySuggestion(text)
+    // 后缀取建议文本去掉已输入前缀的剩余部分（保留用户实际输入的大小写）
+    setGhostSuffix(suggestion ? suggestion.slice(text.length) : '')
   }
 
   /** 请求文件列表（防抖）*/
@@ -482,7 +558,7 @@ export function InputBox({ onSend, isStreaming = false, onStop, disabled = false
   /** 选中命令：把技能名加到 SkillRef chip 列表 + 清除输入框里的 /xxx 文本 */
   function selectSlash(item: SlashCommand) {
     // 先加 chip（确保 UI 更新不受 DOM 操作异常影响）
-    setSkillRefs((prev) => (prev.includes(item.name) ? prev : [...prev, item.name]))
+    setSkillRefs((prev) => (prev.some((x) => x.name === item.name) ? prev : [...prev, item]))
     setSlashQuery(null)
 
     // 再清除输入框里的 /xxx 文本（容错：失败不影响 chip）
@@ -647,6 +723,20 @@ export function InputBox({ onSend, isStreaming = false, onStop, disabled = false
         return
       }
     }
+    // 历史前缀幽灵建议：Tab 采纳 / Escape 关闭（IME 合成中按键留给输入法）
+    if (!e.nativeEvent.isComposing && ghostSuffix) {
+      if (e.key === 'Tab') {
+        e.preventDefault()
+        const el = editorRef.current
+        if (el) setTextFromHistory(el.innerText.replace(/\n$/, '') + ghostSuffix)
+        return
+      }
+      if (e.key === 'Escape') {
+        e.preventDefault()
+        setGhostSuffix('')
+        return
+      }
+    }
     // 历史导航（补全关闭时）：空输入 ArrowUp 回溯 / 导航中 ArrowDown 前进
     if (handleHistoryKeyDown(e)) return
     // 正常的 IME 安全发送
@@ -660,7 +750,7 @@ export function InputBox({ onSend, isStreaming = false, onStop, disabled = false
   return (
     <div className="input-area">
       {/* 拖拽调高手柄（顶部细条，向上拖增大）*/}
-      <div className="input-box__resize-handle" onMouseDown={handleResizeStart} title="拖拽调整高度" />
+      <div className="input-box__resize-handle" onMouseDown={handleResizeStart} title={t('input.resizeHandle')} />
       <div className="chat-input-box">
         {/* 排队消息（streaming 中 Enter 入队的，回合结束自动发送）*/}
         <MessageQueue onEdit={editQueuedToInput} />
@@ -670,17 +760,15 @@ export function InputBox({ onSend, isStreaming = false, onStop, disabled = false
             不贴输入框 */}
         {(skillRefs.length > 0 || fileRefs.length > 0 || pastedTexts.length > 0) && (
           <div className="input-box__refs">
-            {skillRefs.map((s) => {
-              const desc = slashCacheRef.current?.find((c) => c.name === s)?.description
-              return (
-                <SkillRef
-                  key={s}
-                  name={s}
-                  description={desc}
-                  onRemove={() => setSkillRefs((prev) => prev.filter((x) => x !== s))}
-                />
-              )
-            })}
+            {skillRefs.map((s) => (
+              <SkillRef
+                key={`${s.kind}:${s.name}`}
+                name={s.name}
+                kind={s.kind}
+                description={s.description}
+                onRemove={() => setSkillRefs((prev) => prev.filter((x) => x.name !== s.name))}
+              />
+            ))}
             {fileRefs.map((f) => (
               <FileRef
                 key={f}
@@ -705,7 +793,7 @@ export function InputBox({ onSend, isStreaming = false, onStop, disabled = false
             className="context-tool-btn"
             onClick={() => sendToJava({ op: 'pickFiles' })}
             disabled={disabled}
-            title="添加附件（选择文件）"
+            title={t('input.attach')}
           >
             <span className="codicon codicon-attach" />
           </button>
@@ -724,9 +812,10 @@ export function InputBox({ onSend, isStreaming = false, onStop, disabled = false
             suppressContentEditableWarning
             data-placeholder={
               isStreaming
-                ? '回复生成中，Enter 加入发送队列…'
-                : placeholder || '@引用文件，/ 调用技能，Enter 发送'
+                ? t('input.placeholderStreaming')
+                : placeholder || t('input.placeholder')
             }
+            data-completion-suffix={ghostSuffix || undefined}
             onInput={handleInput}
             onKeyDown={handleEditorKeyDown}
             onCompositionEnd={handleCompositionEnd}
@@ -754,7 +843,7 @@ export function InputBox({ onSend, isStreaming = false, onStop, disabled = false
               <button
                 className="submit-button stop-button"
                 onClick={onStop}
-                title="停止生成"
+                title={t('input.stop')}
                 disabled={disabled}
               >
                 <span className="codicon codicon-debug-stop" />
@@ -764,7 +853,7 @@ export function InputBox({ onSend, isStreaming = false, onStop, disabled = false
                 className="submit-button"
                 onClick={doSend}
                 disabled={!canSend}
-                title="发送 (Enter)"
+                title={t('input.send')}
               >
                 <span className="codicon codicon-send" />
               </button>
