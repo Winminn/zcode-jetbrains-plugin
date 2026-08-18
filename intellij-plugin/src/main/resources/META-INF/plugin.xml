@@ -1,20 +1,37 @@
+<!-- 插件列表图标：平台约定路径 META-INF/pluginIcon.svg（+ pluginIcon_dark.svg），
+     <idea-plugin> 无 icon 属性，放 /icons/ 下不生效；ToolWindow 图标走 ZCodeIcons.Zai -->
 <idea-plugin>
     <id>com.zcode.ideaplugin.zcode-assistant</id>
     <name>ZC GUI</name>
-    <vendor email="zcode-assistant@example.com" url="https://github.com/zcode-assistant">ZC GUI</vendor>
+    <vendor email="csuftt@users.noreply.github.com" url="https://github.com/csuftt/zcode-jetbrains-plugin">ZC GUI</vendor>
 
     <description><![CDATA[
         <h3>ZC GUI</h3>
-        在 IDEA 里管理 ZCode 会话：列表、查看历史、对话、流式输出。
-        <br/><br/>
-        基于 ZCode Protocol（app-server）实现，协议客户端独立可测。
+        <p><b>Manage ZCode sessions right inside the IDE</b> — list sessions, browse history, chat, and stream responses, powered by the ZCode Protocol (app-server) with an independently testable protocol client.</p>
+        <ul>
+            <li>Session list &amp; history browsing</li>
+            <li>Chat with streaming output</li>
+            <li>Embedded JCEF browser (browser-use host)</li>
+            <li>Send file / selection to input from context menu</li>
+            <li>Model management with provider enable/disable</li>
+        </ul>
+        <h3>ZC GUI（中文）</h3>
+        <p>在 IDEA 里管理 ZCode 会话：列表、查看历史、对话、流式输出，基于 ZCode Protocol（app-server）实现，协议客户端独立可测。</p>
     ]]></description>
 
     <!-- 兼容的 IDE 版本范围：2024.1+ 全支持（含 2026.x EAP/正式版） -->
-    <idea-version since-build="241" until-build="261.*"/>
+    <idea-version since-build="241" until-build="263.*"/>
 
-    <!-- 依赖 JCEF（嵌入式 Chromium，用于渲染 React UI） -->
+    <!-- 依赖 JCEF（嵌入式 Chromium，用于渲染 React UI）。
+         2026.2 起 JCEF API 从平台核心剥离为独立捆绑插件 com.intellij.modules.jcef，
+         不显式声明依赖会触发 NoClassDefFoundError: JBCefJSQuery$Response。
+         声明为可选依赖：2026.2+ 上要求该插件存在（缺失则不安装）；
+         2026.1 及以下该插件 ID 不存在（JCEF 仍在平台核心），可选配置被忽略不影响加载。 -->
     <depends>com.intellij.modules.platform</depends>
+    <depends optional="true" config-file="jcef-dependency.xml">com.intellij.modules.jcef</depends>
+
+    <!-- 原生 UI 文案 bundle（messages/ZCodeBundle*.properties，默认中文 + en/ja/ko） -->
+    <resource-bundle>messages.ZCodeBundle</resource-bundle>
 
     <extensions defaultExtensionNs="com.intellij">
         <!-- 注册 ToolWindow（右侧工具栏）；canCloseContents 开启多标签关闭按钮（cc-gui 同款） -->
@@ -24,25 +41,31 @@
                     icon="com.zcode.ideaplugin.ZCodeIcons.Zai"
                     secondary="false"
                     canCloseContents="true"/>
+        <!-- 编辑器右键动作的气泡通知（复制AI引用结果反馈） -->
+        <notificationGroup id="ZCode" displayType="BALLOON"/>
     </extensions>
 
     <actions>
-        <!-- 右键发送文件/选中代码到输入框（对齐 cc-gui SendFilePathToInputAction / SendSelectionToTerminalAction） -->
+        <!-- 右键发送文件/选中代码到输入框（对齐 cc-gui SendFilePathToInputAction / SendSelectionToTerminalAction）
+             text/description 不走 XML %key%（2026.1 实测解析为占位符原文），由 action 类构造器
+             经 ZCodeBundle.message 取值（cc-gui 同款做法） -->
         <action id="ZCode.SendFileToInput"
                 class="com.zcode.ideaplugin.action.SendFileToInputAction"
-                icon="com.zcode.ideaplugin.ZCodeIcons.Zai"
-                text="发送到 ZC GUI 输入框"
-                description="把选中的文件引用发送到 ZC GUI 输入框">
+                icon="com.zcode.ideaplugin.ZCodeIcons.Zai">
             <add-to-group group-id="ProjectViewPopupMenu" anchor="first"/>
             <add-to-group group-id="EditorTabPopupMenu" anchor="first"/>
         </action>
         <action id="ZCode.SendSelectionToInput"
                 class="com.zcode.ideaplugin.action.SendSelectionToInputAction"
-                icon="com.zcode.ideaplugin.ZCodeIcons.Zai"
-                text="发送选中代码到 ZC GUI 输入框"
-                description="把选中代码的行号引用发送到 ZC GUI 输入框">
+                icon="com.zcode.ideaplugin.ZCodeIcons.Zai">
             <add-to-group group-id="EditorPopupMenu" anchor="first"/>
             <keyboard-shortcut keymap="$default" first-keystroke="ctrl alt K"/>
+        </action>
+        <!-- 右键复制选中代码的路径+行号引用到剪贴板（对齐 cc-gui CopySelectionReferenceAction） -->
+        <action id="ZCode.CopySelectionReference"
+                class="com.zcode.ideaplugin.action.CopySelectionReferenceAction"
+                icon="com.zcode.ideaplugin.ZCodeIcons.Zai">
+            <add-to-group group-id="EditorPopupMenu" anchor="after" relative-to-action="ZCode.SendSelectionToInput"/>
         </action>
     </actions>
 </idea-plugin>

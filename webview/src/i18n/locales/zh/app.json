@@ -1,0 +1,63 @@
+{
+  "errorClose": "关闭",
+  "errorCloseAria": "关闭错误",
+  "backendQuotaError": "模型配额已超限（月度 Token 额度用尽）：服务端仍在自动重试但不会成功，建议停止本轮并切换模型或套餐，或等待额度重置",
+  "backendApiError": "模型服务错误（HTTP {{statusCode}}）：{{message}}",
+  "turnFailed": "本轮执行失败：{{message}}",
+  "turnFailedNoDetail": "本轮执行失败（服务端未返回错误详情）",
+  "newSession": {
+    "title": "新建会话",
+    "message": "将开启新的空白会话（发送首条消息时才创建），当前会话会保留在历史记录中，可随时切换回来。确定新建吗？",
+    "confirm": "新建"
+  },
+  "askUser": {
+    "title": "回答 AI 的提问",
+    "cancel": "取消",
+    "confirm": "确认",
+    "progress": "第 {{current}}/{{total}} 题",
+    "multiSelect": "可多选",
+    "other": "其他（自定义答案）",
+    "otherPlaceholder": "输入自定义答案…",
+    "back": "上一题",
+    "next": "下一题"
+  },
+  "planApproval": {
+    "title": "计划审批",
+    "hint": "批准后将退出规划模式并开始执行",
+    "emptyPlan": "_（计划内容为空）_",
+    "tip": "点击弹窗外可直接关闭（视为留在规划模式）",
+    "continuePlanning": "继续规划",
+    "approveAndRun": "批准执行",
+    "feedbackPlaceholder": "输入修改意见，AI 将按意见继续完善计划…",
+    "feedbackRequired": "请先输入修改意见"
+  },
+  "notification": {
+    "subagent": "子代理",
+    "bashTask": "后台命令",
+    "backgroundTask": "后台任务",
+    "completed": "✓ 完成",
+    "failed": "✗ 失败",
+    "notice": "通知"
+  },
+  "status": {
+    "todoTab": "任务",
+    "agentTab": "子代理",
+    "fileTab": "文件",
+    "noTodos": "暂无任务",
+    "noAgents": "暂无子任务",
+    "noFiles": "暂无文件改动",
+    "viewSubagentDetail": "点击查看子代理执行过程",
+    "openInEditor": "在编辑器打开：{{path}}",
+    "viewDiff": "查看编辑前后对比",
+    "diffTitle": "编辑对比：{{name}}"
+  },
+  "envBanner": {
+    "title": "运行环境配置异常，插件暂不可用",
+    "nodeMissing": "Node.js 未找到：{{detail}}",
+    "nodeTooLow": "Node.js 版本过低（{{version}}，需要 v{{min}}+）",
+    "cliMissing": "ZCode CLI 未找到：{{detail}}",
+    "credentialsInvalid": "凭证未配置或无效：{{detail}}",
+    "recheck": "重新检测",
+    "goSettings": "去设置"
+  }
+}

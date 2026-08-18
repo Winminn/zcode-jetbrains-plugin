@@ -9,9 +9,11 @@
  */
 
 import { useEffect, useMemo, useRef, useState } from 'react'
+import { useTranslation } from 'react-i18next'
 import { useStore } from '@/store/useStore'
 import type { ModelOption } from '@/types/messages'
 import { ModelIcon } from './ModelIcon'
+import { PlanBadge } from './PlanBadge'
 
 interface Props {
   /** 当前会话模型（null 时回退到消息 footer 的 modelID）*/
@@ -22,6 +24,7 @@ interface Props {
 }
 
 export function ModelSelect({ currentModel, onSelect, disabled = false }: Props) {
+  const { t } = useTranslation()
   const models = useStore((s) => s.models)
   const messages = useStore((s) => s.messages)
   const [open, setOpen] = useState(false)
@@ -83,7 +86,7 @@ export function ModelSelect({ currentModel, onSelect, disabled = false }: Props)
         className="selector-button"
         onClick={() => setOpen((v) => !v)}
         disabled={disabled || models.length === 0}
-        title={displayName ?? '请选择模型'}
+        title={displayName ?? t('input.model.selectModel')}
       >
         {hasModel && (
           <ModelIcon
@@ -93,7 +96,7 @@ export function ModelSelect({ currentModel, onSelect, disabled = false }: Props)
           />
         )}
         <span className={`selector-button-text ${!hasModel ? 'selector-button-text--placeholder' : ''}`}>
-          {displayName ?? '请选择模型'}
+          {displayName ?? t('input.model.selectModel')}
         </span>
         <span className="codicon codicon-chevron-down selector-button-chevron" />
       </button>
@@ -102,7 +105,10 @@ export function ModelSelect({ currentModel, onSelect, disabled = false }: Props)
         <div className="selector-dropdown">
           {groups.map(([providerId, items]) => (
             <div key={providerId} className="selector-dropdown-group">
-              <div className="selector-dropdown-group-title">{items[0]?.providerName ?? providerId}</div>
+              <div className="selector-dropdown-group-title">
+                {items[0]?.providerName ?? providerId}
+                <PlanBadge plan={items[0]?.plan} />
+              </div>
               {items.map((m) => (
                 <div
                   key={m.modelId}

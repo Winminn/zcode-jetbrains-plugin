@@ -1,0 +1,63 @@
+{
+  "errorClose": "Close",
+  "errorCloseAria": "Close error",
+  "backendQuotaError": "Model quota exceeded (monthly token limit): the server keeps retrying but will never succeed — stop this turn and switch model/plan, or wait for the quota to reset",
+  "backendApiError": "Model API error (HTTP {{statusCode}}): {{message}}",
+  "turnFailed": "Turn failed: {{message}}",
+  "turnFailedNoDetail": "Turn failed (no error detail returned)",
+  "newSession": {
+    "title": "New Session",
+    "message": "A new blank session will be started (created only when the first message is sent). The current session will be kept in history and can be switched back to at any time. Start a new session?",
+    "confirm": "New"
+  },
+  "askUser": {
+    "title": "Answer the question",
+    "cancel": "Cancel",
+    "confirm": "Confirm",
+    "progress": "Question {{current}}/{{total}}",
+    "multiSelect": "Multiple selections allowed",
+    "other": "Other (custom answer)",
+    "otherPlaceholder": "Type your answer…",
+    "back": "Back",
+    "next": "Next"
+  },
+  "planApproval": {
+    "title": "Plan Approval",
+    "hint": "Once approved, plan mode will be exited and execution will begin",
+    "emptyPlan": "_(The plan is empty)_",
+    "tip": "Click outside the dialog to close (stays in plan mode)",
+    "continuePlanning": "Keep Planning",
+    "approveAndRun": "Approve & Run",
+    "feedbackPlaceholder": "Describe changes; the AI will keep refining the plan…",
+    "feedbackRequired": "Enter your feedback first"
+  },
+  "notification": {
+    "subagent": "Subagent",
+    "bashTask": "Background Command",
+    "backgroundTask": "Background Task",
+    "completed": "✓ Done",
+    "failed": "✗ Failed",
+    "notice": "Notice"
+  },
+  "status": {
+    "todoTab": "Tasks",
+    "agentTab": "Subagents",
+    "fileTab": "Files",
+    "noTodos": "No tasks",
+    "noAgents": "No subtasks",
+    "noFiles": "No file changes",
+    "viewSubagentDetail": "Click to view subagent execution details",
+    "openInEditor": "Open in editor: {{path}}",
+    "viewDiff": "View diff before and after edits",
+    "diffTitle": "Edit diff: {{name}}"
+  },
+  "envBanner": {
+    "title": "Runtime environment issue — plugin unavailable",
+    "nodeMissing": "Node.js not found: {{detail}}",
+    "nodeTooLow": "Node.js version too low ({{version}}, requires v{{min}}+)",
+    "cliMissing": "ZCode CLI not found: {{detail}}",
+    "credentialsInvalid": "Credentials missing or invalid: {{detail}}",
+    "recheck": "Recheck",
+    "goSettings": "Open Settings"
+  }
+}
