@@ -25,16 +25,13 @@ webview/.vite/
 webview/*.local
 webview/tsconfig.tsbuildinfo
 
-# webview 构建产物（打进 intellij-plugin resources，不单独存）
-# 注意：intellij-plugin/src/main/resources/webview/ 是构建产物，但不忽略
-# 因为没装 webview 依赖时 Java 端也要能加载
-
 # ===== 开发期诊断/抓包脚本与产物（含本机路径，不入库；仅根目录，勿伤 webview/scripts）=====
-/scripts/
+# 发布相关脚本（gen-signing-key.sh）需要入库，故按文件模式忽略诊断脚本而非整个目录
+/scripts/diag-*.py
+/scripts/capture-*
 
-# ===== 开发过程文档（缺陷回归报告/里程碑记录/UI重构实施规划，仅本地留档）=====
-/docs/计划与里程碑/
-/docs/缺陷与回归/
+# ===== 开发过程文档（设计调研/缺陷回归/里程碑记录，仅本地留档，不入库）=====
+/docs/internal/
 
 # ===== OS =====
 .DS_Store
@@ -48,3 +45,7 @@ npm-debug.log*
 
 # ===== GUI 测试截图（临时验收产物）=====
 gui-test-screenshots/
+
+# ===== webview 构建产物（不入库：npm build 生成，见 build.sh；避免 hash 文件名每次变更污染历史）=====
+intellij-plugin/src/main/resources/webview/
+intellij-plugin/src/main/resources/webview-single/

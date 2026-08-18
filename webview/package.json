@@ -1,6 +1,6 @@
 {
   "name": "zcode-webview",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "type": "module",
   "description": "ZCode IDEA 插件的 JCEF webview（cc-gui 风格 React UI）",
@@ -8,26 +8,33 @@
     "dev": "vite",
     "build": "tsc -b && vite build",
     "build:single": "tsc -b && vite build --config vite.singlefile.config.ts",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "test": "vitest run"
   },
   "dependencies": {
     "@lobehub/icons": "^5.16.0",
     "dompurify": "^3.4.13",
     "highlight.js": "^11.12.0",
+    "i18next": "^26.3.6",
     "marked": "^15.0.12",
     "marked-highlight": "^2.2.4",
     "mermaid": "^11.16.1",
     "react": "^19.1.0",
     "react-dom": "^19.1.0",
+    "react-i18next": "^17.0.11",
     "zustand": "^5.0.3"
   },
   "devDependencies": {
+    "@testing-library/react": "^16.3.2",
+    "@testing-library/user-event": "^14.6.5",
     "@types/react": "^19.1.0",
     "@types/react-dom": "^19.1.0",
     "@vitejs/plugin-react": "^4.3.4",
+    "jsdom": "^29.1.1",
     "less": "^4.2.1",
     "typescript": "^5.7.2",
     "vite": "^7.0.0",
-    "vite-plugin-singlefile": "^2.1.0"
+    "vite-plugin-singlefile": "^2.1.0",
+    "vitest": "^4.1.10"
   }
 }
