@@ -12,6 +12,7 @@
 
 import { useEffect } from 'react'
 import { useTranslation } from 'react-i18next'
+import type { TFunction } from 'i18next'
 import { useStore } from '@/store/useStore'
 import { sendToJava } from '@/ipc/bridge'
 import type { MemoryFileInfo } from '@/types/messages'
@@ -27,6 +28,16 @@ function fmtSize(bytes?: number): string {
   if (bytes >= 1024 * 1024) return `${(bytes / 1024 / 1024).toFixed(1)} MB`
   if (bytes >= 1024) return `${(bytes / 1024).toFixed(1)} KB`
   return `${bytes} B`
+}
+
+/** 条目说明：走前端 i18n（后端 description 是拼好的中文，不再直接渲染）*/
+function localizedDesc(t: TFunction, file: MemoryFileInfo): string {
+  if (file.kind === 'auto') {
+    return file.name === 'MEMORY.md'
+      ? t('memory.auto.indexDesc')
+      : (file.title || t('memory.auto.factFallback'))
+  }
+  return file.scope === 'global' ? t('memory.global.hint') : t('memory.project.hint')
 }
 
 /** 单条记忆文件条目 */
@@ -56,7 +67,7 @@ function MemoryItem({ file }: { file: MemoryFileInfo }) {
             <span className="memory-item__badge">{t('memory.item.notCreated')}</span>
           )}
         </div>
-        <div className="memory-item__desc">{file.description}</div>
+        <div className="memory-item__desc">{localizedDesc(t, file)}</div>
         <div className="memory-item__path" title={file.path}>
           {file.path}
         </div>

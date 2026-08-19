@@ -23,9 +23,11 @@
     "title": "ZCode auto memory",
     "hint": "Automatically distilled from completed conversations and injected into later sessions (toggle shared with the ZCode client)",
     "switchTitle": "Workspace memory",
-    "switchDesc": "Save and reuse long-term context in this workspace; takes effect for new sessions. Shares the same toggle with the ZCode client (Settings → General); enabling it may increase model calls and token usage",
+    "switchDesc": "Save and reuse long-term context in this workspace; takes effect for new sessions. Shares the same toggle with the ZCode client settings; enabling it may increase model calls and token usage",
     "switchOnHint": "Click to turn off (applies to new sessions)",
     "switchOffHint": "Click to turn on (applies to new sessions)",
+    "indexDesc": "Memory index (one line per memory, pointing to fact files in the same directory)",
+    "factFallback": "Facts automatically distilled from completed conversations",
     "empty": "No auto memories yet — turn on the toggle above and finish a few conversations; distilled facts will appear here"
   }
 }

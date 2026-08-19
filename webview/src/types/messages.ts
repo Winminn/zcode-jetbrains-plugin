@@ -344,8 +344,10 @@ export interface MemoryFileInfo {
   sizeBytes?: number
   /** 最后修改时间戳（exists 时）*/
   lastModified?: number
-  /** 展示说明 */
+  /** 展示说明（后端中文，仅兜底；正式渲染走前端 i18n）*/
   description?: string
+  /** auto 事实文件首个 # 标题（数据非文案，缺失走 factFallback）*/
+  title?: string
 }
 
 /**

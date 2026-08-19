@@ -1320,6 +1320,17 @@ flowchart LR
             sizeBytes: 1180,
             lastModified: Date.now() - 7200_000,
             description: '自动记忆：用户偏好用 Ctrl+F 做会话内搜索',
+            title: '用户偏好用 Ctrl+F 做会话内搜索',
+          },
+          {
+            name: 'no-heading-fact.md',
+            scope: 'project',
+            kind: 'auto',
+            path: 'C:\\Users\\mock\\.zcode\\cli\\memories\\projects\\mock-abc123\\memory\\no-heading-fact.md',
+            exists: true,
+            sizeBytes: 640,
+            lastModified: Date.now() - 10800_000,
+            description: '',
           },
         ],
       }

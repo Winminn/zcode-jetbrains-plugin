@@ -2736,6 +2736,7 @@ if (!window.__ZCODE_LOG_HOOK__) {
                     f.sizeBytes?.let { put("sizeBytes", it) }
                     f.lastModified?.let { put("lastModified", it) }
                     put("description", f.description)
+                    f.title?.let { put("title", it) }
                 }
             }))
         }

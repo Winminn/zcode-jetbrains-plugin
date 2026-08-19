@@ -32,9 +32,11 @@ object MemoryFileScanner {
         val exists: Boolean,
         val sizeBytes: Long? = null,
         val lastModified: Long? = null,
-        /** 展示说明 */
-        val description: String,
-    )
+    /** 展示说明（历史字段：后端拼好的中文，前端已改按 scope/kind 走 i18n，不再直接渲染）*/
+    val description: String,
+    /** auto 事实文件首个 # 标题（无则 null）——作为数据传给前端展示 */
+    val title: String? = null,
+)
 
     /** 指令记忆固定清单 + 自动记忆目录扫描 */
     fun list(projectBasePath: String?): List<MemoryFile> {
@@ -73,7 +75,8 @@ object MemoryFileScanner {
             inspect(it, "project", "auto", "记忆索引（每条记忆一行，指向同目录事实文件）")
         }
         val factItems = facts.sortedByDescending { it.lastModified() }.map {
-            inspect(it, "project", "auto", firstHeading(it) ?: "从已完成对话中自动提取的事实记忆")
+            val title = firstHeading(it)
+            inspect(it, "project", "auto", title ?: "").copy(title = title)
         }
         return indexItems + factItems
     }
@@ -115,12 +118,11 @@ object MemoryFileScanner {
         return digest.joinToString("") { "%02x".format(it) }.take(16)
     }
 
-    /** 读文件首个「# 标题」行作展示说明（自动记忆的事实文件都有标题行）*/
+    /** 读文件首个「# 标题」行（自动记忆的事实文件都有标题行；返回纯标题不带前缀）*/
     private fun firstHeading(f: File): String? = try {
         f.readText(Charsets.UTF_8).lineSequence()
             .firstOrNull { it.startsWith("# ") }
             ?.removePrefix("# ")?.trim()?.take(80)
-            ?.let { "自动记忆：$it" }
     } catch (_: Exception) {
         null
     }
