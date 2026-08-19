@@ -165,6 +165,10 @@ interface StoreState {
   /** 正在创建的记忆文件路径（条目按钮 loading 用）*/
   memoryCreatingPath: string | null
   memoryError: string | null
+  /** 「工作区记忆」开关（null=未加载；与 ZCode 客户端共用 ~/.zcode/v2/setting.json）*/
+  memoryEnabled: boolean | null
+  /** 开关切换请求在途（防重复点击）*/
+  memoryToggling: boolean
 
   // 技能清单（设置视图「技能」条目，SkillScanner 三来源扫描）
   skills: SkillInfo[] | null
@@ -252,6 +256,8 @@ interface StoreState {
   loadMemoryFiles: () => void
   /** 创建缺失的记忆文件（写默认模板，Kotlin 侧自动用编辑器打开）*/
   createMemoryFile: (path: string) => void
+  /** 切换「工作区记忆」开关（新会话生效）*/
+  setMemoryEnabled: (enabled: boolean) => void
   /** 拉取技能清单（设置视图「技能」条目）*/
   loadSkills: () => void
   /** 启用/禁用技能（写 config skill 节点，CLI 下次发现生效）*/
@@ -373,6 +379,8 @@ export const useStore = create<StoreState>((set, get) => ({
   memoryLoading: false,
   memoryCreatingPath: null,
   memoryError: null,
+  memoryEnabled: null,
+  memoryToggling: false,
 
   skills: null,
   skillsLoading: false,
@@ -843,6 +851,13 @@ export const useStore = create<StoreState>((set, get) => ({
   createMemoryFile: (path) => {
     set({ memoryCreatingPath: path, memoryError: null })
     sendToJava({ op: 'createMemoryFile', path })
+  },
+
+  setMemoryEnabled: (enabled) => {
+    // 防重复点击：上一次切换还在途中就忽略
+    if (get().memoryToggling) return
+    set({ memoryToggling: true, memoryError: null })
+    sendToJava({ op: 'setMemoryEnabled', enabled })
   },
 
   loadSkills: () => {
@@ -1548,6 +1563,7 @@ function handleResponse(
         waitingSince: null,
         memoryLoading: false,
         memoryCreatingPath: null,
+        memoryToggling: false,
         skillsLoading: false,
         skillTogglingPath: null,
         mcpLoading: false,
@@ -1699,7 +1715,12 @@ function handleResponse(
       break
 
     case 'memoryFiles':
-      set({ memoryFiles: msg.files, memoryLoading: false, memoryError: null })
+      set({ memoryFiles: msg.files, memoryEnabled: msg.memoryEnabled, memoryLoading: false, memoryError: null })
+      break
+
+    case 'memoryEnabledChanged':
+      // setMemoryEnabled 后端写 setting.json 成功才回包；开关对新建会话生效
+      set({ memoryEnabled: msg.enabled, memoryToggling: false, memoryError: null })
       break
 
     case 'memoryFileCreated':

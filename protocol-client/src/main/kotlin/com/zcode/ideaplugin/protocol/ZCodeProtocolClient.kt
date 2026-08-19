@@ -62,9 +62,11 @@ class ZCodeProtocolClient private constructor(
     // 全局事件监听器（所有 session）
     private val globalListeners = ConcurrentHashMap.newKeySet<(SessionEvent) -> Unit>()
 
-    // 运行时偏好应答策略（默认自动应答 SAFE_DEFAULT）
+    // 运行时偏好应答策略：memoryEnabled 决定 MEMORY.md 自动记忆是否注入会话上下文
+    // （宿主答 false 时 CLI 强制 memory:{enabled:false}）。默认 SAFE_DEFAULT（全 false），
+    // 宿主可注入真实配置。在 reader 线程同步调用，实现必须快（本地小文件读取级别）
     @Volatile
-    var runtimePreferencesResponder: (suspend (sessionId: String, scope: String) -> RuntimePreferences) =
+    var runtimePreferencesResponder: (sessionId: String, scope: String) -> RuntimePreferences =
         { _, _ -> RuntimePreferences.SAFE_DEFAULT }
 
     // 用户输入请求处理器（AskUserQuestion 等需要用户交互的工具）
@@ -243,8 +245,15 @@ class ZCodeProtocolClient private constructor(
         val params = msg["params"]?.jsonObject ?: JsonObject(emptyMap())
 
         if (method == "session/requestRuntimePreferences") {
-            // 规格书 §3：必须应答，否则卡死
-            val prefs = RuntimePreferences.SAFE_DEFAULT
+            // 规格书 §3：必须应答，否则卡死。responder 异常时兜底 SAFE_DEFAULT（不答就永久卡死）
+            val prefs = try {
+                val sid = params["sessionId"]?.jsonPrimitive?.contentOrNull ?: ""
+                val scope = params["scope"]?.jsonPrimitive?.contentOrNull ?: ""
+                runtimePreferencesResponder(sid, scope)
+            } catch (e: Exception) {
+                System.err.println("[ZCodeProtocolClient] runtimePreferencesResponder 异常(${e.javaClass.simpleName}): ${e.message}，回退 SAFE_DEFAULT")
+                RuntimePreferences.SAFE_DEFAULT
+            }
             respondToServer(id, buildJsonObject {
                 put("nativeSearchEnhancementsEnabled", prefs.nativeSearchEnhancementsEnabled)
                 put("memoryEnabled", prefs.memoryEnabled)

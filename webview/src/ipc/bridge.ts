@@ -1280,6 +1280,8 @@ flowchart LR
       // mock：全局存在 + 项目未创建 + 两条自动记忆（验收三种形态的条目）
       return {
         op: 'memoryFiles',
+        memoryEnabled: true,
+        memorySettingPath: 'C:\\Users\\mock\\.zcode\\v2\\setting.json',
         files: [
           {
             name: 'AGENTS.md',
@@ -1323,6 +1325,8 @@ flowchart LR
       }
     case 'createMemoryFile':
       return { op: 'memoryFileCreated', path: req.path }
+    case 'setMemoryEnabled':
+      return { op: 'memoryEnabledChanged', enabled: req.enabled }
     case 'listSkills':
       // mock：三来源 + 启用/禁用/插件名/whenToUse 各形态（浏览器验收用）
       return {

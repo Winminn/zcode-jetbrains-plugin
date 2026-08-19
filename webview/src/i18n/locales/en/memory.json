@@ -21,7 +21,11 @@
   },
   "auto": {
     "title": "ZCode auto memory",
-    "hint": "Automatically distilled from completed conversations and injected into later sessions (enable in ZCode client: Settings → General)",
-    "empty": "No auto memories yet — enable the Memory feature in the ZCode client and finish a few conversations; distilled facts will appear here"
+    "hint": "Automatically distilled from completed conversations and injected into later sessions (toggle shared with the ZCode client)",
+    "switchTitle": "Workspace memory",
+    "switchDesc": "Save and reuse long-term context in this workspace; takes effect for new sessions. Shares the same toggle with the ZCode client (Settings → General); enabling it may increase model calls and token usage",
+    "switchOnHint": "Click to turn off (applies to new sessions)",
+    "switchOffHint": "Click to turn on (applies to new sessions)",
+    "empty": "No auto memories yet — turn on the toggle above and finish a few conversations; distilled facts will appear here"
   }
 }

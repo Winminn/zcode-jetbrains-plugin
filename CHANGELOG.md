@@ -8,9 +8,9 @@
 
 ### Fixed
 
+- **插件会话的自动记忆（MEMORY.md）从未生效**：`requestRuntimePreferences` 应答被硬编码为全 false，ZCode 客户端开启的「工作区记忆」对插件创建的所有会话一律无效——现与客户端共用 `~/.zcode/v2/setting.json` 同一份配置，设置页「记忆」条目新增「工作区记忆」开关（双向同步、新建会话生效），`nativeSearchEnhancements` / `askUserQuestionAutoResolution` 两项偏好一并恢复跟随客户端配置
 - **CLI 升级/重启后恢复会话无限转圈自动收尾**：ZCode 桌面端自动更新会杀掉插件依赖的 app-server 进程，恢复后的回合在服务端真实执行但事件流零下发，界面只认终止帧导致无限转圈——新增流式静默对账看门狗（60 秒无事件即静默探测服务端快照），回合已完成自动落地收尾、流丢失自动收尾并提示重发
 - **冷会话发送失败自动恢复**：send 撞 `-32004 Session is not active`（升级/重启后新进程未激活会话）时自动 resume 后重试一次，不再需要手动从历史记录重开；该错误同时追加中文提示与操作引导（五语言）
-- 移除已过时的「发布到 JetBrains Marketplace」README 章节与打 tag 自动发布工作流（改为手动发布）
 
 ## [0.2.0] - 2026-08-18
 

@@ -85,6 +85,35 @@ function MemoryItem({ file }: { file: MemoryFileInfo }) {
   )
 }
 
+/** 「工作区记忆」开关卡（与 ZCode 客户端共用 ~/.zcode/v2/setting.json 的 memoryEnabled）*/
+function MemoryToggle() {
+  const { t } = useTranslation()
+  const memoryEnabled = useStore((s) => s.memoryEnabled)
+  const memoryToggling = useStore((s) => s.memoryToggling)
+  const setMemoryEnabled = useStore((s) => s.setMemoryEnabled)
+  const on = memoryEnabled === true
+
+  return (
+    <div className={cx('memory-toggle', on && 'on')}>
+      <div className="memory-toggle__body">
+        <div className="memory-toggle__name-row">
+          <span className="codicon codicon-lightbulb memory-toggle__icon" />
+          <span className="memory-toggle__name">{t('memory.auto.switchTitle')}</span>
+        </div>
+        <div className="memory-toggle__desc">{t('memory.auto.switchDesc')}</div>
+      </div>
+      <button
+        className={cx('memory-toggle__switch', on && 'on')}
+        onClick={() => memoryEnabled != null && setMemoryEnabled(!on)}
+        disabled={memoryToggling || memoryEnabled == null}
+        title={on ? t('memory.auto.switchOffHint') : t('memory.auto.switchOnHint')}
+      >
+        <span className={cx('codicon', memoryToggling ? 'codicon-loading spin' : 'memory-toggle__knob')} />
+      </button>
+    </div>
+  )
+}
+
 export function MemoryView() {
   const { t } = useTranslation()
   const memoryFiles = useStore((s) => s.memoryFiles)
@@ -140,6 +169,7 @@ export function MemoryView() {
           <h3 className="memory-view__section-title">{t('memory.auto.title')}</h3>
           <span className="memory-view__hint">{t('memory.auto.hint')}</span>
         </div>
+        <MemoryToggle />
         {autoFiles.length > 0 ? (
           autoFiles.map((f) => <MemoryItem key={f.path} file={f} />)
         ) : (

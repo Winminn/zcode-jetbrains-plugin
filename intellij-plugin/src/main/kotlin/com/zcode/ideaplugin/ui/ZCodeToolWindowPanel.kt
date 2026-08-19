@@ -637,6 +637,7 @@ if (!window.__ZCODE_LOG_HOOK__) {
                         "listCommands" -> handleListCommands(msg)
                         "listMemoryFiles" -> handleListMemoryFiles(msg)
                         "createMemoryFile" -> handleCreateMemoryFile(msg)
+                        "setMemoryEnabled" -> handleSetMemoryEnabled(msg)
                         "listSkills" -> handleListSkills(msg)
                         "toggleSkill" -> handleToggleSkill(msg)
                         "listMcpServers" -> handleListMcpServers(msg)
@@ -2717,11 +2718,14 @@ if (!window.__ZCODE_LOG_HOOK__) {
      * 指令记忆（MemoryFileScanner）：全局 ~/.zcode/AGENTS.md + 项目根 AGENTS.md，
      * 缺失项也返回（前端提供创建入口）；另含 ZCode 自动记忆
      * （~/.zcode/cli/memories/projects/<key>/memory/，只读展示）。
+     * 附带 memoryEnabled（~/.zcode/v2/setting.json 的「工作区记忆」开关，与客户端共用）。
      */
     private fun handleListMemoryFiles(msg: JsonObject): JsonObject {
         val files = MemoryFileScanner.list(project.basePath)
         return buildJsonObject {
             put("op", "memoryFiles")
+            put("memoryEnabled", ZCodeClientSettingStore.readRuntimePrefs().memoryEnabled)
+            put("memorySettingPath", ZCodeClientSettingStore.settingPath().absolutePath)
             put("files", JsonArray(files.map { f ->
                 buildJsonObject {
                     put("name", f.name)
@@ -2763,6 +2767,24 @@ if (!window.__ZCODE_LOG_HOOK__) {
         return buildJsonObject {
             put("op", "memoryFileCreated")
             put("path", path)
+        }
+    }
+
+    /**
+     * op=setMemoryEnabled — 切换「工作区记忆」开关（写 ~/.zcode/v2/setting.json，
+     * 与 ZCode 客户端共用同一份配置；requestRuntimePreferences 应答即时读取，
+     * 新建会话生效，已在跑的会话不受影响）
+     */
+    private fun handleSetMemoryEnabled(msg: JsonObject): JsonObject {
+        val enabled = msg["enabled"]?.jsonPrimitive?.boolean
+            ?: return errorResponse("缺少 enabled")
+        if (!ZCodeClientSettingStore.writeMemoryEnabled(enabled)) {
+            return errorResponse("写入 setting.json 失败")
+        }
+        log.info("工作区记忆已${if (enabled) "开启" else "关闭"}（与 ZCode 客户端共用 ~/.zcode/v2/setting.json）")
+        return buildJsonObject {
+            put("op", "memoryEnabledChanged")
+            put("enabled", enabled)
         }
     }
 

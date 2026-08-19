@@ -208,6 +208,8 @@ export type JavaRequest =  | { op: 'listSessions'; workspacePath?: string }
   | { op: 'refreshFile'; filePath: string }
   | { op: 'listMemoryFiles' }
   | { op: 'createMemoryFile'; path: string }
+  /** 切换「工作区记忆」开关（写 ~/.zcode/v2/setting.json，与 ZCode 客户端共用）*/
+  | { op: 'setMemoryEnabled'; enabled: boolean }
   | { op: 'listSkills' }
   | { op: 'toggleSkill'; path: string; enabled: boolean }
   /** mode：status=状态快照（默认）| connect=真实连接（慢）*/
@@ -519,7 +521,8 @@ export type JavaResponse =
   | { op: 'fileOpened' }
   | { op: 'diffShown' }
   | { op: 'fileRefreshed' }
-  | { op: 'memoryFiles'; files: MemoryFileInfo[] }
+  | { op: 'memoryFiles'; files: MemoryFileInfo[]; memoryEnabled: boolean; memorySettingPath: string }
+  | { op: 'memoryEnabledChanged'; enabled: boolean }
   | { op: 'memoryFileCreated'; path: string }
   | { op: 'skills'; skills: SkillInfo[] }
   | { op: 'skillToggled'; path: string; enabled: boolean }

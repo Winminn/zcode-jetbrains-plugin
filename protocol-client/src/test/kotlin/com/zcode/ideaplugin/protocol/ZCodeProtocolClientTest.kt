@@ -47,6 +47,15 @@ class ZCodeProtocolClientTest {
         // 前置检查：ZCode 和凭证必须可用，否则跳过整个测试类
         try {
             client = ZCodeProtocolClient.start()
+            // 注入自定义 runtimePreferences 应答：既验证 responder 路径不破坏握手
+            // （规格书 §3 必须应答，答错/异常会卡死 session/create），也覆盖 memoryEnabled=true 分支
+            client.runtimePreferencesResponder = { _, _ ->
+                RuntimePreferences(
+                    nativeSearchEnhancementsEnabled = true,
+                    memoryEnabled = true,
+                    askUserQuestionAutoResolutionEnabled = true,
+                )
+            }
             assertTrue(client.isAlive(), "app-server 进程应该存活")
             println("✅ ZCodeProtocolClient 启动成功")
         } catch (e: Exception) {

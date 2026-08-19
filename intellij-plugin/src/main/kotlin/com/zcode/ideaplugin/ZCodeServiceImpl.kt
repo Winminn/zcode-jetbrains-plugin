@@ -78,6 +78,18 @@ class ZCodeServiceImpl(private val project: Project) : ZCodeService, com.intelli
                 credentials = env.credentials,
                 nodePath = env.nodePath,
             )
+            // requestRuntimePreferences 应答：三项与 ZCode 客户端共用 ~/.zcode/v2/setting.json
+            // （设置页「工作区记忆」开关写的也是这份）。每次应答即时读文件——
+            // 切换开关后新建会话立即生效，无需重启 app-server；memoryEnabled=false 时
+            // CLI 强制 memory:{enabled:false}，MEMORY.md 自动记忆不注入上下文
+            newClient.runtimePreferencesResponder = { _, _ ->
+                val p = com.zcode.ideaplugin.ui.ZCodeClientSettingStore.readRuntimePrefs()
+                com.zcode.ideaplugin.protocol.model.RuntimePreferences(
+                    nativeSearchEnhancementsEnabled = p.nativeSearchEnhancementsEnabled,
+                    memoryEnabled = p.memoryEnabled,
+                    askUserQuestionAutoResolutionEnabled = p.askUserQuestionAutoResolutionEnabled,
+                )
+            }
             client = newClient
             newClient
         }
