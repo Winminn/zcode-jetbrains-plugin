@@ -5,6 +5,8 @@
   "backendApiError": "模型服務錯誤（HTTP {{statusCode}}）：{{message}}",
   "turnFailed": "本輪執行失敗：{{message}}",
   "turnFailedNoDetail": "本輪執行失敗（伺服器未返回錯誤詳情）",
+  "sessionInactiveHint": "會話在伺服器端不活躍（CLI 升級或重啟後的新程序尚未啟用它），插件會自動恢復後重發；若仍失敗，請從歷史列表重新開啟該會話",
+  "streamLost": "已超過 1 分鐘未收到任何串流事件且伺服器端無新進展，本輪按流中斷收尾；如任務未完成請重發（CLI 升級/重啟後恢復的會話可能不回發事件）",
   "newSession": {
     "title": "新建會話",
     "message": "將開啟新的空白會話（傳送首條訊息時才建立），當前會話會保留在歷史記錄中，可隨時切換回來。確定新建嗎？",

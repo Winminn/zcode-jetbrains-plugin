@@ -177,7 +177,8 @@ export type JavaRequest =  | { op: 'listSessions'; workspacePath?: string }
   | { op: 'restoreSession'; sessionId: string }
   /** 拉取已归档会话列表 */
   | { op: 'listArchivedSessions'; workspacePath?: string }
-  | { op: 'messages'; sessionId: string; workspacePath?: string }
+  /** reconcile=true：流式静默对账探测（看门狗只读快照，响应带 reconcile 标记） */
+  | { op: 'messages'; sessionId: string; workspacePath?: string; reconcile?: boolean }
   | { op: 'subagents'; sessionId: string }
   | { op: 'subagentMessages'; sessionId: string; workspacePath?: string }
   | { op: 'send'; sessionId: string; text: string; workspacePath?: string; providerId?: string; modelId?: string }
@@ -475,7 +476,7 @@ export type JavaResponse =
   | { op: 'sessionArchived'; sessionId: string }
   | { op: 'sessionRestored'; sessionId: string }
   | { op: 'archivedSessions'; sessions: SessionInfo[] }
-  | { op: 'messages'; sessionId: string; messages: ZCodeMessage[] }
+  | { op: 'messages'; sessionId: string; messages: ZCodeMessage[]; reconcile?: boolean }
   | { op: 'subagents'; sessionId: string; data: SubagentsResult; error?: string }
   | { op: 'subagentMessages'; sessionId: string; messages: ZCodeMessage[]; error?: string }
   | { op: 'sendAccepted'; sessionId: string; accepted: string; cliResponse?: unknown }

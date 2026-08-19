@@ -8,7 +8,7 @@ import { useTranslation } from 'react-i18next'
 import { ZaiIcon } from './ZaiIcon'
 import '../styles/welcome.less'
 
-const APP_VERSION = '0.2.0'
+const APP_VERSION = '0.2.1'
 
 /**
  * 逐字打字机入场：把文本拆成 span，按序号递增 animation-delay

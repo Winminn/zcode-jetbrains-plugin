@@ -5,6 +5,8 @@
   "backendApiError": "Model API error (HTTP {{statusCode}}): {{message}}",
   "turnFailed": "Turn failed: {{message}}",
   "turnFailedNoDetail": "Turn failed (no error detail returned)",
+  "sessionInactiveHint": "The session is inactive on the server (common after a CLI upgrade/restart); the plugin resumes it automatically and retries. If it still fails, reopen the session from the history list and send again",
+  "streamLost": "No stream events for over a minute and no server-side progress; this turn was closed as interrupted. If the task is unfinished, send again (sessions resumed after a CLI upgrade/restart may not emit events)",
   "newSession": {
     "title": "New Session",
     "message": "A new blank session will be started (created only when the first message is sent). The current session will be kept in history and can be switched back to at any time. Start a new session?",

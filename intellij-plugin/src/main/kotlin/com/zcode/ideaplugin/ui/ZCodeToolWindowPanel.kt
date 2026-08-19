@@ -43,6 +43,7 @@ import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.boolean
+import kotlinx.serialization.json.booleanOrNull
 import kotlinx.serialization.json.intOrNull
 import kotlinx.serialization.json.put
 import java.awt.BorderLayout
@@ -2161,8 +2162,24 @@ if (!window.__ZCODE_LOG_HOOK__) {
         val accepted = try {
             client.send(sessionId, text, workspacePath, providerId = providerId, modelId = modelId)
         } catch (e: ZCodeProtocolException) {
-            log.error("send 失败", e)
-            return errorResponse("发送失败: ${e.message}")
+            // 冷会话 send：CLI 升级/重启后的新进程里会话未激活（-32004 Session is not
+            // active）。与 resumeAndReadMessages 同一模式——先 resume 激活再重试一次，
+            // 否则用户要靠"从历史重开"手动触发 resume 才能续上（2026-08-19 实测踩坑）
+            val coldSession = e.message?.let {
+                it.contains("-32004") || it.contains("Session is not active", ignoreCase = true)
+            } == true
+            if (!coldSession) {
+                log.error("send 失败", e)
+                return errorResponse("发送失败: ${e.message}")
+            }
+            try {
+                client.resume(sessionId, com.zcode.ideaplugin.protocol.model.Workspace(workspacePath))
+                log.info("send 撞冷会话（-32004），resume 后重试: $sessionId")
+                client.send(sessionId, text, workspacePath, providerId = providerId, modelId = modelId)
+            } catch (e2: Exception) {
+                log.error("send 失败（resume 重试后仍失败）", e2)
+                return errorResponse("发送失败: ${e2.message}")
+            }
         }
 
         return buildJsonObject {
@@ -2182,11 +2199,15 @@ if (!window.__ZCODE_LOG_HOOK__) {
             ?: System.getProperty("user.dir")
 
         val messages = resumeAndReadMessages(sessionId, workspacePath)
-        log.info("messages 返回 ${messages.size} 条")
+        // 前端流式静默对账探测（看门狗只读快照判定回合是否已在服务端结束）：
+        // 原样回传 reconcile 标记，前端区分"权威全量落地"与"对账只读"
+        val reconcile = msg["reconcile"]?.jsonPrimitive?.booleanOrNull ?: false
+        log.info("messages 返回 ${messages.size} 条${if (reconcile) "（对账探测）" else ""}")
         return buildJsonObject {
             put("op", "messages")
             put("sessionId", sessionId)
             put("messages", messages)
+            if (reconcile) put("reconcile", true)
         }
     }
 

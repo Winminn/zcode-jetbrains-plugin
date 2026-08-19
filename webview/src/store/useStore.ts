@@ -31,6 +31,25 @@ export const GLM_PLAN_PROVIDER = 'builtin:bigmodel-coding-plan'
 /** GLM 额度自动刷新间隔（ms）——悬浮栏/用量页「上次刷新」的更新节奏 */
 const QUOTA_POLL_INTERVAL = 60_000
 
+// ===== 流式静默对账看门狗（缺陷M，2026-08-19）=====
+// CLI 升级/重启杀掉 app-server 后，会话经 resume 恢复的回合在服务端真实执行但
+// 事件流零下发（background turn 不回发 session/event）——前端只认终止帧收尾，
+// 无限转圈。看门狗在 streaming 且当前会话持续 STREAM_SILENCE_MS 无任何事件时，
+// 每 STREAM_PROBE_INTERVAL_MS 静默拉一次 messages 快照（reconcile 标记，只读
+// 判定不落地）：末尾已是完整 assistant 回复 → 回合已在服务端结束，收尾并落地
+// 快照；快照连续 STREAM_DEAD_PROBES 轮毫无进展（尾部连 assistant 内容都没有）
+// → 判定流丢失，收尾并提示。事件正常流动时阈值永不满足，探测是纯兜底。
+const STREAM_SILENCE_MS = 60_000
+const STREAM_PROBE_INTERVAL_MS = 10_000
+const STREAM_DEAD_PROBES = 4
+/** 最近一次当前会话流式活动（事件到达/消息发出）时刻——看门狗静默计时基准 */
+let lastStreamActivityAt = 0
+let streamWatchTimer: ReturnType<typeof setInterval> | null = null
+let reconcileProbeInFlight = false
+let reconcileProbeSentAt = 0
+let reconcileDeadCount = 0
+let reconcileLastFingerprint = ''
+
 /** 排队消息（对话进行中 Enter 入队，回合结束自动发送；text 为拼好技能/文件引用的最终文本）*/
 export interface QueuedMessage {
   id: string
@@ -521,6 +540,7 @@ export const useStore = create<StoreState>((set, get) => ({
     // 自动发出暂存消息。先置 streaming 让等待动画立即出现；等待期的后续消息因
     // streaming=true 走下方入队分支，回合结束后 flushQueue 兜底发出
     if (!sid && !get().creatingSession) {
+      lastStreamActivityAt = Date.now() // 看门狗基准：等待从此刻起算
       set({
         streaming: true,
         streamingMessageId: null,
@@ -550,6 +570,7 @@ export const useStore = create<StoreState>((set, get) => ({
     // 兜底：无会话且不在建会话流程（正常应已被懒创建/入队分支拦截）
     if (!sid) return
 
+    lastStreamActivityAt = Date.now() // 看门狗基准：send 发出即开始静默计时
     set({
       streaming: true,
       streamingMessageId: null,
@@ -1373,7 +1394,30 @@ function handleResponse(
       break
     }
 
-    case 'messages':
+    case 'messages': {
+      // 对账探测响应（看门狗只读快照）：不直接落地，先判定回合是否已在服务端结束。
+      // 误判风险低——能走到这里说明已静默 60s+：末尾若有完整 assistant 回复，要么
+      // 回合真结束了，要么 send 从未被服务端受理（两种情况收尾都是正确行为）
+      if (msg.reconcile) {
+        reconcileProbeInFlight = false
+        if (msg.sessionId === get().currentSessionId && get().streaming) {
+          const verdict = classifyReconcileSnapshot(msg.messages)
+          if (verdict !== 'progress') {
+            set({ streaming: false, streamingMessageId: null, waitingSince: null })
+            if (verdict === 'dead') {
+              console.warn('[store] 流式对账：长时间无事件且服务端无进展，判定流丢失并收尾')
+              set({ lastError: i18n.t('app.streamLost') })
+            } else {
+              console.log('[store] 流式对账：服务端回合已完成，落地快照收尾')
+            }
+            applyMessagesSnapshot(msg, set, get)
+            // 回合结束的常规善后（对齐 turnEnded 路径的轻量子集：标题刷新 + 队列）
+            get().loadSessions()
+            get().flushQueue()
+          }
+        }
+        break
+      }
       if (msg.sessionId === get().currentSessionId) {
         // 流式进行中到达的重拉响应 = 过期快照：turn 结束触发的 300ms 延迟重拉，
         // 会落后于排队消息自动发出后已开启的新 turn（idea.log 2026-08-15 时序证据：
@@ -1382,32 +1426,10 @@ function handleResponse(
         // messageId 与重拉后服务端 user 消息撞车时，AI delta 会叠进用户气泡（叠字）。
         // 丢弃——本轮 turn 结束还会再拉一次权威数据落地。
         if (get().streaming) break
-        const st = get()
-        // 过滤 model-only 合成消息（todo_reminder 等，2026-08-15 误渲染成
-        // "子代理完成"卡片的根源）——只影响展示，下方派生计算仍用原始全量。
-        // 同轮 turn 的多条 assistant step 合并为一条（耗时/token 取整轮），
-        // 否则重拉后"已工作"塌缩成最后一个 step 的耗时
-        const visibleMessages = mergeTurnMessages(
-          msg.messages.filter((m) => !isHiddenSyntheticMessage(m.info)),
-        )
-        const patch: Partial<StoreState> = {
-          messages: visibleMessages,
-          loadingMessages: false,
-          ...refreshStatus(msg.messages, st.subagentActivities, st.subagents),
-        }
-        // currentModel 为 null 时从消息推断（兼容历史会话 / CLI 默认模型，解除空会话发送限制）
-        if (!get().currentModel) {
-          const inferred = inferCurrentModel(msg.messages, get().models)
-          if (inferred) patch.currentModel = inferred
-        }
-        // currentMode 为 null 时从消息推断（settings 拉取前的兜底显示）
-        if (!get().currentMode) {
-          const mode = inferCurrentMode(msg.messages)
-          if (mode) patch.currentMode = mode
-        }
-        set(patch)
+        applyMessagesSnapshot(msg, set, get)
       }
       break
+    }
 
     case 'subagents': {
       // session/subagents RPC 权威列表：刷新 agents 合并结果；
@@ -1509,10 +1531,15 @@ function handleResponse(
       set({ envStatus: msg.status, envSaving: false })
       break
 
-    case 'error':
+    case 'error': {
       // 建会话失败（Java 外层 catch 回 error）：复位懒创建标志与暂存消息（防卡死、防误重试）
+      // -32004（Session is not active）追加人话提示：CLI 升级/重启后的新进程里会话
+      // 未激活，此前用户只看到协议原文不知道该怎么办（2026-08-19 升级中断实测）
+      const sessionInactive = /Session is not active/i.test(msg.message)
       set({
-        lastError: msg.message,
+        lastError: sessionInactive
+          ? `${msg.message}；${i18n.t('app.sessionInactiveHint')}`
+          : msg.message,
         // 环境前置检查失败（EnvCheckException/envSave 验证失败）：附带 envStatus 刷新提醒条
         ...(msg.envStatus ? { envStatus: msg.envStatus } : {}),
         envSaving: false,
@@ -1534,6 +1561,7 @@ function handleResponse(
       // 错误清 streaming 后继续发队列下一条（排队意图明确；持续失败时用户可删队列项）
       get().flushQueue()
       break
+    }
 
     case 'backendError': {
       // app-server stderr 兜底通道：模型 API 错误（429 配额超限等）在 turn 终止帧之外
@@ -1913,6 +1941,9 @@ function handleStreamBatch(
   }
   if (events.length === 0) return
 
+  // 看门狗心跳：当前会话有任何事件到达 = 回合活着（静默对账不会触发）
+  lastStreamActivityAt = Date.now()
+
   let messages = get().messages
   let streamingMessageId = get().streamingMessageId
   let activities = get().subagentActivities
@@ -2030,6 +2061,9 @@ function handleStreamEvent(
     }
     return
   }
+
+  // 看门狗心跳：当前会话有任何事件到达 = 回合活着（静默对账不会触发）
+  lastStreamActivityAt = Date.now()
 
   // 状态变化通知（panel 单推，低频即时）：模式/级别跟随服务端
   if (event.type === 'state.updated') {
@@ -2153,6 +2187,118 @@ useStore.subscribe((s, prev) => {
   } else if (usagePollTimer) {
     clearInterval(usagePollTimer)
     usagePollTimer = null
+  }
+})
+
+// ===== 流式静默对账看门狗（缺陷M，2026-08-19；常量与状态见文件顶部）=====
+// 时序证据（idea.log + cli jsonl）：CLI 桌面端自动更新 taskkill 掉 app-server，
+// 插件自动重启新进程后，resume 恢复的回合以 background turn 方式在服务端真实
+// 执行完毕（工具调用/commit 全部落地），但 session/event 零下发——前端只认
+// 终止帧收尾，转圈永不停；用户手动 stop 也因回合已结束而空转。看门狗用
+// messages 快照对账兜底这条"服务端跑完、前端不知道"的断链。
+
+/** messages 响应的权威落地（常规重拉与对账收尾共用） */
+function applyMessagesSnapshot(
+  msg: { messages: ZCodeMessage[] },
+  set: (partial: Partial<StoreState>) => void,
+  get: () => StoreState,
+) {
+  const st = get()
+  // 过滤 model-only 合成消息（todo_reminder 等，2026-08-15 误渲染成
+  // "子代理完成"卡片的根源）——只影响展示，下方派生计算仍用原始全量。
+  // 同轮 turn 的多条 assistant step 合并为一条（耗时/token 取整轮），
+  // 否则重拉后"已工作"塌缩成最后一个 step 的耗时
+  const visibleMessages = mergeTurnMessages(
+    msg.messages.filter((m) => !isHiddenSyntheticMessage(m.info)),
+  )
+  const patch: Partial<StoreState> = {
+    messages: visibleMessages,
+    loadingMessages: false,
+    ...refreshStatus(msg.messages, st.subagentActivities, st.subagents),
+  }
+  // currentModel 为 null 时从消息推断（兼容历史会话 / CLI 默认模型，解除空会话发送限制）
+  if (!get().currentModel) {
+    const inferred = inferCurrentModel(msg.messages, get().models)
+    if (inferred) patch.currentModel = inferred
+  }
+  // currentMode 为 null 时从消息推断（settings 拉取前的兜底显示）
+  if (!get().currentMode) {
+    const mode = inferCurrentMode(msg.messages)
+    if (mode) patch.currentMode = mode
+  }
+  set(patch)
+}
+
+/** 消息是否带非空正文（判定"末尾是完整 assistant 回复"用）*/
+function hasVisibleText(m: ZCodeMessage): boolean {
+  return (m.parts ?? []).some((p) => {
+    if (p.type !== 'text') return false
+    const text = (p as { text?: string }).text
+    return typeof text === 'string' && text.trim().length > 0
+  })
+}
+
+/** 快照指纹（长度 + 末条消息标识）：两次探测之间服务端是否有任何进展 */
+function fingerprintMessages(raw: ZCodeMessage[]): string {
+  const visible = raw.filter((m) => !isHiddenSyntheticMessage(m.info))
+  if (visible.length === 0) return 'empty'
+  const last = visible[visible.length - 1]
+  return `${visible.length}:${last.info.id ?? ''}:${last.info.time?.created ?? ''}`
+}
+
+/**
+ * 判定对账快照（内部维护连续无进展计数，仅在 streaming 期间调用）：
+ * - ended：末尾是带正文的 assistant 回复 → 回合已在服务端完成
+ * - dead：快照连续 STREAM_DEAD_PROBES 轮无变化且始终没有 assistant 产出 → 疑似流丢失
+ * - progress：其他（工具步骤推进 / 静默长任务）→ 继续等待，不打扰
+ */
+function classifyReconcileSnapshot(raw: ZCodeMessage[]): 'ended' | 'dead' | 'progress' {
+  const fp = fingerprintMessages(raw)
+  if (fp !== reconcileLastFingerprint) {
+    reconcileLastFingerprint = fp
+    reconcileDeadCount = 0
+  }
+  const visible = raw.filter((m) => !isHiddenSyntheticMessage(m.info))
+  const last = visible[visible.length - 1]
+  if (last && last.info.role === 'assistant' && hasVisibleText(last)) return 'ended'
+  reconcileDeadCount += 1
+  return reconcileDeadCount >= STREAM_DEAD_PROBES ? 'dead' : 'progress'
+}
+
+function probeTurnState(): void {
+  const st = useStore.getState()
+  if (!st.streaming || !st.currentSessionId) return
+  // mock/dev 数据源不会复现"服务端跑完但零事件"，不探测
+  if (st.connectionStatus !== 'connected') return
+  // 上一发探测仍在途（30s 未回视为丢失，放行重探）
+  if (reconcileProbeInFlight && Date.now() - reconcileProbeSentAt < 30_000) return
+  if (Date.now() - lastStreamActivityAt < STREAM_SILENCE_MS) return
+  reconcileProbeInFlight = true
+  reconcileProbeSentAt = Date.now()
+  sendToJava({ op: 'messages', sessionId: st.currentSessionId, workspacePath: st.currentWorkspacePath, reconcile: true })
+}
+
+useStore.subscribe((s, prev) => {
+  if (s.streaming === prev.streaming) return
+  if (s.streaming) {
+    lastStreamActivityAt = Date.now()
+    reconcileDeadCount = 0
+    reconcileLastFingerprint = ''
+    if (!streamWatchTimer) {
+      streamWatchTimer = setInterval(() => {
+        if (!useStore.getState().streaming) {
+          if (streamWatchTimer) clearInterval(streamWatchTimer)
+          streamWatchTimer = null
+          reconcileProbeInFlight = false
+          return
+        }
+        probeTurnState()
+      }, STREAM_PROBE_INTERVAL_MS)
+    }
+  } else if (streamWatchTimer) {
+    clearInterval(streamWatchTimer)
+    streamWatchTimer = null
+    reconcileProbeInFlight = false
   }
 })
 
