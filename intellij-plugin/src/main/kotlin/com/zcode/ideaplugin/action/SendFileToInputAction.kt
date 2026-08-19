@@ -23,7 +23,7 @@ import kotlinx.serialization.json.put
 class SendFileToInputAction : AnAction(
     message("action.sendFileToInput.text"),
     message("action.sendFileToInput.description"),
-    ZCodeIcons.Zai,
+    ZCodeIcons.ZcGui,
 ) {
 
     override fun getActionUpdateThread(): ActionUpdateThread = ActionUpdateThread.BGT

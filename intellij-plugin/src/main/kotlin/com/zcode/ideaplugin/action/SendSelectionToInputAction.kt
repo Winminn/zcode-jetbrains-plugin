@@ -22,7 +22,7 @@ import com.zcode.ideaplugin.ZCodeIcons
 class SendSelectionToInputAction : AnAction(
     message("action.sendSelectionToInput.text"),
     message("action.sendSelectionToInput.description"),
-    ZCodeIcons.Zai,
+    ZCodeIcons.ZcGui,
 ) {
 
     override fun getActionUpdateThread(): ActionUpdateThread = ActionUpdateThread.BGT

@@ -40,9 +40,17 @@ jobs:
       - name: Verify zip structure
         run: |
           ZIP=$(ls intellij-plugin/build/distributions/ZC-GUI-*.zip | head -1)
+          # gradle-intellij-plugin 产物结构：zip 顶层是 <模块>/ 目录，
+          # 主插件 jar 与依赖都放 <模块>/lib/ 下；plugin.xml 与图标在主 jar 内部。
+          # 因此先解出主 jar（instrumented-*.jar）再查内部条目。
           unzip -l "$ZIP" | grep -E "lib/.*\.jar" > /dev/null
-          unzip -l "$ZIP" | grep -E "META-INF/plugin\.xml" > /dev/null
-          unzip -l "$ZIP" | grep -E "META-INF/pluginIcon.*\.svg" > /dev/null
+          MAIN_JAR=$(unzip -Z1 "$ZIP" | grep -E '^[^/]+/lib/instrumented-[^ ]*\.jar$' | head -1)
+          test -n "$MAIN_JAR"
+          TMPDIR=$(mktemp -d)
+          unzip -q "$ZIP" "$MAIN_JAR" -d "$TMPDIR"
+          unzip -l "$TMPDIR/$MAIN_JAR" | grep -E "META-INF/plugin\.xml" > /dev/null
+          unzip -l "$TMPDIR/$MAIN_JAR" | grep -E "META-INF/pluginIcon.*\.svg" > /dev/null
+          rm -rf "$TMPDIR"
           echo "✅ zip 结构完整: $ZIP"
 
       # 兼容性验证：检查 deprecated/scheduled-for-removal API 与二进制兼容性。

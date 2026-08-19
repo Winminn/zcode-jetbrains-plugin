@@ -25,7 +25,7 @@ import java.awt.datatransfer.StringSelection
 class CopySelectionReferenceAction : AnAction(
     message("action.copySelectionReference.text"),
     message("action.copySelectionReference.description"),
-    ZCodeIcons.Zai,
+    ZCodeIcons.ZcGui,
 ) {
 
     override fun getActionUpdateThread(): ActionUpdateThread = ActionUpdateThread.BGT
