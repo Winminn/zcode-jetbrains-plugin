@@ -32,6 +32,7 @@ import com.zcode.ideaplugin.protocol.Credentials
 import com.zcode.ideaplugin.protocol.ZCodeProtocolClient
 import com.zcode.ideaplugin.protocol.ZCodeProtocolException
 import com.zcode.ideaplugin.protocol.SessionStat
+import com.zcode.ideaplugin.protocol.model.SessionInfo
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
@@ -642,6 +643,9 @@ if (!window.__ZCODE_LOG_HOOK__) {
                         "getMcpLogs" -> handleGetMcpLogs(msg)
                         "askUserResponse" -> handleAskUserResponse(msg)
                         "deleteSession" -> handleDeleteSession(msg)
+                        "archiveSession" -> handleArchiveSession(msg)
+                        "restoreSession" -> handleRestoreSession(msg)
+                        "listArchivedSessions" -> handleListArchivedSessions(msg)
                         "listModels" -> handleListModels(msg)
                         "modelManageList" -> handleModelManageList(msg)
                         "modelToggleProvider" -> handleModelToggleProvider(msg)
@@ -1421,22 +1425,7 @@ if (!window.__ZCODE_LOG_HOOK__) {
         // 会话统计（消息数/内容大小，直读 db.sqlite；失败内部已降级空 map，字段缺省前端不显示）
         val stats: Map<String, SessionStat> = client.getSessionStats()
 
-        val sessionsJson = JsonArray(filtered.map { s ->
-            buildJsonObject {
-                put("sessionId", s.sessionId)
-                put("title", s.title)
-                put("status", s.status)
-                put("mode", s.mode)
-                put("workspacePath", s.workspace?.workspacePath ?: "")
-                put("workspaceKey", s.workspace?.workspaceKey ?: "")
-                put("createdAt", s.createdAt)
-                put("updatedAt", s.updatedAt)
-                stats[s.sessionId]?.let { st ->
-                    put("messageCount", st.messageCount)
-                    put("sizeBytes", st.sizeBytes)
-                }
-            }
-        })
+        val sessionsJson = JsonArray(filtered.map { buildSessionJson(it, stats) })
         return buildJsonObject {
             put("op", "listSessions")
             put("sessions", sessionsJson)
@@ -1475,6 +1464,87 @@ if (!window.__ZCODE_LOG_HOOK__) {
         return buildJsonObject {
             put("op", "sessionDeleted")
             put("sessionId", sessionId)
+        }
+    }
+
+    /** 归档会话（UPDATE time_archived，不删数据，可恢复）*/
+    private fun handleArchiveSession(msg: JsonObject): JsonObject {
+        val sessionId = msg["sessionId"]?.jsonPrimitive?.content
+            ?: return errorResponse("缺少 sessionId")
+        val client = project.zCodeService().getClient()
+        try {
+            client.archiveSession(sessionId)
+            log.info("归档会话成功: $sessionId")
+        } catch (e: Exception) {
+            log.warn("归档会话失败: ${e.message}")
+            return errorResponse("归档失败: ${e.message}")
+        }
+        return buildJsonObject {
+            put("op", "sessionArchived")
+            put("sessionId", sessionId)
+        }
+    }
+
+    /** 恢复归档会话（置 time_archived = NULL）*/
+    private fun handleRestoreSession(msg: JsonObject): JsonObject {
+        val sessionId = msg["sessionId"]?.jsonPrimitive?.content
+            ?: return errorResponse("缺少 sessionId")
+        val client = project.zCodeService().getClient()
+        try {
+            client.restoreSession(sessionId)
+            log.info("恢复会话成功: $sessionId")
+        } catch (e: Exception) {
+            log.warn("恢复会话失败: ${e.message}")
+            return errorResponse("恢复失败: ${e.message}")
+        }
+        return buildJsonObject {
+            put("op", "sessionRestored")
+            put("sessionId", sessionId)
+        }
+    }
+
+    /** 列出已归档会话（includeArchived=true 过滤 archivedAt>0）*/
+    private fun handleListArchivedSessions(msg: JsonObject): JsonObject {
+        val workspacePath = msg["workspacePath"]?.jsonPrimitive?.content
+            ?: project.basePath
+            ?: ""
+        val client = project.zCodeService().getClient()
+        val sessions = if (workspacePath.isEmpty()) {
+            client.listArchivedSessions()
+        } else {
+            client.listArchivedSessions(workspacePath)
+        }
+        val filtered = if (workspacePath.isEmpty()) {
+            sessions
+        } else {
+            val normalized = normalizePath(workspacePath)
+            sessions.filter { s ->
+                val ws = s.workspace?.workspacePath
+                ws != null && normalizePath(ws) == normalized
+            }
+        }
+        val stats = client.getSessionStats()
+        val sessionsJson = JsonArray(filtered.map { buildSessionJson(it, stats) })
+        return buildJsonObject {
+            put("op", "archivedSessions")
+            put("sessions", sessionsJson)
+        }
+    }
+
+    /** 单个会话 → 前端 JSON（handleListSessions / handleListArchivedSessions 共用）*/
+    private fun buildSessionJson(s: SessionInfo, stats: Map<String, SessionStat>): JsonObject = buildJsonObject {
+        put("sessionId", s.sessionId)
+        put("title", s.title)
+        put("status", s.status)
+        put("mode", s.mode)
+        put("workspacePath", s.workspace?.workspacePath ?: "")
+        put("workspaceKey", s.workspace?.workspaceKey ?: "")
+        put("createdAt", s.createdAt)
+        put("updatedAt", s.updatedAt)
+        s.archivedAt?.takeIf { it > 0 }?.let { put("archivedAt", it) }
+        stats[s.sessionId]?.let { st ->
+            put("messageCount", st.messageCount)
+            put("sizeBytes", st.sizeBytes)
         }
     }
 
@@ -2081,11 +2151,15 @@ if (!window.__ZCODE_LOG_HOOK__) {
         val workspacePath = msg["workspacePath"]?.jsonPrimitive?.content
             ?: project.basePath
             ?: System.getProperty("user.dir")
+        // 前端 currentModel 透传：-32031 恢复时优先用用户选择的 provider 构造 runtimeModel，
+        // 避免恢复链路静默切回默认 provider（个人套餐）；缺省时协议端走原有默认路径
+        val providerId = msg["providerId"]?.jsonPrimitive?.content
+        val modelId = msg["modelId"]?.jsonPrimitive?.content
 
         val client = project.zCodeService().getClient()
 
         val accepted = try {
-            client.send(sessionId, text, workspacePath)
+            client.send(sessionId, text, workspacePath, providerId = providerId, modelId = modelId)
         } catch (e: ZCodeProtocolException) {
             log.error("send 失败", e)
             return errorResponse("发送失败: ${e.message}")

@@ -140,6 +140,8 @@ export interface SessionInfo {
   messageCount?: number
   /** 内容大小（message+part 字节和；统计失败时字段缺省）*/
   sizeBytes?: number
+  /** 归档时间戳（毫秒）；缺省 = 未归档（仅已归档列表的项带此字段）*/
+  archivedAt?: number
 }
 
 // ============ IPC 请求 / 响应（JS ↔ Java）============
@@ -169,10 +171,16 @@ export type JavaRequest =  | { op: 'listSessions'; workspacePath?: string }
   /** 前端进入无会话待命态（「新建会话」延迟创建）→ Java 清 TabState 绑定与标签 tooltip */
   | { op: 'clearTabSession' }
   | { op: 'deleteSession'; sessionId: string }
+  /** 归档会话（标记 time_archived，不删数据，可恢复）*/
+  | { op: 'archiveSession'; sessionId: string }
+  /** 恢复归档会话（置 time_archived = NULL）*/
+  | { op: 'restoreSession'; sessionId: string }
+  /** 拉取已归档会话列表 */
+  | { op: 'listArchivedSessions'; workspacePath?: string }
   | { op: 'messages'; sessionId: string; workspacePath?: string }
   | { op: 'subagents'; sessionId: string }
   | { op: 'subagentMessages'; sessionId: string; workspacePath?: string }
-  | { op: 'send'; sessionId: string; text: string; workspacePath?: string }
+  | { op: 'send'; sessionId: string; text: string; workspacePath?: string; providerId?: string; modelId?: string }
   | { op: 'subscribe'; sessionId: string; workspacePath?: string }
   /** 订阅子代理会话事件流（实时归约前提；不改当前会话/标签状态，见 Java handleSubscribeChild）*/
   | { op: 'subscribeChild'; sessionId: string; workspacePath?: string }
@@ -464,6 +472,9 @@ export type JavaResponse =
   | { op: 'listSessions'; sessions: SessionInfo[] }  | { op: 'createSession'; sessionId: string }
   | { op: 'tabSessionCleared' }
   | { op: 'sessionDeleted'; sessionId: string }
+  | { op: 'sessionArchived'; sessionId: string }
+  | { op: 'sessionRestored'; sessionId: string }
+  | { op: 'archivedSessions'; sessions: SessionInfo[] }
   | { op: 'messages'; sessionId: string; messages: ZCodeMessage[] }
   | { op: 'subagents'; sessionId: string; data: SubagentsResult; error?: string }
   | { op: 'subagentMessages'; sessionId: string; messages: ZCodeMessage[]; error?: string }

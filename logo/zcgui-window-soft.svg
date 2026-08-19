@@ -16,16 +16,4 @@
     <rect x="274" y="704" width="26" height="36" fill="#FFFFFF" fill-opacity="0.54"/><rect x="304" y="704" width="26" height="36" fill="#FFFFFF" fill-opacity="0.54"/><rect x="334" y="704" width="26" height="36" fill="#FFFFFF" fill-opacity="0.54"/><rect x="364" y="704" width="26" height="36" fill="#FFFFFF" fill-opacity="0.54"/><rect x="394" y="704" width="26" height="36" fill="#FFFFFF" fill-opacity="0.54"/><rect x="424" y="704" width="26" height="36" fill="#FFFFFF" fill-opacity="0.54"/><rect x="484" y="704" width="26" height="36" fill="#FFFFFF" fill-opacity="0.54"/><rect x="514" y="704" width="26" height="36" fill="#FFFFFF" fill-opacity="0.54"/><rect x="544" y="704" width="26" height="36" fill="#FFFFFF" fill-opacity="0.54"/><rect x="574" y="704" width="26" height="36" fill="#FFFFFF" fill-opacity="0.54"/><rect x="604" y="704" width="26" height="36" fill="#FFFFFF" fill-opacity="0.54"/><rect x="634" y="704" width="26" height="36" fill="#FFFFFF" fill-opacity="0.54"/><rect x="664" y="704" width="26" height="36" fill="#FFFFFF" fill-opacity="0.54"/><rect x="694" y="704" width="26" height="36" fill="#FFFFFF" fill-opacity="0.54"/><rect x="724" y="704" width="26" height="36" fill="#FFFFFF" fill-opacity="0.54"/><rect x="754" y="704" width="26" height="36" fill="#FFFFFF" fill-opacity="0.54"/>
     <rect x="244" y="746" width="26" height="36" fill="#FFFFFF" fill-opacity="0.50"/><rect x="274" y="746" width="26" height="36" fill="#FFFFFF" fill-opacity="0.50"/><rect x="304" y="746" width="26" height="36" fill="#FFFFFF" fill-opacity="0.50"/><rect x="334" y="746" width="26" height="36" fill="#FFFFFF" fill-opacity="0.50"/><rect x="364" y="746" width="26" height="36" fill="#FFFFFF" fill-opacity="0.50"/><rect x="394" y="746" width="26" height="36" fill="#FFFFFF" fill-opacity="0.50"/><rect x="454" y="746" width="26" height="36" fill="#FFFFFF" fill-opacity="0.50"/><rect x="484" y="746" width="26" height="36" fill="#FFFFFF" fill-opacity="0.50"/><rect x="514" y="746" width="26" height="36" fill="#FFFFFF" fill-opacity="0.50"/><rect x="544" y="746" width="26" height="36" fill="#FFFFFF" fill-opacity="0.50"/><rect x="574" y="746" width="26" height="36" fill="#FFFFFF" fill-opacity="0.50"/><rect x="604" y="746" width="26" height="36" fill="#FFFFFF" fill-opacity="0.50"/><rect x="634" y="746" width="26" height="36" fill="#FFFFFF" fill-opacity="0.50"/><rect x="664" y="746" width="26" height="36" fill="#FFFFFF" fill-opacity="0.50"/><rect x="694" y="746" width="26" height="36" fill="#FFFFFF" fill-opacity="0.50"/><rect x="724" y="746" width="26" height="36" fill="#FFFFFF" fill-opacity="0.50"/><rect x="754" y="746" width="26" height="36" fill="#FFFFFF" fill-opacity="0.50"/>
   </g>
-  <!-- 窗口控制圆点：对齐 c3/c4/c5 块中心 -->
-  <g fill="#262A55"><circle cx="347" cy="260" r="10"/><circle cx="377" cy="260" r="10"/><circle cx="407" cy="260" r="10"/></g>
-  <!-- 对话气泡（右下角，下移84px后与 Z 字 y704 行方块交叠 20px）：AI 会话 + 编程意象 -->
-  <g fill="#FFFFFF">
-    <rect x="610" y="604" width="160" height="120" rx="22"/>
-    <path d="M642 724 L632 766 L690 724 Z"/>
-  </g>
-  <g stroke="#282B5E" id="code" stroke-width="14" stroke-linecap="round" stroke-linejoin="round" fill="none">
-    <path d="M656 646 L636 664 L656 682"/>
-    <path d="M722 646 L742 664 L722 682"/>
-    <path d="M700 639 L678 689"/>
-  </g>
 </svg>

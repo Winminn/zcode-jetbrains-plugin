@@ -543,8 +543,22 @@ class ZCodeProtocolClient private constructor(
         return r["result"]?.jsonObject ?: JsonObject(emptyMap())
     }
 
-    /** session/send — 发消息（字段是 content 不是 message！） */
-    fun send(sessionId: String, content: String, workspacePath: String? = null, timeoutMs: Long = 10000): JsonObject {
+    /**
+     * session/send — 发消息（字段是 content 不是 message！）
+     *
+     * @param providerId 用户当前选择的 provider（来自前端 currentModel）；-32031 恢复时
+     *   优先用它构造 runtimeModel，避免恢复链路静默切回默认 provider（个人套餐）导致
+     *   "显示百度千帆、实际走个人套餐"。null 时回退 runtimeModelFactory（默认 provider）。
+     * @param modelId 同上，与 providerId 配对；两者都非 null 才走指定 provider 路径。
+     */
+    fun send(
+        sessionId: String,
+        content: String,
+        workspacePath: String? = null,
+        timeoutMs: Long = 10000,
+        providerId: String? = null,
+        modelId: String? = null,
+    ): JsonObject {
         val params = buildJsonObject {
             put("sessionId", sessionId)
             put("content", content)
@@ -558,7 +572,13 @@ class ZCodeProtocolClient private constructor(
             // 故用带 runtimeModel 的 send 原地重试，成功后走正常流式。
             if (errCode == -32031) {
                 println("[ZCodeProtocolClient] send 遇到 -32031（restoreWarning），带 runtimeModel 重试")
-                val runtimeModel = runtimeModelFactory()
+                // 优先用用户当前选择的 provider 构造 runtimeModel（跟随前端 currentModel），
+                // 避免恢复链路用默认 provider 把会话静默切到个人套餐；构造失败回退默认 factory
+                val runtimeModel = if (providerId != null && modelId != null) {
+                    RuntimeModels.buildRuntimeModel(providerId, modelId) ?: runtimeModelFactory()
+                } else {
+                    runtimeModelFactory()
+                }
                 if (runtimeModel != null) {
                     val retryParams = buildJsonObject {
                         put("sessionId", sessionId)
@@ -887,6 +907,52 @@ class ZCodeProtocolClient private constructor(
         }
     }
 
+    /**
+     * 归档会话：直接 UPDATE db.sqlite session.time_archived（标记归档，不删数据）
+     *
+     * 与删除不同——归档是可逆的单行 UPDATE，不碰 app-server 内存/索引，不删任何关联表。
+     * session/list(includeArchived=false) 过滤 time_archived 非空的会话从而从历史列表隐藏；
+     * 恢复（restoreSession）置 NULL 即重新显示。ZCode 协议无归档方法，故直连 DB
+     *（同删除的无奈之举，但仅改一个字段，schema 耦合面极小，zcode 升级几乎不会破坏）。
+     */
+    fun archiveSession(sessionId: String) = updateSessionArchived(sessionId, archive = true)
+
+    /** 恢复归档会话：置 time_archived = NULL，重新进入历史列表 */
+    fun restoreSession(sessionId: String) = updateSessionArchived(sessionId, archive = false)
+
+    private fun updateSessionArchived(sessionId: String, archive: Boolean) {
+        val dbPath = Path.of(System.getProperty("user.home"), ".zcode", "cli", "db", "db.sqlite")
+        if (!java.nio.file.Files.exists(dbPath)) {
+            throw IllegalStateException("db.sqlite 不存在: $dbPath")
+        }
+        val pb = ProcessBuilder(nodePath, "-e", ARCHIVE_SESSION_JS)
+        pb.environment()["ZCODE_ARCHIVE_DB"] = dbPath.toString()
+        pb.environment()["ZCODE_ARCHIVE_SID"] = sessionId
+        pb.environment()["ZCODE_ARCHIVE_MODE"] = if (archive) "archive" else "restore"
+        val p = pb.start()
+        val out = p.inputStream.bufferedReader().readText()
+        val err = p.errorStream.bufferedReader().readText()
+        val finished = p.waitFor(15, TimeUnit.SECONDS)
+        if (!finished) {
+            p.destroyForcibly()
+            throw IllegalStateException("${if (archive) "归档" else "恢复"}超时: $sessionId")
+        }
+        if (p.exitValue() != 0) {
+            throw IllegalStateException("${if (archive) "归档" else "恢复"}失败: ${err.ifBlank { out }}")
+        }
+    }
+
+    /**
+     * 列出已归档会话（includeArchived=true 拉全部后过滤 archivedAt>0）
+     *
+     * zcode session/list 无"只查归档"选项，includeArchived=true 返回归档+未归档全部，
+     * 这里过滤出 archivedAt 非空的。归档列表低频访问，全量拉取可接受。
+     */
+    fun listArchivedSessions(workspacePath: String? = null, limit: Int = 500, timeoutMs: Long = 10000): List<SessionInfo> {
+        val all = listSessions(workspacePath, includeArchived = true, limit = limit, timeoutMs = timeoutMs)
+        return all.filter { (it.archivedAt ?: 0L) > 0L }
+    }
+
     // 会话统计缓存：db 文件指纹（mtime:size，主库+WAL）→ 统计结果（见 getSessionStats）
     @Volatile
     private var sessionStatsCache: Pair<String, Map<String, SessionStat>>? = null
@@ -1065,6 +1131,29 @@ private val DELETE_SESSION_JS = """
     db.exec('BEGIN IMMEDIATE');
     try { del(sid); db.exec('COMMIT'); console.log('deleted'); }
     catch (e) { try { db.exec('ROLLBACK'); } catch(_){} console.error('ERR: ' + e.message); process.exit(1); }
+""".trimIndent()
+
+/** node:sqlite 内联脚本：归档/恢复会话（单行 UPDATE session.time_archived）。
+ * mode=archive 置当前毫秒时间戳，mode=restore 置 NULL；affected rows=0 报错（会话不存在）。
+ * 参数经环境变量传入（同 DELETE_SESSION_JS 的 Windows 命令行参数坑）*/
+private val ARCHIVE_SESSION_JS = """
+    const {DatabaseSync} = require('node:sqlite');
+    const db = new DatabaseSync(process.env.ZCODE_ARCHIVE_DB);
+    db.exec('PRAGMA busy_timeout = 15000');
+    const mode = process.env.ZCODE_ARCHIVE_MODE;
+    const sid = process.env.ZCODE_ARCHIVE_SID;
+    db.exec('BEGIN IMMEDIATE');
+    try {
+      const res = mode === 'archive'
+        ? db.prepare('UPDATE session SET time_archived = ? WHERE id = ?').run(Date.now(), sid)
+        : db.prepare('UPDATE session SET time_archived = NULL WHERE id = ?').run(sid);
+      if (res.changes === 0) { db.exec('ROLLBACK'); console.error('ERR: session not found: ' + sid); process.exit(1); }
+      db.exec('COMMIT');
+      console.log('ok');
+    } catch (e) {
+      try { db.exec('ROLLBACK'); } catch(_){}
+      console.error('ERR: ' + e.message); process.exit(1);
+    }
 """.trimIndent()
 
 /** node:sqlite 内联脚本：按会话统计消息数与内容字节数（只读，表名硬编码，无注入）。

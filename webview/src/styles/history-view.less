@@ -22,6 +22,35 @@
   background: var(--bg-secondary);
 }
 
+/* tab 切换：会话 / 已归档 */
+.history-tabs {
+  display: flex;
+  gap: 4px;
+  margin-bottom: 8px;
+}
+
+.history-tab {
+  padding: 4px 12px;
+  font-size: 12px;
+  color: var(--text-tertiary);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  cursor: pointer;
+  transition: all 0.15s;
+
+  &:hover {
+    background: var(--bg-hover);
+    color: var(--text-secondary);
+  }
+
+  &--active {
+    color: var(--accent-primary);
+    background: color-mix(in srgb, var(--accent-primary) 10%, transparent);
+    border-color: color-mix(in srgb, var(--accent-primary) 30%, transparent);
+  }
+}
+
 /* header-main：信息条 + 工具栏（cc-gui .history-header-main）*/
 .history-header-main {
   display: flex;

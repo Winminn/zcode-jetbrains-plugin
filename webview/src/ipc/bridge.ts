@@ -250,6 +250,32 @@ const mockSessions = [
   },
 ]
 
+// 已归档会话 mock（回收站视图验收用）
+const mockArchivedSessions = [
+  {
+    sessionId: 'sess_mock_archived_1',
+    title: '（mock·已归档）旧版本登录模块重构',
+    status: 'idle',
+    mode: 'build',
+    workspacePath: 'G:\\mock',
+    workspaceKey: 'G:\\mock',
+    createdAt: Date.now() - 10 * 86400_000,
+    updatedAt: Date.now() - 9 * 86400_000,
+    archivedAt: Date.now() - 8 * 86400_000,
+  },
+  {
+    sessionId: 'sess_mock_archived_2',
+    title: '（mock·已归档）数据库连接池调参',
+    status: 'idle',
+    mode: 'yolo',
+    workspacePath: 'G:\\mock',
+    workspaceKey: 'G:\\mock',
+    createdAt: Date.now() - 20 * 86400_000,
+    updatedAt: Date.now() - 19 * 86400_000,
+    archivedAt: Date.now() - 18 * 86400_000,
+  },
+]
+
 function mockRespond(req: JavaRequest): void {
   console.log('[bridge:mock] 收到请求', req.op)
 
@@ -578,6 +604,12 @@ function mockResponse(req: JavaRequest): JavaResponse | null {
   switch (req.op) {
     case 'listSessions':
       return { op: 'listSessions', sessions: mockSessions }
+    case 'listArchivedSessions':
+      return { op: 'archivedSessions', sessions: mockArchivedSessions }
+    case 'archiveSession':
+      return { op: 'sessionArchived', sessionId: req.sessionId }
+    case 'restoreSession':
+      return { op: 'sessionRestored', sessionId: req.sessionId }
     case 'listModels':
       // 模拟 ~/.zcode/v2/config.json 的 provider 注册表（验收模型下拉用；内置套餐带 plan 标记）
       return {

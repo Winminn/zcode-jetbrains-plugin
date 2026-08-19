@@ -88,8 +88,15 @@
     flex-shrink: 0;
   }
 
-  /* 删除按钮：默认透明，hover 显现（cc-gui history-action-buttons）*/
-  &__delete {
+  /* 操作区：归档 / 恢复 / 彻底删除（默认透明，hover 显现，cc-gui history-action-buttons）*/
+  &__actions {
+    display: flex;
+    align-items: center;
+    gap: 2px;
+    flex-shrink: 0;
+  }
+
+  &__action {
     background: transparent;
     border: none;
     color: var(--text-tertiary);
@@ -102,12 +109,19 @@
     cursor: pointer;
     opacity: 0;
     transition: all 0.15s;
-    flex-shrink: 0;
 
     .codicon {
       font-size: 15px;
     }
 
+    &:hover {
+      background: var(--bg-hover);
+      color: var(--text-secondary);
+    }
+  }
+
+  /* 彻底删除按钮（叠加 __action，危险 hover + 二次确认显现）*/
+  &__delete {
     &:hover {
       background: var(--color-button-danger-hover-bg);
       color: var(--color-danger);
@@ -121,7 +135,16 @@
     }
   }
 
-  &:hover &__delete {
+  /* 归档按钮二次确认态（强调色高亮，区别于删除的危险红）*/
+  &__archive--confirming,
+  &__restore--confirming {
+    opacity: 1;
+    background: color-mix(in srgb, var(--accent-primary) 15%, transparent);
+    color: var(--accent-primary);
+    border: 1px solid color-mix(in srgb, var(--accent-primary) 30%, transparent);
+  }
+
+  &:hover &__action {
     opacity: 1;
   }
 

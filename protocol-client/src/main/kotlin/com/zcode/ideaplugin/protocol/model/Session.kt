@@ -28,7 +28,9 @@ data class SessionInfo(
     val createdAt: Long = 0,
     val updatedAt: Long = 0,
     val traceId: String? = null,
-    val titleSource: String? = null
+    val titleSource: String? = null,
+    /** 归档时间戳（毫秒）；null = 未归档。对应 db.sqlite session.time_archived */
+    val archivedAt: Long? = null
 )
 
 /** session/create 的响应 */

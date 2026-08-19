@@ -86,6 +86,50 @@ class RuntimeModelRecoveryTest {
     }
 
     @Test
+    fun `send 带 providerId 时 -32031 恢复优先用指定 provider 而非默认 factory`() {
+        // providerId 指向 config.json 里不存在的 provider → buildRuntimeModel 返回 null → 回退 factory
+        // 验证回退逻辑：factory 仍被调用，不会因 buildRuntimeModel 失败而整体失败
+        startFakeClient(factory = { fakeRuntimeModel }).use { client ->
+            val r = client.send("sess_fake", "你好", providerId = "nonexistent-provider", modelId = "x")
+            assertEquals("true", r["usedRuntimeModel"]?.jsonPrimitive?.content, "buildRuntimeModel 失败应回退 factory")
+            assertEquals("GLM-9.9", r["modelId"]?.jsonPrimitive?.content, "回退 factory 的 runtimeModel 应被采用")
+        }
+    }
+
+    @Test
+    fun `buildRuntimeModel 按 providerId 从 config 构造指定 provider 的完整定义`() {
+        // hermetic：注入临时 config（两个 enabled provider，验证 buildRuntimeModel 取的是指定 provider 而非第一个）
+        val config = tempDir.resolve("config.json").also { it.writeText("""
+            {
+              "provider": {
+                "p-default": {
+                  "enabled": true, "kind": "anthropic", "name": "默认套餐", "source": "builtin",
+                  "options": { "baseURL": "https://default.api/v1", "apiKey": "sk-default" },
+                  "models": { "GLM-DEFAULT": {} }
+                },
+                "p-baidu": {
+                  "enabled": true, "kind": "anthropic", "name": "百度千帆", "source": "custom",
+                  "options": { "baseURL": "https://qianfan.baidubce.com/anthropic", "apiKey": "bce-v3-key" },
+                  "models": { "glm-5.2": {} }
+                }
+              }
+            }
+        """.trimIndent()) }
+        // 按 providerId 构造：指定百度千帆（排第二），验证不是默认套餐（排第一）
+        val rt = RuntimeModels.buildRuntimeModel("p-baidu", "glm-5.2", config)
+        assertEquals("glm-5.2", rt?.get("model")?.jsonObject?.get("modelId")?.jsonPrimitive?.content, "应取指定 provider 的模型")
+        assertEquals("p-baidu", rt?.get("model")?.jsonObject?.get("providerId")?.jsonPrimitive?.content, "应取指定 provider 而非第一个")
+        val provider = rt?.get("provider")?.jsonObject!!
+        assertEquals("百度千帆", provider["label"]?.jsonPrimitive?.content)
+        assertEquals("https://qianfan.baidubce.com/anthropic", provider["baseURL"]?.jsonPrimitive?.content)
+        assertEquals("bce-v3-key", provider["apiKey"]?.jsonObject?.get("value")?.jsonPrimitive?.content)
+        assertEquals("custom", provider["source"]?.jsonPrimitive?.content)
+
+        // providerId 不存在 → null（调用方走 factory 回退）
+        assertEquals(null, RuntimeModels.buildRuntimeModel("no-such-provider", "x", config))
+    }
+
+    @Test
     fun `defaultRuntimeModel 从 config 构造完整 provider 定义`() {
         // hermetic：注入临时 config（enabled anthropic provider + 两个模型）
         val config = tempDir.resolve("config.json").also { it.writeText("""

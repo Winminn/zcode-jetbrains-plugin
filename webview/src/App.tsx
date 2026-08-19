@@ -38,9 +38,10 @@ export default function App() {
     sessions, currentSessionId,
     messages, loadingMessages, streaming, streamingMessageId, waitingSince, lastError,
     askUser, exitPlanApproval, currentModel,
-    init, loadSessions, selectSession, resetToNewSession, deleteSession, stopStreaming, sendMessage,
+    init, loadSessions, selectSession, resetToNewSession, stopStreaming, sendMessage,
     clearError,
     renameSession, setModel,
+    archivedSessions, archivedLoading, loadArchivedSessions, archiveSession, restoreSession,
   } = useStore()
   const setPendingSettingsSection = useStore((s) => s.setPendingSettingsSection)
 
@@ -187,13 +188,17 @@ export default function App() {
         {currentView === 'history' && (
           <HistoryView
             sessions={sessions}
+            archivedSessions={archivedSessions}
+            archivedLoading={archivedLoading}
             currentSessionId={currentSessionId}
             /** 当前会话有对话历史时，历史列表切换前需二次确认（覆盖当前标签页）*/
             currentSessionHasMessages={!loadingMessages && messages.length > 0}
             onSelect={selectSession}
             onBack={() => setCurrentView('chat')}
-            onDelete={deleteSession}
+            onArchive={archiveSession}
+            onRestore={restoreSession}
             onRefresh={loadSessions}
+            onLoadArchived={loadArchivedSessions}
           />
         )}
 

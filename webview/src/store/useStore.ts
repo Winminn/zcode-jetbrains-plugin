@@ -62,6 +62,10 @@ interface StoreState {
   creatingSession: boolean
   /** 懒创建暂存的首条消息：无会话时发送 → 先建会话，createSession 响应后自动发出 */
   pendingFirstMessage: string | null
+  /** 已归档会话（回收站视图，独立于 sessions；用户进入「已归档」tab 时拉取）*/
+  archivedSessions: SessionInfo[]
+  /** 已归档列表加载中（tab 切换/归档后刷新的 loading 态）*/
+  archivedLoading: boolean
 
   // 消息
   messages: ZCodeMessage[]
@@ -196,6 +200,12 @@ interface StoreState {
   /** 「新建会话」按钮：重置为无会话待命态（延迟创建），首条消息触发建会话 */
   resetToNewSession: () => void
   deleteSession: (sessionId: string) => void
+  /** 拉取已归档会话列表（回收站视图）*/
+  loadArchivedSessions: () => void
+  /** 归档会话（从历史列表移入回收站，可恢复）*/
+  archiveSession: (sessionId: string) => void
+  /** 恢复归档会话（从回收站移回历史列表）*/
+  restoreSession: (sessionId: string) => void
   stopStreaming: () => void
   /** 重命名会话（CLI 协议无 rename op，仅前端 persist 持久化）*/
   renameSession: (sessionId: string, title: string) => void
@@ -298,6 +308,8 @@ export const useStore = create<StoreState>((set, get) => ({
   currentWorkspacePath: '',
   creatingSession: false,
   pendingFirstMessage: null,
+  archivedSessions: [],
+  archivedLoading: false,
 
   messages: [],
   loadingMessages: false,
@@ -379,22 +391,76 @@ export const useStore = create<StoreState>((set, get) => ({
     // 单事件兜底（mock 模式 + Java 端关键事件走 streamEvent 单推）
     onStreamEvent((sid: string, event: StreamEvent) => handleStreamEvent(sid, event, set, get))
 
-    const inJcef = isInJcef()
-    const ws = getWorkspacePath()
-    set({ connectionStatus: inJcef ? 'connected' : 'mock', projectPath: ws })
-    console.log(`[store] 初始化完成，连接=${inJcef ? 'JCEF' : 'mock'}，workspace=${ws || '(空)'}`)
-
     // IDE 广播：envSave 保存成功后多标签同步最新环境状态（Panel broadcastEnvStatus）
     // node 测试环境（vitest）无 window，跳过注册
     if (typeof window !== 'undefined') {
       window.onEnvStatusChanged = (status: EnvStatus) => set({ envStatus: status })
     }
 
-    get().checkEnv()
-    get().loadSessions()
-    get().loadModels()
-    // GLM 额度 60s 定时刷新（悬浮栏/用量页「上次刷新」的更新源，见 startQuotaPolling）
-    startQuotaPolling()
+    /**
+     * 冷启动时 Kotlin 桥注入（onLoadStart/onLoadEnd → invokeLater → executeJavaScript）
+     * 可能晚于 React useEffect → init() 的执行。若一次性判定 isInJcef() 会误判为 mock，
+     * 后续 loadSessions/sendToJava 落入 mockRespond 返回假数据（手动刷新才恢复）。
+     *
+     * 判断逻辑：
+     * - isInJcef() 首次即 true → 桥已就绪，直接拉数据（热启动/刷新场景）
+     * - isInJcef() false 但运行在浏览器（window 存在）→ 可能是 JCEF 冷启动桥未注入，
+     *   轮询 window.__ZCODE_CEF_QUERY__ 就绪后再拉（同 persist.ts initPersist 硬化模式）
+     * - 测试环境（isInJcef 被 mock 为 false，jsdom 有 window 但无桥注入）→ 轮询超时后
+     *   走 mock 兜底；fake timers 下 setTimeout 不自动推进，测试需手动控制（见各 spec beforeEach）
+     */
+    const ws = getWorkspacePath()
+    set({ projectPath: ws })
+
+    if (isInJcef()) {
+      // 桥已就绪（热启动/刷新）：直接拉数据
+      set({ connectionStatus: 'connected' })
+      console.log(`[store] 桥已就绪，workspace=${ws || '(空)'}`)
+      get().checkEnv()
+      get().loadSessions()
+      get().loadModels()
+      startQuotaPolling()
+      return
+    }
+
+    // 可能是 JCEF 冷启动（桥未注入完）或 dev/测试环境
+    // 测试环境（vitest）无桥注入，跳过轮询直接走 mock（fake timers 不推进 setTimeout）
+    if (import.meta.env?.VITEST) {
+      set({ connectionStatus: 'mock' })
+      console.log(`[store] 测试环境，连接=mock，workspace=${ws || '(空)'}`)
+      get().checkEnv()
+      get().loadSessions()
+      get().loadModels()
+      startQuotaPolling()
+      return
+    }
+
+    // JCEF 冷启动：轮询 window.__ZCODE_CEF_QUERY__ 就绪后再拉数据
+    // （同 persist.ts initPersist 硬化模式：桥注入可能晚于 React init 执行）
+    let bridgeRetries = 0
+    const waitForBridge = () => {
+      if (typeof window !== 'undefined' && typeof window.__ZCODE_CEF_QUERY__ === 'function') {
+        set({ connectionStatus: 'connected' })
+        console.log(`[store] 桥就绪（轮询 ${bridgeRetries}×50ms），workspace=${ws || '(空)'}`)
+        get().checkEnv()
+        get().loadSessions()
+        get().loadModels()
+        startQuotaPolling()
+        return
+      }
+      if (++bridgeRetries <= 40) {
+        setTimeout(waitForBridge, 50)
+        return
+      }
+      // 超时：dev 环境或桥注入异常，走 mock
+      set({ connectionStatus: 'mock' })
+      console.log(`[store] 桥等待超时，回退 mock，workspace=${ws || '(空)'}`)
+      get().checkEnv()
+      get().loadSessions()
+      get().loadModels()
+      startQuotaPolling()
+    }
+    waitForBridge()
   },
 
   loadSessions: () => {
@@ -493,12 +559,15 @@ export const useStore = create<StoreState>((set, get) => ({
 
     // 确保已订阅（规格书 §4：先 subscribe 再 send，否则丢事件）
     sendToJava({ op: 'subscribe', sessionId: sid, workspacePath: get().currentWorkspacePath })
-    // 发送
+    // 发送（附带 currentModel：-32031 恢复时用用户选择的 provider 而非默认 provider，
+    // 避免重装后既有会话 resume 恢复时被静默切到个人套餐导致显示与实际不符）
+    const cm = get().currentModel
     sendToJava({
       op: 'send',
       sessionId: sid,
       text,
       workspacePath: get().currentWorkspacePath,
+      ...(cm ? { providerId: cm.providerId, modelId: cm.modelId } : {}),
     })
 
     // 本地把用户消息立即加入列表（不等 reload，体验更快）
@@ -578,6 +647,19 @@ export const useStore = create<StoreState>((set, get) => ({
 
   deleteSession: (sessionId) => {
     sendToJava({ op: 'deleteSession', sessionId })
+  },
+
+  loadArchivedSessions: () => {
+    set({ archivedLoading: true })
+    sendToJava({ op: 'listArchivedSessions', workspacePath: get().projectPath })
+  },
+
+  archiveSession: (sessionId) => {
+    sendToJava({ op: 'archiveSession', sessionId })
+  },
+
+  restoreSession: (sessionId) => {
+    sendToJava({ op: 'restoreSession', sessionId })
   },
 
   stopStreaming: () => {
@@ -1260,6 +1342,34 @@ function handleResponse(
       })
       // 删的是当前会话 → 进入待命态，恢复当前模型的缓存级别集供预选
       if (deletedCurrent) get().hydrateThoughtLevelStandby()
+      break
+    }
+
+    case 'sessionArchived': {
+      // 归档：从历史列表移除（不删数据，可恢复）。当前会话被归档不清空——
+      // app-server 内存仍在跑，保留对话上下文，恢复后列表重新显示
+      set({ sessions: get().sessions.filter((x) => x.sessionId !== msg.sessionId) })
+      // 已归档列表已加载则刷新（让归档项出现）；未加载则下次进入 tab 时拉取
+      if (get().archivedSessions.length > 0 || get().archivedLoading) {
+        get().loadArchivedSessions()
+      }
+      break
+    }
+
+    case 'sessionRestored': {
+      // 恢复：从已归档列表移除，刷新历史列表让会话重新出现
+      set({ archivedSessions: get().archivedSessions.filter((x) => x.sessionId !== msg.sessionId) })
+      get().loadSessions()
+      break
+    }
+
+    case 'archivedSessions': {
+      // 标题合并（persist 手动重命名优先，同 listSessions 逻辑简化版）
+      const merged = msg.sessions.map((s) => {
+        const stored = getPersisted(`zcode.sessionTitle.${s.sessionId}`)
+        return stored ? { ...s, title: stored } : s
+      })
+      set({ archivedSessions: merged, archivedLoading: false })
       break
     }
 
