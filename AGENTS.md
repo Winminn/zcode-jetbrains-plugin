@@ -35,4 +35,5 @@ cd webview && npm test                # webview 测试（vitest，test/ 与 *.te
 ## 外部参考
 
 - CCGUI 参考项目（GitHub）：https://github.com/zhukunpenglinyutong/jetbrains-cc-gui （本项目 UI/设置页参考项目 jetbrains-cc-gui，探索其实现直接读 GitHub 源码；本机副本路径见工作区记忆）
+- Marketplace 发布：pluginId=33622（ZC-GUI），xmlId=`com.zcode.ideaplugin.zcode-assistant`；签名密钥在 `~/.zcode/plugin-signing/`，流程走 jetbrains-marketplace-publish skill（默认不本地跑 verifier，上传后以平台自动校验为准）
 
