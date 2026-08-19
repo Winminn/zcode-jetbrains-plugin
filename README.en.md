@@ -122,34 +122,6 @@ The frontend can be developed standalone, independent of the IDE (auto-switches 
 
 In production mode the plugin serves the multi-file build from a built-in HttpServer (127.0.0.1, random port) — the webview gets a real origin and sourcemaps, so DevTools can show TS/TSX sources with breakpoints; if the server fails to start it automatically falls back to singlefile loading.
 
-## Publishing to JetBrains Marketplace
-
-The first release must be uploaded manually on plugins.jetbrains.com; subsequent updates are published automatically by GitHub Actions.
-
-### First release (one-time)
-
-1. Register a JetBrains account and create a personal access token: [plugins.jetbrains.com/author/me/tokens](https://plugins.jetbrains.com/author/me/tokens)
-2. Generate a signing key pair: `./scripts/gen-signing-key.sh` (outputs to `~/.zcode/plugin-signing/`, outside the repo and never committed; delete that directory first to regenerate)
-3. Run the compatibility check locally: `./gradlew :intellij-plugin:runPluginVerifier` (downloads several IDE versions on first run — slow)
-4. `./build.sh` produces the distribution zip `intellij-plugin/build/distributions/ZC-GUI-<version>.zip`
-5. Upload the zip manually at [plugins.jetbrains.com/upload](https://plugins.jetbrains.com/upload) and fill in the Marketplace description, license and screenshots
-
-### Subsequent updates (automatic)
-
-Pushing a tag (e.g. `v0.1.1`) triggers `.github/workflows/release.yml`: build → compatibility verification → signing → publish to the stable channel. Configure these repository Secrets:
-
-| Secret | Source |
-| --- | --- |
-| `MARKETPLACE_TOKEN` | Token created in step 1 |
-| `CERTIFICATE_CHAIN` | Contents of `cat ~/.zcode/plugin-signing/chain.crt` |
-| `PRIVATE_KEY` | Contents of `cat ~/.zcode/plugin-signing/private.pem` |
-| `PRIVATE_KEY_PASSWORD` | Password passed when generating the key (leave empty if none) |
-
-> Before a release:
-> - Keep the version in sync in 4 places: `version` in `intellij-plugin/build.gradle.kts`, `webview/package.json`, `McpToolsClient.kt`, `WelcomeScreen.tsx`; the tag must be `v<version>` — CI verifies the tag matches the Gradle version
-> - Add a new version block at the top of `CHANGELOG.md` (the latest block is shown as the plugin change-notes)
-> - Run `runPluginVerifier` before widening the `until-build` compatibility range
-
 ## How it works
 
 The plugin starts ZCode's app-server as a child process (`node zcode.cjs app-server`) and drives sessions over JSON-RPC on stdin/stdout; events are dispatched per session, throttled, and pushed to JCEF in batches, where a frontend reducer incrementally folds them into the message tree and derived state (tasks / subagents / file changes). The plugin also acts as a host implementing the app-server's browser-use host protocol (reverse requests `interaction/browserList` / `browserExecute`), landing the AI's browser tools in the embedded JCEF browser.

@@ -122,34 +122,6 @@ cd webview && npm install && npm run build && npm run build:single && cd ..
 
 生产模式下插件会用内置 HttpServer（127.0.0.1 随机端口）serve 多文件产物——webview 拥有真实 origin 与 sourcemap，DevTools 中可直接看 TS/TSX 源码断点；server 启动失败时自动降级 singlefile 单文件加载。
 
-## 发布到 JetBrains Marketplace
-
-首次上架需在 plugins.jetbrains.com 网页手动完成；后续版本更新由 GitHub Actions 自动发布。
-
-### 首次上架（一次性）
-
-1. 注册 JetBrains 账号并创建个人访问令牌：[plugins.jetbrains.com/author/me/tokens](https://plugins.jetbrains.com/author/me/tokens)
-2. 生成签名密钥对：`./scripts/gen-signing-key.sh`（产物在 `~/.zcode/plugin-signing/`，项目外不入库；重复生成需先手动删除旧目录）
-3. 本地跑兼容性验证：`./gradlew :intellij-plugin:runPluginVerifier`（首次会下载多个 IDE 版本，耗时较长）
-4. `./build.sh` 产出发行包 `intellij-plugin/build/distributions/ZC-GUI-<版本>.zip`
-5. 在 [plugins.jetbrains.com/upload](https://plugins.jetbrains.com/upload) 手动上传 zip，并填写 Marketplace 描述、许可证、截图
-
-### 后续更新（自动）
-
-打 tag（如 `v0.1.1`）即触发 `.github/workflows/release.yml`：构建 → 兼容性验证 → 签名 → 发布到 stable 渠道。仓库需配置以下 Secrets：
-
-| Secret | 来源 |
-| --- | --- |
-| `MARKETPLACE_TOKEN` | 第 1 步创建的令牌 |
-| `CERTIFICATE_CHAIN` | `cat ~/.zcode/plugin-signing/chain.crt` 的内容 |
-| `PRIVATE_KEY` | `cat ~/.zcode/plugin-signing/private.pem` 的内容 |
-| `PRIVATE_KEY_PASSWORD` | 生成密钥时传入的密码（无密码则留空） |
-
-> 发布前注意事项：
-> - 版本号需保持 4 处一致：`intellij-plugin/build.gradle.kts` 的 `version`、`webview/package.json`、`McpToolsClient.kt`、`WelcomeScreen.tsx`；tag 名必须为 `v<版本>`，CI 会校验 tag 与 build.gradle.kts 版本一致
-> - 在 `CHANGELOG.md` 顶部新增版本块（其最新版本块会作为插件 change-notes 展示）
-> - 更新 `until-build` 兼容范围前先跑 `runPluginVerifier` 验证
-
 ## 工作原理
 
 插件以子进程方式启动 ZCode 的 app-server（`node zcode.cjs app-server`），通过 stdin/stdout 上的 JSON-RPC 驱动会话；事件流按会话分发、节流批量推入 JCEF，前端 reducer 增量归约为消息树与任务 / 子代理 / 文件改动等派生状态。插件同时充当宿主，实现 app-server 下行的 browser-use 宿主协议（`interaction/browserList` / `browserExecute` 反向请求），把 AI 的浏览器工具落到内嵌 JCEF 浏览器上执行。
