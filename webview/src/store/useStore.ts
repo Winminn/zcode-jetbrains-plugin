@@ -15,7 +15,7 @@
 import { create } from 'zustand'
 import { onMessage, onStreamEvent, onStreamBatch, sendToJava, initBridge, isInJcef, getWorkspacePath, getInitialSessionId } from '@/ipc/bridge'
 import type { JavaResponse, SessionInfo, ZCodeMessage, StreamEvent, ModelOption, ModelManageProvider, TodoItem, AgentItem, FileChangeItem, QuotaData, ModelUsageData, ToolUsageData, UsageRange, ContextBreakdownItem, ThoughtLevelInfo, SubagentActivity, SubagentInfo, ToolUpdatedPayload, MemoryFileInfo, SkillInfo, McpServerInfo, McpToolsState, McpLogEntry, EnvStatus } from '@/types/messages'
-import { applyStreamEvent, isSubagentToolEvent, applySubagentToolEvent, markActivityOutcome, asSubagentLifecycle, looksLikeQuotaError } from '@/utils/streamReducer'
+import { applyStreamEvent, isSubagentToolEvent, applySubagentToolEvent, markActivityOutcome, finalizeActivitiesFromNotifications, asSubagentLifecycle, looksLikeQuotaError } from '@/utils/streamReducer'
 import type { TurnErrorInfo, SubagentLifecyclePayload } from '@/utils/streamReducer'
 import i18n from '@/i18n/config'
 import { parseTodos, parseAgents, parseFileChanges, mergeAgentItems } from '@/utils/parseStatus'
@@ -1082,6 +1082,40 @@ function subscribeChildSession(childSessionId: string): void {
   })
 }
 
+// ===== 子代理权威状态轮询（兜底：不依赖事件时序）=====
+let subagentPollTimer: ReturnType<typeof setInterval> | null = null
+
+/**
+ * 有 running 活动期间每 3s 拉一次 session/subagents 权威列表。
+ * 事件路径全部有时序竞态（2026-08-20 两轮实测）：lifecycle 事件 subscribe 流
+ * 不下发；快子代理在 subscribeChild 建立前就跑完，子会话 turn.completed 被
+ * 订阅过滤器丢弃；合成通知消息回合中途不可见。RPC 状态合并本就是最终权威
+ * （case 'subagents'），轮询保证任何路径失联时底部栏最迟 3s 收口。
+ * 无 running 活动自动停表（含测试环境的活动清空）。
+ */
+function ensureSubagentStatusPolling(): void {
+  if (subagentPollTimer != null) return
+  subagentPollTimer = setInterval(() => {
+    const st = useStore.getState()
+    if (!st.subagentActivities.some((a) => a.status === 'running')) {
+      if (subagentPollTimer != null) {
+        clearInterval(subagentPollTimer)
+        subagentPollTimer = null
+      }
+      return
+    }
+    if (st.currentSessionId) st.loadSubagents()
+  }, 3000)
+}
+
+/** 停止权威轮询（无 running 活动时轮询也会自停；此函数用于测试隔离与会话清理）*/
+export function stopSubagentStatusPolling(): void {
+  if (subagentPollTimer != null) {
+    clearInterval(subagentPollTimer)
+    subagentPollTimer = null
+  }
+}
+
 /**
  * 子会话消息的静默拉取登记（sessionId 集合）：
  * 弹窗运行中 3s 轮询用 silent 模式拉快照，响应侧据此跳过 loading/error，
@@ -1465,9 +1499,20 @@ function handleResponse(
       if (msg.sessionId !== st.currentSessionId) break
       if (msg.error) break
       const items = [...msg.data.running, ...msg.data.ended.items]
+      // RPC 报告已结束的子代理 → 活动同步收尾（底部栏 agents 由 merge 覆盖，
+      // 活动本身也须收尾：否则权威轮询（见 ensureSubagentStatusPolling）
+      // 因 running 活动常驻而永不停止，且 turnEnded 前三源状态不一致）
+      let activities = st.subagentActivities
+      for (const it of items) {
+        const s = String(it.status ?? '').toLowerCase()
+        if (!it.toolCallId || s === '' || s === 'running' || s === 'pending') continue
+        const failed = !['completed', 'succeeded', 'success'].includes(s)
+        activities = markActivityOutcome(activities, it.toolCallId, failed, Date.now())
+      }
       set({
         subagents: items,
-        agents: mergeAgentItems(parseAgents(st.messages), st.subagentActivities, items),
+        ...(activities !== st.subagentActivities ? { subagentActivities: activities } : {}),
+        agents: mergeAgentItems(parseAgents(st.messages), activities, items),
       })
       const detail = st.subagentDetail
       if (detail) {
@@ -1918,6 +1963,7 @@ function applyModeEventToPatch(
  */
 function applySubagentLifecycle(
   lc: SubagentLifecyclePayload,
+  timestamp: number,
   set: (partial: Partial<StoreState>) => void,
   get: () => StoreState,
 ) {
@@ -1931,6 +1977,16 @@ function applySubagentLifecycle(
   }
   if (lc.phase === 'stopped') {
     const st = get()
+    // stopped 是子代理的真实终点：即时收尾底部栏活动 + 权威刷新列表。
+    // 后台代理的 Agent 工具启动即返回（result 早于活动创建，markActivityOutcome
+    // 当时无对象可标记），不在这里收尾会卡 running 直到主回合 turnEnded
+    const failStatus = (lc.status ?? '').toLowerCase()
+    const failed = ['failed', 'error', 'interrupted', 'aborted', 'cancelled'].includes(failStatus)
+    if (key) {
+      const activities = markActivityOutcome(st.subagentActivities, key, failed, timestamp)
+      set({ subagentActivities: activities, ...refreshStatus(st.messages, activities, st.subagents) })
+    }
+    get().loadSubagents()
     if (st.subagentDetail && st.childSessionKeys[lc.childSessionId] === st.subagentDetail) {
       st.loadChildMessages(lc.childSessionId)
     }
@@ -1951,6 +2007,8 @@ function handleChildStreamBatch(
   if (events.length === 0) return
   let messages = get().childLiveMessages[sessionId] ?? []
   let streamingId = get().childStreamingIds[sessionId] ?? null
+  let childTurnEnded = false
+  let childTurnFailed = false
   for (const event of events) {
     if (event.type === 'state.updated') continue
     // 防御：子会话原生流不应出现转发标记，出现则跳过（转发事件走父会话流）
@@ -1958,12 +2016,29 @@ function handleChildStreamBatch(
     const r = applyStreamEvent(messages, event, streamingId)
     messages = r.messages
     streamingId = r.streamingMessageId
+    if (r.turnEnded) {
+      childTurnEnded = true
+      if (r.turnError) childTurnFailed = true
+    }
   }
   const st = get()
   set({
     childLiveMessages: { ...st.childLiveMessages, [sessionId]: messages },
     childStreamingIds: { ...st.childStreamingIds, [sessionId]: streamingId },
   })
+  // 子会话 turn 结束 = 子代理跑完：后台代理唯一实时可用的终点信号
+  //（session/subscribe 流不带 subagent.lifecycle，合成通知消息只在重拉时可见），
+  // 即时收尾父会话活动 + 权威刷新。子会话多 turn 自动续轮时会提前收尾一次，
+  // RPC 刷新返回 running 会把状态盖回来，可自愈。
+  if (childTurnEnded) {
+    const key = st.childSessionKeys[sessionId]
+    if (key) {
+      const ts = events[events.length - 1]?.timestamp ?? Date.now()
+      const activities = markActivityOutcome(st.subagentActivities, key, childTurnFailed, ts)
+      set({ subagentActivities: activities, ...refreshStatus(st.messages, activities, st.subagents) })
+      get().loadSubagents()
+    }
+  }
 }
 
 function handleStreamBatch(
@@ -2005,11 +2080,11 @@ function handleStreamBatch(
       continue
     }
     // 子代理生命周期通知（session.updated / kind=subagent.lifecycle）：
-    // spawned 携带 childSessionId → 注册子会话；stopped → 详情弹窗开着则拉权威全量
+    // spawned 携带 childSessionId → 注册子会话；stopped → 收尾活动 + 拉权威全量
     if (event.type === 'session.updated') {
       const lc = asSubagentLifecycle(event.payload)
       if (lc) {
-        applySubagentLifecycle(lc, set, get)
+        applySubagentLifecycle(lc, event.timestamp, set, get)
         continue
       }
     }
@@ -2017,6 +2092,7 @@ function handleStreamBatch(
     // 聚合到 subagentActivities 供底部子代理栏与详情弹窗使用
     if (event.type === 'tool.updated' && isSubagentToolEvent(event.payload)) {
       activities = applySubagentToolEvent(activities, event.payload, event.timestamp)
+      ensureSubagentStatusPolling() // running 活动期间启动权威轮询兜底
       // 兜底注册子会话（spawned 通知缺失时，转发事件自带的归属字段也能建立映射）
       const fp = event.payload as ToolUpdatedPayload
       if (fp.childSessionId && fp.parentToolCallId
@@ -2116,11 +2192,11 @@ function handleStreamEvent(
     return
   }
 
-  // 子代理生命周期通知（spawned/stopped）：注册子会话，stop 时按需拉权威
+  // 子代理生命周期通知（spawned/stopped）：注册子会话，stop 时收尾活动 + 拉权威
   if (event.type === 'session.updated') {
     const lc = asSubagentLifecycle(event.payload)
     if (lc) {
-      applySubagentLifecycle(lc, set, get)
+      applySubagentLifecycle(lc, event.timestamp, set, get)
       return
     }
   }
@@ -2129,6 +2205,7 @@ function handleStreamEvent(
   if (event.type === 'tool.updated' && isSubagentToolEvent(event.payload)) {
     const st = get()
     const activities = applySubagentToolEvent(st.subagentActivities, event.payload, event.timestamp)
+    ensureSubagentStatusPolling() // running 活动期间启动权威轮询兜底
     // 兜底注册子会话（同批量路径）
     const fp = event.payload as ToolUpdatedPayload
     const keyPatch = (fp.childSessionId && fp.parentToolCallId && !(fp.childSessionId in st.childSessionKeys))
@@ -2256,10 +2333,13 @@ function applyMessagesSnapshot(
   const visibleMessages = mergeTurnMessages(
     msg.messages.filter((m) => !isHiddenSyntheticMessage(m.info)),
   )
+  // 通知扫描：转录里出现 task-notification 而活动还停在 running（子会话流与
+  // 生命周期钩子都错过的场合，如重启恢复）→ 自愈收尾并拉权威列表补齐
+  const activities = finalizeActivitiesFromNotifications(st.subagentActivities, msg.messages, Date.now())
   const patch: Partial<StoreState> = {
     messages: visibleMessages,
     loadingMessages: false,
-    ...refreshStatus(msg.messages, st.subagentActivities, st.subagents),
+    ...refreshStatus(msg.messages, activities, st.subagents),
   }
   // currentModel 为 null 时从消息推断（兼容历史会话 / CLI 默认模型，解除空会话发送限制）
   if (!get().currentModel) {
@@ -2271,7 +2351,9 @@ function applyMessagesSnapshot(
     const mode = inferCurrentMode(msg.messages)
     if (mode) patch.currentMode = mode
   }
+  if (activities !== st.subagentActivities) patch.subagentActivities = activities
   set(patch)
+  if (activities !== st.subagentActivities) get().loadSubagents()
 }
 
 /** 消息是否带非空正文（判定"末尾是完整 assistant 回复"用）*/

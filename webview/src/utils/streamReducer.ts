@@ -8,6 +8,7 @@
  */
 
 import type { ZCodeMessage, MessagePart, StreamEvent, StreamEventPayload, ToolPart, SubagentActivity, ToolUpdatedPayload, TurnFailedPayload } from '@/types/messages'
+import { isAgentNotification, parseNotificationText } from './parseNotification'
 
 /**
  * 把一个流式事件应用到消息数组，返回新的消息数组（不可变更新）。
@@ -578,6 +579,35 @@ export function markActivityOutcome(
   return activities.map((a) => a.key === key && a.status === 'running'
     ? { ...a, status: failed ? 'failed' : 'completed', lastUpdate: timestamp, endedAt: timestamp }
     : a)
+}
+
+/**
+ * 合成 task-notification 消息 → 收尾对应子代理活动（幂等，仅 running 可翻转）。
+ * session/subscribe 事件流实测不带 subagent.lifecycle（2026-08-20 idea.log/zcode.cjs
+ * 取证），后台子代理完成在转录里的唯一痕迹是这条通知消息（tool-use-id = 父会话
+ * Agent 工具 callID = 活动 key）；子会话流与生命周期钩子都错过的场合（如重启
+ * 恢复出 running 活动），消息重拉时在此自愈。后台 Bash 任务的 tool-use-id 不在
+ * activities 里，markActivityOutcome 天然不命中，无副作用。
+ */
+export function finalizeActivitiesFromNotifications(
+  activities: SubagentActivity[],
+  messages: ZCodeMessage[],
+  timestamp: number,
+): SubagentActivity[] {
+  if (!activities.some((a) => a.status === 'running')) return activities
+  let next = activities
+  for (const msg of messages) {
+    if (msg.info?.role !== 'user' || !isAgentNotification(msg.info)) continue
+    const textPart = msg.parts.find((p) => p.type === 'text') as { text?: string } | undefined
+    const text = typeof textPart?.text === 'string' ? textPart.text : ''
+    if (!text) continue
+    const parsed = parseNotificationText(text)
+    if (parsed.kind !== 'task' || !parsed.toolUseId) continue
+    const failed = parsed.status !== undefined
+      && !['completed', 'succeeded', 'success'].includes(parsed.status)
+    next = markActivityOutcome(next, parsed.toolUseId, failed, timestamp)
+  }
+  return next
 }
 
 /**

@@ -132,7 +132,12 @@ export function ToolCallCard({ part }: Props) {
     const info = s.subagents.find((x) => x.toolCallId === part.callID)
     const item = s.agents.find((a) => a.callID === part.callID)
     const act = s.subagentActivities.find((a) => a.key === part.callID)
-    return String(info?.status ?? item?.status ?? act?.status ?? '')
+    // 防降级（同 mergeAgentItems）：本地活动/合并结果已终态时，不被过期的
+    // RPC running 盖回——轮询自停后 RPC 缓存可能永远停在 running
+    //（2026-08-20 前台代理实测：卡片转圈到回合结束的根源）
+    const local = String(item?.status ?? act?.status ?? '')
+    if (local === 'completed' || local === 'error') return local
+    return String(info?.status ?? local)
   })
   // 流式期间的原始工具输入（tool_input_delta 累积的 JSON 片段，未完整无法解析）：
   // 回合中即可看到"在运行什么命令/读写什么文件"，回合结束全量刷新后被解析的 input 取代

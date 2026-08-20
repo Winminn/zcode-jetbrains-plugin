@@ -151,6 +151,14 @@ export function mergeAgentItems(
   for (const r of rpc) {
     const prev = byCall.get(r.toolCallId)
     const rpcStatus = normalizeRpcStatus(r.status, prev?.status)
+    // 防降级：RPC 是快照（轮询/回合结束拉取），可能落后于本地事件收尾——
+    // 本地已终态时，过期的 running/pending 不得把 completed/error 盖回去。
+    //（2026-08-20 前台代理实测：28s 轮询取到 running、29.65s 事件收尾、
+    //  31s 轮询自停不再刷新 → 缓存 running 永久覆盖 completed，卡到回合结束）
+    const prevTerminal = prev?.status === 'completed' || prev?.status === 'error'
+    const effectiveStatus = prevTerminal && (rpcStatus === 'running' || rpcStatus === 'pending')
+      ? prev!.status
+      : rpcStatus
     const bg = prev?.background
     const span = bg
       ? validSpan(r.startedAt, r.endedAt)
@@ -159,7 +167,7 @@ export function mergeAgentItems(
     const endedAt = span?.endedAt ?? prev?.endedAt
     byCall.set(r.toolCallId, {
       description: r.title || prev?.description || i18n.t('utils.subagentTask'),
-      status: rpcStatus,
+      status: effectiveStatus,
       ...(r.subagentType || prev?.subagentType
         ? { subagentType: r.subagentType || prev?.subagentType }
         : {}),
