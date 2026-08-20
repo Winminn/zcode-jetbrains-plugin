@@ -644,6 +644,7 @@ if (!window.__ZCODE_LOG_HOOK__) {
                         "mcpServerTools" -> handleMcpServerTools(msg)
                         "getMcpLogs" -> handleGetMcpLogs(msg)
                         "askUserResponse" -> handleAskUserResponse(msg)
+                        "askUserPendingState" -> handleAskUserPendingState()
                         "deleteSession" -> handleDeleteSession(msg)
                         "archiveSession" -> handleArchiveSession(msg)
                         "restoreSession" -> handleRestoreSession(msg)
@@ -2189,16 +2190,30 @@ if (!window.__ZCODE_LOG_HOOK__) {
             val coldSession = e.message?.let {
                 it.contains("-32004") || it.contains("Session is not active", ignoreCase = true)
             } == true
-            if (!coldSession) {
+            // 悬挂回合 send：服务端 prompt 仍在 running（典型：审批反向请求被服务端
+            // 退避放弃后回合未收尾，2026-08-20 实测；或多标签 resume 同会话并发）。
+            // -32010 是同步拒绝、消息未入队，先 session/stop 打断悬挂回合再重发一次。
+            // 注意多标签同会话另一侧真实生成中会被误停——属可接受边缘（同会话本就
+            // 不该两标签同时发）；不违反 requestWithRetry 的幂等约束（那是超时未知态）
+            val promptRunning = e.code == -32010 || e.message?.contains("-32010") == true
+            if (!coldSession && !promptRunning) {
                 log.error("send 失败", e)
                 return errorResponse("发送失败: ${e.message}")
             }
             try {
-                client.resume(sessionId, com.zcode.ideaplugin.protocol.model.Workspace(workspacePath))
-                log.info("send 撞冷会话（-32004），resume 后重试: $sessionId")
+                if (promptRunning) {
+                    client.stop(sessionId)
+                    // stop 打断的回合可能正挂着审批/提问弹窗：立即废弃（关窗 + 不发
+                    // 迟到应答），否则用户点死弹窗的应答会发给已死请求（缺陷P2/P3）
+                    project.zCodeService().abortPendingUserInputs(sessionId)
+                    log.info("send 撞悬挂回合（-32010），stop 后重试: $sessionId")
+                } else {
+                    client.resume(sessionId, com.zcode.ideaplugin.protocol.model.Workspace(workspacePath))
+                    log.info("send 撞冷会话（-32004），resume 后重试: $sessionId")
+                }
                 client.send(sessionId, text, workspacePath, providerId = providerId, modelId = modelId)
             } catch (e2: Exception) {
-                log.error("send 失败（resume 重试后仍失败）", e2)
+                log.error("send 失败（恢复重试后仍失败）", e2)
                 return errorResponse("发送失败: ${e2.message}")
             }
         }
@@ -2634,6 +2649,12 @@ if (!window.__ZCODE_LOG_HOOK__) {
         val answer = msg["answer"]
         val answers = msg["answers"]?.jsonObject
         return project.zCodeService().completeUserInput(requestId, action, answer, answers)
+    }
+
+    /** 前端 init 拉取反向请求挂起状态（新开标签/页面重载错过广播的看门狗豁免兜底）*/
+    private fun handleAskUserPendingState(): JsonObject {
+        project.zCodeService().pushAskUserPendingState(this)
+        return buildJsonObject { put("op", "askUserStateAck") }
     }
 
     /**

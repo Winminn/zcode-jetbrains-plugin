@@ -237,6 +237,7 @@ export default function App() {
           requestId={askUser.requestId}
           toolName={askUser.toolName}
           questions={askUser.questions}
+          deadlineMs={askUser.deadlineMs}
           onClose={() => useStore.setState({ askUser: null })}
         />
       )}
@@ -246,6 +247,7 @@ export default function App() {
         <PlanApprovalDialog
           requestId={exitPlanApproval.requestId}
           plan={exitPlanApproval.plan}
+          deadlineMs={exitPlanApproval.deadlineMs}
           onClose={() => useStore.setState({ exitPlanApproval: null })}
         />
       )}

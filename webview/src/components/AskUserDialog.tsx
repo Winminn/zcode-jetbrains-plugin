@@ -17,12 +17,15 @@ import { useMemo, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import type { AskUserQuestion, AskUserResponseMsg } from '@/types/messages'
 import { sendToJava } from '@/ipc/bridge'
+import { DialogCountdown } from './DialogCountdown'
 import '../styles/ask-user-dialog.less'
 
 interface Props {
   requestId: string
   toolName: string
   questions: AskUserQuestion[]
+  /** Java 侧应答超时时刻（epoch 毫秒），倒计时显示用；旧链路可缺省 */
+  deadlineMs?: number
   onClose: () => void
 }
 
@@ -30,7 +33,7 @@ interface Props {
 const OTHER_MARKER = '__other__'
 const MAX_CUSTOM_INPUT_LENGTH = 200
 
-export function AskUserDialog({ requestId, toolName, questions, onClose }: Props) {
+export function AskUserDialog({ requestId, toolName, questions, deadlineMs, onClose }: Props) {
   const { t } = useTranslation()
   const [current, setCurrent] = useState(0)
   /** 问题文本 → 已选 option label 集合（含 OTHER_MARKER） */
@@ -120,9 +123,10 @@ export function AskUserDialog({ requestId, toolName, questions, onClose }: Props
   if (!q) return null
 
   return (
-    <div className="ask-user-overlay" onClick={handleDecline}>
-      {/* title=源工具名（悬停可见，便于区分请求来源；标题本体走国际化）*/}
-      <div className="ask-user-dialog" onClick={(e) => e.stopPropagation()} title={toolName}>
+    <div className="ask-user-overlay">
+      {/* 遮罩不响应点击：旧版遮罩=decline，双击禁用按钮的第二击落在遮罩上会误取消
+          （2026-08-20 实测）；取消只走 footer 显式按钮 */}
+      <div className="ask-user-dialog" title={toolName}>
         <div className="ask-user-dialog__header">
           <span className="ask-user-dialog__icon">❓</span>
           <span className="ask-user-dialog__title">{t('app.askUser.title')}</span>
@@ -131,6 +135,7 @@ export function AskUserDialog({ requestId, toolName, questions, onClose }: Props
               {t('app.askUser.progress', { current: idx + 1, total: list.length })}
             </span>
           )}
+          <DialogCountdown deadlineMs={deadlineMs} />
         </div>
 
         <div className="ask-user-dialog__body">

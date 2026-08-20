@@ -179,6 +179,22 @@
     color: var(--accent-primary, #007fd4);
   }
 
+  // 显式裸拒绝按钮（decline 唯一入口）：次级样式，与批准/继续规划区分
+  &__btn--decline {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+
+    &:hover:not(:disabled) {
+      color: var(--status-error, #e5546a);
+      border-color: color-mix(in srgb, var(--status-error, #e5546a) 50%, transparent);
+    }
+
+    .codicon {
+      font-size: 14px;
+    }
+  }
+
   &__btn--approve {
     display: inline-flex;
     align-items: center;

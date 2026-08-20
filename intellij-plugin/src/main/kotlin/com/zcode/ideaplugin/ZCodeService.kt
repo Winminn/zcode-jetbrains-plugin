@@ -93,4 +93,20 @@ interface ZCodeService {
         answer: JsonElement?,
         answers: JsonObject?,
     ): JsonObject
+
+    /**
+     * 回合被外力打断（-32010 自愈的 session/stop、回合终止事件）时废弃待应答弹窗：
+     * 直接移除 pendingUserInputs（不 complete future，杜绝向已死请求发迟到
+     * decline——服务端权限请求状态机会被迟到应答污染，2026-08-20 实测缺陷P2/P3），
+     * 并推 askUserAck 让前端立即关窗。挂起的 handler 线程由自身超时兜底退出。
+     *
+     * @param sessionId 只废弃该会话的挂起请求（双会话并发互不误伤）；null = 全部
+     */
+    fun abortPendingUserInputs(sessionId: String? = null)
+
+    /**
+     * 向指定面板同步反向请求挂起状态（webview init 时拉取）：存在挂起请求则推
+     * {op:"askUserPending", active:true}——新开标签/页面重载错过广播的看门狗豁免兜底。
+     */
+    fun pushAskUserPendingState(panel: ZCodeToolWindowPanel)
 }

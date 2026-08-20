@@ -166,7 +166,8 @@ export type AskUserResponseMsg =
       answers?: Record<string, string | string[]>
     }
 
-export type JavaRequest =  | { op: 'listSessions'; workspacePath?: string }
+export type JavaRequest =  | { op: 'askUserPendingState' }
+  | { op: 'listSessions'; workspacePath?: string }
   | { op: 'createSession'; workspacePath?: string }
   /** 前端进入无会话待命态（「新建会话」延迟创建）→ Java 清 TabState 绑定与标签 tooltip */
   | { op: 'clearTabSession' }
@@ -507,8 +508,10 @@ export type JavaResponse =
   | { op: 'streamEvent'; sessionId: string; event: StreamEvent }
   | { op: 'streamBatch'; sessionId: string; events: StreamEvent[] }
   | { op: 'newSession'; oldSessionId: string; sessionId: string }
-  | { op: 'askUser'; requestId: string; toolName: string; questions: AskUserQuestion[] }
-  | { op: 'exitPlanApproval'; requestId: string; plan: string }
+  | { op: 'askUser'; requestId: string; toolName: string; questions: AskUserQuestion[]; deadlineMs?: number }
+  | { op: 'exitPlanApproval'; requestId: string; plan: string; deadlineMs?: number }
+  | { op: 'askUserPending'; active: boolean }
+  | { op: 'askUserStateAck' }
   | { op: 'askUserAck' }
   | { op: 'tabCreating' }
   | { op: 'browserPaneToggled'; visible: boolean }

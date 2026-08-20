@@ -208,11 +208,15 @@ interface StoreState {
   /** 用量查询局部错误（凭证/HTTP 失败，不污染全局 lastError）*/
   usageError: string | null
 
-  // AskUserQuestion 弹窗
-  askUser: { requestId: string; toolName: string; questions: import('@/types/messages').AskUserQuestion[] } | null
+  // AskUserQuestion 弹窗（deadlineMs = Java 侧应答超时时刻，弹窗倒计时用；旧链路可缺省）
+  askUser: { requestId: string; toolName: string; questions: import('@/types/messages').AskUserQuestion[]; deadlineMs?: number } | null
 
   // ExitPlanMode 计划审批弹窗（服务端 interaction/requestUserInput，params = {input:{plan}}）
-  exitPlanApproval: { requestId: string; plan: string } | null
+  exitPlanApproval: { requestId: string; plan: string; deadlineMs?: number } | null
+
+  // 本会话存在挂起中的反向请求（Java 广播，多标签同会话时无弹窗的面板也置位）——
+  // 流式看门狗豁免用：等待用户应答是合法静默，不应判 streamLost 提前收尾
+  askUserPendingActive: boolean
 
   // actions
   init: () => void
@@ -361,6 +365,7 @@ export const useStore = create<StoreState>((set, get) => ({
   queuedMessages: [],
   askUser: null,
   exitPlanApproval: null,
+  askUserPendingActive: false,
 
   models: [],
   currentModel: null,
@@ -443,6 +448,9 @@ export const useStore = create<StoreState>((set, get) => ({
       // 桥已就绪（热启动/刷新）：直接拉数据
       set({ connectionStatus: 'connected' })
       console.log(`[store] 桥已就绪，workspace=${ws || '(空)'}`)
+      // 拉取反向请求挂起状态：页面刷新/重载会错过 Java 的 askUserPending 广播，
+      // 看门狗豁免标志（askUserPendingActive）需重新同步
+      sendToJava({ op: 'askUserPendingState' })
       get().checkEnv()
       get().loadSessions()
       get().loadModels()
@@ -469,6 +477,8 @@ export const useStore = create<StoreState>((set, get) => ({
       if (typeof window !== 'undefined' && typeof window.__ZCODE_CEF_QUERY__ === 'function') {
         set({ connectionStatus: 'connected' })
         console.log(`[store] 桥就绪（轮询 ${bridgeRetries}×50ms），workspace=${ws || '(空)'}`)
+        // 冷启动就绪同样拉取挂起状态（广播可能在桥注入前已错过）
+        sendToJava({ op: 'askUserPendingState' })
         get().checkEnv()
         get().loadSessions()
         get().loadModels()
@@ -668,6 +678,7 @@ export const useStore = create<StoreState>((set, get) => ({
       childStreamingIds: {},
       askUser: null, // 旧会话遗留的提问/审批弹窗随会话切换关闭
       exitPlanApproval: null,
+      askUserPendingActive: false,
     })
     // 待命态：恢复当前模型的缓存级别集（currentMode 不水合——模式是即时意图，预选重新开始）
     get().hydrateThoughtLevelStandby()
@@ -1551,10 +1562,16 @@ function handleResponse(
       // -32004（Session is not active）追加人话提示：CLI 升级/重启后的新进程里会话
       // 未激活，此前用户只看到协议原文不知道该怎么办（2026-08-19 升级中断实测）
       const sessionInactive = /Session is not active/i.test(msg.message)
+      // -32010（A prompt is already running）：服务端回合悬挂，Java 已自动 stop+重发，
+      // 走到前端说明自愈失败——提示可操作文案；且跳过 flushQueue（服务端 prompt 状态
+      // 未清前队列下一条大概率再撞，会连环报错，2026-08-20 实测）
+      const promptRunning = /-32010|prompt is already running/i.test(msg.message)
       set({
         lastError: sessionInactive
           ? `${msg.message}；${i18n.t('app.sessionInactiveHint')}`
-          : msg.message,
+          : promptRunning
+            ? `${msg.message}；${i18n.t('app.promptRunningHint')}`
+            : msg.message,
         // 环境前置检查失败（EnvCheckException/envSave 验证失败）：附带 envStatus 刷新提醒条
         ...(msg.envStatus ? { envStatus: msg.envStatus } : {}),
         envSaving: false,
@@ -1574,8 +1591,9 @@ function handleResponse(
         ...(get().creatingSession ? { creatingSession: false, pendingFirstMessage: null } : {}),
       })
       console.error('[store] Java 错误:', msg.message)
-      // 错误清 streaming 后继续发队列下一条（排队意图明确；持续失败时用户可删队列项）
-      get().flushQueue()
+      // 错误清 streaming 后继续发队列下一条（排队意图明确；持续失败时用户可删队列项）；
+      // -32010 例外：悬挂回合未清，队列再发必再撞
+      if (!promptRunning) get().flushQueue()
       break
     }
 
@@ -1590,18 +1608,24 @@ function handleResponse(
     case 'askUser':
       // AskUserQuestion 弹窗（服务器反向请求 interaction/requestUserInput）
       console.log('[store] 收到 askUser:', msg.toolName, msg.questions)
-      set({ askUser: { requestId: msg.requestId, toolName: msg.toolName, questions: msg.questions } })
+      set({ askUser: { requestId: msg.requestId, toolName: msg.toolName, questions: msg.questions, deadlineMs: msg.deadlineMs }, askUserPendingActive: true })
       break
 
     case 'exitPlanApproval':
       // ExitPlanMode 计划审批弹窗：渲染 plan markdown，用户批准/拒绝
       console.log('[store] 收到 exitPlanApproval，plan 长度:', msg.plan?.length ?? 0)
-      set({ exitPlanApproval: { requestId: msg.requestId, plan: msg.plan || '' } })
+      set({ exitPlanApproval: { requestId: msg.requestId, plan: msg.plan || '', deadlineMs: msg.deadlineMs }, askUserPendingActive: true })
+      break
+
+    case 'askUserPending':
+      // Java 广播的反向请求挂起标志（多标签同会话：无弹窗的面板靠它豁免看门狗）。
+      // 只维护标志，不动弹窗状态（弹窗由 askUserAck / 组件 onClose 关闭）
+      set({ askUserPendingActive: msg.active })
       break
 
     case 'askUserAck':
-      // Java 确认已收到用户选择，关闭弹窗
-      set({ askUser: null, exitPlanApproval: null })
+      // Java 确认已收到用户选择（或回合终止/超时联动废弃），关闭弹窗
+      set({ askUser: null, exitPlanApproval: null, askUserPendingActive: false })
       break
 
     case 'ideTheme':
@@ -2291,6 +2315,11 @@ function probeTurnState(): void {
   if (!st.streaming || !st.currentSessionId) return
   // mock/dev 数据源不会复现"服务端跑完但零事件"，不探测
   if (st.connectionStatus !== 'connected') return
+  // 反向请求弹窗（AskUser / 计划审批）挂起期间豁免：等待用户应答是合法静默
+  // （Java 侧最长 5 分钟），不应判流丢失提前收尾——否则审批超时路径被 60s 看门狗
+  // 截胡（2026-08-20 实测缺陷P1）。askUserPendingActive 覆盖多标签同会话：
+  // 弹窗只路由到一个标签，其余标签靠 Java 广播的标志豁免（缺陷P1+）
+  if (st.askUser || st.exitPlanApproval || st.askUserPendingActive) return
   // 上一发探测仍在途（30s 未回视为丢失，放行重探）
   if (reconcileProbeInFlight && Date.now() - reconcileProbeSentAt < 30_000) return
   if (Date.now() - lastStreamActivityAt < STREAM_SILENCE_MS) return

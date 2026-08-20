@@ -1,0 +1,32 @@
+// 反向请求弹窗超时倒计时（AskUser / 计划审批共用），复用全局 CSS 变量
+.dialog-countdown {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-left: auto;
+  padding-left: 8px;
+  font-size: 11px;
+  color: var(--zc-text-secondary, #8a8a8a);
+  white-space: nowrap;
+  user-select: none;
+
+  .codicon {
+    font-size: 12px;
+  }
+
+  // 临近超时（≤60s）警示：红字 + 时钟图标微闪
+  &--warning {
+    color: var(--zc-error, #e5546a);
+    animation: dialog-countdown-pulse 1s ease-in-out infinite;
+  }
+}
+
+@keyframes dialog-countdown-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.45;
+  }
+}

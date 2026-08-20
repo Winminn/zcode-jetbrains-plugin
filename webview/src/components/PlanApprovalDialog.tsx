@@ -3,14 +3,15 @@
  *
  * plan 模式下 AI 调用 ExitPlanMode 工具时，服务端通过 interaction/requestUserInput
  * 反向请求用户审批计划（params = {toolName:"ExitPlanMode", input:{plan:"markdown"}}）。
- * Java 端识别后推 {op:"exitPlanApproval", requestId, plan} 给前端，此组件渲染计划全文。
+ * Java 端识别后推 {op:"exitPlanApproval", requestId, plan, deadlineMs} 给前端，此组件渲染计划全文。
  *
  * 应答复用 askUserResponse 通道（Java 端按 requestId 找 future 应答服务器）：
  * - 批准并执行 = {action:"accept", answer:"approve"} + 乐观退出计划模式
  * - 继续规划（意见式） = {action:"accept", answer:"用户意见文本"} —— answer 有值但
  *   ≠ "approve" 会被服务端判为反馈式拒绝（The plan was not approved by the user），
  *   AI 据此留在计划模式继续修改；因此「继续规划」要求先输入意见才可点击。
- * - 裸 decline 仅保留兜底（点遮罩关闭 / Java 侧 5 分钟超时）。
+ * - 裸拒绝只走显式「拒绝」按钮（+ Java 侧 5 分钟超时兜底）。遮罩点击不响应：
+ *   旧版遮罩=裸 decline，双击禁用按钮的第二击落在遮罩上会一击误拒（2026-08-20 实测）。
  *
  * ⚠️ answer 必须是小写 "approve"（zcode.cjs 常量 S7t，严格相等比较）：
  * 大写 "Approve" 会落入"有答案但≠approve"分支被判为反馈式拒绝。
@@ -23,15 +24,18 @@ import { sendToJava } from '@/ipc/bridge'
 import { useStore } from '@/store/useStore'
 import type { ZCodeMessage } from '@/types/messages'
 import { MarkdownBlock } from './MarkdownBlock'
+import { DialogCountdown } from './DialogCountdown'
 import '../styles/plan-approval-dialog.less'
 
 interface Props {
   requestId: string
   plan: string
+  /** Java 侧应答超时时刻（epoch 毫秒），倒计时显示用；旧链路可缺省 */
+  deadlineMs?: number
   onClose: () => void
 }
 
-export function PlanApprovalDialog({ requestId, plan, onClose }: Props) {
+export function PlanApprovalDialog({ requestId, plan, deadlineMs, onClose }: Props) {
   const { t } = useTranslation()
   const [feedback, setFeedback] = useState('')
 
@@ -80,19 +84,20 @@ export function PlanApprovalDialog({ requestId, plan, onClose }: Props) {
     onClose()
   }
 
-  /** 兜底裸拒绝（遮罩误点）：无意见直接回到规划，服务端继续 plan 模式 */
+  /** 显式裸拒绝：无意见直接回到规划，服务端继续 plan 模式（唯一 decline 入口，遮罩不响应）*/
   const handleDecline = () => {
     sendToJava({ op: 'askUserResponse', requestId, action: 'decline' })
     onClose()
   }
 
   return (
-    <div className="plan-approval-overlay" onClick={handleDecline}>
-      <div className="plan-approval-dialog" onClick={(e) => e.stopPropagation()}>
+    <div className="plan-approval-overlay">
+      <div className="plan-approval-dialog">
         <div className="plan-approval-dialog__header">
           <span className="plan-approval-dialog__icon codicon codicon-tasklist" />
           <span className="plan-approval-dialog__title">{t('app.planApproval.title')}</span>
           <span className="plan-approval-dialog__hint">{t('app.planApproval.hint')}</span>
+          <DialogCountdown deadlineMs={deadlineMs} />
         </div>
 
         <div className="plan-approval-dialog__body">
@@ -105,6 +110,10 @@ export function PlanApprovalDialog({ requestId, plan, onClose }: Props) {
             <button className="plan-approval-dialog__btn plan-approval-dialog__btn--approve" onClick={handleApprove}>
               <span className="codicon codicon-play" />
               {t('app.planApproval.approveAndRun')}
+            </button>
+            <button className="plan-approval-dialog__btn plan-approval-dialog__btn--decline" onClick={handleDecline}>
+              <span className="codicon codicon-close" />
+              {t('app.planApproval.decline')}
             </button>
             <span className="plan-approval-dialog__divider" />
             <div className="plan-approval-dialog__feedback-group">

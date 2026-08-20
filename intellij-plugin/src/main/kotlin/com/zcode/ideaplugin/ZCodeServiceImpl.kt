@@ -29,8 +29,28 @@ class ZCodeServiceImpl(private val project: Project) : ZCodeService, com.intelli
     private val log = com.intellij.openapi.diagnostic.Logger.getInstance("ZCodePlugin")
 
     companion object {
+        /**
+         * interaction/requestUserInput 应答是否按 decline 处理（纯函数，单测覆盖）：
+         * 显式 decline/cancel；或 ExitPlanMode 审批的 accept 但 answer 为空——
+         * 空反馈 ≠ 批准，旧版 normalize 成 "approve" 会在前端防线失守（旧 webview
+         * 产物/回归）时把"用户没说批准"变成"批准执行"（2026-08-20 实测）。
+         * AskUserQuestion 的空答案不在此列（透传，服务端自行处理）。
+         */
+        internal fun isDeclineResponse(isPlanApproval: Boolean, action: String, answer: JsonElement?): Boolean {
+            val emptyAnswer = answer == null ||
+                (answer is JsonPrimitive && answer.contentOrNull.isNullOrBlank())
+            return action == "decline" || action == "cancel" || (isPlanApproval && emptyAnswer)
+        }
+
         /** 活跃 Service 实例（多项目并开各一个）；宿主探针聚合判定用，dispose 移除 */
         private val activeInstances = java.util.concurrent.CopyOnWriteArrayList<ZCodeServiceImpl>()
+
+        /**
+         * interaction/requestUserInput（AskUserQuestion / ExitPlanMode 审批）等待用户
+         * 应答的超时：超时自动 decline 并关弹窗。推送弹窗时随消息附带 deadlineMs
+         * （= 当前时刻 + 本值），前端据此显示倒计时——两处必须同源，防显示与实际超时错位。
+         */
+        const val USER_INPUT_TIMEOUT_MS = 5 * 60 * 1000L
     }
 
     init {
@@ -90,6 +110,8 @@ class ZCodeServiceImpl(private val project: Project) : ZCodeService, com.intelli
         val contentKey: String,
         val future: CompletableFuture<JsonObject>,
         val targetPanel: ZCodeToolWindowPanel?,
+        /** 请求归属会话（params 可缺省为 null）；turn 终止/stop 按会话定向废弃用 */
+        val sessionId: String?,
     )
 
     private val pendingUserInputs = ConcurrentHashMap<String, PendingUserInput>()
@@ -142,6 +164,19 @@ class ZCodeServiceImpl(private val project: Project) : ZCodeService, com.intelli
                 }
                 userInputHandlerRegistered = true
                 log.info("[askUser] userInputRequestHandler 已在 Service 层注册（多标签共享）")
+            }
+            // 回合终止联动废弃待应答弹窗：挂起的反向请求随回合而生，回合死了弹窗即死
+            // （服务端对未应答权限请求重试到头会自行放弃并 failed 收尾，插件此前无感知，
+            // 死弹窗留到 5 分钟超时批量 decline——迟到应答风暴即 P3/P4 污染源）。
+            // 按 sessionId 定向废弃：双会话并发时 A 会话收尾不误伤 B 会话挂起的弹窗；
+            // 正常应答路径 pending 已清空，此处 no-op 无副作用
+            c.addGlobalEventListener { event ->
+                if (event.type == "turn.completed" || event.type == "turn.failed") {
+                    if (pendingUserInputs.values.any { it.sessionId == event.sessionId }) {
+                        log.info("[askUser] 回合已终止（${event.type}，${event.sessionId}），联动废弃该会话待应答弹窗")
+                        abortPendingUserInputs(event.sessionId)
+                    }
+                }
             }
             if (!browserHandlerRegistered) {
                 val executor = com.zcode.ideaplugin.ui.ZCodeBrowserExecutor(project)
@@ -282,12 +317,12 @@ class ZCodeServiceImpl(private val project: Project) : ZCodeService, com.intelli
             // 服务端重试同一请求：共享旧 future（各 handler 线程向自己的 id 应答），
             // 不重复弹窗——重复推送会重建弹窗、重置用户已选状态
             pendingUserInputs[serverRequestId] =
-                PendingUserInput(contentKey, existing.future, existing.targetPanel)
+                PendingUserInput(contentKey, existing.future, existing.targetPanel, existing.sessionId)
             future = existing.future
             log.info("[askUser] 服务端重试同一请求，共享等待: $serverRequestId")
         } else {
             future = CompletableFuture()
-            pendingUserInputs[serverRequestId] = PendingUserInput(contentKey, future, targetPanel)
+            pendingUserInputs[serverRequestId] = PendingUserInput(contentKey, future, targetPanel, sessionId)
 
             // ExitPlanMode 走专门的计划审批通道：params = {toolName:"ExitPlanMode", input:{plan:"..."}}
             // 它没有 questions 数组，而是 input.plan 直接是计划 markdown 文本。
@@ -298,6 +333,7 @@ class ZCodeServiceImpl(private val project: Project) : ZCodeService, com.intelli
                     put("op", "exitPlanApproval")
                     put("requestId", serverRequestId)
                     put("plan", plan)
+                    put("deadlineMs", System.currentTimeMillis() + USER_INPUT_TIMEOUT_MS)
                 }
                 targetPanel.pushToWebview(askMsg)
                 log.info("[askUser] ExitPlanMode 计划审批已推给前端，等待用户批准/拒绝...")
@@ -309,25 +345,29 @@ class ZCodeServiceImpl(private val project: Project) : ZCodeService, com.intelli
                     put("requestId", serverRequestId)
                     put("toolName", toolName)
                     put("questions", questions)
+                    put("deadlineMs", System.currentTimeMillis() + USER_INPUT_TIMEOUT_MS)
                 }
                 targetPanel.pushToWebview(askMsg)
                 log.info("[askUser] 已推给前端，等待用户选择...")
             }
+            // 广播挂起标志（含未收到弹窗的面板——多标签同会话时弹窗只路由到一个标签，
+            // 其余标签的流式看门狗靠它豁免，否则 60s 静默误判 streamLost 收尾回合）
+            broadcastAskUserPending(true)
         }
 
         // 阻塞等用户选择（在协议客户端的独立线程，不阻塞 reader/EDT）。
         // 超时必须立即 decline 并关闭弹窗：悬空的等待线程 5 分钟后向服务端补发
         // 迟到的 decline，会被当作"用户拒绝了计划"（引发重复 ExitPlanMode）。
         return try {
-            future.get(5, java.util.concurrent.TimeUnit.MINUTES)
+            future.get(USER_INPUT_TIMEOUT_MS, java.util.concurrent.TimeUnit.MILLISECONDS)
         } catch (e: java.util.concurrent.TimeoutException) {
             log.warn("[askUser] 等待用户应答超时（5 分钟），自动 decline: $serverRequestId")
-            pendingUserInputs.entries.removeIf { it.value.future === future }
+            cleanupPendingFor(future)
             targetPanel.pushToWebview(buildJsonObject { put("op", "askUserAck") })
             buildJsonObject { put("action", "decline") }
         } catch (e: InterruptedException) {
             Thread.currentThread().interrupt()
-            pendingUserInputs.entries.removeIf { it.value.future === future }
+            cleanupPendingFor(future)
             buildJsonObject { put("action", "decline") }
         }
     }
@@ -350,17 +390,13 @@ class ZCodeServiceImpl(private val project: Project) : ZCodeService, com.intelli
         // - 小写 "approve" = 批准退出计划模式
         // - 有值但 ≠ "approve" = 反馈式拒绝：AI 留在计划模式按意见文本继续修改
         //   （审批弹窗「继续规划」按钮的通道）
-        // - 空 = 兜底按批准处理（保持旧行为，防 undefined 误判）
+        // - 空 = 按 decline 处理（安全侧，与 5 分钟超时同语义）：空反馈 ≠ 批准
         val isPlanApproval = pending.contentKey.startsWith("ExitPlanMode|")
-        val normalizedAnswer = if (isPlanApproval && action != "decline" && action != "cancel"
-            && (answer == null || (answer is JsonPrimitive && answer.contentOrNull.isNullOrBlank()))
-        ) {
-            JsonPrimitive("approve")
-        } else {
-            answer // "approve"、意见文本、optionId 或自由文本，原样透传
-        }
+        val effectiveDecline = isDeclineResponse(isPlanApproval, action, answer)
+        // "approve"、意见文本、optionId 或自由文本，原样透传（decline 路径用不到）
+        val normalizedAnswer = if (effectiveDecline) null else answer
 
-        val result = if (action == "decline" || action == "cancel") {
+        val result = if (effectiveDecline) {
             buildJsonObject { put("action", "decline") }
         } else {
             // accept + content：AskUserQuestion 答案（zcode.cjs normalizeAskUserQuestionAnswers）
@@ -382,9 +418,54 @@ class ZCodeServiceImpl(private val project: Project) : ZCodeService, com.intelli
 
         future.complete(result)
         // 服务端重试的其他 id 共享此 future，一并清理
-        pendingUserInputs.entries.removeIf { it.value.future === future }
+        cleanupPendingFor(future)
         log.info("[askUser] 用户已选择，应答服务器: action=$action answer=$normalizedAnswer")
         return buildJsonObject { put("op", "askUserAck") }
+    }
+
+    /**
+     * 清理共享同一 future 的全部 pending id（应答/超时/中断三路共用）。
+     * 挂起标志仅在**全部清空**后才广播 false——多个不同 contentKey 请求并存时，
+     * 先应答一个不能把仍挂起的另一弹窗的多标签看门狗豁免标志提前清零。
+     */
+    private fun cleanupPendingFor(future: CompletableFuture<JsonObject>) {
+        pendingUserInputs.entries.removeIf { it.value.future === future }
+        if (pendingUserInputs.isEmpty()) broadcastAskUserPending(false)
+    }
+
+    /** 向所有面板广播反向请求挂起标志（看门狗豁免用，多标签同会话时无弹窗的面板也需感知）*/
+    private fun broadcastAskUserPending(active: Boolean) {
+        val msg = buildJsonObject {
+            put("op", "askUserPending")
+            put("active", active)
+        }
+        panels.forEach { it.pushToWebview(msg) }
+    }
+
+    override fun pushAskUserPendingState(panel: ZCodeToolWindowPanel) {
+        // webview init 拉取（新开标签/页面重载错过广播的兜底）：有挂起请求才推
+        if (pendingUserInputs.isNotEmpty()) {
+            panel.pushToWebview(buildJsonObject {
+                put("op", "askUserPending")
+                put("active", true)
+            })
+        }
+    }
+
+    override fun abortPendingUserInputs(sessionId: String?) {
+        val victims = pendingUserInputs.entries.filter {
+            sessionId == null || it.value.sessionId == sessionId
+        }
+        if (victims.isEmpty()) return
+        // 回合已死：不 complete future（complete 会让 handler 线程向各自 id 发应答，
+        // 迟到 decline 会污染服务端权限请求状态机），handler 线程由 5 分钟超时自行退出；
+        // 只推 askUserAck 让前端立刻关窗，防用户点击死弹窗发出迟到应答
+        val targetPanels = victims.map { it.value.targetPanel }.distinct()
+        victims.forEach { pendingUserInputs.remove(it.key) }
+        val ack = buildJsonObject { put("op", "askUserAck") }
+        targetPanels.forEach { it?.pushToWebview(ack) }
+        if (pendingUserInputs.isEmpty()) broadcastAskUserPending(false)
+        log.info("[askUser] 回合被打断（sessionId=${sessionId ?: "全部"}），废弃 ${targetPanels.size} 个面板上的待应答弹窗（不发迟到应答）")
     }
 }
 
