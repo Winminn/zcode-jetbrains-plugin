@@ -1,8 +1,10 @@
 /**
  * 运行环境提醒条（主界面顶栏下方，仅异常时渲染）
  *
- * envStatus.allOk=false 时显示：逐条列出 node / zcode.cjs / 凭证的问题与修复提示，
- * 提供「去设置」（直达基础设置→环境子tab）与「重新检测」。
+ * 两档：
+ * - 阻断（allOk=false）：node / zcode.cjs / 凭证问题，插件暂不可用，warning 色；
+ * - 建议（allOk=true 但 browserHost 异常）：AI 浏览器工具不可用、对话不受影响，info 色。
+ * 提供「去设置」（直达基础设置→环境子tab）与「重新检测」（后者会触发宿主自愈重探）。
  * 数据源：store envStatus（init checkEnv / envSave 重检 / IDE 广播 onEnvStatusChanged / error 附带）。
  */
 
@@ -18,20 +20,32 @@ interface Props {
 }
 
 /** 按优先级把异常环境转成可读问题列表（node → cli → 凭证） */
-function collectProblems(status: EnvStatus): { key: string; text: string }[] {
-  const problems: { key: string; text: string }[] = []
+function collectProblems(status: EnvStatus): { key: string; code?: string; arg?: string; text: string }[] {
+  const problems: { key: string; code?: string; arg?: string; text: string }[] = []
   if (!status.node.found) {
-    problems.push({ key: 'node', text: status.node.error || '' })
+    problems.push({ key: 'node', code: status.node.code, arg: status.node.arg, text: status.node.error || '' })
   } else if (status.node.versionTooLow) {
     problems.push({ key: 'nodeLow', text: `${status.node.version || '?'}` })
   }
   if (!status.cli.found) {
-    problems.push({ key: 'cli', text: status.cli.error || '' })
+    problems.push({ key: 'cli', code: status.cli.code, arg: status.cli.arg, text: status.cli.error || '' })
   }
   if (!status.credentials.ok) {
-    problems.push({ key: 'credentials', text: status.credentials.error || '' })
+    problems.push({
+      key: 'credentials',
+      code: status.credentials.code,
+      arg: status.credentials.path ?? '',
+      text: status.credentials.error || '',
+    })
   }
   return problems
+}
+
+/** browserHost 非阻断告警（未探测/健康时为 null）；渲染只按 code 选文案 */
+function browserHostProblem(status: EnvStatus): { code?: string } | null {
+  const bh = status.browserHost
+  if (!bh || bh.ok) return null
+  return { code: bh.code }
 }
 
 export function EnvBanner({ onGoSettings }: Props) {
@@ -40,9 +54,10 @@ export function EnvBanner({ onGoSettings }: Props) {
   const checkEnv = useStore((s) => s.checkEnv)
   const [checking, setChecking] = useState(false)
 
-  if (!envStatus || envStatus.allOk) return null
-
-  const problems = collectProblems(envStatus)
+  if (!envStatus) return null
+  const problems = envStatus.allOk ? [] : collectProblems(envStatus)
+  const hostWarning = envStatus.allOk ? browserHostProblem(envStatus) : null
+  if (problems.length === 0 && !hostWarning) return null
 
   const handleRecheck = () => {
     if (checking) return
@@ -52,21 +67,39 @@ export function EnvBanner({ onGoSettings }: Props) {
     setTimeout(() => setChecking(false), 3000)
   }
 
+  // 阻断档沿用 warning 色；纯 browserHost 建议档换 info 色（不吓用户，对话功能正常）
+  const advisory = problems.length === 0
+
   return (
-    <div className="env-banner" role="alert">
-      <span className="codicon codicon-warning env-banner__icon" />
+    <div className={`env-banner${advisory ? ' env-banner--advisory' : ''}`} role="alert">
+      <span className={`codicon ${advisory ? 'codicon-info' : 'codicon-warning'} env-banner__icon`} />
       <div className="env-banner__content">
-        <div className="env-banner__title">{t('app.envBanner.title')}</div>
+        <div className="env-banner__title">
+          {advisory ? t('app.envBanner.browserHostTitle') : t('app.envBanner.title')}
+        </div>
         <ul className="env-banner__problems">
-          {problems.map((p) => (
-            <li key={p.key} className="env-banner__problem">
-              {p.key === 'node' && t('app.envBanner.nodeMissing', { detail: p.text })}
-              {p.key === 'nodeLow' &&
-                t('app.envBanner.nodeTooLow', { version: p.text, min: envStatus.node.minVersion })}
-              {p.key === 'cli' && t('app.envBanner.cliMissing', { detail: p.text })}
-              {p.key === 'credentials' && t('app.envBanner.credentialsInvalid', { detail: p.text })}
+          {problems.map((p) => {
+            // 详情按 Java 侧错误码走 i18n（英文环境不再露中文）；无码（旧包/未知）回退原文
+            const detail = p.code
+              ? t(`app.envErrors.${p.code}`, { arg: p.arg ?? '' })
+              : p.text
+            return (
+              <li key={p.key} className="env-banner__problem">
+                {p.key === 'node' && t('app.envBanner.nodeMissing', { detail })}
+                {p.key === 'nodeLow' &&
+                  t('app.envBanner.nodeTooLow', { version: p.text, min: envStatus.node.minVersion })}
+                {p.key === 'cli' && t('app.envBanner.cliMissing', { detail })}
+                {p.key === 'credentials' && t('app.envBanner.credentialsInvalid', { detail })}
+              </li>
+            )
+          })}
+          {hostWarning && (
+            <li className="env-banner__problem">
+              {hostWarning.code === 'browserHostCefDown'
+                ? t('app.envBanner.browserHostCefDown')
+                : t('app.envBanner.browserHostHandlerMissing')}
             </li>
-          ))}
+          )}
         </ul>
       </div>
       <div className="env-banner__actions">

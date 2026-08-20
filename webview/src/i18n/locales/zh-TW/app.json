@@ -60,6 +60,21 @@
     "cliMissing": "ZCode CLI 未找到：{{detail}}",
     "credentialsInvalid": "憑證未設定或無效：{{detail}}",
     "recheck": "重新檢測",
-    "goSettings": "前往設定"
+    "goSettings": "前往設定",
+    "browserHostTitle": "內嵌瀏覽器宿主異常（AI 瀏覽器工具不可用，不影響對話）",
+    "browserHostCefDown": "瀏覽器除錯通道不可用：JCEF 已啟動但 CDP 連接埠不可達，請重新啟動 IDE 恢復（重新檢測會嘗試自動修復）",
+    "browserHostHandlerMissing": "瀏覽器宿主未註冊到協定用戶端，點「重新檢測」自動補註冊"
+  },
+  "envErrors": {
+    "nodeNotFound": "已嘗試 PATH、常見安裝位置與登入 shell，請在設定中配置路徑",
+    "nodeFileNotFound": "檔案不存在：{{arg}}",
+    "nodePackageManager": "{{arg}} 是套件管理器，不是 Node.js 可執行檔",
+    "nodeIsScript": "{{arg}} 是 JS 腳本，不是 Node.js 可執行檔（zcode.cjs 應填到「ZCode CLI 路徑」）",
+    "nodeTimeout": "執行逾時：{{arg}} --version",
+    "nodeExecFail": "無法執行（{{arg}}）",
+    "cliFileNotFound": "zcode.cjs 不存在：{{arg}}",
+    "cliNotFound": "未在標準安裝位置找到 zcode.cjs，請確認已安裝 ZCode 用戶端",
+    "credsMissing": "設定檔不存在：{{arg}}，請先用 ZCode 用戶端登入一次",
+    "credsInvalid": "設定檔無效：{{arg}}，請用 ZCode 用戶端重新登入"
   }
 }

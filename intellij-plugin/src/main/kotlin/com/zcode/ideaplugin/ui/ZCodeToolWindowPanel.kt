@@ -882,7 +882,21 @@ if (!window.__ZCODE_LOG_HOOK__) {
 
     /** 环境三件套状态查询（30s 缓存，spawn node --version 不再重复探测） */
     private fun handleCheckEnv(): JsonObject {
-        val status = com.zcode.ideaplugin.env.ZCodeEnvChecker.check()
+        var status = com.zcode.ideaplugin.env.ZCodeEnvChecker.check()
+        // browserHost 非阻断告警的轻量自愈：仅 handlerMissing 可修（补注册后立即复测）。
+        // cefDown 不做运行期自愈：探针报 cefDown 的前提是 JBCefApp 已起，此时杀
+        // cef_server 会弄死现有 webview（restartStaleCefServerIfNeeded 的守卫即为此返回），
+        // 自愈只可能在 Factory 面板创建前那条路径生效——运行期只能指引用户重启 IDE（文案）。
+        if (status.browserHost?.ok == false &&
+            status.browserHost?.code == com.zcode.ideaplugin.env.BrowserHostStatus.CODE_HANDLER_MISSING
+        ) {
+            try {
+                project.zCodeService().ensureBrowserExecutor()
+            } catch (e: Exception) {
+                log.warn("[envCheck] 宿主 handler 补注册失败: ${e.message}")
+            }
+            status = com.zcode.ideaplugin.env.ZCodeEnvChecker.check(force = true)
+        }
         return buildJsonObject {
             put("op", "envStatus")
             put("status", com.zcode.ideaplugin.env.ZCodeEnvChecker.statusJson(status))
@@ -1400,10 +1414,8 @@ if (!window.__ZCODE_LOG_HOOK__) {
         log.info("ZCodeProtocolClient 获取成功, isAlive=${client.isAlive()}")
 
         // workspace 过滤：只显示当前项目的会话（差异化优势，cc-gui 不做）
-        // 前端传 workspacePath；没传则用 project.basePath；空串表示不过滤（返回全部）
-        val workspacePath = msg["workspacePath"]?.jsonPrimitive?.content
-            ?: project.basePath
-            ?: ""
+        // 前端传 workspacePath；空串/未传回退 project.basePath（重启初期前端注入值可能为空）
+        val workspacePath = effectiveWorkspacePath(msg)
         // 服务端过滤（按项目 + 大 limit），避免 app-server 默认"全库最新 50 条"截断；
         // 客户端 normalizePath 过滤保留作兜底
         val sessions = if (workspacePath.isEmpty()) {
@@ -1434,10 +1446,20 @@ if (!window.__ZCODE_LOG_HOOK__) {
         }
     }
 
+    /**
+     * 解析本次请求生效的 workspacePath：前端值非空白优先，否则回退 project.basePath。
+     * 必须防"空串"（不只是 null）——IDE 重启初期面板可能先于 project.basePath 就绪创建，
+     * 注入前端的 __ZCODE_WORKSPACE__ 是空串，后续 createSession 等带空路径会被
+     * app-server 以 -32602 拒绝（Mac/Windows 均复现过）。
+     */
+    private fun effectiveWorkspacePath(msg: JsonObject): String {
+        val requested = msg["workspacePath"]?.jsonPrimitive?.contentOrNull
+        if (!requested.isNullOrBlank()) return requested
+        return project.basePath ?: System.getProperty("user.dir") ?: ""
+    }
+
     private fun handleCreateSession(msg: JsonObject): JsonObject {
-        val workspacePath = msg["workspacePath"]?.jsonPrimitive?.content
-            ?: project.basePath
-            ?: System.getProperty("user.dir")
+        val workspacePath = effectiveWorkspacePath(msg)
         val client = project.zCodeService().getClient()
         val sid = client.createSession(
             com.zcode.ideaplugin.protocol.model.Workspace(workspacePath),
@@ -2150,9 +2172,7 @@ if (!window.__ZCODE_LOG_HOOK__) {
             ?: return errorResponse("缺少 sessionId")
         val text = msg["text"]?.jsonPrimitive?.content
             ?: return errorResponse("缺少 text")
-        val workspacePath = msg["workspacePath"]?.jsonPrimitive?.content
-            ?: project.basePath
-            ?: System.getProperty("user.dir")
+        val workspacePath = effectiveWorkspacePath(msg)
         // 前端 currentModel 透传：-32031 恢复时优先用用户选择的 provider 构造 runtimeModel，
         // 避免恢复链路静默切回默认 provider（个人套餐）；缺省时协议端走原有默认路径
         val providerId = msg["providerId"]?.jsonPrimitive?.content
@@ -2195,9 +2215,7 @@ if (!window.__ZCODE_LOG_HOOK__) {
         val sessionId = msg["sessionId"]?.jsonPrimitive?.content
             ?: return errorResponse("缺少 sessionId")
         // JS 传过来的会话原始 workspace（来自 session/list 的 workspace 字段）
-        val workspacePath = msg["workspacePath"]?.jsonPrimitive?.content
-            ?: project.basePath
-            ?: System.getProperty("user.dir")
+        val workspacePath = effectiveWorkspacePath(msg)
 
         val messages = resumeAndReadMessages(sessionId, workspacePath)
         // 前端流式静默对账探测（看门狗只读快照判定回合是否已在服务端结束）：
@@ -2274,9 +2292,7 @@ if (!window.__ZCODE_LOG_HOOK__) {
     private fun handleSubagentMessages(msg: JsonObject): JsonObject {
         val sessionId = msg["sessionId"]?.jsonPrimitive?.content
             ?: return errorResponse("缺少 sessionId")
-        val workspacePath = msg["workspacePath"]?.jsonPrimitive?.content
-            ?: project.basePath
-            ?: System.getProperty("user.dir")
+        val workspacePath = effectiveWorkspacePath(msg)
         return try {
             val messages = resumeAndReadMessages(sessionId, workspacePath)
             log.info("subagentMessages($sessionId) 返回 ${messages.size} 条")
@@ -2318,9 +2334,7 @@ if (!window.__ZCODE_LOG_HOOK__) {
     private fun handleSubscribe(msg: JsonObject): JsonObject {
         val sessionId = msg["sessionId"]?.jsonPrimitive?.content
             ?: return errorResponse("缺少 sessionId")
-        val workspacePath = msg["workspacePath"]?.jsonPrimitive?.content
-            ?: project.basePath
-            ?: System.getProperty("user.dir")
+        val workspacePath = effectiveWorkspacePath(msg)
         val client = project.zCodeService().getClient()
 
         // 记录当前会话（标签持久化 + 生成中状态归属判断）+ 同步 TabState
@@ -2386,9 +2400,7 @@ if (!window.__ZCODE_LOG_HOOK__) {
     private fun handleSubscribeChild(msg: JsonObject): JsonObject {
         val sessionId = msg["sessionId"]?.jsonPrimitive?.content
             ?: return errorResponse("缺少 sessionId")
-        val workspacePath = msg["workspacePath"]?.jsonPrimitive?.content
-            ?: project.basePath
-            ?: System.getProperty("user.dir")
+        val workspacePath = effectiveWorkspacePath(msg)
         val client = project.zCodeService().getClient()
 
         // 全局监听器（只注册一次，同 handleSubscribe）

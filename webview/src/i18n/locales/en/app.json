@@ -60,6 +60,21 @@
     "cliMissing": "ZCode CLI not found: {{detail}}",
     "credentialsInvalid": "Credentials missing or invalid: {{detail}}",
     "recheck": "Recheck",
-    "goSettings": "Open Settings"
+    "goSettings": "Open Settings",
+    "browserHostTitle": "Embedded browser host issue (AI browser tools unavailable, chat unaffected)",
+    "browserHostCefDown": "Browser debug channel unavailable: JCEF is running but the CDP port is unreachable. Restart the IDE to recover (Recheck will attempt auto-repair)",
+    "browserHostHandlerMissing": "Browser host is not registered with the protocol client. Click \"Recheck\" to re-register"
+  },
+  "envErrors": {
+    "nodeNotFound": "searched PATH, common install locations and login shell; set the path in Settings",
+    "nodeFileNotFound": "File does not exist: {{arg}}",
+    "nodePackageManager": "{{arg}} is a package manager, not the Node.js executable",
+    "nodeIsScript": "{{arg}} is a JS script, not the Node.js executable (zcode.cjs belongs in the ZCode CLI path field)",
+    "nodeTimeout": "Timed out running: {{arg}} --version",
+    "nodeExecFail": "Failed to execute ({{arg}})",
+    "cliFileNotFound": "zcode.cjs does not exist: {{arg}}",
+    "cliNotFound": "zcode.cjs not found in standard install locations. Please install the ZCode client first",
+    "credsMissing": "config file does not exist: {{arg}}. Please log in once with the ZCode client",
+    "credsInvalid": "config file is invalid: {{arg}}. Please log in again with the ZCode client"
   }
 }

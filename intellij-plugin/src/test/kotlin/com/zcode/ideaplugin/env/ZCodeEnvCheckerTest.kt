@@ -8,6 +8,7 @@ import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
+import kotlin.test.fail
 
 /**
  * ZCodeEnvChecker 单元测试
@@ -30,6 +31,7 @@ class ZCodeEnvCheckerTest {
     @AfterTest
     fun cleanup() {
         ZCodeEnvChecker.setStoreForTest(WritableStore()) // 清理测试注入，恢复无副作用状态
+        ZCodeEnvChecker.setBrowserHostProbe(null)
     }
 
     // ============ 版本解析 ============
@@ -64,6 +66,49 @@ class ZCodeEnvCheckerTest {
         assertFalse(EnvStatus(okNode(), okCli(), okCred().copy(ok = false)).allOk)
         // 版本过低 = node 不可用
         assertFalse(EnvStatus(okNode().copy(version = "v16.20.2", versionTooLow = true), okCli(), okCred()).allOk)
+    }
+
+    // ============ browserHost（非阻断宿主检查） ============
+
+    @Test
+    fun `browserHost 异常不影响 allOk`() {
+        val hostDown = EnvStatus(okNode(), okCli(), okCred(), BrowserHostStatus(false, "CDP 不可达", "browserHostCefDown"))
+        assertTrue(hostDown.allOk, "宿主故障只是建议性告警，不阻断 app-server 启动")
+    }
+
+    @Test
+    fun `statusJson browserHost 序列化与 null 省略`() {
+        // 探针缺席（未初始化）：JSON 不含 browserHost 节点（旧前端兼容）
+        val absent = ZCodeEnvChecker.statusJson(EnvStatus(okNode(), okCli(), okCred()))
+        assertTrue("browserHost" !in absent, "null browserHost 应省略节点")
+
+        // 健康：ok=true，无 code
+        val ok = ZCodeEnvChecker.statusJson(
+            EnvStatus(okNode(), okCli(), okCred(), BrowserHostStatus(true, null)),
+        )
+        assertTrue(ok["browserHost"]!!.jsonObject["ok"]!!.jsonPrimitive.content.toBoolean())
+        assertTrue("code" !in ok["browserHost"]!!.jsonObject)
+
+        // 故障：ok=false + 机器可读 code
+        val down = ZCodeEnvChecker.statusJson(
+            EnvStatus(okNode(), okCli(), okCred(), BrowserHostStatus(false, "CDP 不可达", "browserHostCefDown")),
+        )
+        val bh = down["browserHost"]!!.jsonObject
+        assertEquals(false, bh["ok"]!!.jsonPrimitive.content.toBoolean())
+        assertEquals("browserHostCefDown", bh["code"]!!.jsonPrimitive.content)
+    }
+
+    @Test
+    fun `check 组装宿主探针且探针异常不炸检测`() {
+        ZCodeEnvChecker.setStoreForTest(WritableStore())
+        // 环境三件套齐备时探针被调用；抛异常按未探测处理（null）
+        ZCodeEnvChecker.setBrowserHostProbe { throw IllegalStateException("probe boom") }
+        kotlin.runCatching { ZCodeEnvChecker.check(force = true) }
+            .onFailure { fail("探针异常不应导致 check 抛错: ${it.message}") }
+        ZCodeEnvChecker.setBrowserHostProbe { BrowserHostStatus(true, null) }
+        val s = ZCodeEnvChecker.check(force = true)
+        // 三件套不满足时（真机差异）宿主不评判，两种结果都合法
+        assertTrue(s.browserHost == null || s.browserHost!!.ok, "探针健康或未探测均合法，实际: ${s.browserHost}")
     }
 
     @Test

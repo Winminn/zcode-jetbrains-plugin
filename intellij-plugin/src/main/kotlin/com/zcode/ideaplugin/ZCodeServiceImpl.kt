@@ -28,6 +28,38 @@ class ZCodeServiceImpl(private val project: Project) : ZCodeService, com.intelli
 
     private val log = com.intellij.openapi.diagnostic.Logger.getInstance("ZCodePlugin")
 
+    companion object {
+        /** 活跃 Service 实例（多项目并开各一个）；宿主探针聚合判定用，dispose 移除 */
+        private val activeInstances = java.util.concurrent.CopyOnWriteArrayList<ZCodeServiceImpl>()
+    }
+
+    init {
+        activeInstances.add(this)
+        // browser-use 宿主探针注入 EnvChecker（环境自检第四项，非阻断）。
+        // 闭包不捕获实例、读活跃实例聚合（多项目并开时任一实例健康即健康，
+        // 避免后开项目覆盖先开项目、dispose 后悬垂引用）：
+        // - 全部实例的 app-server 未拉起 → null（未初始化，不评判）
+        // - 有实例已拉起但 handler 未注册 → CODE_HANDLER_MISSING
+        // - JCEF 已起但 CDP 调试端口不可达 → CODE_CEF_DOWN（宿主浏览器能力废）
+        com.zcode.ideaplugin.env.ZCodeEnvChecker.setBrowserHostProbe {
+            val live = activeInstances.filter { it.isStarted() }
+            when {
+                live.isEmpty() -> null
+                live.any { !it.browserHandlerRegistered } -> com.zcode.ideaplugin.env.BrowserHostStatus(
+                    false, "app-server 已启动但 browser-use 宿主 handler 未注册",
+                    com.zcode.ideaplugin.env.BrowserHostStatus.CODE_HANDLER_MISSING,
+                )
+                com.intellij.ui.jcef.JBCefApp.isStarted() &&
+                    !com.zcode.ideaplugin.ui.ZCodeBrowserExecutor.hasReachableCdpEndpoint() ->
+                    com.zcode.ideaplugin.env.BrowserHostStatus(
+                        false, "JCEF 已启动但 CDP 调试端口不可达",
+                        com.zcode.ideaplugin.env.BrowserHostStatus.CODE_CEF_DOWN,
+                    )
+                else -> com.zcode.ideaplugin.env.BrowserHostStatus(true, null)
+            }
+        }
+    }
+
     @Volatile
     private var client: ZCodeProtocolClient? = null
 
@@ -64,7 +96,6 @@ class ZCodeServiceImpl(private val project: Project) : ZCodeService, com.intelli
 
     @Volatile
     private var userInputHandlerRegistered = false
-    private val userInputLock = Any()
 
     override fun getClient(): ZCodeProtocolClient {
         client?.let { if (it.isAlive()) return it }
@@ -91,7 +122,37 @@ class ZCodeServiceImpl(private val project: Project) : ZCodeService, com.intelli
                 )
             }
             client = newClient
+            // 协议就绪即注册反向请求 handler（幂等）。注册点放在这里而非仅面板初始化：
+            // 面板初始化时环境未就绪会抛 EnvCheckException 跳过注册，若不在此补注册，
+            // 用户配好环境后 handler 永远缺席（Mac 首启 PATH 探测失败即触发过）
+            registerProtocolHandlersLocked(newClient)
             newClient
+        }
+    }
+
+    /**
+     * 在刚启动的 client 上注册反向请求 handler（幂等，可在任何 getClient 成功后调用）。
+     * 不调用 getClient（防重入），不抛异常（注册失败仅记日志，不影响协议链路）。
+     */
+    private fun registerProtocolHandlersLocked(c: ZCodeProtocolClient) {
+        try {
+            if (!userInputHandlerRegistered) {
+                c.userInputRequestHandler = { serverRequestId, params ->
+                    handleUserInputRequest(serverRequestId, params)
+                }
+                userInputHandlerRegistered = true
+                log.info("[askUser] userInputRequestHandler 已在 Service 层注册（多标签共享）")
+            }
+            if (!browserHandlerRegistered) {
+                val executor = com.zcode.ideaplugin.ui.ZCodeBrowserExecutor(project)
+                browserExecutor = executor
+                c.browserListHandler = { executor.listBrowsers() }
+                c.browserExecuteHandler = { params -> executor.execute(params) }
+                browserHandlerRegistered = true
+                log.info("[browser-use] 宿主 handler 已注册（interaction/browserList + browserExecute）")
+            }
+        } catch (e: Exception) {
+            log.warn("协议 handler 注册失败（下轮 getClient 重试）: ${e.message}")
         }
     }
 
@@ -145,7 +206,9 @@ class ZCodeServiceImpl(private val project: Project) : ZCodeService, com.intelli
     }
 
     override fun dispose() {
-        // 项目级服务销毁：释放共享浏览器实例（所有标签共用这一个）
+        // 项目级服务销毁：从宿主探针聚合集中摘除（先于释放浏览器实例）
+        activeInstances.remove(this)
+        // 释放共享浏览器实例（所有标签共用这一个）
         sharedBrowserPanel?.let {
             try {
                 com.intellij.openapi.util.Disposer.dispose(it)
@@ -169,16 +232,9 @@ class ZCodeServiceImpl(private val project: Project) : ZCodeService, com.intelli
     }
 
     override fun ensureUserInputHandler() {
-        if (userInputHandlerRegistered) return
-        synchronized(userInputLock) {
-            if (userInputHandlerRegistered) return
-            val c = getClient()
-            c.userInputRequestHandler = { serverRequestId, params ->
-                handleUserInputRequest(serverRequestId, params)
-            }
-            userInputHandlerRegistered = true
-            log.info("[askUser] userInputRequestHandler 已在 Service 层注册（多标签共享）")
-        }
+        // 注册统一在 getClient() 启动成功后执行（registerProtocolHandlersLocked），
+        // 这里只需确保协议客户端已拉起
+        getClient()
     }
 
     // ============ browser-use 宿主执行器（AI 浏览器工具 → JCEF 面板）============
@@ -188,20 +244,10 @@ class ZCodeServiceImpl(private val project: Project) : ZCodeService, com.intelli
 
     @Volatile
     private var browserHandlerRegistered = false
-    private val browserHandlerLock = Any()
 
     override fun ensureBrowserExecutor() {
-        if (browserHandlerRegistered) return
-        synchronized(browserHandlerLock) {
-            if (browserHandlerRegistered) return
-            val executor = com.zcode.ideaplugin.ui.ZCodeBrowserExecutor(project)
-            browserExecutor = executor
-            val c = getClient()
-            c.browserListHandler = { executor.listBrowsers() }
-            c.browserExecuteHandler = { params -> executor.execute(params) }
-            browserHandlerRegistered = true
-            log.info("[browser-use] 宿主 handler 已注册（interaction/browserList + browserExecute）")
-        }
+        // 注册统一在 getClient() 启动成功后执行（registerProtocolHandlersLocked）
+        getClient()
     }
 
     override fun getBrowserExecutor(): com.zcode.ideaplugin.ui.ZCodeBrowserExecutor? = browserExecutor

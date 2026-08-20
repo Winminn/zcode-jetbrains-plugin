@@ -66,8 +66,36 @@ class ZCodeBrowserExecutor(private val project: Project) {
         private val cdpBaseLock = Any()
         private val json = Json { ignoreUnknownKeys = true }
 
-        /** jcef_cache 定位：系统缓存根下最新修改的产品目录（含正在运行的 IDE）*/
-        private fun findDevToolsActivePortFile(): java.io.File? {
+        /**
+         * 是否存在"活的" CDP 端点：任一 DevToolsActivePort 文件的端口可建立 TCP 连接。
+         * 文件存在但端口连不通 = server 已死文件残留（cef_server 被强杀后常见），
+         * 调用方（ToolWindowFactory 的旧 cef_server 清理）据此决定是否需要清理重启。
+         */
+        fun hasReachableCdpEndpoint(): Boolean {
+            for (f in findDevToolsActivePortFiles()) {
+                val port = parseDevToolsPort(f) ?: continue
+                for (host in listOf("127.0.0.1", "[::1]")) {
+                    val h = host.removePrefix("[").removeSuffix("]")
+                    try {
+                        java.net.Socket().use { s ->
+                            s.connect(java.net.InetSocketAddress(h, port), 800)
+                        }
+                        return true
+                    } catch (e: Exception) {
+                        // 换下一个 host / 文件
+                    }
+                }
+            }
+            return false
+        }
+
+        /**
+         * jcef_cache 定位：系统缓存根下所有产品的 DevToolsActivePort 候选，
+         * 按修改时间降序（多 IDE 并存时最近的优先，但不"一棵树吊死"——
+         * 最新那份不可达时继续试次新的，Mac 实测出现过最新文件属于别的产品）。
+         * 目录含 jcef_cache 本体与 jcef_cache 数字后缀变体（远程开发/沙箱场景）。
+         */
+        fun findDevToolsActivePortFiles(): List<java.io.File> {
             val osName = System.getProperty("os.name", "").lowercase()
             val base = when {
                 osName.startsWith("win") ->
@@ -76,16 +104,23 @@ class ZCodeBrowserExecutor(private val project: Project) {
                     java.io.File(System.getProperty("user.home"), "Library/Caches/JetBrains")
                 else -> java.io.File(System.getProperty("user.home"), ".cache/JetBrains")
             }
-            if (!base.isDirectory) return null
-            // 找最新修改的 DevToolsActivePort（多个 JetBrains IDE 并存时对应最近启动的那个）
+            if (!base.isDirectory) return emptyList()
             return base.listFiles { f: java.io.File -> f.isDirectory }
                 ?.flatMap { product ->
-                    product.resolve("jcef_cache").let { cache ->
-                        if (cache.isDirectory) listOf(java.io.File(cache, "DevToolsActivePort")) else emptyList()
-                    }
+                    product.listFiles { f: java.io.File -> f.isDirectory }
+                        ?.filter { it.name == "jcef_cache" || it.name.startsWith("jcef_cache-") }
+                        ?.map { java.io.File(it, "DevToolsActivePort") }
+                        ?.filter { it.isFile } ?: emptyList()
                 }
-                ?.filter { it.isFile }
-                ?.maxByOrNull { it.lastModified() }
+                ?.sortedByDescending { it.lastModified() }
+                ?: emptyList()
+        }
+
+        /** DevToolsActivePort 首行端口号（CEF 写出格式）；缺失/损坏/不可读为 null */
+        private fun parseDevToolsPort(f: java.io.File): Int? = try {
+            f.readText().trim().lineSequence().firstOrNull()?.trim()?.toIntOrNull()
+        } catch (e: Exception) {
+            null
         }
     }
 
@@ -94,9 +129,15 @@ class ZCodeBrowserExecutor(private val project: Project) {
         cdpBase?.let { return it }
         synchronized(cdpBaseLock) {
             cdpBase?.let { return it }
-            // 1) DevToolsActivePort 文件（随机端口模式，Factory 默认设置）
-            val fromFile = readDevToolsActivePort()
-            if (fromFile != null) return fromFile
+            // 1) DevToolsActivePort 文件（随机端口模式，Factory 默认设置），逐候选验证
+            val files = findDevToolsActivePortFiles()
+            if (files.isEmpty()) {
+                log.info("[browser-use] 未找到任何 DevToolsActivePort 文件（jcef_cache 未生成或 CEF 未启用调试端口），转 9222 兜底")
+            }
+            for (f in files) {
+                val hit = probeDevToolsPortFile(f)
+                if (hit != null) return hit
+            }
             // 2) 兜底：固定 9222（用户手工设正值）
             for (host in listOf("127.0.0.1", "[::1]")) {
                 val base = "http://$host:9222"
@@ -111,24 +152,23 @@ class ZCodeBrowserExecutor(private val project: Project) {
         }
     }
 
-    /** 读 DevToolsActivePort 首行端口并验证 /json/version 可达 */
-    private fun readDevToolsActivePort(): String? {
-        return try {
-            val f = findDevToolsActivePortFile() ?: return null
-            val port = f.readText().trim().lineSequence().firstOrNull()?.trim()?.toIntOrNull() ?: return null
-            for (host in listOf("127.0.0.1", "[::1]")) {
-                val base = "http://$host:$port"
-                if (httpGetJson("$base/json/version") != null) {
-                    cdpBase = base
-                    log.info("[browser-use] CDP 端点（DevToolsActivePort 端口 $port）：$base")
-                    return base
-                }
-            }
-            null
-        } catch (e: Exception) {
-            log.warn("[browser-use] 读 DevToolsActivePort 失败: ${e.message}")
-            null
+    /** 单个 DevToolsActivePort 文件：首行端口 + /json/version 可达性验证 */
+    private fun probeDevToolsPortFile(f: java.io.File): String? {
+        val port = parseDevToolsPort(f)
+        if (port == null) {
+            log.info("[browser-use] DevToolsActivePort 端口不可解析，跳过：$f")
+            return null
         }
+        for (host in listOf("127.0.0.1", "[::1]")) {
+            val base = "http://$host:$port"
+            if (httpGetJson("$base/json/version") != null) {
+                cdpBase = base
+                log.info("[browser-use] CDP 端点（DevToolsActivePort $port，$f）：$base")
+                return base
+            }
+        }
+        log.info("[browser-use] DevToolsActivePort 端口 $port 不可达，换下一候选：$f")
+        return null
     }
 
     private val log = Logger.getInstance("ZCodePlugin")

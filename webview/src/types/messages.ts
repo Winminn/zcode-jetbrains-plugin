@@ -448,6 +448,10 @@ export interface EnvNodeStatus {
   versionTooLow: boolean
   minVersion: number
   error?: string
+  /** 机器可读错误码（Java EnvChecker 产，i18n 键 app.envErrors.<code>）；探测成功缺省 */
+  code?: string
+  /** 错误码插值参数（路径/文件名） */
+  arg?: string
 }
 
 export interface EnvCliStatus {
@@ -455,6 +459,8 @@ export interface EnvCliStatus {
   path?: string
   found: boolean
   error?: string
+  code?: string
+  arg?: string
 }
 
 export interface EnvCredentialStatus {
@@ -464,12 +470,23 @@ export interface EnvCredentialStatus {
   error?: string
   /** 实际读取的 config.json 路径（随 dataBaseDir 重定向）*/
   path?: string
+  /** 机器可读错误码（credsMissing/credsInvalid）*/
+  code?: string
+}
+
+export interface EnvBrowserHostStatus {
+  ok: boolean
+  error?: string
+  /** 机器可读错误码（browserHostCefDown/browserHostHandlerMissing）*/
+  code?: string
 }
 
 export interface EnvStatus {
   node: EnvNodeStatus
   cli: EnvCliStatus
   credentials: EnvCredentialStatus
+  /** browser-use 宿主健康（非阻断建议项；null = 未探测/未初始化，旧包兼容）*/
+  browserHost?: EnvBrowserHostStatus
   allOk: boolean
 }
 

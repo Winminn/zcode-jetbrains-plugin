@@ -60,6 +60,21 @@
     "cliMissing": "ZCode CLI が見つかりません：{{detail}}",
     "credentialsInvalid": "認証情報が無効または未設定です：{{detail}}",
     "recheck": "再チェック",
-    "goSettings": "設定へ"
+    "goSettings": "設定へ",
+    "browserHostTitle": "内蔵ブラウザホストに異常（AI ブラウザツールは使用不可、チャットへの影響なし）",
+    "browserHostCefDown": "ブラウザデバッグチャネルが利用不可：JCEF は起動していますが CDP ポートに到達できません。IDE を再起動して復旧してください（再チェックで自動修復を試みます）",
+    "browserHostHandlerMissing": "ブラウザホストがプロトコルクライアントに登録されていません。「再チェック」で再登録します"
+  },
+  "envErrors": {
+    "nodeNotFound": "PATH・一般的なインストール先・ログインシェルを検索済み。設定でパスを指定してください",
+    "nodeFileNotFound": "ファイルが存在しません：{{arg}}",
+    "nodePackageManager": "{{arg}} はパッケージマネージャーであり、Node.js の実行ファイルではありません",
+    "nodeIsScript": "{{arg}} は JS スクリプトであり、Node.js の実行ファイルではありません（zcode.cjs は ZCode CLI パス欄へ）",
+    "nodeTimeout": "実行タイムアウト：{{arg}} --version",
+    "nodeExecFail": "実行できません（{{arg}}）",
+    "cliFileNotFound": "zcode.cjs が存在しません：{{arg}}",
+    "cliNotFound": "標準のインストール先に zcode.cjs が見つかりません。先に ZCode クライアントをインストールしてください",
+    "credsMissing": "設定ファイルが存在しません：{{arg}}。先に ZCode クライアントでログインしてください",
+    "credsInvalid": "設定ファイルが無効です：{{arg}}。ZCode クライアントで再ログインしてください"
   }
 }

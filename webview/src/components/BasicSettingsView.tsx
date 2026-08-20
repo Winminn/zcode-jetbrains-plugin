@@ -641,7 +641,11 @@ function EnvironmentSettings() {
         {!envStatus?.credentials.ok && envStatus?.credentials.error && (
           <div className="basic-settings__version-warning">
             <span className="codicon codicon-error" />
-            <span>{envStatus.credentials.error}</span>
+            <span>
+              {envStatus.credentials.code
+                ? t(`app.envErrors.${envStatus.credentials.code}`, { arg: envStatus.credentials.path ?? '' })
+                : envStatus.credentials.error}
+            </span>
           </div>
         )}
         <small className="basic-settings__hint">

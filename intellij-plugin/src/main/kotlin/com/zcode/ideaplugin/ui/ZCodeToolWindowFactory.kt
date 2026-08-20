@@ -252,14 +252,74 @@ class ZCodeToolWindowFactory : ToolWindowFactory, DumbAware {
         try {
             @Suppress("DEPRECATION")
             val current = com.intellij.openapi.util.registry.Registry.intValue("ide.browser.jcef.debug.port", -1)
-            if (current == 0) return
-            @Suppress("DEPRECATION")
-            com.intellij.openapi.util.registry.Registry.get("ide.browser.jcef.debug.port").setValue(0)
-            com.intellij.openapi.diagnostic.Logger.getInstance("ZCodePlugin")
-                .warn("[browser-use] 已设置 ide.browser.jcef.debug.port=0（随机端口，经 DevToolsActivePort 发现；若 CEF 已启动则重启 IDE 后生效）")
+            if (current != 0) {
+                @Suppress("DEPRECATION")
+                com.intellij.openapi.util.registry.Registry.get("ide.browser.jcef.debug.port").setValue(0)
+                com.intellij.openapi.diagnostic.Logger.getInstance("ZCodePlugin")
+                    .warn("[browser-use] 已设置 ide.browser.jcef.debug.port=0（随机端口，经 DevToolsActivePort 发现）")
+            }
+            restartStaleCefServerIfNeeded()
         } catch (e: Exception) {
             com.intellij.openapi.diagnostic.Logger.getInstance("ZCodePlugin")
                 .warn("[browser-use] 设置 CDP 调试端口失败: ${e.message}")
+        }
+    }
+
+    /**
+     * Mac 自动清理未带调试端口的历史 cef_server（2026.1 remote JCEF 架构专属坑）：
+     *
+     * Mac 上 CEF 跑在独立常驻的 cef_server 进程里，IDE 重启不会杀它——若它启动早于
+     * 本插件的 debug.port registry 配置，则远程调试永远关着（不写 DevToolsActivePort、
+     * 9222 也不通），browser-use 全废，此前只能手动 pkill。这里在面板创建前自动兜底：
+     *
+     * 1. 本 IDE 会话尚未初始化 CEF（JBCefApp 未起）——否则杀进程会弄死现有 webview；
+     * 2. 已有 DevToolsActivePort 则当前 server 正常，无需处理；
+     * 3. 通过 Helper 进程的 --user-data-dir 归属到本产品缓存目录，只杀本产品
+     *    cef_server 主进程（Helper 的父进程），绝不误伤并存的 JetBrains 产品；
+     * 4. 结束后由后续 JBCefBrowser 创建自动拉起带调试端口的新 server，用户无感。
+     */
+    private fun restartStaleCefServerIfNeeded() {
+        if (!com.intellij.openapi.util.SystemInfo.isMac) return
+        val log = com.intellij.openapi.diagnostic.Logger.getInstance("ZCodePlugin")
+        try {
+            if (com.intellij.ui.jcef.JBCefApp.isStarted()) return
+            // 端口文件存在 ≠ 健康：server 被强杀后文件可能残留（端口已死），只认端口可达
+            if (ZCodeBrowserExecutor.hasReachableCdpEndpoint()) {
+                log.info("[browser-use] CDP 端点健康（DevToolsActivePort 端口可达），无需清理 cef_server")
+                return
+            }
+            log.info("[browser-use] 无可达 CDP 端点，检查是否存在未带调试端口的历史 cef_server…")
+            val ps = ProcessBuilder("ps", "ax", "-o", "pid=,ppid=,command=")
+                .redirectErrorStream(true).start()
+            val out = try {
+                if (!ps.waitFor(5, java.util.concurrent.TimeUnit.SECONDS)) return
+                ps.inputStream.bufferedReader().readText()
+            } finally {
+                ps.destroyForcibly()
+            }
+            // 本产品 jcef_cache 下的 Helper → 其父进程即本产品 cef_server 主进程
+            val cacheDir = com.intellij.openapi.application.PathManager.getSystemDir()
+                .resolve("jcef_cache").toString()
+            val serverPids = out.lineSequence()
+                .filter { it.contains("cef_server Helper") && it.contains(cacheDir) }
+                .mapNotNull { Regex("""^\s*(\d+)\s+(\d+)\s""").find(it)?.groupValues?.get(2)?.toIntOrNull() }
+                .toSet()
+            if (serverPids.isEmpty()) return
+            val mains = out.lineSequence()
+                .filter { Regex("""^\s*(\d+)\s""").find(it)?.groupValues?.get(1)?.toIntOrNull() in serverPids }
+                .filter { it.contains("cef_server") && it.contains("--params=") }
+                .toList()
+            for (line in mains) {
+                val pid = Regex("""^\s*(\d+)\s""").find(line)?.groupValues?.get(1) ?: continue
+                try {
+                    ProcessBuilder("kill", pid).start().waitFor(5, java.util.concurrent.TimeUnit.SECONDS)
+                    log.warn("[browser-use] 已结束未带调试端口的历史 cef_server（pid=$pid，Mac remote JCEF 常驻进程不随 IDE 重启）；面板创建时将自动拉起带调试端口的新进程")
+                } catch (e: Exception) {
+                    log.warn("[browser-use] 结束旧 cef_server 失败（pid=$pid）: ${e.message}")
+                }
+            }
+        } catch (e: Exception) {
+            log.warn("[browser-use] 检测/清理历史 cef_server 失败: ${e.message}")
         }
     }
 }
