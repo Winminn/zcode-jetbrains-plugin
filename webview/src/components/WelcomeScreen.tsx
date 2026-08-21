@@ -5,10 +5,10 @@
  */
 
 import { useTranslation } from 'react-i18next'
+import { useStore } from '@/store/useStore'
 import { ZaiIcon } from './ZaiIcon'
+import { APP_VERSION } from '@/version/version'
 import '../styles/welcome.less'
-
-const APP_VERSION = '0.2.2'
 
 /**
  * 逐字打字机入场：把文本拆成 span，按序号递增 animation-delay
@@ -32,6 +32,7 @@ function StaggeredText({ text, startDelay = 0, step = 0.05 }: { text: string; st
 
 export function WelcomeScreen() {
   const { t } = useTranslation()
+  const openChangelog = useStore((s) => s.openChangelog)
   return (
     <div className="welcome">
       <div className="welcome__logo-wrapper">
@@ -44,7 +45,15 @@ export function WelcomeScreen() {
           {/* 扫光高光条 */}
           <span className="welcome__logo-shine" />
         </div>
-        <span className="welcome__version-tag" title={t('chat.welcome.version')}>v{APP_VERSION}</span>
+        {/* 版本角标可点击：打开「版本更新」弹窗（What's New，翻看各版本变更） */}
+        <button
+          type="button"
+          className="welcome__version-tag"
+          title={t('chat.welcome.version')}
+          onClick={openChangelog}
+        >
+          v{APP_VERSION}
+        </button>
       </div>
       <div className="welcome__hint">
         {/* 无会话（懒创建待命态）与空会话一致：直接输入即开始对话（首条消息触发建会话） */}

@@ -46,6 +46,11 @@
   gap: 8px;
   margin-bottom: 12px;
 
+  /* 与上一区块（管理历史记录等）拉开间隔：header 只有下边距，区块收起时两标题紧贴 */
+  &--version {
+    margin-top: 18px;
+  }
+
   .codicon {
     font-size: 15px;
     color: var(--text-tertiary);
@@ -56,6 +61,13 @@
   font-size: 14px;
   font-weight: 600;
   color: var(--text-secondary);
+}
+
+/* 版本记录行的当前版本号（What's New 手动入口） */
+.other-settings__version-now {
+  font-size: 12px;
+  color: var(--text-tertiary);
+  font-family: var(--font-mono, 'Consolas', monospace);
 }
 
 .other-settings__hint {

@@ -2,9 +2,13 @@
 
 本项目遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/) 格式，版本号遵循 [Semantic Versioning](https://semver.org/lang/zh-CN/)。
 
-最新版本块会被 `patchPluginXml` 提取为插件 change-notes（展示在 Marketplace 与 IDE 插件详情页），保持格式：`## [版本] - 日期` + `- ` 列表。
+双语约定：每个版本块内先 `中文:` 段后 `English:` 段（内容一一对应）。
+
+最新版本块的中文段会被 `patchPluginXml` 提取为插件 change-notes（展示在 Marketplace 与 IDE 插件详情页，行内 Markdown 转换为 HTML），保持格式：`## [版本] - 日期` + `### 节` + `- ` 列表。
 
 ## [0.2.2] - 2026-08-21
+
+中文:
 
 ### Fixed
 
@@ -16,7 +20,21 @@
 
 - **环境自检增强**：新增内嵌浏览器（browser-use 宿主）健康检测项，异常时顶栏提醒条给出修复入口；macOS 下 Node.js 安装路径免配置自动探测
 
+English:
+
+### Fixed
+
+- **Subagent status stuck on "running" after completion**: after a background subagent finished (or a foreground one returned), the bottom Agent tab and the in-chat subagent card kept spinning until the whole turn ended — completion is now finalized within seconds via multiple signals (child-session end events plus authoritative status polling as a fallback), and a display regression where stale snapshots overwrote "completed" back to "running" is fixed
+- **Mis-taps on approval/question dialogs hanging the session**: double-clicking buttons or accidentally hitting the overlay while a dialog was up triggered duplicate responses, hanging the turn and causing cascading errors — buttons are now protected against mis-taps while a dialog is open and the overlay no longer rejects accidentally; a 5-minute timeout countdown was added (red warning in the last 60 seconds, five languages); pending dialogs are discarded automatically when the turn terminates, and hung turns auto-stop and restore for resending
+- **Memory settings copy**: the Settings "Memory" entry now has descriptions in all five languages, and the toggle hint no longer references ZCode client menu paths (which don't exist inside the plugin)
+
+### Added
+
+- **Environment check improvements**: new health probe for the embedded browser (browser-use host), with a fix entry point in the top banner when abnormal; Node.js install locations are auto-detected on macOS without manual configuration
+
 ## [0.2.1] - 2026-08-19
+
+中文:
 
 ### Fixed
 
@@ -24,7 +42,17 @@
 - **CLI 升级/重启后恢复会话无限转圈自动收尾**：ZCode 桌面端自动更新会杀掉插件依赖的 app-server 进程，恢复后的回合在服务端真实执行但事件流零下发，界面只认终止帧导致无限转圈——新增流式静默对账看门狗（60 秒无事件即静默探测服务端快照），回合已完成自动落地收尾、流丢失自动收尾并提示重发
 - **冷会话发送失败自动恢复**：send 撞 `-32004 Session is not active`（升级/重启后新进程未激活会话）时自动 resume 后重试一次，不再需要手动从历史记录重开；该错误同时追加中文提示与操作引导（五语言）
 
+English:
+
+### Fixed
+
+- **Automatic memory (MEMORY.md) never took effect for plugin sessions**: the `requestRuntimePreferences` response was hard-coded to all false, so "workspace memory" enabled in the ZCode client was ignored by every session the plugin created — the plugin now shares the same `~/.zcode/v2/setting.json` as the client, the Settings "Memory" entry gained a "Workspace memory" toggle (two-way sync, applied to newly created sessions), and the `nativeSearchEnhancements` / `askUserQuestionAutoResolution` preferences follow the client configuration again
+- **Restored sessions spinning forever after CLI upgrade/restart now settle automatically**: the ZCode desktop app's auto-update kills the app-server process the plugin depends on; restored turns actually ran on the server but emitted zero events, leaving the UI spinning forever because it only accepted terminal frames — a streaming-silence watchdog was added (silently probes the authoritative server snapshot after 60 seconds without events): completed turns are finalized automatically, and lost streams are closed with a resend hint
+- **Automatic recovery for cold-session send failures**: when send hits `-32004 Session is not active` (the new process hasn't activated the session after upgrade/restart), the plugin now resumes once and retries automatically instead of requiring a manual reopen from history; the error also gains a localized hint with guidance (five languages)
+
 ## [0.2.0] - 2026-08-18
+
+中文:
 
 首个稳定发布版本。把 [ZCode](https://zcode.z.ai/cn) 编码助手带进 JetBrains IDE：不切终端、不离开编辑器，会话、对话、模型与任务管理都在一个工具窗口里完成，AI 的 browser-use 还能直接驱动插件内嵌浏览器干活。
 
@@ -93,57 +121,71 @@
 - IntelliJ Platform 2024.1 ~ 2026.3（sinceBuild 241 / untilBuild 263.*），JDK 17
 - 2026.2 起 JCEF API 剥离为独立捆绑插件，已声明可选依赖 `com.intellij.modules.jcef` 兼容
 
-## [0.1.4] - 2026-08-18
+English:
 
-### Fixed
+First stable release. Brings the [ZCode](https://zcode.z.ai/cn) coding assistant into JetBrains IDEs: no terminal switching, no leaving the editor — sessions, conversations, models and task management all live in one tool window, and the AI's browser-use can drive the plugin's embedded browser directly.
 
-- 修复未安装 ZCode CLI 时 ToolWindow 创建失败导致 IDE 主界面不渲染：`initJcef` 里 `ensureUserInputHandler`/`ensureBrowserExecutor` 调用捕获 `EnvCheckException`，CLI 不可用时 webview 正常加载并由前端显示环境提醒
+> Community third-party plugin, not affiliated with ZCode / Z.ai. Install the ZCode CLI locally and sign in before use.
 
-## [0.1.3] - 2026-08-18
+### Conversation
 
-### Fixed
+- Streaming output: reasoning / text / tool calls rendered live, with Markdown / Mermaid / syntax highlighting
+- Reasoning-time tracking and message queuing (press Enter while generating to queue; queued cards can be sent or deleted immediately)
+- Ctrl+F in-conversation search (case / whole word / regex) and message anchor navigation (dot markers on user messages with hover preview)
 
-- 修复 0.1.2 的 JCEF 依赖回归：`com.intellij.modules.jcef` 改为可选依赖（`optional="true"`），2026.2+ 上要求该插件存在，2026.1 及以下（JCEF 仍在平台核心）跳过不影响加载
+### Multitasking
 
-## [0.1.2] - 2026-08-18
+- Multi-tab parallel sessions (each tab has its own isolated context), auto-restored on IDE restart
+- Session list / rename / search / multi-select bulk delete
 
-### Fixed
+### Process visibility
 
-- 修复 2026.2 上 `NoClassDefFoundError: JBCefJSQuery$Response`：2026.2 起 JCEF API 从平台核心剥离为独立捆绑插件，`plugin.xml` 新增 `<depends>com.intellij.modules.jcef</depends>`
+- TodoWrite checklist with live progress
+- Subagent (Agent) panel with execution process and final-report dialog
+- File-change stats (click to open in editor, inline before/after diff)
+- AskUserQuestion interactive dialog and plan-mode (ExitPlanMode) approval dialog
 
-## [0.1.1] - 2026-08-18
+### Embedded browser · browser-use host
 
-### Fixed
+- One click in the header opens a browser pane beside the chat: multiple tabs (globally shared across sessions), back / forward / reload / address bar / free sizing / DevTools / open externally
+- The plugin acts as the host implementing ZCode app-server's browser-use reverse protocol (`interaction/browserList` / `browserExecute`), so AI browser tools land in the embedded JCEF browser with zero configuration
+- Navigation & capture: newTab / navigate / screenshot / evaluate; screenshots go straight back to the model
+- Playwright locator pass-through: getByRole / getByText / label / testid / and / or / nth / css chains and other selector engines; ARIA-tree DOM snapshots for the AI to read
+- CUA mouse & keyboard: coordinate clicks / typing / drag / scroll / key combos, with JS dialogs auto-suspended and handled
+- Tab lifecycle: markDeliverable / markHandoff / finalize flags with readback, tab.close really closes
+- Free sizing: DevTools device-toolbar style — centered letterboxed virtual screen, zoom steps, persisted size
+- Graceful degradation when Playwright capabilities are unavailable (title / get_visible_dom / screenshot combo), keeping the pipeline usable
 
-- 消除 Plugin Verifier 报告的全部 deprecated API 警告：`JBCefJSQuery.create(JBCefBrowser)`（scheduled for removal）改用 `create(JBCefBrowserBase)` 重载；`JBUI.scale(float)`（6 处）改用 `JBUIScale.scale(float)`
+### Runtime control
 
-### Changed
+- Model dropdown switching, permission mode (build / edit / plan / yolo) and thinking level (model-dependent) adjustment
+- Standby state (no session yet) can preselect mode and thinking level, applied when the session is created
+- Context-capacity ring (with usage breakdown and cache hits), 5-hour / weekly quota lookup
 
-- 兼容上限从 2026.1（261.*）扩到 2026.3（263.*）
+### Settings hub
 
-## [0.1.0] - 2026-08-18
+- Seven tabs: Basic (theme / font / language / custom colors + env paths), Models (read-only provider-grouped list, path follows the data directory), Usage (quota cards + model / tool usage charts and detail tables), Memory (AGENTS.md instruction memory + automatic memory), Skills (global / project / plugin source scanning with inline enable/disable), MCP (server list / tool list / connection logs), Other (input-history completion toggle and history management)
 
-### Added
+### Environment check
 
-- 三模块项目骨架：protocol-client（纯 Kotlin JSON-RPC 协议客户端，可独立测试）/ intellij-plugin / webview
-- ToolWindow 会话管理：会话列表、历史浏览、对话与流式输出
-- 富消息渲染：子代理、记忆、MCP 工具、技能管理、多标签体验
-- 内置 JCEF 浏览器与 browser-use 集成（AI 浏览器工具落到内嵌浏览器执行）
-- 设置页基础设置页签，配置持久化迁移至 IDE 侧
-- 运行环境依赖检测与配置、计划审批交互重构
-- 待命态预选模式与思考级别选择
-- 输入框内置命令提示、代码块背景与命令 chip 图标
-- 模型管理页签：供应商启用/禁用切换、套餐徽章、按项目过滤加载会话列表
-- 全插件国际化（中/英/日/韩 UI 文案）
-- 编辑器右键动作：发送文件/选中代码到输入框、复制选区引用（Ctrl+Alt+K）
+- Startup self-check for Node.js (≥18) / ZCode CLI / login credentials; the top banner lists per-item fix entry points and re-check when abnormal
+- Paths are manually configurable or auto-detected when left empty; on Windows, CLI auto-detection covers per-user installs (`%LOCALAPPDATA%\Programs\ZCode`) and machine-wide installs (`%ProgramFiles%\ZCode`, `%ProgramFiles(x86)%\ZCode`)
 
-### Fixed
+### IDE integration
 
-- 模型 API 错误无提示、429 配额超限无限转圈
-- 输入历史冷启动水合失败（kvLoad 拉取兜底 + 水合事件解锁缓存）
-- 环境配置回显断流、凭证数据目录跟随等多项修复
-- 插件重装后 K/V 存储清空问题
+- Right-click a file in Project View / editor tab to send it, right-click a selection in the editor to send code to the input box (Ctrl+Alt+K), copy a selection reference (path + line numbers)
+- Files, memory, skills and MCP configs all open in the editor with one click
 
-### Changed
+### Input enhancements
 
-- README 中英双语化并补充界面预览截图
+- `@` file references (chips + completion, pasted absolute paths auto-convert to chips), `/` to invoke skills, long-paste folding
+- Input history recall and prefix ghost completion (Tab to accept); per-entry history capped at 2000 characters to keep storage lean
+
+### Localization
+
+- 简体中文 / English / 日本語 / 한국어 / 繁體中文, following the IDE UI language automatically
+
+### Compatibility
+
+- IntelliJ Platform 2024.1 ~ 2026.3 (sinceBuild 241 / untilBuild 263.*), JDK 17
+- Since 2026.2 the JCEF APIs are split into a standalone bundled plugin; an optional `com.intellij.modules.jcef` dependency keeps compatibility

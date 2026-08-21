@@ -106,6 +106,8 @@ interface StoreState {
   subagentReport: { callID: string; title: string; markdown: string } | null
   /** 通用 Markdown 预览弹窗（工具卡输出全文阅读，如 Skill 加载的技能文档；与子代理弹窗互斥）*/
   markdownPreview: { title: string; meta?: string; markdown: string } | null
+  /** 版本更新弹窗（What's New）开关：升级后首次打开自动弹 / 欢迎页角标 / 设置页手动打开 */
+  changelogOpen: boolean
   /** 子会话完整消息缓存（childSessionId → messages，详情弹窗"原始过程"）*/
   childMessages: Record<string, ZCodeMessage[]>
   childMessagesLoading: boolean
@@ -314,6 +316,10 @@ interface StoreState {
   openMarkdownPreview: (p: { title: string; meta?: string; markdown: string }) => void
   /** 关闭通用 Markdown 预览弹窗 */
   closeMarkdownPreview: () => void
+  /** 打开版本更新弹窗（What's New；已读标记写回由 App 关闭回调负责）*/
+  openChangelog: () => void
+  /** 关闭版本更新弹窗 */
+  closeChangelog: () => void
   /**
    * 拉取子会话完整消息（详情弹窗"原始过程"）。
    * silent = true：弹窗运行中 3s 轮询用——不置 loading/error（避免空态文案与
@@ -359,6 +365,7 @@ export const useStore = create<StoreState>((set, get) => ({
   subagentDetail: null,
   subagentReport: null,
   markdownPreview: null,
+  changelogOpen: false,
   childMessages: {},
   childMessagesLoading: false,
   childMessagesError: null,
@@ -998,6 +1005,9 @@ export const useStore = create<StoreState>((set, get) => ({
   // 通用 Markdown 预览与子代理弹窗同层互斥：叠着开两个 overlay，点哪关哪会很怪
   openMarkdownPreview: (p) => set({ markdownPreview: p, subagentDetail: null, subagentReport: null }),
   closeMarkdownPreview: () => set({ markdownPreview: null }),
+
+  openChangelog: () => set({ changelogOpen: true }),
+  closeChangelog: () => set({ changelogOpen: false }),
 
   loadChildMessages: (childSessionId, silent = false) => {
     if (silent) {

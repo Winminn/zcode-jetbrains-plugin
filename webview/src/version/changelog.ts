@@ -1,0 +1,277 @@
+// 由 scripts/extract-changelog.mjs 从根 CHANGELOG.md 生成（npm prebuild 自动执行）——请勿手改；
+// 修改变更内容请编辑 CHANGELOG.md 后重新构建。
+
+export interface ChangelogSection {
+  title: string
+  items: string[]
+}
+
+/** 一个语言段的正文（intro 引言 + 分节列表） */
+export interface ChangelogContent {
+  /** 语言段内、首个节之间的引言段（如 0.2.0 首版说明；多行，> 开头为引用行） */
+  intro?: string
+  sections: ChangelogSection[]
+}
+
+/** 一个版本块：中文段在前英文段后（渲染顺序固定，不随 UI 语言） */
+export interface ChangelogEntry {
+  version: string
+  date: string
+  zh?: ChangelogContent
+  en?: ChangelogContent
+}
+
+export const CHANGELOG_DATA: ChangelogEntry[] = [
+  {
+    "version": "0.2.2",
+    "date": "2026-08-21",
+    "zh": {
+      "sections": [
+        {
+          "title": "Fixed",
+          "items": [
+            "**子代理完成后状态持续显示「运行中」**：后台子代理完成（或前台子代理返回）后，底部 Agent 标签与聊天区子代理卡片长时间停在转圈状态、直到整个回合结束才刷新——现通过多层完成信号（子会话结束事件 / 权威状态轮询兜底）秒级收口，并修复过期状态快照把「已完成」覆盖回「运行中」的显示回退",
+            "**审批/提问弹窗误触导致会话卡死**：弹窗出现期间双击按钮或误触遮罩会触发重复应答，使回合悬挂并接连报错——现弹窗期间按钮防误触、遮罩不再误拒，新增 5 分钟超时倒计时（最后 60 秒红色警示，五语言）；回合终止时自动废弃挂起弹窗，悬挂回合自动停止并恢复重发",
+            "**记忆设置文案**：设置页「记忆」条目描述补齐五语言，开关说明去掉 ZCode 客户端菜单路径（插件内无此入口）"
+          ]
+        },
+        {
+          "title": "Added",
+          "items": [
+            "**环境自检增强**：新增内嵌浏览器（browser-use 宿主）健康检测项，异常时顶栏提醒条给出修复入口；macOS 下 Node.js 安装路径免配置自动探测"
+          ]
+        }
+      ]
+    },
+    "en": {
+      "sections": [
+        {
+          "title": "Fixed",
+          "items": [
+            "**Subagent status stuck on \"running\" after completion**: after a background subagent finished (or a foreground one returned), the bottom Agent tab and the in-chat subagent card kept spinning until the whole turn ended — completion is now finalized within seconds via multiple signals (child-session end events plus authoritative status polling as a fallback), and a display regression where stale snapshots overwrote \"completed\" back to \"running\" is fixed",
+            "**Mis-taps on approval/question dialogs hanging the session**: double-clicking buttons or accidentally hitting the overlay while a dialog was up triggered duplicate responses, hanging the turn and causing cascading errors — buttons are now protected against mis-taps while a dialog is open and the overlay no longer rejects accidentally; a 5-minute timeout countdown was added (red warning in the last 60 seconds, five languages); pending dialogs are discarded automatically when the turn terminates, and hung turns auto-stop and restore for resending",
+            "**Memory settings copy**: the Settings \"Memory\" entry now has descriptions in all five languages, and the toggle hint no longer references ZCode client menu paths (which don't exist inside the plugin)"
+          ]
+        },
+        {
+          "title": "Added",
+          "items": [
+            "**Environment check improvements**: new health probe for the embedded browser (browser-use host), with a fix entry point in the top banner when abnormal; Node.js install locations are auto-detected on macOS without manual configuration"
+          ]
+        }
+      ]
+    }
+  },
+  {
+    "version": "0.2.1",
+    "date": "2026-08-19",
+    "zh": {
+      "sections": [
+        {
+          "title": "Fixed",
+          "items": [
+            "**插件会话的自动记忆（MEMORY.md）从未生效**：`requestRuntimePreferences` 应答被硬编码为全 false，ZCode 客户端开启的「工作区记忆」对插件创建的所有会话一律无效——现与客户端共用 `~/.zcode/v2/setting.json` 同一份配置，设置页「记忆」条目新增「工作区记忆」开关（双向同步、新建会话生效），`nativeSearchEnhancements` / `askUserQuestionAutoResolution` 两项偏好一并恢复跟随客户端配置",
+            "**CLI 升级/重启后恢复会话无限转圈自动收尾**：ZCode 桌面端自动更新会杀掉插件依赖的 app-server 进程，恢复后的回合在服务端真实执行但事件流零下发，界面只认终止帧导致无限转圈——新增流式静默对账看门狗（60 秒无事件即静默探测服务端快照），回合已完成自动落地收尾、流丢失自动收尾并提示重发",
+            "**冷会话发送失败自动恢复**：send 撞 `-32004 Session is not active`（升级/重启后新进程未激活会话）时自动 resume 后重试一次，不再需要手动从历史记录重开；该错误同时追加中文提示与操作引导（五语言）"
+          ]
+        }
+      ]
+    },
+    "en": {
+      "sections": [
+        {
+          "title": "Fixed",
+          "items": [
+            "**Automatic memory (MEMORY.md) never took effect for plugin sessions**: the `requestRuntimePreferences` response was hard-coded to all false, so \"workspace memory\" enabled in the ZCode client was ignored by every session the plugin created — the plugin now shares the same `~/.zcode/v2/setting.json` as the client, the Settings \"Memory\" entry gained a \"Workspace memory\" toggle (two-way sync, applied to newly created sessions), and the `nativeSearchEnhancements` / `askUserQuestionAutoResolution` preferences follow the client configuration again",
+            "**Restored sessions spinning forever after CLI upgrade/restart now settle automatically**: the ZCode desktop app's auto-update kills the app-server process the plugin depends on; restored turns actually ran on the server but emitted zero events, leaving the UI spinning forever because it only accepted terminal frames — a streaming-silence watchdog was added (silently probes the authoritative server snapshot after 60 seconds without events): completed turns are finalized automatically, and lost streams are closed with a resend hint",
+            "**Automatic recovery for cold-session send failures**: when send hits `-32004 Session is not active` (the new process hasn't activated the session after upgrade/restart), the plugin now resumes once and retries automatically instead of requiring a manual reopen from history; the error also gains a localized hint with guidance (five languages)"
+          ]
+        }
+      ]
+    }
+  },
+  {
+    "version": "0.2.0",
+    "date": "2026-08-18",
+    "zh": {
+      "sections": [
+        {
+          "title": "对话",
+          "items": [
+            "流式输出：思考过程 / 正文 / 工具调用实时渲染，Markdown / Mermaid / 代码高亮",
+            "思考耗时统计、消息排队（生成中回车自动排队，排队卡片可立即发送 / 删除）",
+            "Ctrl+F 会话内搜索（大小写 / 整词 / 正则）、消息锚点导航（用户消息圆点定位 + hover 预览）"
+          ]
+        },
+        {
+          "title": "多任务",
+          "items": [
+            "多标签页并行会话（每标签独立上下文互不串扰），重启 IDE 自动恢复",
+            "会话列表 / 重命名 / 搜索 / 批量多选删除"
+          ]
+        },
+        {
+          "title": "过程可视",
+          "items": [
+            "任务清单（TodoWrite）实时进度",
+            "子代理（Agent）面板与执行过程 / 最终报告弹窗",
+            "文件改动统计（点击在编辑器打开、行内 diff 前后对比）",
+            "AskUserQuestion 交互弹窗、计划模式（ExitPlanMode）审批弹窗"
+          ]
+        },
+        {
+          "title": "内嵌浏览器 · browser-use 宿主",
+          "items": [
+            "Header 一键在聊天区右侧展开浏览器分栏：多 tab（全局共享、跨会话沿用）、后退 / 前进 / 刷新 / 地址栏 / 自由尺寸 / DevTools / 外部打开",
+            "插件作为宿主实现 ZCode app-server 的 browser-use 反向协议（`interaction/browserList` / `browserExecute`），AI 的浏览器工具零配置落到内嵌 JCEF 浏览器执行",
+            "导航与采集：newTab / navigate / screenshot / evaluate，截图直接回传模型",
+            "playwright 定位器透传：getByRole / getByText / label / testid / and / or / nth / css 链等选择器引擎，ARIA 树 DOM 快照供 AI 读取",
+            "CUA 鼠标键盘：坐标点击 / 输入 / 拖拽 / 滚动 / 组合按键，JS 对话框自动挂起处理",
+            "tab 生命周期：markDeliverable / markHandoff / finalize 标记与回读，tab.close 真关闭",
+            "自由尺寸：DevTools 设备工具栏形态——虚拟屏居中信箱、缩放档、尺寸持久化",
+            "playwright 能力不可用时优雅降级（title / get_visible_dom / screenshot 组合），链路始终可用"
+          ]
+        },
+        {
+          "title": "运行时控制",
+          "items": [
+            "模型下拉切换、权限模式（build / edit / plan / yolo）与思考级别（随模型动态）调整",
+            "待命态（未建会话）可预选模式与思考级别，建会话即生效",
+            "上下文容量圆环（含用量构成与缓存命中）、5 小时 / 每周额度查询"
+          ]
+        },
+        {
+          "title": "设置中心",
+          "items": [
+            "七页签：基础（主题 / 字体 / 语言 / 自定义配色 + 环境路径）、模型（provider 分组只读清单，路径跟随数据目录迁移）、用量（额度卡片 + 模型 / 工具用量曲线与明细表）、记忆（AGENTS.md 指令记忆 + 自动记忆）、技能（全局 / 项目 / 插件三来源扫描，行内启用禁用）、MCP（服务器清单 / 工具列表 / 连接日志）、其他（输入历史补全开关与历史记录管理）"
+          ]
+        },
+        {
+          "title": "环境检测",
+          "items": [
+            "启动自检 Node.js（≥18）/ ZCode CLI / 登录凭证三件套，异常时顶栏提醒条逐项给出修复入口与重新检测",
+            "路径可手动配置，留空自动探测；Windows 下 CLI 自动探测覆盖单用户安装（`%LOCALAPPDATA%\\Programs\\ZCode`）与全局安装（`%ProgramFiles%\\ZCode`、`%ProgramFiles(x86)%\\ZCode`）三类位置"
+          ]
+        },
+        {
+          "title": "IDE 集成",
+          "items": [
+            "项目视图 / 编辑器标签右键发送文件、编辑器右键发送选中代码到输入框（Ctrl+Alt+K）、复制选区引用（路径 + 行号）",
+            "文件、记忆、技能、MCP 配置均可一键在编辑器打开"
+          ]
+        },
+        {
+          "title": "输入增强",
+          "items": [
+            "`@` 引用文件（chip + 补全，粘贴绝对路径自动转 chip）、`/` 调用技能、长文本粘贴折叠",
+            "输入历史回溯与前缀幽灵补全（Tab 采纳）；单条历史长度上限 2000 字符，避免超长内容撑爆存储"
+          ]
+        },
+        {
+          "title": "多语言",
+          "items": [
+            "简体中文 / English / 日本語 / 한국어 / 繁體中文，跟随 IDE 界面语言自动切换"
+          ]
+        },
+        {
+          "title": "兼容性",
+          "items": [
+            "IntelliJ Platform 2024.1 ~ 2026.3（sinceBuild 241 / untilBuild 263.*），JDK 17",
+            "2026.2 起 JCEF API 剥离为独立捆绑插件，已声明可选依赖 `com.intellij.modules.jcef` 兼容"
+          ]
+        }
+      ],
+      "intro": "首个稳定发布版本。把 [ZCode](https://zcode.z.ai/cn) 编码助手带进 JetBrains IDE：不切终端、不离开编辑器，会话、对话、模型与任务管理都在一个工具窗口里完成，AI 的 browser-use 还能直接驱动插件内嵌浏览器干活。\n> 社区第三方插件，与 ZCode / Z.ai 官方无关。使用前需本机安装 ZCode CLI 并完成登录。"
+    },
+    "en": {
+      "sections": [
+        {
+          "title": "Conversation",
+          "items": [
+            "Streaming output: reasoning / text / tool calls rendered live, with Markdown / Mermaid / syntax highlighting",
+            "Reasoning-time tracking and message queuing (press Enter while generating to queue; queued cards can be sent or deleted immediately)",
+            "Ctrl+F in-conversation search (case / whole word / regex) and message anchor navigation (dot markers on user messages with hover preview)"
+          ]
+        },
+        {
+          "title": "Multitasking",
+          "items": [
+            "Multi-tab parallel sessions (each tab has its own isolated context), auto-restored on IDE restart",
+            "Session list / rename / search / multi-select bulk delete"
+          ]
+        },
+        {
+          "title": "Process visibility",
+          "items": [
+            "TodoWrite checklist with live progress",
+            "Subagent (Agent) panel with execution process and final-report dialog",
+            "File-change stats (click to open in editor, inline before/after diff)",
+            "AskUserQuestion interactive dialog and plan-mode (ExitPlanMode) approval dialog"
+          ]
+        },
+        {
+          "title": "Embedded browser · browser-use host",
+          "items": [
+            "One click in the header opens a browser pane beside the chat: multiple tabs (globally shared across sessions), back / forward / reload / address bar / free sizing / DevTools / open externally",
+            "The plugin acts as the host implementing ZCode app-server's browser-use reverse protocol (`interaction/browserList` / `browserExecute`), so AI browser tools land in the embedded JCEF browser with zero configuration",
+            "Navigation & capture: newTab / navigate / screenshot / evaluate; screenshots go straight back to the model",
+            "Playwright locator pass-through: getByRole / getByText / label / testid / and / or / nth / css chains and other selector engines; ARIA-tree DOM snapshots for the AI to read",
+            "CUA mouse & keyboard: coordinate clicks / typing / drag / scroll / key combos, with JS dialogs auto-suspended and handled",
+            "Tab lifecycle: markDeliverable / markHandoff / finalize flags with readback, tab.close really closes",
+            "Free sizing: DevTools device-toolbar style — centered letterboxed virtual screen, zoom steps, persisted size",
+            "Graceful degradation when Playwright capabilities are unavailable (title / get_visible_dom / screenshot combo), keeping the pipeline usable"
+          ]
+        },
+        {
+          "title": "Runtime control",
+          "items": [
+            "Model dropdown switching, permission mode (build / edit / plan / yolo) and thinking level (model-dependent) adjustment",
+            "Standby state (no session yet) can preselect mode and thinking level, applied when the session is created",
+            "Context-capacity ring (with usage breakdown and cache hits), 5-hour / weekly quota lookup"
+          ]
+        },
+        {
+          "title": "Settings hub",
+          "items": [
+            "Seven tabs: Basic (theme / font / language / custom colors + env paths), Models (read-only provider-grouped list, path follows the data directory), Usage (quota cards + model / tool usage charts and detail tables), Memory (AGENTS.md instruction memory + automatic memory), Skills (global / project / plugin source scanning with inline enable/disable), MCP (server list / tool list / connection logs), Other (input-history completion toggle and history management)"
+          ]
+        },
+        {
+          "title": "Environment check",
+          "items": [
+            "Startup self-check for Node.js (≥18) / ZCode CLI / login credentials; the top banner lists per-item fix entry points and re-check when abnormal",
+            "Paths are manually configurable or auto-detected when left empty; on Windows, CLI auto-detection covers per-user installs (`%LOCALAPPDATA%\\Programs\\ZCode`) and machine-wide installs (`%ProgramFiles%\\ZCode`, `%ProgramFiles(x86)%\\ZCode`)"
+          ]
+        },
+        {
+          "title": "IDE integration",
+          "items": [
+            "Right-click a file in Project View / editor tab to send it, right-click a selection in the editor to send code to the input box (Ctrl+Alt+K), copy a selection reference (path + line numbers)",
+            "Files, memory, skills and MCP configs all open in the editor with one click"
+          ]
+        },
+        {
+          "title": "Input enhancements",
+          "items": [
+            "`@` file references (chips + completion, pasted absolute paths auto-convert to chips), `/` to invoke skills, long-paste folding",
+            "Input history recall and prefix ghost completion (Tab to accept); per-entry history capped at 2000 characters to keep storage lean"
+          ]
+        },
+        {
+          "title": "Localization",
+          "items": [
+            "简体中文 / English / 日本語 / 한국어 / 繁體中文, following the IDE UI language automatically"
+          ]
+        },
+        {
+          "title": "Compatibility",
+          "items": [
+            "IntelliJ Platform 2024.1 ~ 2026.3 (sinceBuild 241 / untilBuild 263.*), JDK 17",
+            "Since 2026.2 the JCEF APIs are split into a standalone bundled plugin; an optional `com.intellij.modules.jcef` dependency keeps compatibility"
+          ]
+        }
+      ],
+      "intro": "First stable release. Brings the [ZCode](https://zcode.z.ai/cn) coding assistant into JetBrains IDEs: no terminal switching, no leaving the editor — sessions, conversations, models and task management all live in one tool window, and the AI's browser-use can drive the plugin's embedded browser directly.\n> Community third-party plugin, not affiliated with ZCode / Z.ai. Install the ZCode CLI locally and sign in before use."
+    }
+  }
+]

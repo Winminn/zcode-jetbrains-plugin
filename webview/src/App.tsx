@@ -25,8 +25,11 @@ import { SubagentDetailDialog } from '@/components/SubagentDetailDialog'
 import { SubagentReportDialog } from '@/components/SubagentReportDialog'
 import { MarkdownPreviewDialog } from '@/components/MarkdownPreviewDialog'
 import { ConfirmDialog } from '@/components/ConfirmDialog'
+import { ChangelogDialog, CHANGELOG_LAST_SEEN_KEY } from '@/components/ChangelogDialog'
 import { EnvBanner } from '@/components/EnvBanner'
 import { sendToJava, isInJcef } from '@/ipc/bridge'
+import { getPersisted, setPersisted, isKvHydrated, KV_HYDRATED_EVENT } from '@/utils/persist'
+import { APP_VERSION } from '@/version/version'
 import './styles/global.less'
 import './styles/buttons.less'
 
@@ -44,6 +47,9 @@ export default function App() {
     archivedSessions, archivedLoading, loadArchivedSessions, archiveSession, restoreSession,
   } = useStore()
   const setPendingSettingsSection = useStore((s) => s.setPendingSettingsSection)
+  const changelogOpen = useStore((s) => s.changelogOpen)
+  const openChangelog = useStore((s) => s.openChangelog)
+  const closeChangelog = useStore((s) => s.closeChangelog)
 
   // IDE 主题同步
   useTheme()
@@ -94,6 +100,21 @@ export default function App() {
   useEffect(() => {
     init()
   }, [init])
+
+  // 升级后首次打开自动弹「版本更新」：已读标记走 persist kv 通道（IDE 侧持久——
+  // 内置 server 随机端口致 localStorage 跨重启失效）。JCEF 内等权威 kv 水合完成再比对
+  // （注入 2.8s 兜底失败时 persist 停用，本会话宁可不弹不误弹）；dev/mock 直读 localStorage
+  useEffect(() => {
+    const check = () => {
+      if (getPersisted(CHANGELOG_LAST_SEEN_KEY) !== APP_VERSION) openChangelog()
+    }
+    if (!isInJcef() || isKvHydrated()) {
+      check()
+      return
+    }
+    window.addEventListener(KV_HYDRATED_EVENT, check, { once: true })
+    return () => window.removeEventListener(KV_HYDRATED_EVENT, check)
+  }, [openChangelog])
 
   const currentSession = sessions.find((s) => s.sessionId === currentSessionId)
 
@@ -259,6 +280,15 @@ export default function App() {
       <SubagentReportDialog />
       {/* 通用 Markdown 预览弹窗（工具卡输出全文阅读，如 Skill 技能文档）*/}
       <MarkdownPreviewDialog />
+      {/* 版本更新弹窗（条件渲染：每次打开从最新版页开始；关闭即记已读当前版本）*/}
+      {changelogOpen && (
+        <ChangelogDialog
+          onClose={() => {
+            closeChangelog()
+            setPersisted(CHANGELOG_LAST_SEEN_KEY, APP_VERSION)
+          }}
+        />
+      )}
     </div>
   )
 }

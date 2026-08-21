@@ -90,7 +90,10 @@
     "confirmClearAllTitle": "清空全部歷史記錄",
     "confirmClearLowTitle": "清除低重要度記錄",
     "confirmClearAllMsg": "將刪除全部 {{count}} 條歷史記錄，刪除後不可恢復。",
-    "confirmClearLowMsg": "將刪除 {{count}} 條僅使用過一次的記錄，刪除後不可恢復。"
+    "confirmClearLowMsg": "將刪除 {{count}} 條僅使用過一次的記錄，刪除後不可恢復。",
+    "versionHistory": "版本記錄",
+    "versionHistoryView": "檢視記錄",
+    "versionHistoryHint": "檢視各版本的新功能與修復"
   },
   "basicTabs": {
     "appearance": "外觀",

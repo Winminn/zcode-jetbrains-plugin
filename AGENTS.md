@@ -41,7 +41,7 @@ cd webview && npm test                # webview 测试（vitest，test/ 与 *.te
 ## 发版标准流程（x.y.z）
 
 1. **收尾改动**（在 feature/x.y.z 分支）：
-   - 升版本号四处同步：`intellij-plugin/build.gradle.kts` 的 `version`、`webview/package.json`、`McpToolsClient.kt` 的 `CLIENT_VERSION`、`WelcomeScreen.tsx` 的 `APP_VERSION`。
+   - 升版本号三处同步：`intellij-plugin/build.gradle.kts` 的 `version`、`webview/package.json`、`McpToolsClient.kt` 的 `CLIENT_VERSION`（webview 的 `APP_VERSION` 自 0.2.3 起由 `npm prebuild` 从 build.gradle.kts 自动生成 `src/version/version.ts`，同时生成版本更新弹窗数据 `src/version/changelog.ts`——后者提交仓库，前者 gitignore）。
    - `CHANGELOG.md` 顶部加 `[x.y.z] - 日期` 块（patchPluginXml 提取为 change-notes；只写用户可感知的改动，README/工作流调整类杂务不放）。
    - 测试全过：`./gradlew test` + `cd webview && npm test`（tsc 在 build 时跑）。
 2. **构建签名**（必须照 jetbrains-marketplace-publish skill 坑 1b，否则会静默产出未签名包）：

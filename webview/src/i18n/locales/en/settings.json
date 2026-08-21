@@ -90,7 +90,10 @@
     "confirmClearAllTitle": "Clear all history",
     "confirmClearLowTitle": "Clear low-importance records",
     "confirmClearAllMsg": "This will delete all {{count}} history records. This cannot be undone.",
-    "confirmClearLowMsg": "This will delete {{count}} records that were used only once. This cannot be undone."
+    "confirmClearLowMsg": "This will delete {{count}} records that were used only once. This cannot be undone.",
+    "versionHistory": "Version History",
+    "versionHistoryView": "View History",
+    "versionHistoryHint": "See new features and fixes in each release"
   },
   "basicTabs": {
     "appearance": "Appearance",

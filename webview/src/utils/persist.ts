@@ -113,6 +113,11 @@ let flushTimer: ReturnType<typeof setTimeout> | null = null
 /** hydration 状态：注入写回完成前挂起 flush（防"空 localStorage 全量覆盖"清空存量）*/
 let kvHydrated = false
 
+/** 权威 kv 是否已水合完成（App 据此决定何时读取持久值；未水合读到的是缓存/空值）*/
+export function isKvHydrated(): boolean {
+  return kvHydrated
+}
+
 function scheduleKvFlush(): void {
   if (!isInJcef()) return // mock/dev：localStorage 即权威源
   if (!kvHydrated) return // 注入未写回：本会话改动挂起，hydration 完成后补发

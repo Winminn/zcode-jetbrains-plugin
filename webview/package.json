@@ -6,6 +6,8 @@
   "description": "ZCode IDEA 插件的 JCEF webview（cc-gui 风格 React UI）",
   "scripts": {
     "dev": "vite",
+    "prebuild": "node scripts/extract-changelog.mjs",
+    "prebuild:single": "node scripts/extract-changelog.mjs",
     "build": "tsc -b && vite build",
     "build:single": "tsc -b && vite build --config vite.singlefile.config.ts",
     "preview": "vite preview",

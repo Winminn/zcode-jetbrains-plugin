@@ -10,6 +10,14 @@
   "promptRunningHint": "上一回合仍在執行且自動停止失敗，請稍後重試，或點擊停止按鈕結束當前生成後再傳送",
   "dialogCountdown": "剩餘 {{time}}",
   "dialogCountdownTitle": "長時間未應答將逾時，自動視為拒絕並關閉彈窗",
+  "changelog": {
+    "title": "版本更新",
+    "close": "知道了",
+    "dismiss": "關閉",
+    "page": "{{current}} / {{total}}",
+    "prev": "上一版",
+    "next": "下一版"
+  },
   "newSession": {
     "title": "新建會話",
     "message": "將開啟新的空白會話（傳送首條訊息時才建立），當前會話會保留在歷史記錄中，可隨時切換回來。確定新建嗎？",

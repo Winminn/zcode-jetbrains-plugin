@@ -1,0 +1,259 @@
+/**
+ * 版本更新弹窗（What's New）——cc-gui changelog-dialog.less 适配本项目变量体系
+ *
+ * 壳复用全局弹窗风格（--bg-elevated / --border-primary，同 modal-content），
+ * 布局自成一体：header（标题 + v 徽章 + 日期 + 关闭）/ body（引言 + 分节列表，可滚动）/
+ * footer（翻页导航 + 圆点/页码 + 知道了）。
+ */
+
+.changelog-dialog__overlay {
+  position: fixed;
+  inset: 0;
+  background: var(--bg-overlay);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+}
+
+.changelog-dialog {
+  display: flex;
+  flex-direction: column;
+  width: 560px;
+  max-width: calc(100vw - 48px);
+  max-height: min(640px, calc(100vh - 96px));
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-primary);
+  border-radius: 10px;
+  box-shadow: var(--shadow-lg, var(--shadow-card));
+  overflow: hidden;
+}
+
+/* ============ 头部：标题 + v 徽章 + 日期 + 关闭 ============ */
+
+.changelog-dialog__header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 14px 18px;
+  border-bottom: 1px solid var(--border-primary);
+  flex-shrink: 0;
+}
+
+.changelog-dialog__title {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--text-secondary);
+  margin: 0;
+}
+
+.changelog-dialog__version-badge {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--accent-primary);
+  background: rgba(0, 127, 212, 0.12);
+  border: 1px solid rgba(0, 127, 212, 0.35);
+  border-radius: 10px;
+  padding: 1px 8px;
+  line-height: 18px;
+}
+
+.changelog-dialog__date {
+  font-size: 12px;
+  color: var(--text-tertiary);
+}
+
+.changelog-dialog__close {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--text-tertiary);
+  cursor: pointer;
+  transition: all 0.15s;
+
+  &:hover {
+    background: var(--bg-hover);
+    color: var(--text-secondary);
+  }
+}
+
+/* ============ 正文：引言 + 分节列表（可滚动） ============ */
+
+.changelog-dialog__body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 14px 18px;
+}
+
+.changelog-dialog__intro {
+  margin-bottom: 12px;
+
+  p {
+    font-size: 13px;
+    color: var(--text-tertiary);
+    line-height: 1.6;
+    margin: 0 0 6px;
+  }
+
+  blockquote {
+    margin: 0 0 6px;
+    padding: 4px 10px;
+    border-left: 3px solid var(--border-focus);
+    background: var(--bg-secondary);
+    border-radius: 0 4px 4px 0;
+    font-size: 12px;
+    color: var(--text-tertiary);
+    line-height: 1.6;
+  }
+}
+
+.changelog-dialog__section {
+  margin-bottom: 14px;
+
+  &:last-child {
+    margin-bottom: 4px;
+  }
+}
+
+/* 中英文段之间的分隔线 */
+.changelog-dialog__lang-divider {
+  border: none;
+  border-top: 1px dashed var(--border-primary);
+  margin: 18px 0 14px;
+}
+
+.changelog-dialog__section-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-secondary);
+  margin: 0 0 6px;
+}
+
+.changelog-dialog__list {
+  margin: 0;
+  padding-left: 20px;
+
+  li {
+    font-size: 13px;
+    color: var(--text-tertiary);
+    line-height: 1.65;
+    margin-bottom: 6px;
+    word-break: break-word;
+
+    strong {
+      color: var(--text-secondary);
+    }
+
+    code {
+      font-family: var(--font-mono, 'Consolas', monospace);
+      font-size: 12px;
+      background: var(--bg-secondary);
+      border: 1px solid var(--border-secondary);
+      border-radius: 3px;
+      padding: 0 4px;
+    }
+
+    a {
+      color: var(--accent-primary);
+      text-decoration: none;
+
+      &:hover {
+        text-decoration: underline;
+      }
+    }
+  }
+}
+
+/* ============ 底部：翻页导航 + 圆点/页码 + 知道了 ============ */
+
+.changelog-dialog__footer {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 18px;
+  border-top: 1px solid var(--border-primary);
+  flex-shrink: 0;
+}
+
+.changelog-dialog__nav-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  border: 1px solid var(--border-primary);
+  border-radius: 4px;
+  background: transparent;
+  color: var(--text-tertiary);
+  cursor: pointer;
+  transition: all 0.15s;
+
+  &:hover:not(:disabled) {
+    background: var(--bg-hover);
+    color: var(--text-secondary);
+    border-color: var(--border-hover);
+  }
+
+  &:disabled {
+    opacity: 0.35;
+    cursor: default;
+  }
+}
+
+.changelog-dialog__dots {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  margin: 0 4px;
+}
+
+.changelog-dialog__dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  border: none;
+  padding: 0;
+  background: var(--border-primary);
+  cursor: pointer;
+  transition: all 0.15s;
+
+  &:hover {
+    background: var(--text-muted);
+  }
+
+  &--active {
+    background: var(--accent-primary);
+    transform: scale(1.25);
+  }
+}
+
+.changelog-dialog__page-text {
+  font-size: 12px;
+  color: var(--text-tertiary);
+  margin: 0 6px;
+  min-width: 52px;
+  text-align: center;
+}
+
+.changelog-dialog__ok-btn {
+  margin-left: auto;
+  padding: 5px 18px;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  background: var(--accent-primary);
+  color: #fff;
+  font-size: 13px;
+  cursor: pointer;
+  transition: all 0.15s;
+
+  &:hover {
+    background: var(--accent-primary-hover);
+  }
+}

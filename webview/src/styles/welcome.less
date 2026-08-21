@@ -81,7 +81,7 @@
     }
   }
 
-  /* 版本徽章：Logo 右侧（cc-gui .version-tag 紫色方角 + 辉光） */
+  /* 版本徽章：Logo 右侧（cc-gui .version-tag 紫色方角 + 辉光）；button 可点开版本更新弹窗 */
   &__version-tag {
     position: absolute;
     top: -2px;
@@ -91,6 +91,7 @@
     border: 1px solid rgba(139, 92, 246, 0.5);
     color: #ddd6fe;
     font-size: 10px;
+    font-family: inherit;
     padding: 2px 8px;
     border-radius: 4px;
     font-weight: 500;
@@ -100,9 +101,17 @@
     z-index: 10;
     cursor: pointer;
     user-select: none;
+    transition: background 0.15s, border-color 0.15s;
     animation:
       welcome-badge-in 0.5s cubic-bezier(0.34, 1.56, 0.64, 1) 0.55s both,
       welcome-badge-glow 3s ease-in-out 1.2s infinite;
+
+    &:hover,
+    &:focus-visible {
+      background: rgba(139, 92, 246, 0.22);
+      border-color: rgba(139, 92, 246, 0.8);
+      outline: none;
+    }
   }
 
   &__hint {

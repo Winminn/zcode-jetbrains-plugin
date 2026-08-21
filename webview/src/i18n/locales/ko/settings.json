@@ -90,7 +90,10 @@
     "confirmClearAllTitle": "기록 전체 삭제",
     "confirmClearLowTitle": "낮은 중요도 기록 삭제",
     "confirmClearAllMsg": "{{count}}개의 기록을 모두 삭제합니다. 복구할 수 없습니다.",
-    "confirmClearLowMsg": "한 번만 사용한 기록 {{count}}개를 삭제합니다. 복구할 수 없습니다."
+    "confirmClearLowMsg": "한 번만 사용한 기록 {{count}}개를 삭제합니다. 복구할 수 없습니다.",
+    "versionHistory": "버전 기록",
+    "versionHistoryView": "기록 보기",
+    "versionHistoryHint": "각 버전의 새 기능과 수정 사항 확인"
   },
   "basicTabs": {
     "appearance": "외관",

@@ -25,6 +25,8 @@ import {
   type HistoryItem,
 } from '@/hooks/useInputHistory'
 import { ConfirmDialog } from './ConfirmDialog'
+import { useStore } from '@/store/useStore'
+import { APP_VERSION } from '@/version/version'
 import '../styles/other-settings.less'
 
 const cx = (...c: (string | false | null | undefined)[]) => c.filter(Boolean).join(' ')
@@ -184,6 +186,7 @@ function HistoryItemEditor({
 
 export function OtherSettingsView() {
   const { t } = useTranslation()
+  const openChangelog = useStore((s) => s.openChangelog)
   const [completionEnabled, setCompletionEnabled] = useState(() => isHistoryCompletionEnabled())
   const [historyItems, setHistoryItems] = useState<HistoryItem[]>([])
   const [showHistoryList, setShowHistoryList] = useState(false)
@@ -372,6 +375,26 @@ export function OtherSettingsView() {
             </div>
           )}
         </div>
+        {/* 版本记录（What's New 弹窗手动入口）：标签右侧展示当前版本号 */}
+        <div className="other-settings__field-header other-settings__field-header--version">
+          <span className="codicon codicon-tag" />
+          <span className="other-settings__field-label">{t('settings.other.versionHistory')}</span>
+          <span className="other-settings__version-now">v{APP_VERSION}</span>
+          <div className="other-settings__actions-spacer" />
+          <button
+            type="button"
+            className="other-settings__action-btn other-settings__action-btn--add"
+            onClick={openChangelog}
+            title={t('settings.other.versionHistoryHint')}
+          >
+            <span className="codicon codicon-history" />
+            <span>{t('settings.other.versionHistoryView')}</span>
+          </button>
+        </div>
+        <small className="other-settings__hint">
+          <span className="codicon codicon-info" />
+          <span>{t('settings.other.versionHistoryHint')}</span>
+        </small>
       </section>
 
       {/* 条目编辑弹窗（条件渲染保证每次打开重置初始值）*/}

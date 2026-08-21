@@ -90,7 +90,10 @@
     "confirmClearAllTitle": "履歴をすべて削除",
     "confirmClearLowTitle": "低重要度の記録を削除",
     "confirmClearAllMsg": "{{count}} 件の履歴をすべて削除します。元に戻せません。",
-    "confirmClearLowMsg": "使用が 1 回のみの記録 {{count}} 件を削除します。元に戻せません。"
+    "confirmClearLowMsg": "使用が 1 回のみの記録 {{count}} 件を削除します。元に戻せません。",
+    "versionHistory": "バージョン履歴",
+    "versionHistoryView": "履歴を表示",
+    "versionHistoryHint": "各バージョンの新機能と修正を確認"
   },
   "basicTabs": {
     "appearance": "外観",

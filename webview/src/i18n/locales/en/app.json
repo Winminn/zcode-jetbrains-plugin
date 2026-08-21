@@ -10,6 +10,14 @@
   "promptRunningHint": "The previous turn is still running and auto-stop failed. Try again later, or click Stop to end the current generation before sending",
   "dialogCountdown": "{{time}} remaining",
   "dialogCountdownTitle": "If unanswered until timeout, the request is auto-declined and the dialog closes",
+  "changelog": {
+    "title": "What's New",
+    "close": "Got it",
+    "dismiss": "Close",
+    "page": "{{current}} / {{total}}",
+    "prev": "Previous version",
+    "next": "Next version"
+  },
   "newSession": {
     "title": "New Session",
     "message": "A new blank session will be started (created only when the first message is sent). The current session will be kept in history and can be switched back to at any time. Start a new session?",

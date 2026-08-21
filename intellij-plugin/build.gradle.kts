@@ -8,22 +8,71 @@ plugins {
 group = "com.zcode.ideaplugin"
 version = "0.2.2"
 
-// 从仓库根 CHANGELOG.md 提取「最新一个版本块」（## 标题到下一个 ## 之前），
-// 把 markdown 粗转成 HTML 片段，作为 patchPluginXml 的 change-notes 注入
+// 从仓库根 CHANGELOG.md 提取「最新一个版本块」（## 标题到下一个 ## 之前）的中文段
+// （English: 标记之前；无语言标记的块整块兼容），把 markdown 粗转成 HTML 片段，
+// 作为 patchPluginXml 的 change-notes 注入。Marketplace 渲染 changeNotes 的 HTML
+// 子集但不解析 markdown——**加粗** / `代码` / [链接] 必须在此转换为 <b>/<code>/<a>，
+// 否则星号反引号原样显示；先做 HTML 转义防 CHANGELOG 里的 <depends> 等文本破坏 XML
 fun latestChangelogSection(): String {
     val changelog = rootProject.file("CHANGELOG.md").readText()
     val headings = Regex("(?m)^## ").findAll(changelog).toList()
     if (headings.isEmpty()) return ""
     val start = headings.first().range.first
     val end = if (headings.size > 1) headings[1].range.first else changelog.length
-    return changelog.substring(start, end).trim().lines().joinToString("\n") { line ->
-        when {
-            line.startsWith("## ") -> "<h3>${line.removePrefix("## ")}</h3>"
-            line.startsWith("### ") -> "<h4>${line.removePrefix("### ")}</h4>"
-            line.startsWith("- ") -> "<li>${line.removePrefix("- ")}</li>"
-            else -> line
+    var section = changelog.substring(start, end).trim()
+
+    // 双语块只取中文段（保留版本头行，仅移除语言标记行与 English: 段）
+    val zhLines = mutableListOf<String>()
+    var inEnglish = false
+    for (line in section.lines()) {
+        when (line.trim()) {
+            "English:" -> inEnglish = true
+            "中文:" -> Unit // 标记行本身移除
+            else -> if (!inEnglish) zhLines.add(line)
         }
     }
+    section = zhLines.joinToString("\n").trim()
+
+    fun inline(s: String): String = s
+        .replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+        .let { Regex("\\*\\*([^*]+)\\*\\*").replace(it, "<b>$1</b>") }
+        .let { Regex("`([^`]+)`").replace(it, "<code>$1</code>") }
+        .let { Regex("\\[([^\\]]+)\\]\\((https?://[^)\\s]+)\\)").replace(it, "<a href=\"$2\">$1</a>") }
+
+    val html = StringBuilder()
+    var inList = false
+    fun closeList() {
+        if (inList) {
+            html.append("</ul>\n")
+            inList = false
+        }
+    }
+    for (line in section.lines()) {
+        when {
+            line.startsWith("## ") -> {
+                closeList()
+                html.append("<h3>").append(inline(line.removePrefix("## "))).append("</h3>\n")
+            }
+            line.startsWith("### ") -> {
+                closeList()
+                html.append("<h4>").append(inline(line.removePrefix("### "))).append("</h4>\n")
+            }
+            line.startsWith("- ") -> {
+                if (!inList) {
+                    html.append("<ul>\n")
+                    inList = true
+                }
+                html.append("<li>").append(inline(line.removePrefix("- "))).append("</li>\n")
+            }
+            line.isBlank() -> { /* 空行：段落间隔，列表边界在下一内容行处理 */ }
+            else -> {
+                closeList()
+                html.append("<div>").append(inline(line.trim())).append("</div>\n")
+            }
+        }
+    }
+    closeList()
+    return html.toString().trim()
 }
 
 // gradle-intellij-plugin 会注入自己的 repository（指向本地 SDK），
