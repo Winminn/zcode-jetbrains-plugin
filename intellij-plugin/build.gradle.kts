@@ -6,7 +6,7 @@ plugins {
 }
 
 group = "com.zcode.ideaplugin"
-version = "0.2.1"
+version = "0.2.2"
 
 // 从仓库根 CHANGELOG.md 提取「最新一个版本块」（## 标题到下一个 ## 之前），
 // 把 markdown 粗转成 HTML 片段，作为 patchPluginXml 的 change-notes 注入
