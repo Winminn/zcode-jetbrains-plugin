@@ -5,7 +5,7 @@
  * - IME 安全的 Enter 发送（useKeyboard hook）
  * - 对话进行中仍可输入：Enter 入队（store sendMessage 分流），回合结束自动发送
  * - @文件引用（FileRef chip + 补全下拉）
- * - /斜杠命令技能选择（行首 / 触发，磁盘扫描 skill/command）
+ * - /斜杠命令技能选择（行首 / 触发，磁盘扫描 skill/command；下拉分组展示，命令组排在技能组前优先匹配）
  * - 输入历史导航（useInputHistory：空输入 ArrowUp 回溯、ArrowDown 前进）
  * - 历史前缀幽灵补全（findHistorySuggestion：输入匹配历史前缀显示灰色后缀，Tab 采纳/Esc 关闭）
  * - 发送/停止 28×28 互斥（isStreaming ? codicon-debug-stop : codicon-send）
@@ -21,7 +21,7 @@
  * 发送时拼回 /技能名 前缀（由 ZCode CLI 解析）。
  */
 
-import { useEffect, useRef, useState, useCallback } from 'react'
+import { Fragment, useEffect, useRef, useState, useCallback, useMemo } from 'react'
 import { useTranslation } from 'react-i18next'
 import { useKeyboard } from '@/hooks/useKeyboard'
 import { useInputHistory, findHistorySuggestion } from '@/hooks/useInputHistory'
@@ -545,15 +545,18 @@ export function InputBox({ onSend, isStreaming = false, onStop, disabled = false
     return unsub
   }, [])
 
-  /** 按输入过滤（名称/描述，大小写不敏感）*/
-  const filteredSlashItems =
-    slashQuery === null
-      ? slashItems
-      : slashItems.filter(
-          (c) =>
-            c.name.toLowerCase().includes(slashQuery.toLowerCase()) ||
-            (c.description ?? '').toLowerCase().includes(slashQuery.toLowerCase())
-        )
+  /** 按输入过滤（名称/描述，大小写不敏感），命令组排在技能组前（组内保持扫描顺序）*/
+  const filteredSlashItems = useMemo(() => {
+    const filtered =
+      slashQuery === null
+        ? slashItems
+        : slashItems.filter(
+            (c) =>
+              c.name.toLowerCase().includes(slashQuery.toLowerCase()) ||
+              (c.description ?? '').toLowerCase().includes(slashQuery.toLowerCase())
+          )
+    return [...filtered].sort((a, b) => (a.kind === b.kind ? 0 : a.kind === 'command' ? -1 : 1))
+  }, [slashItems, slashQuery])
 
   /** 选中命令：把技能名加到 SkillRef chip 列表 + 清除输入框里的 /xxx 文本 */
   function selectSlash(item: SlashCommand) {
@@ -696,7 +699,8 @@ export function InputBox({ onSend, isStreaming = false, onStop, disabled = false
       }
       if (e.key === 'Enter' && !e.shiftKey) {
         e.preventDefault()
-        selectSlash(filteredSlashItems[slashIndex])
+        // 过滤列表变短时 index 可能超界（filter 变化不重置导航位），clamp 防越界
+        selectSlash(filteredSlashItems[Math.min(slashIndex, filteredSlashItems.length - 1)])
         return
       }
     }
@@ -881,31 +885,37 @@ export function InputBox({ onSend, isStreaming = false, onStop, disabled = false
           </div>
         )}
 
-        {/* / 斜杠命令补全下拉 */}
+        {/* / 斜杠命令补全下拉（命令组在前、技能组在后，组切换处插入标题行；标题不占导航索引）*/}
         {slashQuery !== null && filteredSlashItems.length > 0 && (
           <div className="input-box__slash">
             {filteredSlashItems.map((c, i) => (
-              <div
-                key={`${c.kind}:${c.name}`}
-                className={`input-box__slash-item ${i === slashIndex ? 'active' : ''}`}
-                onMouseEnter={() => setSlashIndex(i)}
-                onMouseDown={(e) => {
-                  e.preventDefault() // 不让编辑器失焦
-                  selectSlash(c)
-                }}
-              >
-                <span
-                  className={`codicon ${
-                    c.kind === 'skill' ? 'codicon-wand' : 'codicon-terminal'
-                  } input-box__slash-icon input-box__slash-icon--${c.kind}`}
-                />
-                <span className="input-box__slash-main">
-                  <span className="input-box__slash-name">/{c.name}</span>
-                  {c.description && (
-                    <span className="input-box__slash-desc">{c.description}</span>
-                  )}
-                </span>
-              </div>
+              <Fragment key={`${c.kind}:${c.name}`}>
+                {(i === 0 || filteredSlashItems[i - 1].kind !== c.kind) && (
+                  <div className="input-box__slash-group-title">
+                    {c.kind === 'command' ? t('input.slash.groupCommands') : t('input.slash.groupSkills')}
+                  </div>
+                )}
+                <div
+                  className={`input-box__slash-item ${i === slashIndex ? 'active' : ''}`}
+                  onMouseEnter={() => setSlashIndex(i)}
+                  onMouseDown={(e) => {
+                    e.preventDefault() // 不让编辑器失焦
+                    selectSlash(c)
+                  }}
+                >
+                  <span
+                    className={`codicon ${
+                      c.kind === 'skill' ? 'codicon-wand' : 'codicon-terminal'
+                    } input-box__slash-icon input-box__slash-icon--${c.kind}`}
+                  />
+                  <span className="input-box__slash-main">
+                    <span className="input-box__slash-name">/{c.name}</span>
+                    {c.description && (
+                      <span className="input-box__slash-desc">{c.description}</span>
+                    )}
+                  </span>
+                </div>
+              </Fragment>
             ))}
           </div>
         )}

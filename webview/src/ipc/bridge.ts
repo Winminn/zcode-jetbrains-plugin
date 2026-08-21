@@ -1272,7 +1272,7 @@ flowchart LR
           { name: 'diagnosing-bugs', description: '硬 bug 与性能回归的诊断循环', kind: 'skill', source: 'user' },
           { name: 'init', description: 'Create or update workspace AGENTS.md instructions.', kind: 'command', source: 'builtin' },
           { name: 'compact', description: '压缩当前会话上下文', kind: 'command', source: 'builtin' },
-          { name: 'goal', description: 'Show or set the current session goal.', kind: 'command', source: 'builtin' },
+          { name: 'browser-use:control-browser', description: '浏览器自动化（插件贡献，带前缀）', kind: 'skill', source: 'plugin' },
           { name: 'review:code', description: '评审代码（嵌套目录命令）', kind: 'command', source: 'user' },
         ],
       }

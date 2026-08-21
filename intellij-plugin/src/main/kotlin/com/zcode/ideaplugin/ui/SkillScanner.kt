@@ -18,7 +18,7 @@ import java.nio.file.StandardCopyOption
  *   user    ~/.zcode/skills、~/.agents/skills
  *           （junction 挂载时两根指向同一目录，按真实路径去重只保留先扫到的条目）
  *   project 项目根及 git worktree 根的 .zcode/skills、.agents/skills
- *   plugin  ~/.zcode/cli/plugins 下各插件的 skills 目录（限深 7 容错）
+ *   plugin  仅启用插件的 skills 目录（~/.zcode/cli/plugins，启用判据与版本选择见 SlashCommandScanner）
  *
  * 启用状态：~/.zcode/cli/config.json 的 skill 节点 {<SKILL.md路径>: {enable:false}}
  * （CLI collectDisabledPaths 只取 enable===false 条目；匹配时对技能路径做 resolve/realpath
@@ -38,14 +38,12 @@ object SkillScanner {
         val scope: String,
         /** zcode | agents | plugin（同一 scope 下的根目录来源）*/
         val source: String,
-        /** 插件技能的插件名（从路径推断，版本段回退上一层；识别失败为 null）*/
+        /** 插件技能的插件名（启用插件 data 目录名 `插件名@市场名` 解析；用户/项目级为 null）*/
         val pluginName: String?,
         val enabled: Boolean,
     )
 
     private const val MAX_READ = 8192
-    private const val PLUGIN_WALK_DEPTH = 7
-    private val VERSION_LIKE = Regex("^v?\\d+(\\.\\d+)*.*$")
     private val LOCK = Any()
 
     private val prettyJson = Json { prettyPrint = true }
@@ -99,23 +97,19 @@ object SkillScanner {
         }
     }
 
-    /** 插件贡献：~/.zcode/cli/plugins 下任意深度（≤7）的 skills/<name>/SKILL.md */
+    /**
+     * 插件贡献：仅实际启用的插件（data/ 目录为启用判据，见 SlashCommandScanner），
+     * 取 cache 下最新版本目录的 skills/<name>/SKILL.md（直下一层，对齐 CLI 计数语义）。
+     * marketplaces/ 市场清单（未安装插件）与 cache 中未启用插件不进列表。
+     */
     private fun scanPluginSkills(root: File, disabled: Set<String>, out: MutableList<SkillInfo>) {
-        if (!root.isDirectory) return
-        try {
-            Files.walk(root.toPath(), PLUGIN_WALK_DEPTH).use { stream ->
-                stream.forEach { path ->
-                    if (path.fileName?.toString() != "SKILL.md") return@forEach
-                    val rel = root.toPath().relativize(path).toString().replace('\\', '/')
-                    val idx = rel.indexOf("/skills/")
-                    if (idx <= 0) return@forEach
-                    val skillDir = path.parent?.toFile() ?: return@forEach
-                    val pluginName = pluginNameFromRel(rel.substring(0, idx))
-                    parseSkill(path.toFile(), skillDir, "plugin", "plugin", pluginName, disabled, out)
+        SlashCommandScanner.enabledPluginVersionDirs(root).forEach { (pluginName, versionDir) ->
+            File(versionDir, "skills").listFiles()?.filter { it.isDirectory }?.forEach { skillDir ->
+                val skillFile = File(skillDir, "SKILL.md")
+                if (skillFile.isFile) {
+                    parseSkill(skillFile, skillDir, "plugin", "plugin", pluginName, disabled, out)
                 }
             }
-        } catch (_: Exception) {
-            // 插件目录结构异常不阻塞整体
         }
     }
 
@@ -148,16 +142,6 @@ object SkillScanner {
             )
         } catch (_: Exception) {
         }
-    }
-
-    /**
-     * rel 形如 cache/zcode-plugins-official/browser-use/0.2.1
-     * 取最后一段；若形如版本号则回退上一段
-     */
-    private fun pluginNameFromRel(beforeSkills: String): String? {
-        val parts = beforeSkills.split('/')
-        val last = parts.lastOrNull() ?: return null
-        return if (parts.size >= 2 && VERSION_LIKE.matches(last)) parts[parts.size - 2] else last
     }
 
     /** 从项目路径向上找 git worktree 根（CLI 项目级技能根会上溯到 worktree 根） */

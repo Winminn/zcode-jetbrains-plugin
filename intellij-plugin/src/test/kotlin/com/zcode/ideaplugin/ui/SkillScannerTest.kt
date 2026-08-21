@@ -17,7 +17,7 @@ class SkillScannerTest {
     fun `全局与插件扫描非空且结构合法`() {
         val skills = SkillScanner.scan(null)
         println("✅ 扫描到 ${skills.size} 条技能")
-        assertTrue(skills.size > 50, "本机应有大量技能（.zcode+.agents 去重 + 插件），实际 ${skills.size}")
+        assertTrue(skills.size > 40, "本机应有足量技能（.zcode+.agents 去重 + 启用插件），实际 ${skills.size}")
 
         skills.forEach { s ->
             assertTrue(s.name.isNotBlank(), "name 非空")
@@ -25,6 +25,20 @@ class SkillScannerTest {
             assertTrue(s.scope in setOf("user", "project", "plugin"), "scope 合法: ${s.scope}")
             assertTrue(s.source in setOf("zcode", "agents", "plugin"), "source 合法: ${s.source}")
         }
+    }
+
+    @Test
+    fun `插件技能仅来自启用插件的缓存目录`() {
+        val skills = SkillScanner.scan(null)
+        val pluginSkills = skills.filter { it.scope == "plugin" }
+        assertTrue(pluginSkills.isNotEmpty(), "本机应有启用插件贡献的技能")
+
+        pluginSkills.forEach { s ->
+            assertNotNull(s.pluginName, "插件技能应带 pluginName: ${s.path}")
+            assertTrue(!s.path.replace('\\', '/').contains("/marketplaces/"), "市场清单（未安装插件）不应出现在技能列表: ${s.path}")
+            assertTrue(s.path.replace('\\', '/').contains("/cache/"), "插件技能应来自 cache 安装目录: ${s.path}")
+        }
+        println("✅ 插件技能 ${pluginSkills.size} 条: ${pluginSkills.joinToString { "${it.pluginName}:${it.name}" }}")
     }
 
     @Test

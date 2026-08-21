@@ -2,7 +2,6 @@ package com.zcode.ideaplugin.ui
 
 import java.io.File
 import java.nio.charset.Charset
-import java.nio.file.Files
 
 /**
  * 斜杠命令/技能磁盘扫描器（输入框 / 快捷选择数据源）
@@ -10,8 +9,8 @@ import java.nio.file.Files
  * 扫描顺序与 ZCode 客户端发现顺序一致（先扫先得，同名后到者被忽略）：
  *   1. 用户级  ~/.zcode/skills、~/.agents/skills、~/.zcode/commands、~/.agents/commands
  *   2. 工作区级 项目根 .zcode/skills、.agents/skills、.zcode/commands、.agents/commands
- *   3. 插件贡献 ~/.zcode/cli/plugins 下的 skills（限深 7 容错）
- *   4. CLI 内置命令兜底（仅 init/compact/goal 3 个，对齐官方客户端 `/` 补全；
+ *   3. 插件贡献 仅实际启用的插件（见 scanPluginResources），注册为 `插件名:名称`
+ *   4. CLI 内置命令兜底（仅 compact/init 2 个，服务端 send 可解析；
  *      定义在 zcode.cjs 内磁盘无文件，app-server 协议也无 commands/list RPC，
  *      只能随插件内置清单）
  *
@@ -36,21 +35,20 @@ object SlashCommandScanner {
     private const val MAX_READ = 4096
 
     /**
-     * CLI 内置命令提示清单（对齐官方客户端 `/` 补全只展示这 3 个；
-     * 其余内置命令如 model/mode/effort/mcp 在官方客户端走专门 UI，不进输入框提示）。
+     * CLI 内置命令提示清单（仅列服务端 send 可解析执行的；goal 虽在官方客户端 `/`
+     * 补全中出现，但属客户端本地功能，发到 app-server 不被解析只会原文透传给模型，不列）。
      * name+summary 从 zcode.cjs bundle 提取，版本升级时校准：
      * grep -o 'name:"[a-z-]*",summary:"[^"]*"' zcode.cjs
      */
     private val BUILTIN_COMMANDS = listOf(
         "compact" to "Compact the current conversation with optional instructions.",
-        "goal" to "Show or set the current session goal.",
         "init" to "Create or update workspace AGENTS.md instructions.",
     )
 
-    /** 扫描全部来源，返回按名去重后的列表（先扫先得） */
-    fun scan(projectBasePath: String?): List<SlashCommand> {
+    /** 扫描全部来源，返回按名去重后的列表（先扫先得）；home 参数供测试注入隔离目录 */
+    fun scan(projectBasePath: String?, home: String? = System.getProperty("user.home")): List<SlashCommand> {
         val result = LinkedHashMap<String, SlashCommand>()
-        val home = System.getProperty("user.home") ?: return emptyList()
+        if (home == null) return emptyList()
 
         // 1. 用户级
         scanSkillDir(File(home, ".zcode/skills"), "user", result)
@@ -96,15 +94,25 @@ object SlashCommandScanner {
         }
     }
 
-    /** 命令目录：递归扫描 .md，嵌套目录冒号连接 */
-    private fun scanCommandDir(dir: File, source: String, result: LinkedHashMap<String, SlashCommand>, prefix: String = "") {
+    /**
+     * 命令目录：递归扫描 .md，嵌套目录冒号连接；
+     * namespace 非空时注册为 `命名空间:名称`（插件命令用，与 CLI 规范名对齐）
+     */
+    private fun scanCommandDir(
+        dir: File,
+        source: String,
+        result: LinkedHashMap<String, SlashCommand>,
+        prefix: String = "",
+        namespace: String? = null,
+    ) {
         if (!dir.isDirectory) return
         dir.listFiles()?.sorted()?.forEach { f ->
             if (f.isDirectory) {
                 val childPrefix = if (prefix.isEmpty()) f.name else "$prefix:${f.name}"
-                scanCommandDir(f, source, result, childPrefix)
+                scanCommandDir(f, source, result, childPrefix, namespace)
             } else if (f.isFile && f.extension.equals("md", ignoreCase = true)) {
-                val name = if (prefix.isEmpty()) f.nameWithoutExtension else "$prefix:${f.nameWithoutExtension}"
+                val nested = if (prefix.isEmpty()) f.nameWithoutExtension else "$prefix:${f.nameWithoutExtension}"
+                val name = namespace?.let { "$it:$nested" } ?: nested
                 if (result.containsKey(name)) return@forEach
                 try {
                     val fm = parseFrontmatter(f.readText(Charsets.UTF_8).take(MAX_READ))
@@ -116,33 +124,60 @@ object SlashCommandScanner {
         }
     }
 
-    /** 插件贡献：~/.zcode/cli/plugins 下任意深度的 skills 目录与 commands 目录 */
+    /**
+     * 插件贡献：只认实际启用的插件（对齐 `zcode plugins list` 的 enabled 集合）。
+     * ~/.zcode/cli/plugins 下三棵树性质不同（全树扫描会把市场清单当可用项）：
+     *   data/<插件名>@<市场名>/      启用插件初始化时创建的数据目录 = 启用判据（实测与 CLI 输出一致）
+     *   cache/<市场>/<插件>/<版本>/  安装内容（多版本共存取最新）
+     *   marketplaces/<市场>/        市场源完整清单（未安装插件的仓库内容），不进补全
+     * 插件项注册为 `插件名:名称`（对齐 CLI 规范名，如 browser-use:control-browser）
+     */
     private fun scanPluginResources(root: File, result: LinkedHashMap<String, SlashCommand>) {
-        if (!root.isDirectory) return
-        try {
-            Files.walk(root.toPath(), 7).use { stream ->
-                stream.forEach { path ->
-                    val name = path.fileName.toString()
-                    val rel = root.toPath().relativize(path).toString().replace('\\', '/')
-                    if (name == "SKILL.md" && rel.contains("/skills/")) {
-                        val skillDirName = path.parent?.fileName?.toString() ?: return@forEach
-                        try {
-                            val fm = parseFrontmatter(Files.readString(path, Charsets.UTF_8).take(MAX_READ))
-                            if (!isUserInvocable(fm)) return@forEach
-                            putIfAbsent(result, fm["name"] ?: skillDirName, fm["description"], "skill", "plugin")
-                        } catch (_: Exception) { }
-                    } else if (name.endsWith(".md") && rel.contains("/commands/")) {
-                        val cmdName = rel.substringAfter("/commands/").removeSuffix(".md").replace('/', ':')
-                        try {
-                            val fm = parseFrontmatter(Files.readString(path, Charsets.UTF_8).take(MAX_READ))
-                            putIfAbsent(result, cmdName, fm["description"], "command", "plugin")
-                        } catch (_: Exception) { }
-                    }
-                }
+        enabledPluginVersionDirs(root).forEach { (pluginName, versionDir) ->
+            // skills/<name>/SKILL.md（直下一层，对齐 CLI 的 skills 计数语义）
+            File(versionDir, "skills").listFiles()?.filter { it.isDirectory }?.forEach { skillDir ->
+                val skillFile = File(skillDir, "SKILL.md")
+                if (!skillFile.isFile) return@forEach
+                try {
+                    val fm = parseFrontmatter(skillFile.readText(Charsets.UTF_8).take(MAX_READ))
+                    if (!isUserInvocable(fm)) return@forEach
+                    val name = fm["name"] ?: skillDir.name
+                    putIfAbsent(result, "$pluginName:$name", fm["description"], "skill", "plugin")
+                } catch (_: Exception) { }
             }
-        } catch (_: Exception) {
-            // 插件目录结构异常不阻塞整体
+            scanCommandDir(File(versionDir, "commands"), "plugin", result, namespace = pluginName)
         }
+    }
+
+    /** 启用插件 → 其最新版本目录（SkillScanner 共用）；data/ 目录名形如 插件名@市场名 */
+    internal fun enabledPluginVersionDirs(root: File): List<Pair<String, File>> {
+        val dataDir = File(root, "data")
+        val cacheDir = File(root, "cache")
+        if (!dataDir.isDirectory || !cacheDir.isDirectory) return emptyList()
+        return dataDir.listFiles().orEmpty()
+            .filter { it.isDirectory && it.name.contains('@') }
+            .mapNotNull { data ->
+                val pluginName = data.name.substringBefore('@')
+                val marketplace = data.name.substringAfter('@')
+                if (pluginName.isEmpty() || marketplace.isEmpty()) return@mapNotNull null
+                newestVersionDir(File(cacheDir, "$marketplace/$pluginName"))?.let { pluginName to it }
+            }
+    }
+
+    /** 版本目录取语义最新（点分数值比较，0.10.0 > 0.9.0；非数字段按 0）*/
+    private fun newestVersionDir(pluginRoot: File): File? =
+        pluginRoot.listFiles().orEmpty()
+            .filter { it.isDirectory }
+            .maxWithOrNull { a, b -> compareVersionNames(a.name, b.name) }
+
+    private fun compareVersionNames(a: String, b: String): Int {
+        val va = a.split('.').map { it.toIntOrNull() ?: 0 }
+        val vb = b.split('.').map { it.toIntOrNull() ?: 0 }
+        for (i in 0 until maxOf(va.size, vb.size)) {
+            val c = va.getOrElse(i) { 0 }.compareTo(vb.getOrElse(i) { 0 })
+            if (c != 0) return c
+        }
+        return 0
     }
 
     private fun putIfAbsent(

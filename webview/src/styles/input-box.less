@@ -561,6 +561,21 @@
   margin-bottom: 4px;
 }
 
+/* 分组标题行（命令/技能组切换处，不参与导航）*/
+.input-box__slash-group-title {
+  padding: 6px 12px 2px;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.5px;
+  text-transform: uppercase; // 英文标题大写，中文无影响
+  color: var(--text-muted);
+  user-select: none;
+
+  &:first-of-type {
+    padding-top: 4px;
+  }
+}
+
 .input-box__slash-item {
   display: flex;
   align-items: center;
