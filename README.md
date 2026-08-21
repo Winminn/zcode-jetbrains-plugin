@@ -80,6 +80,8 @@ Header 地球按钮在聊天区右侧展开浏览器分栏（上图）：工具�
 | ![流式生成中](docs/screenshots/streaming.png) | ![完整会话](docs/screenshots/chat-main.png) |
 | **子代理执行过程弹窗：任务指令 / 工具调用 / 总结** | **子代理最终报告弹窗：Markdown 全文阅读，可与过程弹窗互切** |
 | ![子代理执行过程](docs/screenshots/subagent-detail.png) | ![子代理最终报告](docs/screenshots/subagent-report.png) |
+| **计划模式审批（ExitPlanMode）：计划全文 Markdown + 批准 / 拒绝反馈，批准后退出规划模式开始执行** | |
+| ![计划模式审批](docs/screenshots/plan-mode.png) | |
 
 **输入增强与多任务**
 

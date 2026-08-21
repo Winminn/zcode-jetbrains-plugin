@@ -80,6 +80,8 @@ It is more than a built-in browser — the plugin implements the ZCode app-serve
 | ![Streaming](docs/screenshots/streaming.png) | ![Full session](docs/screenshots/chat-main.png) |
 | **Subagent execution popup: task instructions / tool calls / summary** | **Subagent final-report popup: full Markdown reading, switchable with the execution popup** |
 | ![Subagent execution](docs/screenshots/subagent-detail.png) | ![Subagent final report](docs/screenshots/subagent-report.png) |
+| **Plan-mode approval (ExitPlanMode): full plan in Markdown + approve / reject feedback; approving exits plan mode and starts execution** | |
+| ![Plan-mode approval](docs/screenshots/plan-mode.png) | |
 
 **Input enhancements & multi-tasking**
 
