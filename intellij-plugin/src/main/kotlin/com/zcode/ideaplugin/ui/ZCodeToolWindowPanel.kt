@@ -1,5 +1,7 @@
 package com.zcode.ideaplugin.ui
 
+import com.zcode.ideaplugin.protocol.LogRedactor
+
 import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.Disposable
 import com.intellij.openapi.diagnostic.Logger
@@ -203,12 +205,12 @@ class ZCodeToolWindowPanel(
                     // 自清：只还原一次，避免用户之后无浏览器拖宽也被拉回
                     props.setValue(KEY_BROWSER_EXPANDED, false, false)
                     toolWindowWidthBeforeBrowser = base // 后续 AI/用户展开浏览器以此为聊天基准
-                    log.info("检测到关闭时浏览器展开，准备还原 TW 宽度到聊天基准宽 $base")
+                    log.info("Browser pane expanded at close, restoring ToolWindow width to chat baseline $base")
                     SwingUtilities.invokeLater { tryRestoreWidth(base, 10) }
                 }
             }
         } catch (e: Exception) {
-            log.warn("重启宽度还原失败: ${e.message}")
+            log.warn("Width restore on restart failed: ${e.message}")
         }
     }
 
@@ -224,7 +226,7 @@ class ZCodeToolWindowPanel(
         // 明显大于基准（含浏览器宽）才还原；阈值防正常波动误判
         if (current > base + JBUI.scale(120)) {
             applyToolWindowWidth(base)
-            log.info("重启还原 ToolWindow 宽度：$current → $base（纯聊天宽度）")
+            log.info("ToolWindow width restored on restart: $current → $base (chat-only width)")
         }
     }
 
@@ -246,7 +248,7 @@ class ZCodeToolWindowPanel(
             val placeholder = createLazyPlaceholder()
             lazyPlaceholder = placeholder
             add(placeholder, BorderLayout.CENTER)
-            log.info("标签懒加载就绪（JCEF 未创建，切到本标签时激活；initialSessionId=$initialSessionId）")
+            log.info("Tab lazy-load ready (JCEF not created, activates on tab switch; initialSessionId=$initialSessionId)")
         } else {
             initJcef()
             registerThemeListener()
@@ -264,7 +266,7 @@ class ZCodeToolWindowPanel(
             SwingUtilities.invokeLater { ensureJcefCreated() }
             return
         }
-        log.info("懒加载标签激活，创建 JCEF 面板（initialSessionId=$initialSessionId）")
+        log.info("Lazy tab activated, creating JCEF panel (initialSessionId=$initialSessionId)")
         initJcef()
         registerThemeListener()
         restoreWidthAfterRestart()
@@ -284,23 +286,23 @@ class ZCodeToolWindowPanel(
     }
 
     private fun initJcef() {
-        log.info("初始化 JCEF 面板")
+        log.info("Initializing JCEF panel")
         jbCefBrowser = JBCefBrowser()
 
         // ============ JS → Java：用 JBCefJSQuery（官方推荐，签名稳定）============
         // JBCefJSQuery.create(JBCefBrowser) 已弃用（forRemoval），改用 create(JBCefBrowserBase) 重载
         jsQuery = JBCefJSQuery.create(jbCefBrowser as com.intellij.ui.jcef.JBCefBrowserBase)
-        log.info("JBCefJSQuery 创建成功，funcName=${jsQuery.funcName}")
+        log.info("JBCefJSQuery created, funcName=${jsQuery.funcName}")
         jsQuery.addHandler { request ->
             if (!frontendReady) {
                 val op = Regex("\"op\"\\s*:\\s*\"([^\"]+)\"").find(request)?.groupValues?.get(1) ?: "?"
                 // __jsLog 只是诊断回传（可能是崩溃报告），不算前端就绪
                 if (op != "__jsLog") {
                     frontendReady = true
-                    log.info("前端已就绪：首条 JS 消息到达（op=$op，面板创建后 ${System.currentTimeMillis() - panelCreatedAt}ms）")
+                    log.info("Frontend ready: first JS message arrived (op=$op, ${System.currentTimeMillis() - panelCreatedAt}ms after panel creation)")
                 }
             }
-            log.info("收到 JS 消息: ${request.take(200)}")
+            log.info("JS message received: ${LogRedactor.redact(request.take(600)).take(200)}")
             handleJsMessage(request)
             JBCefJSQuery.Response("ok")
         }
@@ -320,7 +322,7 @@ class ZCodeToolWindowPanel(
             project.zCodeService().ensureUserInputHandler()
             project.zCodeService().ensureBrowserExecutor()
         } catch (e: com.zcode.ideaplugin.env.EnvCheckException) {
-            log.warn("[initJcef] ZCode CLI 不可用，协议 handler 未注册（前端将显示环境提醒）: ${e.message}")
+            log.warn("[initJcef] ZCode CLI unavailable, protocol handlers not registered (frontend will show env reminder): ${e.message}")
         }
 
         // 开启 JCEF 外部链接（开发期）
@@ -330,7 +332,7 @@ class ZCodeToolWindowPanel(
         lazyPlaceholder?.let { remove(it) }
         lazyPlaceholder = null
         add(jbCefBrowser.component, BorderLayout.CENTER)
-        log.info("JCEF 面板初始化完成")
+        log.info("JCEF panel initialized")
     }
 
     /**
@@ -356,7 +358,7 @@ class ZCodeToolWindowPanel(
 
             override fun onLoadEnd(browser: CefBrowser?, frame: CefFrame?, httpStatusCode: Int) {
                 if (frame?.isMain == true) {
-                    log.info("[webview-load] onLoadEnd httpStatus=$httpStatusCode（页面加载完成）")
+                    log.info("[webview-load] onLoadEnd httpStatus=$httpStatusCode (page load completed)")
                     injectBridgeVars()
                 }
             }
@@ -368,7 +370,7 @@ class ZCodeToolWindowPanel(
                 if (frame?.isMain != true) return
                 if (errorCode == CefLoadHandler.ErrorCode.ERR_ABORTED) {
                     // ERR_ABORTED 常见于正常导航替换，非故障
-                    log.info("[webview-load] onLoadError（良性 ERR_ABORTED）")
+                    log.info("[webview-load] onLoadError (benign ERR_ABORTED)")
                 } else {
                     log.warn("[webview-load] onLoadError code=$errorCode text=$errorText url=${failedUrl?.take(120)}")
                 }
@@ -389,7 +391,7 @@ class ZCodeToolWindowPanel(
             com.intellij.ide.ui.LafManagerListener.TOPIC,
             com.intellij.ide.ui.LafManagerListener {
                 // 主题变了，推给前端
-                log.info("IDE 主题变化，推送给前端")
+                log.info("IDE theme changed, pushing to frontend")
                 pushTheme()
             }
         )
@@ -404,7 +406,7 @@ class ZCodeToolWindowPanel(
             try {
                 jbCefBrowser.cefBrowser.executeJavaScript(js, "zcode-theme", 0)
             } catch (e: Exception) {
-                log.warn("推送主题失败: ${e.message}")
+                log.warn("Theme push failed: ${e.message}")
             }
         }
     }
@@ -427,7 +429,7 @@ class ZCodeToolWindowPanel(
 
         if (isDevServerAlive(devUrl)) {
             // dev 模式：连 vite dev server
-            log.info("检测到 dev server，加载 $devUrl（dev 模式，HMR）")
+            log.info("Dev server detected, loading $devUrl (dev mode, HMR)")
             jbCefBrowser.loadURL(devUrl)
             return
         }
@@ -435,7 +437,7 @@ class ZCodeToolWindowPanel(
         // 生产首选：内置静态资源 server
         val baseUrl = ZCodeWebviewServer.baseUrl()
         if (baseUrl != null) {
-            log.info("加载内置 server $baseUrl/（生产多文件模式，真实 origin + sourcemap 可调试）")
+            log.info("Loading built-in server $baseUrl/ (production multi-file mode, real origin + sourcemap debuggable)")
             jbCefBrowser.loadURL("$baseUrl/")
             return
         }
@@ -443,7 +445,7 @@ class ZCodeToolWindowPanel(
         // 生产 fallback：读 singlefile 单 HTML
         val bundledHtml = readBundledWebview()
         if (bundledHtml != null) {
-            log.info("加载 resources/webview-single/index.html（singlefile fallback，长度=${bundledHtml.length}）")
+            log.info("Loading resources/webview-single/index.html (singlefile fallback, length=${bundledHtml.length})")
             // 把桥变量注入到 HTML 的 <head> 最前面（DOMContentLoaded 前可用）
             val htmlWithBridge = injectBridgeIntoHtml(bundledHtml)
             jbCefBrowser.loadHTML(htmlWithBridge)
@@ -451,7 +453,7 @@ class ZCodeToolWindowPanel(
         }
 
         // fallback：旧的 inline HTML（内含自己的 sendToJava 定义）
-        log.info("无打包产物且无 dev server，使用 fallback inline HTML")
+        log.info("No build artifact and no dev server, using fallback inline HTML")
         val fallbackHtml = buildInitialHtml(jsQuery)
         jbCefBrowser.loadHTML(fallbackHtml)
     }
@@ -498,7 +500,7 @@ class ZCodeToolWindowPanel(
         return try {
             javaClass.getResourceAsStream("/webview-single/index.html")?.bufferedReader()?.use { it.readText() }
         } catch (e: Exception) {
-            log.warn("读取 resources/webview-single/index.html 失败: ${e.message}")
+            log.warn("Failed to read resources/webview-single/index.html: ${e.message}")
             null
         }
     }
@@ -533,7 +535,7 @@ class ZCodeToolWindowPanel(
             try {
                 jbCefBrowser.cefBrowser.executeJavaScript(js, "zcode-bridge", 0)
             } catch (e: Exception) {
-                log.warn("注入桥变量失败: ${e.message}")
+                log.warn("Bridge variable injection failed: ${e.message}")
             }
         }
     }
@@ -609,17 +611,17 @@ if (!window.__ZCODE_LOG_HOOK__) {
         try {
             val msg = json.parseToJsonElement(request).jsonObject
             val op = msg["op"]?.jsonPrimitive?.content ?: run {
-                log.warn("JS 消息缺少 op 字段")
+                log.warn("JS message missing op field")
                 sendToJs(errorResponse("缺少 op")); return
             }
             // 前端诊断日志直落 idea.log（不走 pooled thread，量大也无协议调用）
             if (op == "__jsLog") {
                 val level = msg["level"]?.jsonPrimitive?.content ?: "?"
                 val text = msg["text"]?.jsonPrimitive?.content ?: ""
-                log.warn("[webview-console] [$level] $text")
+                log.warn("[webview-console] [$level] ${LogRedactor.redact(text)}")
                 return
             }
-            log.info("处理 op=$op")
+            log.info("Handling op=$op")
 
             ApplicationManager.getApplication().executeOnPooledThread {
                 try {
@@ -675,23 +677,23 @@ if (!window.__ZCODE_LOG_HOOK__) {
                         "envSave" -> handleEnvSave(msg)
                         else -> errorResponse("未知 op: $op")
                     }
-                    log.info("op=$op 处理完成，发送回 JS")
+                    log.info("op=$op handled, sending back to JS")
                     sendToJs(result)
                 } catch (e: com.zcode.ideaplugin.env.EnvCheckException) {
                     // 环境前置检查失败：附带完整 EnvStatus，前端据此渲染环境提醒条
-                    log.warn("op=$op 环境检查失败: ${e.message}")
+                    log.warn("op=$op env check failed: ${e.message}")
                     sendToJs(buildJsonObject {
                         put("op", "error")
                         put("message", e.message)
                         put("envStatus", com.zcode.ideaplugin.env.ZCodeEnvChecker.statusJson(e.status))
                     })
                 } catch (e: Exception) {
-                    log.error("op=$op 处理失败", e)
+                    log.error("op=$op handling failed", e)
                     sendToJs(errorResponse("处理失败: ${e.message}"))
                 }
             }
         } catch (e: Exception) {
-            log.error("JS 消息解析失败: ${request.take(100)}", e)
+            log.error("JS message parse failed: ${request.take(100)}", e)
             sendToJs(errorResponse("解析失败: ${e.message}"))
         }
     }
@@ -783,10 +785,10 @@ if (!window.__ZCODE_LOG_HOOK__) {
         try {
             com.intellij.ide.util.PropertiesComponent.getInstance()
                 .setValue(ZCodeAppearanceStore.KEY_APPEARANCE, cfg)
-            log.info("外观配置已保存")
+            log.info("Appearance settings saved")
             broadcastAppearance(cfg)
         } catch (e: Exception) {
-            log.warn("外观配置保存失败: ${e.message}")
+            log.warn("Appearance settings save failed: ${e.message}")
         }
         return buildJsonObject { put("op", "appearanceSave") }
     }
@@ -808,7 +810,7 @@ if (!window.__ZCODE_LOG_HOOK__) {
                         "zcode-appearance-sync", 0
                     )
                 } catch (e: Exception) {
-                    log.warn("外观同步推送失败（标签 sessionId=${panel.currentSessionId}）: ${e.message}")
+                    log.warn("Appearance sync push failed (tab sessionId=${panel.currentSessionId}): ${e.message}")
                 }
             }
             try {
@@ -874,7 +876,7 @@ if (!window.__ZCODE_LOG_HOOK__) {
                 broadcastLanguage(ZCodeLanguageService.currentLanguage())
             }
         } catch (e: Exception) {
-            log.warn("webview kv 保存失败: ${e.message}")
+            log.warn("webview kv save failed: ${e.message}")
         }
         return buildJsonObject { put("op", "kvSave") }
     }
@@ -894,7 +896,7 @@ if (!window.__ZCODE_LOG_HOOK__) {
             try {
                 project.zCodeService().ensureBrowserExecutor()
             } catch (e: Exception) {
-                log.warn("[envCheck] 宿主 handler 补注册失败: ${e.message}")
+                log.warn("[envCheck] host handler re-registration failed: ${e.message}")
             }
             status = com.zcode.ideaplugin.env.ZCodeEnvChecker.check(force = true)
         }
@@ -959,14 +961,14 @@ if (!window.__ZCODE_LOG_HOOK__) {
         com.zcode.ideaplugin.env.ZCodeEnvChecker.invalidate()
 
         try { project.zCodeService().shutdown() } catch (e: Exception) {
-            log.warn("环境配置变更后关闭旧 app-server 失败: ${e.message}")
+            log.warn("Failed to close old app-server after env config change: ${e.message}")
         }
         // 旧进程上的订阅与全局监听器全部作废（含其他标签），下次 subscribe 重新走完整注册
         activePanels.forEach { it.resetSubscriptionState() }
 
         val status = com.zcode.ideaplugin.env.ZCodeEnvChecker.check(force = true)
         broadcastEnvStatus(status)
-        log.info("环境配置已保存并重新检测: allOk=${status.allOk}, node=${status.node.path}, cli=${status.cli.path}")
+        log.info("Env config saved and re-checked: allOk=${status.allOk}, node=${status.node.path}, cli=${status.cli.path}")
         return buildJsonObject {
             put("op", "envStatus")
             put("status", com.zcode.ideaplugin.env.ZCodeEnvChecker.statusJson(status))
@@ -988,7 +990,7 @@ if (!window.__ZCODE_LOG_HOOK__) {
                         "zcode-env-sync", 0
                     )
                 } catch (e: Exception) {
-                    log.warn("环境状态同步推送失败: ${e.message}")
+                    log.warn("Env status sync push failed: ${e.message}")
                 }
             }
         }
@@ -1009,7 +1011,7 @@ if (!window.__ZCODE_LOG_HOOK__) {
                         "zcode-language-sync", 0
                     )
                 } catch (e: Exception) {
-                    log.warn("语言同步推送失败（标签 sessionId=${panel.currentSessionId}）: ${e.message}")
+                    log.warn("Language sync push failed (tab sessionId=${panel.currentSessionId}): ${e.message}")
                 }
             }
         }
@@ -1075,7 +1077,7 @@ if (!window.__ZCODE_LOG_HOOK__) {
         embeddedBrowser = panel
         service.setEmbeddedBrowserOwner(this)
         attachEmbeddedSplit(panel, stretch = migrateWidth <= 0, migrateBrowserWidth = migrateWidth)
-        log.info("会话内嵌浏览器分栏已显示（${if (migrateWidth > 0) "自其他标签迁移，浏览器宽=$migrateWidth" else "新建挂载/重新展开"}）")
+        log.info("In-chat browser pane shown (${if (migrateWidth > 0) "migrated from another tab, browser width=$migrateWidth" else "new mount/re-expand"})")
         return panel
     }
 
@@ -1098,7 +1100,7 @@ if (!window.__ZCODE_LOG_HOOK__) {
         embeddedBrowser = panel
         service.setEmbeddedBrowserOwner(this)
         attachEmbeddedSplit(panel, stretch = false, migrateBrowserWidth = migrateWidth)
-        log.info("内嵌浏览器已随标签切换迁移挂载")
+        log.info("In-chat browser re-mounted on tab switch")
     }
 
     /**
@@ -1269,7 +1271,7 @@ if (!window.__ZCODE_LOG_HOOK__) {
             attachedContent?.let { c -> c.manager?.setSelectedContent(c) }
             ZCodeToolWindowFactory.getToolWindow(project)?.show(null)
         } catch (e: Exception) {
-            log.warn("选中会话 Content 失败: ${e.message}")
+            log.warn("Failed to select session Content: ${e.message}")
         }
         return true
     }
@@ -1301,7 +1303,7 @@ if (!window.__ZCODE_LOG_HOOK__) {
                     p = p.parent
                 }
             } catch (e: Exception) {
-                log.warn("调整 ToolWindow 宽度失败: ${e.message}")
+                log.warn("ToolWindow resize failed: ${e.message}")
             }
         }
     }
@@ -1327,7 +1329,7 @@ if (!window.__ZCODE_LOG_HOOK__) {
         if (detachEmbeddedBrowserInternal() < 0) return
         restoreToolWindowWidth()
         persistBrowserWidthState(expanded = false, base = toolWindowWidthBeforeBrowser)
-        log.info("会话内嵌浏览器分栏已收起（实例保留，ToolWindow 宽度还原）")
+        log.info("In-chat browser pane collapsed (instance kept, ToolWindow width restored)")
     }
 
     /** Content 销毁时释放 JCEF 资源（content.setDisposer(panel) 绑定）*/
@@ -1335,7 +1337,7 @@ if (!window.__ZCODE_LOG_HOOK__) {
         if (disposed) return
         disposed = true
         activePanels.remove(this)
-        log.info("释放标签面板（sessionId=$currentSessionId）")
+        log.info("Releasing tab panel (sessionId=$currentSessionId)")
         try {
             // 内嵌浏览器是全局共享单例：只摘除挂载（还原 TW 宽度），实例交由 Service 释放
             if (embeddedSplit != null) {
@@ -1347,24 +1349,24 @@ if (!window.__ZCODE_LOG_HOOK__) {
                 service.setEmbeddedBrowserOwner(null)
             }
         } catch (e: Exception) {
-            log.warn("摘除内嵌浏览器挂载失败: ${e.message}")
+            log.warn("Failed to unmount in-chat browser: ${e.message}")
         }
         embeddedBrowser = null
         embeddedSplit = null
         try {
             themeBusConn?.dispose()
         } catch (e: Exception) {
-            log.warn("断开主题监听失败: ${e.message}")
+            log.warn("Failed to disconnect theme listener: ${e.message}")
         }
         try {
             if (::jsQuery.isInitialized) Disposer.dispose(jsQuery)
         } catch (e: Exception) {
-            log.warn("释放 jsQuery 失败: ${e.message}")
+            log.warn("Failed to release jsQuery: ${e.message}")
         }
         try {
             if (::jbCefBrowser.isInitialized) Disposer.dispose(jbCefBrowser)
         } catch (e: Exception) {
-            log.warn("释放 JCEF browser 失败: ${e.message}")
+            log.warn("Failed to release JCEF browser: ${e.message}")
         }
     }
 
@@ -1380,11 +1382,11 @@ if (!window.__ZCODE_LOG_HOOK__) {
     private fun sendToJs(msg: JsonObject) {
         // 懒加载标签未激活（JCEF 未创建）：丢弃推送，激活后前端 subscribe 拉全量恢复
         if (!::jbCefBrowser.isInitialized) {
-            log.info("sendToJs 跳过（JCEF 未创建，懒加载标签未激活）op=${msg["op"]?.jsonPrimitive?.content}")
+            log.info("sendToJs skipped (JCEF not created, lazy tab not active) op=${msg["op"]?.jsonPrimitive?.content}")
             return
         }
         val jsonStr = Json.encodeToString(JsonObject.serializer(), msg)
-        log.info("sendToJs 准备发送，JSON 长度=${jsonStr.length}, 前 80 字符=${jsonStr.take(80)}")
+        log.info("sendToJs dispatch: length=${jsonStr.length}, preview=${LogRedactor.redact(jsonStr.take(600)).take(80)}")
         // 用 JSON.parse 传字符串，避免转义地狱
         // 关键：executeJavaScript 的 JS 代码里，我们构造一个 JS 字符串字面量
         // 用 JSON.stringify 风格转义（双引号字符串）
@@ -1400,19 +1402,19 @@ if (!window.__ZCODE_LOG_HOOK__) {
         SwingUtilities.invokeLater {
             try {
                 jbCefBrowser.cefBrowser.executeJavaScript(js, "about:blank", 0)
-                log.info("sendToJs executeJavaScript 调用成功")
+                log.info("sendToJs executeJavaScript succeeded")
             } catch (e: Exception) {
-                log.warn("sendToJs 失败（JCEF 可能未就绪）: ${e.message}")
+                log.warn("sendToJs failed (JCEF may not be ready): ${e.message}")
             }
         }
     }
 
     private fun handleListSessions(msg: JsonObject): JsonObject {
-        log.info("开始获取会话列表")
+        log.info("Fetching session list")
         val service = project.zCodeService()
-        log.info("ZCodeService 获取成功: ${service.javaClass.name}")
+        log.info("ZCodeService acquired: ${service.javaClass.name}")
         val client = service.getClient()
-        log.info("ZCodeProtocolClient 获取成功, isAlive=${client.isAlive()}")
+        log.info("ZCodeProtocolClient acquired, isAlive=${client.isAlive()}")
 
         // workspace 过滤：只显示当前项目的会话（差异化优势，cc-gui 不做）
         // 前端传 workspacePath；空串/未传回退 project.basePath（重启初期前端注入值可能为空）
@@ -1424,7 +1426,7 @@ if (!window.__ZCODE_LOG_HOOK__) {
         } else {
             client.listSessions(workspacePath)
         }
-        log.info("listSessions(workspace=$workspacePath) 返回 ${sessions.size} 个会话")
+        log.info("listSessions(workspace=$workspacePath) returned ${sessions.size} session(s)")
 
         val filtered = if (workspacePath.isEmpty()) {
             sessions
@@ -1435,7 +1437,7 @@ if (!window.__ZCODE_LOG_HOOK__) {
                 ws != null && normalizePath(ws) == normalized
             }
         }
-        log.info("workspace=$workspacePath 过滤后 ${filtered.size} 个会话")
+        log.info("workspace=$workspacePath filtered to ${filtered.size} session(s)")
 
         // 会话统计（消息数/内容大小，直读 db.sqlite；失败内部已降级空 map，字段缺省前端不显示）
         val stats: Map<String, SessionStat> = client.getSessionStats()
@@ -1479,9 +1481,9 @@ if (!window.__ZCODE_LOG_HOOK__) {
         val client = project.zCodeService().getClient()
         try {
             client.closeSession(sessionId)
-            log.info("删除会话成功: $sessionId")
+            log.info("Session deleted: $sessionId")
         } catch (e: Exception) {
-            log.warn("删除会话失败: ${e.message}")
+            log.warn("Session delete failed: ${e.message}")
             return errorResponse("删除失败: ${e.message}")
         }
         // 从已 subscribe 集合中移除
@@ -1499,9 +1501,9 @@ if (!window.__ZCODE_LOG_HOOK__) {
         val client = project.zCodeService().getClient()
         try {
             client.archiveSession(sessionId)
-            log.info("归档会话成功: $sessionId")
+            log.info("Session archived: $sessionId")
         } catch (e: Exception) {
-            log.warn("归档会话失败: ${e.message}")
+            log.warn("Session archive failed: ${e.message}")
             return errorResponse("归档失败: ${e.message}")
         }
         return buildJsonObject {
@@ -1517,9 +1519,9 @@ if (!window.__ZCODE_LOG_HOOK__) {
         val client = project.zCodeService().getClient()
         try {
             client.restoreSession(sessionId)
-            log.info("恢复会话成功: $sessionId")
+            log.info("Session restored: $sessionId")
         } catch (e: Exception) {
-            log.warn("恢复会话失败: ${e.message}")
+            log.warn("Session restore failed: ${e.message}")
             return errorResponse("恢复失败: ${e.message}")
         }
         return buildJsonObject {
@@ -1588,7 +1590,7 @@ if (!window.__ZCODE_LOG_HOOK__) {
         // 路径跟随 dataBaseDir 迁移（setting.json 重定向后旧位置是冻结快照），与环境检测同一来源
         val configFile = Credentials.defaultConfigPath().toFile()
         if (!configFile.exists()) {
-            log.warn("config.json 不存在: $configFile")
+            log.warn("config.json not found: $configFile")
             return buildJsonObject {
                 put("op", "models")
                 put("models", JsonArray(emptyList()))
@@ -1597,7 +1599,7 @@ if (!window.__ZCODE_LOG_HOOK__) {
         val providers = try {
             json.parseToJsonElement(configFile.readText()).jsonObject["provider"]?.jsonObject
         } catch (e: Exception) {
-            log.warn("解析 config.json 失败: ${e.message}")
+            log.warn("Failed to parse config.json: ${e.message}")
             null
         } ?: return buildJsonObject {
             put("op", "models")
@@ -1634,7 +1636,7 @@ if (!window.__ZCODE_LOG_HOOK__) {
                 }
             }
         }.flatten())
-        log.info("listModels 返回 ${models.size} 个模型（${providers.size} 个 provider）")
+        log.info("listModels returned ${models.size} model(s) (${providers.size} provider(s))")
         return buildJsonObject {
             put("op", "models")
             put("models", models)
@@ -1657,13 +1659,13 @@ if (!window.__ZCODE_LOG_HOOK__) {
             put("providers", JsonArray(emptyList()))
         }
         if (!java.nio.file.Files.isRegularFile(configPath)) {
-            log.warn("config.json 不存在: $configPath")
+            log.warn("config.json not found: $configPath")
             return emptyResult()
         }
         val providers = try {
             json.parseToJsonElement(configPath.toFile().readText()).jsonObject["provider"]?.jsonObject
         } catch (e: Exception) {
-            log.warn("解析 config.json 失败: ${e.message}")
+            log.warn("Failed to parse config.json: ${e.message}")
             null
         } ?: return emptyResult()
 
@@ -1698,7 +1700,7 @@ if (!window.__ZCODE_LOG_HOOK__) {
             }
         })
         val modelCount = providerArr.sumOf { it.jsonObject["models"]?.jsonArray?.size ?: 0 }
-        log.info("modelManageList 返回 ${providerArr.size} 个 provider / $modelCount 个模型")
+        log.info("modelManageList returned ${providerArr.size} provider(s) / $modelCount model(s)")
         return buildJsonObject {
             put("op", "modelManage")
             put("configPath", configPath.toString())
@@ -1724,13 +1726,13 @@ if (!window.__ZCODE_LOG_HOOK__) {
 
         val configPath = Credentials.defaultConfigPath()
         if (!java.nio.file.Files.isRegularFile(configPath)) {
-            return errorResponse("config.json 不存在: $configPath")
+            return errorResponse("config.json not found: $configPath")
         }
         val file = configPath.toFile()
         val root = try {
             json.parseToJsonElement(file.readText(Charsets.UTF_8)).jsonObject
         } catch (e: Exception) {
-            log.warn("解析 config.json 失败: ${e.message}")
+            log.warn("Failed to parse config.json: ${e.message}")
             return errorResponse("解析 config.json 失败")
         }
         val providersObj = root["provider"]?.let { runCatching { it.jsonObject }.getOrNull() }
@@ -1780,9 +1782,9 @@ if (!window.__ZCODE_LOG_HOOK__) {
                 throw e
             }
             val changeDesc = changes.joinToString(", ") { c -> c.id + "=" + c.newEnabled }
-            log.info("modelToggleProvider: $changeDesc 已写回 $configPath")
+            log.info("modelToggleProvider: $changeDesc written back to $configPath")
         } catch (e: Exception) {
-            log.warn("写回 config.json 失败: ${e.message}")
+            log.warn("Failed to write back config.json: ${e.message}")
             return errorResponse("写回失败: ${e.message}")
         }
         return buildJsonObject {
@@ -1818,7 +1820,7 @@ if (!window.__ZCODE_LOG_HOOK__) {
         val providers = try {
             json.parseToJsonElement(configFile.readText()).jsonObject["provider"]?.jsonObject
         } catch (e: Exception) {
-            return null to "解析 config.json 失败: ${e.message}"
+            return null to "Failed to parse config.json: ${e.message}"
         } ?: return null to "config.json 无 provider"
 
         // 找第一个有 apiKey 的启用 provider（优先 bigmodel-coding-plan）
@@ -1956,7 +1958,7 @@ if (!window.__ZCODE_LOG_HOOK__) {
                     }
                 }
             } else {
-                log.warn("打开文件失败：文件不存在 $filePath")
+                log.warn("Open file failed: file not found $filePath")
             }
         }
         return buildJsonObject { put("op", "fileOpened") }
@@ -1980,7 +1982,7 @@ if (!window.__ZCODE_LOG_HOOK__) {
                 )
                 DiffManager.getInstance().showDiff(project, request)
             } catch (e: Exception) {
-                log.warn("Diff 显示失败: ${e.message}")
+                log.warn("Diff display failed: ${e.message}")
             }
         }
         return buildJsonObject { put("op", "diffShown") }
@@ -1995,7 +1997,7 @@ if (!window.__ZCODE_LOG_HOOK__) {
             if (vfile != null) {
                 vfile.refresh(false, false)
             } else {
-                log.warn("刷新文件失败：文件不存在 $filePath")
+                log.warn("File refresh failed: file not found $filePath")
             }
         }
         return buildJsonObject { put("op", "fileRefreshed") }
@@ -2015,13 +2017,13 @@ if (!window.__ZCODE_LOG_HOOK__) {
             // 普通 setModel 只能切 main/lite/available 里的模型（当前只有 anthropic/GLM-5.2）
             val runtimeModel = buildRuntimeModel(providerId, modelId)
             if (runtimeModel == null) {
-                log.warn("config.json 中找不到 provider $providerId，退回普通 setModel（可能失败）")
+                log.warn("Provider $providerId not found in config.json, falling back to plain setModel (may fail)")
             }
             client.setModel(sessionId, modelId, providerId, runtimeModel)
-            log.info("切换模型成功: $sessionId → $providerId/$modelId")
+            log.info("Model switched: $sessionId → $providerId/$modelId")
         } catch (e: Exception) {
-            log.warn("切换模型失败: ${e.message}")
-            return errorResponse("切换模型失败: ${e.message}")
+            log.warn("Model switch failed: ${e.message}")
+            return errorResponse("Model switch failed: ${e.message}")
         }
         return buildJsonObject {
             put("op", "modelSet")
@@ -2050,7 +2052,7 @@ if (!window.__ZCODE_LOG_HOOK__) {
                 put("thoughtLevel", settings["thoughtLevel"]?.jsonObject ?: JsonObject(emptyMap()))
             }
         } catch (e: Exception) {
-            log.warn("读取会话设置失败: ${e.message}")
+            log.warn("Failed to read session settings: ${e.message}")
             errorResponse("读取设置失败: ${e.message}")
         }
     }
@@ -2064,15 +2066,15 @@ if (!window.__ZCODE_LOG_HOOK__) {
         val client = project.zCodeService().getClient()
         return try {
             client.setThoughtLevel(sessionId, thoughtLevel)
-            log.info("切换思考级别成功: $sessionId → $thoughtLevel")
+            log.info("Thought level switched: $sessionId → $thoughtLevel")
             buildJsonObject {
                 put("op", "thoughtLevelSet")
                 put("sessionId", sessionId)
                 put("thoughtLevel", thoughtLevel)
             }
         } catch (e: Exception) {
-            log.warn("切换思考级别失败: ${e.message}")
-            errorResponse("切换思考级别失败: ${e.message}")
+            log.warn("Thought level switch failed: ${e.message}")
+            errorResponse("Thought level switch failed: ${e.message}")
         }
     }
 
@@ -2087,15 +2089,15 @@ if (!window.__ZCODE_LOG_HOOK__) {
         val client = project.zCodeService().getClient()
         return try {
             client.setMode(sessionId, mode)
-            log.info("切换权限模式成功: $sessionId → $mode")
+            log.info("Permission mode switched: $sessionId → $mode")
             buildJsonObject {
                 put("op", "modeSet")
                 put("sessionId", sessionId)
                 put("mode", modeStr)
             }
         } catch (e: Exception) {
-            log.warn("切换权限模式失败: ${e.message}")
-            errorResponse("切换权限模式失败: ${e.message}")
+            log.warn("Permission mode switch failed: ${e.message}")
+            errorResponse("Permission mode switch failed: ${e.message}")
         }
     }
 
@@ -2122,7 +2124,7 @@ if (!window.__ZCODE_LOG_HOOK__) {
             val p = f.presentableUrl ?: f.path
             if (f.isDirectory && !p.endsWith("/")) "$p/" else p
         }.map { "@$it" }
-        log.info("附件选择 ${refs.size} 个: $refs")
+        log.info("${refs.size} attachment(s) selected: $refs")
         // 复用 filesToInput 推送链路（InputBox 已监听，自动加入 fileRefs chips）
         pushToWebview(buildJsonObject {
             put("op", "filesToInput")
@@ -2159,7 +2161,7 @@ if (!window.__ZCODE_LOG_HOOK__) {
                 if (turnKind != null) put("activeTurnKind", turnKind)
             }
         } catch (e: Exception) {
-            log.warn("获取上下文用量失败: ${e.message}")
+            log.warn("Failed to fetch context usage: ${e.message}")
             errorResponse("获取用量失败: ${e.message}")
         }
     }
@@ -2201,7 +2203,7 @@ if (!window.__ZCODE_LOG_HOOK__) {
             // 不该两标签同时发）；不违反 requestWithRetry 的幂等约束（那是超时未知态）
             val promptRunning = e.code == -32010 || e.message?.contains("-32010") == true
             if (!coldSession && !promptRunning) {
-                log.error("send 失败", e)
+                log.error("send failed", e)
                 return errorResponse("发送失败: ${e.message}")
             }
             try {
@@ -2210,14 +2212,14 @@ if (!window.__ZCODE_LOG_HOOK__) {
                     // stop 打断的回合可能正挂着审批/提问弹窗：立即废弃（关窗 + 不发
                     // 迟到应答），否则用户点死弹窗的应答会发给已死请求（缺陷P2/P3）
                     project.zCodeService().abortPendingUserInputs(sessionId)
-                    log.info("send 撞悬挂回合（-32010），stop 后重试: $sessionId")
+                    log.info("send hit hung turn (-32010), retrying after stop: $sessionId")
                 } else {
                     client.resume(sessionId, com.zcode.ideaplugin.protocol.model.Workspace(workspacePath))
-                    log.info("send 撞冷会话（-32004），resume 后重试: $sessionId")
+                    log.info("send hit cold session (-32004), retrying after resume: $sessionId")
                 }
                 client.send(sessionId, text, workspacePath, providerId = providerId, modelId = modelId)
             } catch (e2: Exception) {
-                log.error("send 失败（恢复重试后仍失败）", e2)
+                log.error("send failed (still failing after recovery retry)", e2)
                 return errorResponse("发送失败: ${e2.message}")
             }
         }
@@ -2240,7 +2242,7 @@ if (!window.__ZCODE_LOG_HOOK__) {
         // 前端流式静默对账探测（看门狗只读快照判定回合是否已在服务端结束）：
         // 原样回传 reconcile 标记，前端区分"权威全量落地"与"对账只读"
         val reconcile = msg["reconcile"]?.jsonPrimitive?.booleanOrNull ?: false
-        log.info("messages 返回 ${messages.size} 条${if (reconcile) "（对账探测）" else ""}")
+        log.info("messages returned ${messages.size} item(s)${if (reconcile) " (reconcile probe)" else ""}")
         return buildJsonObject {
             put("op", "messages")
             put("sessionId", sessionId)
@@ -2261,9 +2263,9 @@ if (!window.__ZCODE_LOG_HOOK__) {
         try {
             val ws = com.zcode.ideaplugin.protocol.model.Workspace(workspacePath)
             client.resume(sessionId, ws)
-            log.info("resume 会话成功: $sessionId (workspace=$workspacePath)")
+            log.info("resume succeeded: $sessionId (workspace=$workspacePath)")
         } catch (e: Exception) {
-            log.info("resume 会话失败（可能已 active）: ${e.message}")
+            log.info("resume failed (may already be active): ${e.message}")
         }
         return client.messages(sessionId)
     }
@@ -2278,14 +2280,14 @@ if (!window.__ZCODE_LOG_HOOK__) {
         val client = project.zCodeService().getClient()
         return try {
             val data = client.subagents(sessionId)
-            log.info("subagents 返回 childSessionIds=${data["childSessionIds"]}")
+            log.info("subagents returned childSessionIds=${data["childSessionIds"]}")
             buildJsonObject {
                 put("op", "subagents")
                 put("sessionId", sessionId)
                 put("data", data)
             }
         } catch (e: Exception) {
-            log.warn("subagents 查询失败: ${e.message}")
+            log.warn("subagents query failed: ${e.message}")
             buildJsonObject {
                 put("op", "subagents")
                 put("sessionId", sessionId)
@@ -2314,14 +2316,14 @@ if (!window.__ZCODE_LOG_HOOK__) {
         val workspacePath = effectiveWorkspacePath(msg)
         return try {
             val messages = resumeAndReadMessages(sessionId, workspacePath)
-            log.info("subagentMessages($sessionId) 返回 ${messages.size} 条")
+            log.info("subagentMessages($sessionId) returned ${messages.size} item(s)")
             buildJsonObject {
                 put("op", "subagentMessages")
                 put("sessionId", sessionId)
                 put("messages", messages)
             }
         } catch (e: Exception) {
-            log.warn("subagentMessages($sessionId) 读取失败: ${e.message}")
+            log.warn("subagentMessages($sessionId) read failed: ${e.message}")
             buildJsonObject {
                 put("op", "subagentMessages")
                 put("sessionId", sessionId)
@@ -2367,12 +2369,12 @@ if (!window.__ZCODE_LOG_HOOK__) {
             }
             registerBackendErrorHandler(client)
             globalListenerRegistered = true
-            log.info("全局事件监听器已注册")
+            log.info("Global event listener registered")
         }
 
         // 每个 session 只 subscribe 一次（不 unsubscribe，避免切回时丢事件）
         if (sessionId in subscribedSessions) {
-            log.info("session $sessionId 已 subscribe 过，跳过")
+            log.info("session $sessionId already subscribed, skipping")
             return buildJsonObject {
                 put("op", "subscribed")
                 put("sessionId", sessionId)
@@ -2383,18 +2385,18 @@ if (!window.__ZCODE_LOG_HOOK__) {
         try {
             val ws = com.zcode.ideaplugin.protocol.model.Workspace(workspacePath)
             client.resume(sessionId, ws)
-            log.info("resume 会话成功: $sessionId")
+            log.info("resume succeeded: $sessionId")
         } catch (e: Exception) {
-            log.info("resume 失败（可能已 active）: ${e.message}")
+            log.info("resume failed (may already be active): ${e.message}")
         }
 
         // subscribe（全局监听器已在 app-server 层面接收所有事件）
         try {
             client.subscribe(sessionId, onEvent = null)
             subscribedSessions.add(sessionId)
-            log.info("subscribe session $sessionId 成功（全局监听器接收事件）")
+            log.info("subscribe session $sessionId succeeded (events via global listener)")
         } catch (e: Exception) {
-            log.error("subscribe session $sessionId 失败", e)
+            log.error("subscribe session $sessionId failed", e)
             return errorResponse("订阅失败: ${e.message}")
         }
 
@@ -2429,11 +2431,11 @@ if (!window.__ZCODE_LOG_HOOK__) {
             }
             registerBackendErrorHandler(client)
             globalListenerRegistered = true
-            log.info("全局事件监听器已注册")
+            log.info("Global event listener registered")
         }
 
         if (sessionId in subscribedSessions) {
-            log.info("subscribeChild: 子会话 $sessionId 已订阅过，跳过")
+            log.info("subscribeChild: child session $sessionId already subscribed, skipping")
             return buildJsonObject {
                 put("op", "subscribedChild")
                 put("sessionId", sessionId)
@@ -2444,21 +2446,21 @@ if (!window.__ZCODE_LOG_HOOK__) {
         try {
             val ws = com.zcode.ideaplugin.protocol.model.Workspace(workspacePath)
             client.resume(sessionId, ws)
-            log.info("subscribeChild: resume 子会话成功 $sessionId")
+            log.info("subscribeChild: child session resumed $sessionId")
         } catch (e: Exception) {
-            log.info("subscribeChild: resume 失败（可能已 active）: ${e.message}")
+            log.info("subscribeChild: resume failed (may already be active): ${e.message}")
         }
 
         return try {
             client.subscribe(sessionId, onEvent = null)
             subscribedSessions.add(sessionId)
-            log.info("subscribeChild: 子会话事件流已订阅 $sessionId")
+            log.info("subscribeChild: child session event stream subscribed $sessionId")
             buildJsonObject {
                 put("op", "subscribedChild")
                 put("sessionId", sessionId)
             }
         } catch (e: Exception) {
-            log.warn("subscribeChild: subscribe 失败 $sessionId: ${e.message}")
+            log.warn("subscribeChild: subscribe failed $sessionId: ${e.message}")
             errorResponse("子会话订阅失败: ${e.message}")
         }
     }
@@ -2472,7 +2474,7 @@ if (!window.__ZCODE_LOG_HOOK__) {
      */
     private fun registerBackendErrorHandler(client: com.zcode.ideaplugin.protocol.ZCodeProtocolClient) {
         client.backendErrorHandler = { err ->
-            log.warn("[backendError] 模型 API 错误 statusCode=${err.statusCode} code=${err.code} message=${err.message.take(300)}")
+            log.warn("[backendError] model API error statusCode=${err.statusCode} code=${err.code} message=${err.message.take(300)}")
             sendToJsDirect(buildJsonObject {
                 put("op", "backendError")
                 err.statusCode?.let { put("statusCode", it) }
@@ -2501,7 +2503,7 @@ if (!window.__ZCODE_LOG_HOOK__) {
             }
         }
 
-        log.info("[stream] 收到事件 type=${event.type} seq=${event.seq}（推送给前端）")
+        log.info("[stream] event type=${event.type} seq=${event.seq} (forwarded to frontend)")
         val eventJson = buildJsonObject {
             put("type", event.type)
             put("seq", event.seq)
@@ -2585,7 +2587,7 @@ if (!window.__ZCODE_LOG_HOOK__) {
             try {
                 jbCefBrowser.cefBrowser.executeJavaScript(js, "zcode-stream", 0)
             } catch (e: Exception) {
-                log.warn("[stream] sendToJsDirect 失败 op=$op: ${e.message}")
+                log.warn("[stream] sendToJsDirect failed op=$op: ${e.message}")
             }
         }
     }
@@ -2597,9 +2599,9 @@ if (!window.__ZCODE_LOG_HOOK__) {
         val client = project.zCodeService().getClient()
         try {
             client.stop(sessionId)
-            log.info("停止 session $sessionId 的当前 turn")
+            log.info("Stopping current turn of session $sessionId")
         } catch (e: Exception) {
-            log.warn("stop 失败: ${e.message}")
+            log.warn("stop failed: ${e.message}")
             return errorResponse("停止失败: ${e.message}")
         }
         return buildJsonObject {
@@ -2619,13 +2621,13 @@ if (!window.__ZCODE_LOG_HOOK__) {
             try {
                 val toolWindow = ZCodeToolWindowFactory.getToolWindow(project)
                 if (toolWindow == null) {
-                    log.warn("createTab 失败：找不到 ZCode ToolWindow")
+                    log.warn("createTab failed: ZCode ToolWindow not found")
                     return@invokeLater
                 }
                 ZCodeToolWindowFactory.createNewTab(project, toolWindow)
-                log.info("createTab 成功")
+                log.info("createTab succeeded")
             } catch (e: Exception) {
-                log.error("createTab 失败", e)
+                log.error("createTab failed", e)
             }
         }
         return buildJsonObject { put("op", "tabCreating") }
@@ -2711,7 +2713,7 @@ if (!window.__ZCODE_LOG_HOOK__) {
                 }
             }
         } catch (e: Exception) {
-            log.warn("扫描文件失败: ${e.message}")
+            log.warn("File scan failed: ${e.message}")
         }
 
         files.sortBy { it.length } // 短路径优先（通常更相关）
@@ -2729,7 +2731,7 @@ if (!window.__ZCODE_LOG_HOOK__) {
      */
     private fun handleListCommands(msg: JsonObject): JsonObject {
         val commands = SlashCommandScanner.scan(project.basePath)
-        log.info("斜杠命令扫描完成，共 ${commands.size} 条")
+        log.info("Slash command scan completed, ${commands.size} item(s)")
         return buildJsonObject {
             put("op", "commands")
             put("commands", JsonArray(commands.map { c ->
@@ -2794,7 +2796,7 @@ if (!window.__ZCODE_LOG_HOOK__) {
         if (!MemoryFileScanner.createWithTemplate(target)) {
             return errorResponse("创建失败: $path")
         }
-        log.info("记忆文件已创建: $path")
+        log.info("Memory file created: $path")
         // VFS 刷新 + 编辑器打开需 EDT（分隔符统一为 /，Windows 下 File.absolutePath 是 \）
         com.intellij.openapi.application.invokeLater {
             val vfile = LocalFileSystem.getInstance().refreshAndFindFileByPath(path.replace('\\', '/'))
@@ -2819,7 +2821,7 @@ if (!window.__ZCODE_LOG_HOOK__) {
         if (!ZCodeClientSettingStore.writeMemoryEnabled(enabled)) {
             return errorResponse("写入 setting.json 失败")
         }
-        log.info("工作区记忆已${if (enabled) "开启" else "关闭"}（与 ZCode 客户端共用 ~/.zcode/v2/setting.json）")
+        log.info("Workspace memory ${if (enabled) "enabled" else "disabled"} (shared with ZCode client via ~/.zcode/v2/setting.json)")
         return buildJsonObject {
             put("op", "memoryEnabledChanged")
             put("enabled", enabled)
@@ -2834,7 +2836,7 @@ if (!window.__ZCODE_LOG_HOOK__) {
      */
     private fun handleListSkills(msg: JsonObject): JsonObject {
         val skills = SkillScanner.scan(project.basePath)
-        log.info("技能扫描完成，共 ${skills.size} 条")
+        log.info("Skill scan completed, ${skills.size} item(s)")
         return buildJsonObject {
             put("op", "skills")
             put("skills", JsonArray(skills.map { s ->
@@ -2870,7 +2872,7 @@ if (!window.__ZCODE_LOG_HOOK__) {
         if (!SkillScanner.setSkillEnabled(path, enabled)) {
             return errorResponse("写入 config 失败: $path")
         }
-        log.info("技能已${if (enabled) "启用" else "禁用"}: $path")
+        log.info("Skill ${if (enabled) "enabled" else "disabled"}: $path")
         return buildJsonObject {
             put("op", "skillToggled")
             put("path", path)
@@ -2904,7 +2906,7 @@ if (!window.__ZCODE_LOG_HOOK__) {
         if (basePath != null) {
             runCatching {
                 appendHostPluginMcpServers(servers, project.zCodeService().getClient(), basePath)
-            }.onFailure { log.warn("plugins/list（宿主内置 MCP）失败：${it.message}") }
+            }.onFailure { log.warn("plugins/list (host built-in MCP) failed: ${it.message}") }
         }
 
         var rpcError: String? = null
@@ -2972,7 +2974,7 @@ if (!window.__ZCODE_LOG_HOOK__) {
                     )
                 }
             } catch (e: Exception) {
-                log.warn("mcp/list($mode) 失败：${e.message}")
+                log.warn("mcp/list($mode) failed: ${e.message}")
                 rpcError = e.message
             }
         } else {
@@ -2988,10 +2990,10 @@ if (!window.__ZCODE_LOG_HOOK__) {
                 if (s.scope != "host") s
                 else runCatching {
                     val tools = McpToolsClient.listTools(s, basePath, 30_000L)
-                    log.info("宿主 MCP 直连探测 [${s.name}] 成功，${tools.size} 个工具")
+                    log.info("Host MCP direct probe [${s.name}] succeeded, ${tools.size} tool(s)")
                     s.copy(status = "connected", toolCount = tools.size, statusError = null)
                 }.getOrElse { e ->
-                    log.warn("宿主 MCP 直连探测 [${s.name}] 失败：${e.message}")
+                    log.warn("Host MCP direct probe [${s.name}] failed: ${e.message}")
                     s.copy(status = "failed", statusError = e.message?.take(200))
                 }
             }
@@ -3071,10 +3073,10 @@ if (!window.__ZCODE_LOG_HOOK__) {
         if (!server.enabled) return resp(error = "服务器已禁用")
         return try {
             val tools = McpToolsClient.listTools(server, project.basePath ?: ".")
-            log.info("MCP 工具列表 [$name] 获取成功，共 ${tools.size} 个")
+            log.info("MCP tool list [$name] fetched, ${tools.size} item(s)")
             resp(tools = tools)
         } catch (e: Exception) {
-            log.warn("MCP 工具列表 [$name] 获取失败：${e.message}")
+            log.warn("MCP tool list [$name] fetch failed: ${e.message}")
             resp(error = e.message ?: "未知错误")
         }
     }
@@ -3162,7 +3164,7 @@ if (!window.__ZCODE_LOG_HOOK__) {
      */
     private fun handleGetMcpLogs(msg: JsonObject): JsonObject {
         val logs = McpLogReader.readRecent()
-        log.info("MCP 日志读取完成，共 ${logs.size} 条")
+        log.info("MCP log read completed, ${logs.size} line(s)")
         return buildJsonObject {
             put("op", "mcpLogs")
             put("logs", JsonArray(logs.map { e ->
@@ -3184,7 +3186,7 @@ if (!window.__ZCODE_LOG_HOOK__) {
         // 这个函数接受一个对象 {request: "...", persistent: false, onSuccess: fn, onFailure: fn}
         // 它会触发 Java 端 addHandler 注册的回调，request 字符串就是传给 Java 的内容
         val funcName = jsQuery.funcName
-        log.info("使用的 JS 函数名: $funcName")
+        log.info("JS function name in use: $funcName")
 
         return """
 <!DOCTYPE html>

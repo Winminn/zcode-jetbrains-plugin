@@ -285,10 +285,10 @@ class ZCodeToolWindowFactory : ToolWindowFactory, DumbAware {
             if (com.intellij.ui.jcef.JBCefApp.isStarted()) return
             // 端口文件存在 ≠ 健康：server 被强杀后文件可能残留（端口已死），只认端口可达
             if (ZCodeBrowserExecutor.hasReachableCdpEndpoint()) {
-                log.info("[browser-use] CDP 端点健康（DevToolsActivePort 端口可达），无需清理 cef_server")
+                log.info("[browser-use] CDP endpoint healthy (DevToolsActivePort port reachable), no cef_server cleanup needed")
                 return
             }
-            log.info("[browser-use] 无可达 CDP 端点，检查是否存在未带调试端口的历史 cef_server…")
+            log.info("[browser-use] No reachable CDP endpoint, checking for stale cef_server without debug port...")
             val ps = ProcessBuilder("ps", "ax", "-o", "pid=,ppid=,command=")
                 .redirectErrorStream(true).start()
             val out = try {
@@ -313,13 +313,13 @@ class ZCodeToolWindowFactory : ToolWindowFactory, DumbAware {
                 val pid = Regex("""^\s*(\d+)\s""").find(line)?.groupValues?.get(1) ?: continue
                 try {
                     ProcessBuilder("kill", pid).start().waitFor(5, java.util.concurrent.TimeUnit.SECONDS)
-                    log.warn("[browser-use] 已结束未带调试端口的历史 cef_server（pid=$pid，Mac remote JCEF 常驻进程不随 IDE 重启）；面板创建时将自动拉起带调试端口的新进程")
+                    log.warn("[browser-use] Stale cef_server without debug port terminated (pid=$pid, Mac remote JCEF daemon survives IDE restart); a new one with debug port will start on panel creation")
                 } catch (e: Exception) {
-                    log.warn("[browser-use] 结束旧 cef_server 失败（pid=$pid）: ${e.message}")
+                    log.warn("[browser-use] Failed to terminate stale cef_server (pid=$pid): ${e.message}")
                 }
             }
         } catch (e: Exception) {
-            log.warn("[browser-use] 检测/清理历史 cef_server 失败: ${e.message}")
+            log.warn("[browser-use] Stale cef_server detect/cleanup failed: ${e.message}")
         }
     }
 }

@@ -50,7 +50,7 @@ object ZCodeLanguageService {
                 else -> null
             }
         } catch (e: Exception) {
-            LOG.warn("读取手动语言选择失败: ${e.message}")
+            LOG.warn("Failed to read manual language selection: ${e.message}")
             null
         }
     }

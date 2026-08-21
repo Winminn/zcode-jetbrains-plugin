@@ -383,7 +383,7 @@ class ZCodeBrowserPanel(
             try {
                 activeTab?.browser?.openDevtools()
             } catch (e: Exception) {
-                log.error("打开 DevTools 失败", e)
+                log.error("Failed to open DevTools", e)
             }
         }
         val externalBtn = navButton(AllIcons.General.Web, message("browser.nav.external")) {
@@ -534,7 +534,7 @@ class ZCodeBrowserPanel(
                 }
             }
         }
-        log.info("[browser-use] 浏览器新建 tab=${tab.id}（共 ${tabs.size} 个）")
+        log.info("[browser-use] browser tab opened id=${tab.id} (${tabs.size} total)")
         return tab.id
     }
 
@@ -605,12 +605,12 @@ class ZCodeBrowserPanel(
         try {
             Disposer.dispose(tab.browser)
         } catch (e: Exception) {
-            log.warn("[browser-use] 释放 tab ${tab.id} 的 JCEF 失败: ${e.message}")
+            log.warn("[browser-use] Failed to release JCEF of tab ${tab.id}: ${e.message}")
         }
         if (wasActive) {
             tabs.lastOrNull()?.let { activateTabInternal(it) }
         }
-        log.info("[browser-use] 浏览器关闭 tab=$tabId（剩 ${tabs.size} 个）")
+        log.info("[browser-use] browser tab closed id=$tabId (${tabs.size} left)")
         return true
     }
 
@@ -640,10 +640,10 @@ class ZCodeBrowserPanel(
         try {
             Disposer.dispose(target.browser)
         } catch (e: Exception) {
-            log.warn("[browser-use] 释放 tab ${target.id} 的 JCEF 失败: ${e.message}")
+            log.warn("[browser-use] Failed to release JCEF of tab ${target.id}: ${e.message}")
         }
         createTab()
-        log.info("[browser-use] 协议关闭唯一 tab=${target.id}，已复位欢迎 tab")
+        log.info("[browser-use] protocol closed the only tab=${target.id}, welcome tab restored")
         return true
     }
 
@@ -996,7 +996,7 @@ class ZCodeBrowserPanel(
                 stale.callback.Continue(false, "")
             } catch (_: Exception) {}
         }
-        log.info("[browser-use] JS 对话框挂起（tab=$tabId type=$type）：${pending.message.take(80)}")
+        log.info("[browser-use] JS dialog pending (tab=$tabId type=$type): ${pending.message.take(80)}")
         scheduleDialogTimeoutCheck()
     }
 
@@ -1016,7 +1016,7 @@ class ZCodeBrowserPanel(
                 pendingDialogs.entries.removeIf { (_, d) ->
                     val expired = now - d.createdAt > DIALOG_TIMEOUT_MS
                     if (expired) {
-                        log.info("[browser-use] 对话框超时自动 dismiss（tab=${d.tabId} type=${d.type}）")
+                        log.info("[browser-use] dialog auto-dismissed on timeout (tab=${d.tabId} type=${d.type})")
                         try {
                             d.callback.Continue(false, "")
                         } catch (_: Exception) {}
@@ -1048,7 +1048,7 @@ class ZCodeBrowserPanel(
     /** 把当前 viewport 状态应用到全部 tab（CDP 阻塞调用，转 pooled 线程执行）*/
     private fun applyViewportOverride() {
         val ex = browserExecutor() ?: run {
-            log.warn("[browser-use] 自由尺寸不可用：浏览器执行器未初始化")
+            log.warn("[browser-use] free-size unavailable: browser executor not initialized")
             return
         }
         val (w, h) = effectiveViewportSize()
@@ -1063,7 +1063,7 @@ class ZCodeBrowserPanel(
         viewportState.active = true
         applyViewportOverride()
         refreshViewportButton()
-        log.info("[browser-use] 进入自由尺寸：${viewportState.width}x${viewportState.height} @${viewportState.scalePct}%")
+        log.info("[browser-use] enter free-size: ${viewportState.width}x${viewportState.height} @${viewportState.scalePct}%")
     }
 
     /** 设置视口尺寸（UI 对话框与协议 browserViewportSet 共用；未激活时自动激活并持久化）*/
@@ -1077,7 +1077,7 @@ class ZCodeBrowserPanel(
         persistViewportConfig()
         applyViewportOverride()
         refreshViewportButton()
-        log.info("[browser-use] 视口尺寸：${viewportState.width}x${viewportState.height}")
+        log.info("[browser-use] viewport size: ${viewportState.width}x${viewportState.height}")
     }
 
     /** 设置缩放：0=适应屏幕，其余为百分比（持久化）*/
@@ -1097,7 +1097,7 @@ class ZCodeBrowserPanel(
             }
         }
         refreshViewportButton()
-        log.info("[browser-use] 退出自由尺寸")
+        log.info("[browser-use] exit free-size")
     }
 
     /** 导航结束后重注入信箱（真导航重建 DOM 丢样式；SPA 路由不重建无需处理）。onLoadEnd 在 JCEF 线程回调 */
@@ -1289,7 +1289,7 @@ class ZCodeBrowserPanel(
             try {
                 Disposer.dispose(tab.browser)
             } catch (e: Exception) {
-                log.warn("释放浏览器 tab ${tab.id} 的 JCEF 失败: ${e.message}")
+                log.warn("Failed to release JCEF of browser tab ${tab.id}: ${e.message}")
             }
         }
         tabs.clear()
@@ -1326,10 +1326,10 @@ class ZCodeBrowserPanel(
         pendingDialogs.remove(dialog.tabId)
         return try {
             dialog.callback.Continue(accept, promptText ?: "")
-            log.info("[browser-use] 对话框已处理（tab=${dialog.tabId} accept=$accept）")
+            log.info("[browser-use] dialog handled (tab=${dialog.tabId} accept=$accept)")
             true
         } catch (e: Exception) {
-            log.warn("[browser-use] 对话框回调失败: ${e.message}")
+            log.warn("[browser-use] dialog callback failed: ${e.message}")
             true // callback 已从挂起表移除，语义上已处置
         }
     }

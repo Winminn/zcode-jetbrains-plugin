@@ -1,5 +1,7 @@
 package com.zcode.ideaplugin
 
+import com.zcode.ideaplugin.protocol.LogRedactor
+
 import com.intellij.openapi.components.Service
 import com.intellij.openapi.components.service
 import com.intellij.openapi.project.Project
@@ -163,7 +165,7 @@ class ZCodeServiceImpl(private val project: Project) : ZCodeService, com.intelli
                     handleUserInputRequest(serverRequestId, params)
                 }
                 userInputHandlerRegistered = true
-                log.info("[askUser] userInputRequestHandler 已在 Service 层注册（多标签共享）")
+                log.info("[askUser] userInputRequestHandler registered at Service level (shared across tabs)")
             }
             // 回合终止联动废弃待应答弹窗：挂起的反向请求随回合而生，回合死了弹窗即死
             // （服务端对未应答权限请求重试到头会自行放弃并 failed 收尾，插件此前无感知，
@@ -173,7 +175,7 @@ class ZCodeServiceImpl(private val project: Project) : ZCodeService, com.intelli
             c.addGlobalEventListener { event ->
                 if (event.type == "turn.completed" || event.type == "turn.failed") {
                     if (pendingUserInputs.values.any { it.sessionId == event.sessionId }) {
-                        log.info("[askUser] 回合已终止（${event.type}，${event.sessionId}），联动废弃该会话待应答弹窗")
+                        log.info("[askUser] Turn terminated (${event.type}, ${event.sessionId}), discarding pending ask dialog of that session")
                         abortPendingUserInputs(event.sessionId)
                     }
                 }
@@ -184,10 +186,10 @@ class ZCodeServiceImpl(private val project: Project) : ZCodeService, com.intelli
                 c.browserListHandler = { executor.listBrowsers() }
                 c.browserExecuteHandler = { params -> executor.execute(params) }
                 browserHandlerRegistered = true
-                log.info("[browser-use] 宿主 handler 已注册（interaction/browserList + browserExecute）")
+                log.info("[browser-use] host handlers registered (interaction/browserList + browserExecute)")
             }
         } catch (e: Exception) {
-            log.warn("协议 handler 注册失败（下轮 getClient 重试）: ${e.message}")
+            log.warn("Protocol handler registration failed (will retry on next getClient): ${e.message}")
         }
     }
 
@@ -229,7 +231,7 @@ class ZCodeServiceImpl(private val project: Project) : ZCodeService, com.intelli
                 embeddedBrowserOwner?.hideEmbeddedBrowser()
             })
             sharedBrowserPanel = panel
-            log.info("[browser-use] 全局共享浏览器面板已创建（跨会话标签）")
+            log.info("[browser-use] Global shared browser panel created (cross-session tab)")
             panel
         }
     }
@@ -248,7 +250,7 @@ class ZCodeServiceImpl(private val project: Project) : ZCodeService, com.intelli
             try {
                 com.intellij.openapi.util.Disposer.dispose(it)
             } catch (e: Exception) {
-                log.warn("释放共享浏览器面板失败: ${e.message}")
+                log.warn("Failed to release shared browser panel: ${e.message}")
             }
         }
         sharedBrowserPanel = null
@@ -260,7 +262,7 @@ class ZCodeServiceImpl(private val project: Project) : ZCodeService, com.intelli
 
     override fun pushToWebview(msg: JsonObject) {
         val p = activePanel ?: run {
-            log.warn("pushToWebview 无激活面板，丢弃消息: ${msg["op"]}")
+            log.warn("pushToWebview: no active panel, message dropped: ${msg["op"]}")
             return
         }
         p.pushToWebview(msg)
@@ -292,8 +294,8 @@ class ZCodeServiceImpl(private val project: Project) : ZCodeService, com.intelli
      * 在协议客户端的独立线程执行，可安全阻塞。
      */
     private fun handleUserInputRequest(serverRequestId: String, params: JsonObject): JsonObject {
-        log.info("[askUser] 收到 interaction/requestUserInput: $serverRequestId")
-        log.info("[askUser] params: ${params.toString().take(600)}")
+        log.info("[askUser] interaction/requestUserInput received: $serverRequestId")
+        log.info("[askUser] params: ${LogRedactor.redact(params.toString()).take(600)}")
 
         val toolName = params["toolName"]?.jsonPrimitive?.content ?: "AskUserQuestion"
         // ExitPlanMode 识别：toolName 为主，interaction:"plan_approval" 兜底
@@ -307,7 +309,7 @@ class ZCodeServiceImpl(private val project: Project) : ZCodeService, com.intelli
         val sessionId = params["sessionId"]?.jsonPrimitive?.contentOrNull
         val targetPanel = (sessionId?.let { findPanelForSession(it) }) ?: activePanel
         if (targetPanel == null) {
-            log.warn("[askUser] 无可用面板，直接 decline: $serverRequestId")
+            log.warn("[askUser] No panel available, declining directly: $serverRequestId")
             return buildJsonObject { put("action", "decline") }
         }
 
@@ -319,7 +321,7 @@ class ZCodeServiceImpl(private val project: Project) : ZCodeService, com.intelli
             pendingUserInputs[serverRequestId] =
                 PendingUserInput(contentKey, existing.future, existing.targetPanel, existing.sessionId)
             future = existing.future
-            log.info("[askUser] 服务端重试同一请求，共享等待: $serverRequestId")
+            log.info("[askUser] Server retried same request, sharing pending wait: $serverRequestId")
         } else {
             future = CompletableFuture()
             pendingUserInputs[serverRequestId] = PendingUserInput(contentKey, future, targetPanel, sessionId)
@@ -336,7 +338,7 @@ class ZCodeServiceImpl(private val project: Project) : ZCodeService, com.intelli
                     put("deadlineMs", System.currentTimeMillis() + USER_INPUT_TIMEOUT_MS)
                 }
                 targetPanel.pushToWebview(askMsg)
-                log.info("[askUser] ExitPlanMode 计划审批已推给前端，等待用户批准/拒绝...")
+                log.info("[askUser] ExitPlanMode plan approval pushed to frontend, waiting for user decision...")
             } else {
                 // 普通 AskUserQuestion：{op:"askUser", requestId, questions, toolName}
                 val questions = params["questions"] ?: kotlinx.serialization.json.JsonArray(emptyList())
@@ -348,7 +350,7 @@ class ZCodeServiceImpl(private val project: Project) : ZCodeService, com.intelli
                     put("deadlineMs", System.currentTimeMillis() + USER_INPUT_TIMEOUT_MS)
                 }
                 targetPanel.pushToWebview(askMsg)
-                log.info("[askUser] 已推给前端，等待用户选择...")
+                log.info("[askUser] Pushed to frontend, waiting for user selection...")
             }
             // 广播挂起标志（含未收到弹窗的面板——多标签同会话时弹窗只路由到一个标签，
             // 其余标签的流式看门狗靠它豁免，否则 60s 静默误判 streamLost 收尾回合）
@@ -361,7 +363,7 @@ class ZCodeServiceImpl(private val project: Project) : ZCodeService, com.intelli
         return try {
             future.get(USER_INPUT_TIMEOUT_MS, java.util.concurrent.TimeUnit.MILLISECONDS)
         } catch (e: java.util.concurrent.TimeoutException) {
-            log.warn("[askUser] 等待用户应答超时（5 分钟），自动 decline: $serverRequestId")
+            log.warn("[askUser] Answer wait timed out (5 min), auto-declining: $serverRequestId")
             cleanupPendingFor(future)
             targetPanel.pushToWebview(buildJsonObject { put("op", "askUserAck") })
             buildJsonObject { put("action", "decline") }
@@ -419,7 +421,7 @@ class ZCodeServiceImpl(private val project: Project) : ZCodeService, com.intelli
         future.complete(result)
         // 服务端重试的其他 id 共享此 future，一并清理
         cleanupPendingFor(future)
-        log.info("[askUser] 用户已选择，应答服务器: action=$action answer=$normalizedAnswer")
+        log.info("[askUser] User answered, responding to server: action=$action answer=$normalizedAnswer")
         return buildJsonObject { put("op", "askUserAck") }
     }
 
@@ -465,7 +467,7 @@ class ZCodeServiceImpl(private val project: Project) : ZCodeService, com.intelli
         val ack = buildJsonObject { put("op", "askUserAck") }
         targetPanels.forEach { it?.pushToWebview(ack) }
         if (pendingUserInputs.isEmpty()) broadcastAskUserPending(false)
-        log.info("[askUser] 回合被打断（sessionId=${sessionId ?: "全部"}），废弃 ${targetPanels.size} 个面板上的待应答弹窗（不发迟到应答）")
+        log.info("[askUser] Turn interrupted (sessionId=${sessionId ?: "all"}), discarding pending ask dialog on ${targetPanels.size} panel(s) (no late answer sent)")
     }
 }
 

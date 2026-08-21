@@ -24,7 +24,7 @@ import java.util.concurrent.atomic.AtomicLong
  * val client = ZCodeProtocolClient.start()
  * val sessions = client.listSessions()
  * val sid = client.createSession(Workspace("G:/work"))
- * client.subscribe(sid) { event -> println("收到事件: ${event.type}") }
+ * client.subscribe(sid) { event -> println("Event received: ${event.type}") }
  * client.send(sid, "你好")
  * client.close()
  * ```
@@ -139,11 +139,11 @@ class ZCodeProtocolClient private constructor(
             Thread({
                 try {
                     stderr.forEachLine { line ->
-                        System.err.println("[app-server stderr] $line")
+                        System.err.println("[app-server stderr] ${LogRedactor.redact(line)}")
                         // 模型 API 错误兜底：429 配额超限等被 app-server 按可重试分类退避重试，
                         // turn 终止帧迟迟不发（UI 无限转圈无提示），stderr dump 是错误第一现场
                         backendErrorDetector.feed(line)?.let { err ->
-                            println("[ZCodeProtocolClient] 检测到后端 API 错误: statusCode=${err.statusCode} code=${err.code}")
+                            println("[ZCodeProtocolClient] Backend API error detected: statusCode=${err.statusCode} code=${err.code}")
                             client.backendErrorHandler?.invoke(err)
                         }
                     }
@@ -181,7 +181,7 @@ class ZCodeProtocolClient private constructor(
 
     private fun readLoop() {
         try {
-            println("[ZCodeProtocolClient] readLoop 启动，开始监听 app-server stdout")
+            println("[ZCodeProtocolClient] readLoop started, listening on app-server stdout")
             var lineCount = 0
             while (!closed) {
                 val line = stdout.readLine() ?: break
@@ -192,7 +192,7 @@ class ZCodeProtocolClient private constructor(
                     Json.parseToJsonElement(line).jsonObject
                 } catch (e: Exception) {
                     // 非 JSON 行（app-server 偶发日志），转发到 stderr 便于排查而不是静默丢弃
-                    System.err.println("[app-server stdout] $line")
+                    System.err.println("[app-server stdout] ${LogRedactor.redact(line)}")
                     continue
                 }
 
@@ -201,7 +201,7 @@ class ZCodeProtocolClient private constructor(
         } catch (e: IOException) {
             if (!closed) {
                 // 进程异常退出
-                System.err.println("[ZCodeProtocolClient] reader 异常: ${e.message}")
+                System.err.println("[ZCodeProtocolClient] reader error: ${e.message}")
             }
         }
     }
@@ -227,13 +227,13 @@ class ZCodeProtocolClient private constructor(
             method != null && id == null -> {
                 // 诊断：确认通知到达 dispatchMessage
                 if (method == "session/event") {
-                    println("[ZCodeProtocolClient] dispatchMessage: session/event 通知到达，转发到 handleNotification")
+                    println("[ZCodeProtocolClient] dispatchMessage: session/event notification arrived, forwarding to handleNotification")
                 }
                 handleNotification(method, msg["params"]?.jsonObject ?: JsonObject(emptyMap()))
             }
             else -> {
                 // 未知消息类型（可能是带 id 的通知？打印诊断）
-                println("[ZCodeProtocolClient] dispatchMessage: 未知消息类型 id=$id method=$method keys=${msg.keys}")
+                println("[ZCodeProtocolClient] dispatchMessage: unknown message type id=$id method=$method keys=${msg.keys}")
             }
         }
     }
@@ -251,7 +251,7 @@ class ZCodeProtocolClient private constructor(
                 val scope = params["scope"]?.jsonPrimitive?.contentOrNull ?: ""
                 runtimePreferencesResponder(sid, scope)
             } catch (e: Exception) {
-                System.err.println("[ZCodeProtocolClient] runtimePreferencesResponder 异常(${e.javaClass.simpleName}): ${e.message}，回退 SAFE_DEFAULT")
+                System.err.println("[ZCodeProtocolClient] runtimePreferencesResponder error (${e.javaClass.simpleName}): ${e.message}, falling back to SAFE_DEFAULT")
                 RuntimePreferences.SAFE_DEFAULT
             }
             respondToServer(id, buildJsonObject {
@@ -263,24 +263,24 @@ class ZCodeProtocolClient private constructor(
         else if (method == "interaction/requestUserInput") {
             // AskUserQuestion：需要用户交互，交给 handler 处理
             // ⚠️ 必须异步处理！handler 会阻塞等用户选择，不能卡 reader 线程
-            println("[ZCodeProtocolClient] 收到 interaction/requestUserInput，异步交给 handler")
+            println("[ZCodeProtocolClient] interaction/requestUserInput received, dispatching to async handler")
             val handler = userInputRequestHandler
             if (handler != null) {
                 Thread({
                     try {
                         val result = handler(id, params)
                         respondToServer(id, result)
-                        println("[ZCodeProtocolClient] interaction/requestUserInput 已应答")
+                        println("[ZCodeProtocolClient] interaction/requestUserInput answered")
                     } catch (e: Exception) {
                         // 带异常类名：TimeoutException/InterruptedException 的 message 为 null，
                         // 只打 message 会显示"异常: null"无法定位（panel 端已自行处理超时/中断，
                         // 走到这里的是真正的意外错误）
-                        println("[ZCodeProtocolClient] interaction/requestUserInput handler 异常(${e.javaClass.simpleName}): ${e.message}")
+                        println("[ZCodeProtocolClient] interaction/requestUserInput handler error (${e.javaClass.simpleName}): ${e.message}")
                         respondToServer(id, buildJsonObject { put("action", "decline") })
                     }
                 }, "zcode-user-input").apply { isDaemon = true }.start()
             } else {
-                println("[ZCodeProtocolClient] 无 userInputRequestHandler，自动 decline")
+                println("[ZCodeProtocolClient] no userInputRequestHandler registered, auto-declining")
                 respondToServer(id, buildJsonObject { put("action", "decline") })
             }
         }
@@ -293,7 +293,7 @@ class ZCodeProtocolClient private constructor(
                     try {
                         respondToServer(id, handler())
                     } catch (e: Exception) {
-                        println("[ZCodeProtocolClient] browserList handler 异常(${e.javaClass.simpleName}): ${e.message}")
+                        println("[ZCodeProtocolClient] browserList handler error (${e.javaClass.simpleName}): ${e.message}")
                         respondToServer(id, error = ProtocolError(ErrorCodes.INTERNAL_ERROR, "browserList 失败: ${e.message}"))
                     }
                 }, "zcode-browser-list").apply { isDaemon = true }.start()
@@ -309,7 +309,7 @@ class ZCodeProtocolClient private constructor(
                     try {
                         respondToServer(id, handler(params))
                     } catch (e: Exception) {
-                        println("[ZCodeProtocolClient] browserExecute handler 异常(${e.javaClass.simpleName}): ${e.message}")
+                        println("[ZCodeProtocolClient] browserExecute handler error (${e.javaClass.simpleName}): ${e.message}")
                         respondToServer(id, error = ProtocolError(ErrorCodes.INTERNAL_ERROR, "browserExecute 失败: ${e.message}"))
                     }
                 }, "zcode-browser-exec").apply { isDaemon = true }.start()
@@ -329,10 +329,10 @@ class ZCodeProtocolClient private constructor(
             val event = SessionEvent.fromNotification(params)
             // 诊断：确认事件到达 + sessionId 匹配
             val registered = eventListeners.keys
-            println("[ZCodeProtocolClient] 收到 session/event: type=${event.type} sessionId=${event.sessionId} 已注册监听的session=${registered}")
+            println("[ZCodeProtocolClient] session/event received: type=${event.type} sessionId=${event.sessionId} registeredSessions=${registered}")
             // 通知该 session 的监听器
             val listeners = eventListeners[event.sessionId]
-            println("[ZCodeProtocolClient] 匹配到 ${listeners?.size ?: 0} 个监听器")
+            println("[ZCodeProtocolClient] matched ${listeners?.size ?: 0} listener(s)")
             listeners?.forEach { it(event) }
             // 通知全局监听器
             globalListeners.forEach { it(event) }
@@ -345,7 +345,7 @@ class ZCodeProtocolClient private constructor(
             val reason = params["reason"]?.jsonPrimitive?.contentOrNull ?: ""
             // 诊断：模式切换（含 ExitPlanMode 审批后退出 plan）依赖此事件的 patch.mode.current，
             // 记录 reason + patch 便于排查"模式切不回"
-            println("[ZCodeProtocolClient] state.updated: reason=$reason patch=${params["patch"]}")
+            println("[ZCodeProtocolClient] state.updated: reason=$reason patch=${LogRedactor.redact(params["patch"].toString())}")
             val event = SessionEvent(
                 type = "state.updated",
                 seq = params["revision"]?.jsonPrimitive?.longOrNull ?: 0L,
@@ -426,7 +426,7 @@ class ZCodeProtocolClient private constructor(
                 val isTimeout = e.message?.startsWith("请求超时") == true
                 if (!isTimeout || attempt == maxAttempts - 1) throw e
                 val delay = if (attempt < backoffMs.size) backoffMs[attempt] else backoffMs.last()
-                println("[ZCodeProtocolClient] $method 超时(${attempt + 1}/$maxAttempts)，退避 ${delay}ms 后重试")
+                println("[ZCodeProtocolClient] $method timeout (${attempt + 1}/$maxAttempts), retrying after ${delay}ms backoff")
                 Thread.sleep(delay)
             }
         }
@@ -580,7 +580,7 @@ class ZCodeProtocolClient private constructor(
             // 本请求携带 runtimeModel（zcode.cjs 应用模型时置 restoreWarning=void 0），
             // 故用带 runtimeModel 的 send 原地重试，成功后走正常流式。
             if (errCode == -32031) {
-                println("[ZCodeProtocolClient] send 遇到 -32031（restoreWarning），带 runtimeModel 重试")
+                println("[ZCodeProtocolClient] send hit -32031 (restoreWarning), retrying with runtimeModel")
                 // 优先用用户当前选择的 provider 构造 runtimeModel（跟随前端 currentModel），
                 // 避免恢复链路用默认 provider 把会话静默切到个人套餐；构造失败回退默认 factory
                 val runtimeModel = if (providerId != null && modelId != null) {
@@ -598,15 +598,15 @@ class ZCodeProtocolClient private constructor(
                     // 此处超时/异常直接上抛——回合可能已在跑，再落 CLI 兜底会重复发送
                     r = request("session/send", retryParams, timeoutMs)
                     if (r["error"] == null) {
-                        println("[ZCodeProtocolClient] runtimeModel 重试成功，restoreWarning 已清除")
+                        println("[ZCodeProtocolClient] runtimeModel retry succeeded, restoreWarning cleared")
                         return r["result"]?.jsonObject ?: JsonObject(emptyMap())
                     }
-                    println("[ZCodeProtocolClient] runtimeModel 重试仍被拒: ${r["error"]}")
+                    println("[ZCodeProtocolClient] runtimeModel retry still rejected: ${LogRedactor.redact(r["error"].toString())}")
                 } else {
-                    println("[ZCodeProtocolClient] 无法构造 runtimeModel（config.json 无 enabled anthropic provider）")
+                    println("[ZCodeProtocolClient] cannot build runtimeModel (no enabled anthropic provider in config.json)")
                 }
                 // 最后兜底：CLI --resume 走另一条干净代码路径（有回复但无流式）
-                println("[ZCodeProtocolClient] fallback 到 CLI --resume")
+                println("[ZCodeProtocolClient] falling back to CLI --resume")
                 return sendViaCliResume(sessionId, content, workspacePath)
             }
             throw ZCodeProtocolException.fromError(r["error"]!!)
@@ -809,7 +809,7 @@ class ZCodeProtocolClient private constructor(
         val runtime = r["result"]?.jsonObject?.get("runtime")?.jsonObject
             ?: return JsonObject(emptyMap())
         // 诊断：确认 runtime 完整结构（是否包含 breakdown 构成明细）
-        println("[DIAG-CTX] runtime keys=${runtime.keys} json=${runtime.toString().take(2000)}")
+        println("[DIAG-CTX] runtime keys=${runtime.keys} json=${LogRedactor.redact(runtime.toString()).take(2000)}")
         return runtime
     }
 
@@ -871,7 +871,7 @@ class ZCodeProtocolClient private constructor(
         try {
             resumeSession(sessionId, timeoutMs)
         } catch (e: Exception) {
-            println("[ZCodeProtocolClient] resume 失败（可忽略，走删 DB 兜底）: ${e.message}")
+            println("[ZCodeProtocolClient] resume failed (ignorable, will fall back to DB deletion): ${e.message}")
         }
         // 2. close 清 app-server 内存/索引。-32004 说明会话不 active（resume 也失败过），可忽略；
         //    其他错误抛给调用方（会话可能半 active，避免静默残留）
@@ -881,7 +881,7 @@ class ZCodeProtocolClient private constructor(
             r["error"]?.let { throw ZCodeProtocolException.fromError(it) }
         } catch (e: ZCodeProtocolException) {
             if (e.code != -32004) throw e
-            println("[ZCodeProtocolClient] close 跳过（会话本就 inactive）: ${e.message}")
+            println("[ZCodeProtocolClient] close skipped (session already inactive): ${e.message}")
         }
         // 3. 删 db.sqlite 持久化记录（关键步骤，session/list 的数据源，失败则抛异常）
         deleteSessionFromDb(sessionId)
@@ -897,7 +897,7 @@ class ZCodeProtocolClient private constructor(
         val home = System.getProperty("user.home")
         val dbPath = Path.of(home, ".zcode", "cli", "db", "db.sqlite")
         if (!java.nio.file.Files.exists(dbPath)) {
-            println("[ZCodeProtocolClient] db.sqlite 不存在，跳过持久化删除: $dbPath")
+            println("[ZCodeProtocolClient] db.sqlite not found, skipping persistent deletion: $dbPath")
             return
         }
         val pb = ProcessBuilder(nodePath, "-e", DELETE_SESSION_JS)
@@ -993,18 +993,18 @@ class ZCodeProtocolClient private constructor(
             val out = p.inputStream.bufferedReader().readText()
             if (!p.waitFor(10, TimeUnit.SECONDS)) {
                 p.destroyForcibly()
-                println("[ZCodeProtocolClient] 会话统计查询超时，降级为空")
+                println("[ZCodeProtocolClient] session stats query timed out, degrading to empty")
                 return emptyMap()
             }
             if (p.exitValue() != 0) {
-                println("[ZCodeProtocolClient] 会话统计查询失败(exit=${p.exitValue()})，降级为空")
+                println("[ZCodeProtocolClient] session stats query failed (exit=${p.exitValue()}), degrading to empty")
                 return emptyMap()
             }
             val stats = parseSessionStats(out)
             sessionStatsCache = fp to stats
             stats
         } catch (e: Exception) {
-            println("[ZCodeProtocolClient] 会话统计异常: ${e.message}")
+            println("[ZCodeProtocolClient] session stats error: ${e.message}")
             emptyMap()
         }
     }
@@ -1076,7 +1076,7 @@ class ZCodeProtocolClient private constructor(
     /** 添加指定 session 的事件监听器 */
     fun addEventListener(sessionId: String, listener: (SessionEvent) -> Unit) {
         eventListeners.computeIfAbsent(sessionId) { ConcurrentHashMap.newKeySet() }.add(listener)
-        println("[ZCodeProtocolClient] addEventListener: sessionId=$sessionId, 当前已注册=${eventListeners.keys}")
+        println("[ZCodeProtocolClient] addEventListener: sessionId=$sessionId, registered=${eventListeners.keys}")
     }
 
     /** 移除指定 session 的事件监听器 */

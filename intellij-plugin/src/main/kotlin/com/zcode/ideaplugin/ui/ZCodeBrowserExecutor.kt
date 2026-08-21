@@ -132,7 +132,7 @@ class ZCodeBrowserExecutor(private val project: Project) {
             // 1) DevToolsActivePort 文件（随机端口模式，Factory 默认设置），逐候选验证
             val files = findDevToolsActivePortFiles()
             if (files.isEmpty()) {
-                log.info("[browser-use] 未找到任何 DevToolsActivePort 文件（jcef_cache 未生成或 CEF 未启用调试端口），转 9222 兜底")
+                log.info("[browser-use] No DevToolsActivePort file found (jcef_cache not generated or CEF debug port disabled), falling back to 9222")
             }
             for (f in files) {
                 val hit = probeDevToolsPortFile(f)
@@ -143,7 +143,7 @@ class ZCodeBrowserExecutor(private val project: Project) {
                 val base = "http://$host:9222"
                 if (httpGetJson("$base/json/version") != null) {
                     cdpBase = base
-                    log.info("[browser-use] CDP 端点（9222 兜底）：$base")
+                    log.info("[browser-use] CDP endpoint (9222 fallback): $base")
                     return base
                 }
             }
@@ -156,18 +156,18 @@ class ZCodeBrowserExecutor(private val project: Project) {
     private fun probeDevToolsPortFile(f: java.io.File): String? {
         val port = parseDevToolsPort(f)
         if (port == null) {
-            log.info("[browser-use] DevToolsActivePort 端口不可解析，跳过：$f")
+            log.info("[browser-use] DevToolsActivePort port unparsable, skipping: $f")
             return null
         }
         for (host in listOf("127.0.0.1", "[::1]")) {
             val base = "http://$host:$port"
             if (httpGetJson("$base/json/version") != null) {
                 cdpBase = base
-                log.info("[browser-use] CDP 端点（DevToolsActivePort $port，$f）：$base")
+                log.info("[browser-use] CDP endpoint (DevToolsActivePort $port, $f): $base")
                 return base
             }
         }
-        log.info("[browser-use] DevToolsActivePort 端口 $port 不可达，换下一候选：$f")
+        log.info("[browser-use] DevToolsActivePort port $port unreachable, trying next candidate: $f")
         return null
     }
 
@@ -181,7 +181,7 @@ class ZCodeBrowserExecutor(private val project: Project) {
     /** interaction/browserList：CDP 端口可达才报浏览器，否则空列表（browser-use 优雅降级）*/
     fun listBrowsers(): JsonObject {
         if (cdpBaseUrl() == null) {
-            log.info("[browser-use] CDP $CDP_PORT 不可达（IPv4/IPv6 均失败），browserList 返回空（AI 浏览器工具不可用）")
+            log.info("[browser-use] CDP $CDP_PORT unreachable (both IPv4/IPv6 failed), browserList returns empty (AI browser tools unavailable)")
             return buildJsonObject { put("browsers", JsonArray(emptyList())) }
         }
         val browserCaps = listOf(
@@ -363,7 +363,7 @@ class ZCodeBrowserExecutor(private val project: Project) {
                 put("elapsedMs", System.currentTimeMillis() - start)
             }
         } catch (e: Exception) {
-            log.warn("[browser-use] 命令 $method 失败: ${e.javaClass.simpleName}: ${e.message}")
+            log.warn("[browser-use] command $method failed: ${e.javaClass.simpleName}: ${e.message}")
             errorResult("${e.javaClass.simpleName}: ${e.message}", command, start)
         }
     }
@@ -447,7 +447,7 @@ class ZCodeBrowserExecutor(private val project: Project) {
                     panel = content.component as? ZCodeBrowserPanel
                 }
             } catch (e: Exception) {
-                log.warn("[browser-use] 激活浏览器面板失败: ${e.message}")
+                log.warn("[browser-use] Failed to activate browser panel: ${e.message}")
             }
         }
         return panel
@@ -574,7 +574,7 @@ class ZCodeBrowserExecutor(private val project: Project) {
                     else -> browser.cefBrowser.reload()
                 }
             } catch (e: Exception) {
-                log.warn("[browser-use] $what 失败: ${e.message}")
+                log.warn("[browser-use] $what failed: ${e.message}")
             }
         }
         val pt = readPanelTabs(panel)
@@ -1548,7 +1548,7 @@ class ZCodeBrowserExecutor(private val project: Project) {
                 SwingUtilities.invokeAndWait { okMark = panel.setTabLifecycle(tabId, status) }
                 if (okMark) marked++ else missing++
             }
-            log.info("[browser-use] finalizeTabs 标记 $marked 个 tab（未匹配 $missing，未列出的保持原状态）")
+            log.info("[browser-use] finalizeTabs marked $marked tab(s) (unmatched $missing, unlisted keep previous state)")
         }
         return buildJsonObject { put("ok", true) }
     }
@@ -1558,7 +1558,7 @@ class ZCodeBrowserExecutor(private val project: Project) {
         val name = command["name"]?.jsonPrimitive?.contentOrNull?.trim()?.takeIf { it.isNotEmpty() }
             ?: throw RuntimeException("nameSession 缺少 name")
         sessionName = name
-        log.info("[browser-use] 浏览器会话命名: $name")
+        log.info("[browser-use] browser session named: $name")
         return buildJsonObject { put("ok", true) }
     }
 
@@ -1708,7 +1708,7 @@ class ZCodeBrowserExecutor(private val project: Project) {
         javax.imageio.ImageIO.write(img.getSubimage(cx, cy, cw, ch), "png", baos)
         java.util.Base64.getEncoder().encodeToString(baos.toByteArray())
     } catch (e: Exception) {
-        log.warn("[browser-use] elementScreenshot 裁剪失败，退回全图: ${e.message}")
+        log.warn("[browser-use] elementScreenshot crop failed, falling back to full image: ${e.message}")
         base64
     }
 
@@ -2405,9 +2405,9 @@ class ZCodeBrowserExecutor(private val project: Project) {
             }, ensurePanel = false)
             val frameJs = deviceFrameScript(width, height, scale)
             cdpCommand(tabId, "Runtime.evaluate", buildJsonObject { put("expression", frameJs) }, ensurePanel = false)
-            log.info("[browser-use] viewport 应用 tab=$tabId 设备屏=${width}x${height} scale=${"%.3f".format(scale)}")
+            log.info("[browser-use] viewport applied tab=$tabId device=${width}x${height} scale=${"%.3f".format(scale)}")
         } catch (e: Exception) {
-            log.warn("[browser-use] viewport 应用失败（tab=$tabId）: ${e.message}")
+            log.warn("[browser-use] viewport apply failed (tab=$tabId): ${e.message}")
         }
     }
 
@@ -2417,12 +2417,12 @@ class ZCodeBrowserExecutor(private val project: Project) {
             try {
                 cdpCommand(tabId, "Emulation.clearDeviceMetricsOverride", JsonObject(emptyMap()), ensurePanel = false)
             } catch (e: Exception) {
-                log.warn("[browser-use] viewport override 清除失败（tab=$tabId）: ${e.message}")
+                log.warn("[browser-use] viewport override clear failed (tab=$tabId): ${e.message}")
             }
             try {
                 cdpCommand(tabId, "Runtime.evaluate", buildJsonObject { put("expression", DEVICE_FRAME_CLEAR_SCRIPT) }, ensurePanel = false)
             } catch (e: Exception) {
-                log.warn("[browser-use] viewport 样式清理失败（tab=$tabId）: ${e.message}")
+                log.warn("[browser-use] viewport style cleanup failed (tab=$tabId): ${e.message}")
             }
         }
     }

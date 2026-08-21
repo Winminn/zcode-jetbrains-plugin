@@ -44,7 +44,7 @@ object ZCodeWebviewServer {
     fun ensureStarted(): Int {
         if (port > 0) return port
         if (javaClass.getResource("/webview/index.html") == null) {
-            log.info("classpath 无 /webview 多文件产物，跳过内置 server（降级 singlefile）")
+            log.info("No /webview multi-file artifact on classpath, skipping built-in server (degrade to singlefile)")
             return -1
         }
         return try {
@@ -56,10 +56,10 @@ object ZCodeWebviewServer {
             s.start()
             server = s
             port = s.address.port
-            log.info("内置 webview server 已启动：http://127.0.0.1:$port")
+            log.info("Built-in webview server started: http://127.0.0.1:$port")
             port
         } catch (e: Exception) {
-            log.warn("内置 webview server 启动失败（降级 singlefile 加载）: ${e.message}")
+            log.warn("Built-in webview server start failed (degrade to singlefile): ${e.message}")
             -1
         }
     }
@@ -79,7 +79,7 @@ object ZCodeWebviewServer {
                 respond(exchange, 200, bytes, mimeOf(rel))
             }
         } catch (e: Exception) {
-            log.warn("webview server 处理请求失败: ${e.message}")
+            log.warn("webview server request handling failed: ${e.message}")
         } finally {
             exchange.close()
         }
