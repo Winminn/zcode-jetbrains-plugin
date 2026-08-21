@@ -17,7 +17,7 @@
  */
 
 import i18n from '@/i18n/config'
-import type { MessageInfo } from '@/types/messages'
+import type { MessageInfo, TimelinePart } from '@/types/messages'
 
 // ============ 类型 ============
 
@@ -78,6 +78,27 @@ export function isAgentNotification(info: MessageInfo): boolean {
 export function isHiddenSyntheticMessage(info: MessageInfo): boolean {
   if (info.synthetic !== true) return false
   return !isAgentNotification(info)
+}
+
+// ============ /compact 压缩消息识别（2026-08-21 RPC 实测）============
+
+/**
+ * 是否为压缩摘要消息：role=user + 顶层 summary:{title:"Compact summary",body}。
+ * 消息级无 synthetic 标记（仅 text part 级有），isHiddenSyntheticMessage 拦不住，
+ * 若不专门识别会整段 8k+ 字符摘要渲染成右对齐用户气泡。
+ */
+export function isCompactSummaryMessage(info: MessageInfo): boolean {
+  return info.summary?.body != null
+}
+
+/**
+ * 取消息里的首个 timeline part（marker 消息核心：context_compaction /
+ * model_change 等时间线分隔符）。无则 undefined。
+ */
+export function findTimelinePart(
+  parts: { type: string }[] | undefined,
+): TimelinePart | undefined {
+  return parts?.find((p): p is TimelinePart => p.type === 'timeline')
 }
 
 // ============ 解析 ============

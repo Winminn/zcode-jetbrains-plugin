@@ -26,9 +26,11 @@ import { AgentNotificationCard } from './AgentNotificationCard'
 import { BashCommandGroupCard } from './BashCommandGroupCard'
 import { FileToolGroupCard } from './FileToolGroupCard'
 import { groupParts } from '@/utils/groupParts'
-import { isAgentNotification } from '@/utils/parseNotification'
+import { isAgentNotification, isCompactSummaryMessage, findTimelinePart } from '@/utils/parseNotification'
 import { clockTime, formatDuration } from '@/utils/time'
 import { useTick } from '@/hooks/useTick'
+import { CompactionSummaryCard } from './CompactionSummaryCard'
+import { TimelineSeparator } from './TimelineSeparator'
 import '../styles/message-bubble.less'
 
 interface Props {
@@ -47,6 +49,17 @@ export const MessageBubble = memo(function MessageBubble({ message, streaming, a
   // 子 agent / 任务回调的合成通知（role 是 user 但 synthetic）：独立卡片渲染，不当用户消息
   if (isAgentNotification(info)) {
     return <AgentNotificationCard message={message} time={time} />
+  }
+  // 压缩摘要消息（role=user + info.summary）：折叠卡片，不当用户气泡
+  // （消息级无 synthetic 标记，isHiddenSyntheticMessage 拦不住，必须在此分流）
+  if (isCompactSummaryMessage(info)) {
+    return <CompactionSummaryCard message={message} time={time} />
+  }
+  // 时间线分隔符消息（assistant + timeline part）：无气泡结构的横线分隔卡，
+  // 此前 timeline part 不被识别渲染成"只有耗时行的空壳气泡"
+  const timelinePart = findTimelinePart(parts)
+  if (timelinePart) {
+    return <TimelineSeparator part={timelinePart} />
   }
   if (isUser) {
     return <UserBubble text={collectUserText(parts)} time={time} anchorAttr={anchorAttr} />

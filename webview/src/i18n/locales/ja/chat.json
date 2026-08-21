@@ -68,5 +68,14 @@
   "welcome": {
     "version": "ZCode バージョン",
     "sendMsg": "ZCode にメッセージを送信"
+  },
+  "compaction": {
+    "compressing": "コンテキストを圧縮中…（AI がこれまでの会話を要約しています）",
+    "title": "コンテキストを圧縮しました",
+    "messagesSummarized": "{{count}} 件のメッセージを要約"
+  },
+  "timeline": {
+    "modelChanged": "モデルを切り替えました",
+    "event": "タイムラインイベント"
   }
 }

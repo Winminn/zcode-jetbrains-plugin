@@ -2153,6 +2153,10 @@ if (!window.__ZCODE_LOG_HOOK__) {
                 // 构成明细：runtime 顶层 breakdown（CLI turn 后构建，重命名自 contextUsageBreakdown）
                 val breakdownEl = runtime["breakdown"] ?: ctx["breakdown"]
                 if (breakdownEl != null) put("breakdown", breakdownEl)
+                // 当前回合类型（activeTurnKind，实测见 /compact：值为 "compact" 时正在
+                // 压缩上下文）：前端压缩状态条/看门狗豁免的权威信号，覆盖 autocompact
+                val turnKind = runtime["activeTurnKind"]?.jsonPrimitive?.content
+                if (turnKind != null) put("activeTurnKind", turnKind)
             }
         } catch (e: Exception) {
             log.warn("获取上下文用量失败: ${e.message}")

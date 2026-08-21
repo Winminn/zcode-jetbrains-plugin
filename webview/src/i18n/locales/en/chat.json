@@ -68,5 +68,14 @@
   "welcome": {
     "version": "ZCode version",
     "sendMsg": "Send a message to ZCode"
+  },
+  "compaction": {
+    "compressing": "Compacting context… (AI is summarizing earlier conversation, no output meanwhile)",
+    "title": "Context compacted",
+    "messagesSummarized": "{{count}} messages summarized"
+  },
+  "timeline": {
+    "modelChanged": "Model switched",
+    "event": "Timeline event"
   }
 }

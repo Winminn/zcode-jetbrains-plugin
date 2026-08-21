@@ -19,6 +19,8 @@ export type MessagePart =
   | ToolPart
   | StepStartPart
   | StepFinishPart
+  | TimelinePart
+  | CompactionPart
 
 export interface TextPart {
   type: 'text'
@@ -80,6 +82,45 @@ export interface StepFinishPart {
   id?: string
 }
 
+/**
+ * 时间线分隔符 part（2026-08-21 RPC 实测，/compact 排查）：
+ * marker 消息（role=assistant）的核心 part，官方语义 display:"separator"。
+ * timelineType 已见 context_compaction（上下文压缩）与 model_change（模型切换）。
+ */
+export interface TimelinePart {
+  type: 'timeline'
+  timelineType?: string
+  display?: string
+  status?: string
+  /** context_compaction：压缩前后 token（truePost 为模型真实上下文）*/
+  preCompactTokenCount?: number
+  postCompactTokenCount?: number
+  truePostCompactTokenCount?: number
+  /** model_change：切换前后模型 */
+  fromModel?: { modelID?: string; label?: string; variant?: string }
+  toModel?: { modelID?: string; label?: string; variant?: string }
+  time?: { start: number; end?: number }
+  [key: string]: unknown
+}
+
+/**
+ * 压缩元数据 part：挂在 marker 消息（过程指标）与摘要消息（compactBoundary
+ * 完整对象）上，与 TimelinePart 信息互补。
+ */
+export interface CompactionPart {
+  type: 'compaction'
+  auto?: boolean
+  trigger?: string
+  /** 摘要消息上的完整边界对象（被摘要消息数等）*/
+  compactBoundary?: {
+    summarizedMessageCount?: number
+    keptMessageCount?: number
+    summarySource?: string
+    [key: string]: unknown
+  }
+  [key: string]: unknown
+}
+
 // ============ 消息 ============
 
 export interface ZCodeMessage {
@@ -114,6 +155,12 @@ export interface MessageInfo {
   metadata?: Record<string, unknown>
   anchor?: Record<string, unknown>
   path?: { cwd?: string; root?: string }
+  /**
+   * /compact 压缩摘要消息（role=user）的顶层字段（2026-08-21 RPC 实测）：
+   * {title:"Compact summary", body:"摘要全文"}。消息级无 synthetic 标记（仅
+   * part 级有），不能靠 isHiddenSyntheticMessage 过滤，须专门识别渲染。
+   */
+  summary?: { title?: string; body?: string }
 }
 
 export interface TokenBreakdown {
@@ -536,7 +583,8 @@ export type JavaResponse =
   | { op: 'modeSet'; sessionId: string; mode: string }
   // hitRate 缺省 = 服务端暂无统计（新 turn 首次模型调用完成前聚合器为空），
   // Kotlin 端对 JSON null 不输出该字段——前端据此显示"—"，而非误导性的 0%
-  | { op: 'usage'; sessionId?: string; used: number; size: number; hitRate?: number; breakdown?: ContextBreakdownItem[] }
+  // activeTurnKind：当前回合类型（'compact' = 上下文压缩中，前端压缩状态条依据）
+  | { op: 'usage'; sessionId?: string; used: number; size: number; hitRate?: number; breakdown?: ContextBreakdownItem[]; activeTurnKind?: string }
   | { op: 'quota'; data?: QuotaData | null; error?: string }
   | { op: 'modelUsage'; data?: ModelUsageData | null; error?: string }
   | { op: 'toolUsage'; data?: ToolUsageData | null; error?: string }

@@ -20,6 +20,7 @@ import { MessageAnchorRail } from './MessageAnchorRail'
 import { ConversationSearch } from './ConversationSearch'
 import { isAgentNotification } from '@/utils/parseNotification'
 import '../styles/chat-view.less'
+import '../styles/compaction.less'
 
 interface Props {
   messages: ZCodeMessage[]
@@ -27,6 +28,8 @@ interface Props {
   waiting: boolean
   waitingSince?: number
   streamingMessageId?: string | null
+  /** 上下文压缩回合进行中（/compact 或 autocompact）：显示压缩状态条，隐藏等待转圈 */
+  compacting?: boolean
   /** 会话内搜索面板开关（App 级状态，Ctrl+F / Header 搜索按钮触发）*/
   searchOpen?: boolean
   /** 关闭搜索面板 */
@@ -46,7 +49,7 @@ function lastMessageFingerprint(messages: ZCodeMessage[]): string {
   }).join(',') + '#' + messages.length
 }
 
-export function ChatView({ messages, loading, waiting, waitingSince, streamingMessageId, searchOpen, onSearchClose }: Props) {
+export function ChatView({ messages, loading, waiting, waitingSince, streamingMessageId, compacting, searchOpen, onSearchClose }: Props) {
   const { t } = useTranslation()
   const bottomRef = useRef<HTMLDivElement>(null)
   const containerRef = useRef<HTMLDivElement>(null)
@@ -162,15 +165,31 @@ export function ChatView({ messages, loading, waiting, waitingSince, streamingMe
       />
       <div className="messages-container" ref={containerRef} onScroll={handleScroll} onWheel={handleWheel}>
         <div className="chat-view__inner">
-          {messages.map((m) => (
-            <MessageBubble
-              key={m.info.id}
-              message={m}
-              streaming={m.info.id === streamingMessageId}
-              anchorAttr={m.info.role === 'user' && !isAgentNotification(m.info) ? m.info.id : undefined}
-            />
-          ))}
-          {waiting && <WaitingIndicator since={waitingSince} />}
+          {messages.map((m) => {
+            // autocompant 场景：turn.started 已建流式消息、usage 轮询才发现压缩——
+            // 压缩期间该消息零 delta，跳过渲染避免空壳气泡（数据保留，回合结束重拉权威修复）
+            if (compacting && m.info.id === streamingMessageId
+              && !m.parts.some((p) => p.type === 'text' || p.type === 'reasoning' || p.type === 'tool')) {
+              return null
+            }
+            return (
+              <MessageBubble
+                key={m.info.id}
+                message={m}
+                streaming={m.info.id === streamingMessageId}
+                anchorAttr={m.info.role === 'user' && !isAgentNotification(m.info) ? m.info.id : undefined}
+              />
+            )
+          })}
+          {/* 压缩状态条与等待转圈互斥：摘要生成期间（事件静默 63s+）明确告知在压缩 */}
+          {compacting ? (
+            <div className="compacting-indicator">
+              <span className="compacting-indicator__spin" />
+              {t('chat.compaction.compressing')}
+            </div>
+          ) : (
+            waiting && <WaitingIndicator since={waitingSince} />
+          )}
           <div ref={bottomRef} />
         </div>
       </div>

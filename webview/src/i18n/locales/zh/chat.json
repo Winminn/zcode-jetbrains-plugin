@@ -68,5 +68,14 @@
   "welcome": {
     "version": "ZCode 版本",
     "sendMsg": "给 ZCode 发送消息"
+  },
+  "compaction": {
+    "compressing": "正在压缩上下文…（AI 正在总结之前的对话，期间无输出）",
+    "title": "上下文已压缩",
+    "messagesSummarized": "{{count}} 条消息已摘要"
+  },
+  "timeline": {
+    "modelChanged": "模型已切换",
+    "event": "时间线事件"
   }
 }

@@ -36,7 +36,7 @@ export default function App() {
   const { t } = useTranslation()
   const {
     sessions, currentSessionId,
-    messages, loadingMessages, streaming, streamingMessageId, waitingSince, lastError,
+    messages, loadingMessages, streaming, streamingMessageId, waitingSince, lastError, compacting,
     askUser, exitPlanApproval, currentModel,
     init, loadSessions, selectSession, resetToNewSession, stopStreaming, sendMessage,
     clearError,
@@ -172,6 +172,7 @@ export default function App() {
             waiting={streaming}
             waitingSince={waitingSince ?? undefined}
             streamingMessageId={streamingMessageId}
+            compacting={compacting}
             searchOpen={searchOpen}
             onSearchClose={() => setSearchOpen(false)}
           />

@@ -125,6 +125,13 @@ interface StoreState {
   streamingMessageId: string | null
   /** 开始等待的时间戳（WaitingIndicator 计时用）*/
   waitingSince: number | null
+  /**
+   * 上下文压缩回合进行中（/compact 或 autocompact）。摘要生成期间事件流
+   * 完全静默（实测 63s+），此标志驱动压缩状态条、跳过空流式气泡与看门狗豁免。
+   * 置位：send 识别 /compact（即时）或 usage 轮询带 activeTurnKind=compact
+   * （权威，覆盖 autocompact）；清除：turn.completed/failed 或 usage 轮询转非 compact。
+   */
+  compacting: boolean
   /** 排队消息（streaming 中 Enter 入队，回合结束自动发队头）*/
   queuedMessages: QueuedMessage[]
 
@@ -362,6 +369,7 @@ export const useStore = create<StoreState>((set, get) => ({
   streaming: false,
   streamingMessageId: null,
   waitingSince: null,
+  compacting: false,
   queuedMessages: [],
   askUser: null,
   exitPlanApproval: null,
@@ -520,6 +528,7 @@ export const useStore = create<StoreState>((set, get) => ({
       streaming: false,
       streamingMessageId: null,
       waitingSince: null,
+      compacting: false,
       queuedMessages: [], // 队列绑定会话上下文，切会话丢弃
       contextUsage: null, // 清空旧会话数据，等 getUsage 回来更新
       contextBreakdown: null,
@@ -589,11 +598,16 @@ export const useStore = create<StoreState>((set, get) => ({
     if (!sid) return
 
     lastStreamActivityAt = Date.now() // 看门狗基准：send 发出即开始静默计时
+    // /compact 即时进入压缩态：摘要生成期间事件流完全静默（实测 63s+），
+    // 不置位的话 UI 只有空气泡转圈、看门狗还会误判流丢失。
+    // 权威校正走 usage 轮询的 activeTurnKind（覆盖 autocompact）
+    const isCompactCmd = /^\/compact\b/.test(text.trim())
     set({
       streaming: true,
       streamingMessageId: null,
       waitingSince: Date.now(),
       lastError: null,
+      ...(isCompactCmd ? { compacting: true } : {}),
     })
 
     // 确保已订阅（规格书 §4：先 subscribe 再 send，否则丢事件）
@@ -658,6 +672,7 @@ export const useStore = create<StoreState>((set, get) => ({
       streaming: false,
       streamingMessageId: null,
       waitingSince: null,
+      compacting: false,
       queuedMessages: [], // 队列绑定旧会话上下文，丢弃
       contextUsage: null,
       contextBreakdown: null,
@@ -1336,6 +1351,7 @@ function handleResponse(
           streaming: false,
           streamingMessageId: null,
           waitingSince: null,
+          compacting: false,
           queuedMessages: [], // 队列绑定旧会话上下文，新建会话丢弃
           contextUsage: null, // 清空旧会话数据，等 getUsage 回来更新
           contextBreakdown: null,
@@ -1411,7 +1427,7 @@ function handleResponse(
         sessions: cur.sessions.filter((x) => x.sessionId !== msg.sessionId),
         ...(deletedCurrent
           ? {
-            currentSessionId: null, messages: [], streaming: false, streamingMessageId: null, waitingSince: null,
+            currentSessionId: null, messages: [], streaming: false, streamingMessageId: null, waitingSince: null, compacting: false,
             queuedMessages: [],
             contextUsage: null, contextBreakdown: null, thoughtLevel: null, currentMode: null,
             todos: [], agents: [], fileChanges: [], // 底部栏派生状态随会话删除清零
@@ -1463,7 +1479,7 @@ function handleResponse(
         if (msg.sessionId === get().currentSessionId && get().streaming) {
           const verdict = classifyReconcileSnapshot(msg.messages)
           if (verdict !== 'progress') {
-            set({ streaming: false, streamingMessageId: null, waitingSince: null })
+            set({ streaming: false, streamingMessageId: null, waitingSince: null, compacting: false })
             if (verdict === 'dead') {
               console.warn('[store] 流式对账：长时间无事件且服务端无进展，判定流丢失并收尾')
               set({ lastError: i18n.t('app.streamLost') })
@@ -1549,7 +1565,7 @@ function handleResponse(
       // 发送被接受，等待流式事件（turn.started 即将到来）
       // CLI fallback 模式（带 cliResponse）：直接重新拉消息，并串行发送队列下一条
       if ('cliResponse' in msg && msg.cliResponse) {
-        set({ streaming: false, waitingSince: null })
+        set({ streaming: false, waitingSince: null, compacting: false })
         const sid = get().currentSessionId
         if (sid) {
           setTimeout(() => {
@@ -1623,6 +1639,7 @@ function handleResponse(
         loadingMessages: false,
         streaming: false,
         waitingSince: null,
+        compacting: false,
         memoryLoading: false,
         memoryCreatingPath: null,
         memoryToggling: false,
@@ -1751,6 +1768,12 @@ function handleResponse(
     case 'usage': {
       // 流式轮询期间切会话：旧会话的迟到响应直接丢弃，避免污染新会话圆环
       if (msg.sessionId && msg.sessionId !== get().currentSessionId) break
+      // 压缩态权威同步（session/read → runtime.activeTurnKind，5s 轮询通道）：
+      // 覆盖 autocompact（send 未识别）与异常残留；null（旧 Java 包不带字段）不动作
+      if (msg.activeTurnKind !== undefined) {
+        const compacting = msg.activeTurnKind === 'compact'
+        if (get().compacting !== compacting) set({ compacting })
+      }
       if (msg.breakdown) {
         // 构成明细来自 session/read 的 runtime.breakdown（turn 后 CLI 构建）：
         // 落一份 persist 缓存，历史会话恢复后服务端拿不到时兜底（见 loadBreakdownCache）
@@ -2111,12 +2134,15 @@ function handleStreamBatch(
       }
     }
     if (event.type === 'turn.started') turnStarted = true
-    const result = applyStreamEvent(messages, event, streamingMessageId)
-    messages = result.messages
-    streamingMessageId = result.streamingMessageId
-    if (result.turnEnded) turnEnded = true
-    if (result.modeEvent) modeEvent = result.modeEvent
-    if (result.turnError) turnError = result.turnError
+    // 压缩回合不建流式 assistant 消息（同单推路径：零 delta 空气泡，CompactingIndicator 表达）
+    if (event.type !== 'turn.started' || !get().compacting) {
+      const result = applyStreamEvent(messages, event, streamingMessageId)
+      messages = result.messages
+      streamingMessageId = result.streamingMessageId
+      if (result.turnEnded) turnEnded = true
+      if (result.modeEvent) modeEvent = result.modeEvent
+      if (result.turnError) turnError = result.turnError
+    }
   }
 
   // 一次性 set（整批只触发一次重渲染）
@@ -2136,6 +2162,7 @@ function handleStreamBatch(
     patch.streaming = false
     patch.streamingMessageId = null
     patch.waitingSince = null
+    patch.compacting = false
     // 失败回合展示错误详情（同批 failed+started 的自动续轮不打扰）
     if (turnError) patch.lastError = formatTurnError(turnError)
   }
@@ -2233,6 +2260,14 @@ function handleStreamEvent(
     }
   }
 
+  // 压缩回合不进消息归约：turn.started 建的流式 assistant 消息在摘要生成期间
+  // 零 delta（实测 63s+ 事件真空），建了就是空气泡；压缩态由 CompactingIndicator
+  // 表达，回合结束重拉落地摘要卡/分隔卡
+  if (event.type === 'turn.started' && get().compacting) {
+    set({ streaming: true, waitingSince: null })
+    return
+  }
+
   const { messages, streamingMessageId, turnEnded, modeEvent, turnError } = applyStreamEvent(
     get().messages,
     event,
@@ -2260,6 +2295,7 @@ function handleStreamEvent(
       streaming: false,
       streamingMessageId: null,
       waitingSince: null,
+      compacting: false,
       // 失败回合展示错误详情（此前 payload.error 被丢弃，失败只表现为"转圈停了"）
       ...(turnError ? { lastError: formatTurnError(turnError) } : {}),
     })
@@ -2402,6 +2438,9 @@ function probeTurnState(): void {
   // 截胡（2026-08-20 实测缺陷P1）。askUserPendingActive 覆盖多标签同会话：
   // 弹窗只路由到一个标签，其余标签靠 Java 广播的标志豁免（缺陷P1+）
   if (st.askUser || st.exitPlanApproval || st.askUserPendingActive) return
+  // 压缩回合豁免：摘要生成期间事件流静默是常态（实测 63s+，大上下文更久），
+  // 对账快照末尾无进展会被误判流丢失提前收尾
+  if (st.compacting) return
   // 上一发探测仍在途（30s 未回视为丢失，放行重探）
   if (reconcileProbeInFlight && Date.now() - reconcileProbeSentAt < 30_000) return
   if (Date.now() - lastStreamActivityAt < STREAM_SILENCE_MS) return
