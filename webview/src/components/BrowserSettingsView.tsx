@@ -1,18 +1,18 @@
 /**
- * 浏览器设置视图（设置页「浏览器」条目；对齐 ZCode 客户端 设置→浏览器 三块能力）：
+ * 浏览器设置视图（设置页「浏览器」条目；对齐 ZCode 客户端 设置→浏览器 能力）：
  *
  *   浏览器控制：**只读状态展示**（启用判据与 ZCode 客户端共用同一 data 目录；
  *              修改请去客户端操作——客户端侧禁用同样需要其后端配合，插件侧不再提供开关）
- *   安全：忽略证书校验（~/.zcode/v2/setting.json 公用键 embeddedBrowserAllowInsecureCertificates
- *              + JCEF 启动参数 provider，重启 IDE 生效）
  *   浏览器数据：清除缓存（HTTP 缓存/Cache Storage/Service Worker，保留 Cookie 与本地
  *              站点数据）/ 清除全部（追加 Cookie/localStorage/IndexedDB，不可撤销）；
  *              每个条目旁「查看」按钮弹数据概览（按站点分组，占用与数量级）
+ *
+ *   （「安全→忽略证书校验」曾于 0.2.3 实现后移除：IntelliJ 的 JCEF 对证书错误有自带
+ *    的"另存为可信站点"弹窗接管，开关开与不开都会弹，无实际意义。）
  */
 import { useEffect, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { useStore } from '@/store/useStore'
-import { SettingToggle } from './SettingToggle'
 import { ConfirmDialog } from './ConfirmDialog'
 import type { BrowserDataOverview, BrowserOverviewSite } from '@/types/messages'
 import type { TFunction } from 'i18next'
@@ -140,7 +140,6 @@ export function BrowserSettingsView() {
   const cleared = useStore((s) => s.browserCleared)
   const overview = useStore((s) => s.browserOverview)
   const loadBrowserConfig = useStore((s) => s.loadBrowserConfig)
-  const setInsecureCertificates = useStore((s) => s.setInsecureCertificates)
   const clearBrowserData = useStore((s) => s.clearBrowserData)
   const loadBrowserOverview = useStore((s) => s.loadBrowserOverview)
   const clearBrowserError = useStore((s) => s.clearBrowserError)
@@ -185,28 +184,6 @@ export function BrowserSettingsView() {
           <span className="codicon codicon-info" />
           <span>{t('browser.control.readonlyHint')}</span>
         </small>
-      </section>
-
-      {/* 安全 */}
-      <section className="browser-settings__section">
-        <h3 className="browser-settings__section-title">{t('browser.security.title')}</h3>
-        <SettingToggle
-          icon="codicon-shield"
-          title={t('browser.security.switchTitle')}
-          desc={t('browser.security.switchDesc')}
-          on={config?.insecureCertificates === true}
-          busy={busy === 'insecure'}
-          disabled={!loaded}
-          onToggle={() => setInsecureCertificates(!config?.insecureCertificates)}
-          onHint={t('browser.security.offHint')}
-          offHint={t('browser.security.onHint')}
-        />
-        {config?.insecurePendingRestart && (
-          <small className="browser-settings__hint browser-settings__hint--warn">
-            <span className="codicon codicon-debug-restart" />
-            <span>{t('browser.security.restartHint')}</span>
-          </small>
-        )}
       </section>
 
       {/* 浏览器数据 */}

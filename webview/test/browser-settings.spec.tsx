@@ -1,10 +1,9 @@
 /**
  * 浏览器设置页（BrowserSettingsView）交互回归：
- * - 进入页面拉 browserConfig 快照；快照未到时开关禁用
- * - 控制开关点击 → setBrowserControl op（新会话生效语义在后端）
- * - 插件未安装（pluginInstalled=false）→ 开关禁用 + notInstalled 文案
- * - 忽略证书待重启（insecurePendingRestart）→ 显示重启提示
+ * - 进入页面拉 browserConfig 快照；快照未到时占位
+ * - 浏览器控制为只读状态卡（无开关、不发 op、按快照显示状态徽标）
  * - 清除全部 → ConfirmDialog 二次确认后才发 clearBrowserData(all)
+ * - 「查看」概览弹窗按站点分组展示
  */
 // @vitest-environment jsdom
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
@@ -39,31 +38,25 @@ describe('浏览器设置页', () => {
   })
 
   it('浏览器控制为只读状态卡：无开关、不发 op、按快照显示状态徽标', () => {
-    setConfig({ browserControlEnabled: true, pluginInstalled: true, insecureCertificates: false, insecurePendingRestart: false })
+    setConfig({ browserControlEnabled: true, pluginInstalled: true })
     render(<BrowserSettingsView />)
-    // 只读卡存在，开关只剩「忽略证书校验」一个
+    // 只读卡存在，页面上没有任何开关（证书开关已随功能移除）
     expect(document.querySelector('.browser-settings__readonly')).toBeTruthy()
-    expect(document.querySelectorAll('.setting-toggle__switch').length).toBe(1)
+    expect(document.querySelectorAll('.setting-toggle__switch').length).toBe(0)
     expect(document.body.textContent).toContain('已启用')
     expect(document.body.textContent).toContain('ZCode 客户端')
 
     // 未安装态显示未安装徽标
     cleanup()
-    setConfig({ browserControlEnabled: false, pluginInstalled: false, insecureCertificates: false, insecurePendingRestart: false })
+    setConfig({ browserControlEnabled: false, pluginInstalled: false })
     render(<BrowserSettingsView />)
     expect(document.body.textContent).toContain('未安装')
     // 只读：任何点击路径都不产生 setBrowserControl
     expect(sent.some((m) => m.op === 'setBrowserControl')).toBe(false)
   })
 
-  it('忽略证书待重启时显示重启提示', () => {
-    setConfig({ browserControlEnabled: false, pluginInstalled: true, insecureCertificates: true, insecurePendingRestart: true })
-    render(<BrowserSettingsView />)
-    expect(document.body.textContent).toContain('重启')
-  })
-
   it('清除全部需二次确认，取消不发 op', () => {
-    setConfig({ browserControlEnabled: false, pluginInstalled: true, insecureCertificates: false, insecurePendingRestart: false })
+    setConfig({ browserControlEnabled: false, pluginInstalled: true })
     render(<BrowserSettingsView />)
     const btns = screen.getAllByRole('button')
     const clearAllBtn = btns.find((b) => b.className.includes('action-btn--danger')) as HTMLButtonElement
@@ -75,7 +68,7 @@ describe('浏览器设置页', () => {
   })
 
   it('清除全部确认后发送 clearBrowserData(all)', async () => {
-    setConfig({ browserControlEnabled: false, pluginInstalled: true, insecureCertificates: false, insecurePendingRestart: false })
+    setConfig({ browserControlEnabled: false, pluginInstalled: true })
     render(<BrowserSettingsView />)
     const clearAllBtn = screen.getAllByRole('button').find((b) => b.className.includes('action-btn--danger')) as HTMLButtonElement
     fireEvent.click(clearAllBtn)
@@ -89,7 +82,7 @@ describe('浏览器设置页', () => {
   })
 
   it('「查看」按钮拉取概览，数据到达后弹窗按站点分组展示', async () => {
-    setConfig({ browserControlEnabled: false, pluginInstalled: true, insecureCertificates: false, insecurePendingRestart: false })
+    setConfig({ browserControlEnabled: false, pluginInstalled: true })
     render(<BrowserSettingsView />)
     // 「清除全部」条目的查看按钮（最后一个查看按钮 = 全部档，展示全部站点与 Cookie 行）
     const viewBtn = screen.getAllByRole('button').filter((b) => b.textContent!.includes('查看')).pop()! as HTMLButtonElement
@@ -125,7 +118,7 @@ describe('浏览器设置页', () => {
   })
 
   it('缓存档概览只列有缓存类数据的站点', async () => {
-    setConfig({ browserControlEnabled: false, pluginInstalled: true, insecureCertificates: false, insecurePendingRestart: false })
+    setConfig({ browserControlEnabled: false, pluginInstalled: true })
     render(<BrowserSettingsView />)
     const viewBtns = screen.getAllByRole('button').filter((b) => b.textContent!.includes('查看'))
     fireEvent.click(viewBtns[0]) // 第一个查看按钮 = 清除缓存条目

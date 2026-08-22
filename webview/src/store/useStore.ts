@@ -213,15 +213,13 @@ interface StoreState {
   /** 开关切换请求在途（防重复点击）*/
   memoryToggling: boolean
 
-  // 浏览器设置（设置视图「浏览器」条目；控制开关/忽略证书与 ZCode 客户端公用配置）
+  // 浏览器设置（设置视图「浏览器」条目；浏览器控制状态与 ZCode 客户端公用配置，只读）
   browserConfig: {
     browserControlEnabled: boolean
     pluginInstalled: boolean
-    insecureCertificates: boolean
-    insecurePendingRestart: boolean
   } | null
-  /** 开关/清理请求在途（防重复点击；含失败回滚窗口）*/
-  browserBusy: 'insecure' | 'cache' | 'all' | 'overview' | null
+  /** 清理/概览请求在途（防重复点击；含失败回滚窗口）*/
+  browserBusy: 'cache' | 'all' | 'overview' | null
   browserError: string | null
   /** 最近一次清理结果（toast 汇总展示用）*/
   browserCleared: { all: boolean; httpCache: boolean; cookies?: boolean; sites: BrowserClearedSite[] } | null
@@ -321,8 +319,6 @@ interface StoreState {
   setMemoryEnabled: (enabled: boolean) => void
   /** 拉取浏览器设置快照（设置视图「浏览器」条目）*/
   loadBrowserConfig: () => void
-  /** 「忽略证书校验」开关（写共用 setting.json + JCEF 参数，重启生效）*/
-  setInsecureCertificates: (enabled: boolean) => void
   /** 清除内置浏览器数据（cache=保留 Cookie 与本地站点数据；all=全清）*/
   clearBrowserData: (mode: 'cache' | 'all') => void
   /** 拉取浏览器数据概览（「查看」按钮弹窗）*/
@@ -959,12 +955,6 @@ export const useStore = create<StoreState>((set, get) => ({
 
   loadBrowserConfig: () => {
     sendToJava({ op: 'browserConfig' })
-  },
-
-  setInsecureCertificates: (enabled) => {
-    if (get().browserBusy) return
-    set({ browserBusy: 'insecure', browserError: null })
-    sendToJava({ op: 'setInsecureCertificates', enabled })
   },
 
   clearBrowserData: (mode) => {
@@ -1941,20 +1931,7 @@ function handleResponse(
       set({ browserConfig: {
         browserControlEnabled: msg.browserControlEnabled,
         pluginInstalled: msg.pluginInstalled,
-        insecureCertificates: msg.insecureCertificates,
-        insecurePendingRestart: msg.insecurePendingRestart,
       } })
-      break
-
-    case 'insecureCertificatesChanged':
-      {
-        const cfg = get().browserConfig
-        set({
-          browserConfig: cfg ? { ...cfg, insecureCertificates: msg.enabled, insecurePendingRestart: msg.pendingRestart } : cfg,
-          browserBusy: null,
-          browserError: null,
-        })
-      }
       break
 
     case 'browserDataCleared':

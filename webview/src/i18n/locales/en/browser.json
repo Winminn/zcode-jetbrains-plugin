@@ -8,14 +8,6 @@
     "notInstalledShort": "Not installed",
     "readonlyHint": "Shared with the ZCode client. To change it, use the settings in the ZCode client (applies to new sessions)"
   },
-  "security": {
-    "title": "Security",
-    "switchTitle": "Ignore certificate errors",
-    "switchDesc": "The embedded browser stops verifying HTTPS certificates. Only affects the embedded browser",
-    "restartHint": "Restart the IDE to apply changes",
-    "onHint": "Click to enable (after IDE restart)",
-    "offHint": "Click to disable (after IDE restart)"
-  },
   "data": {
     "title": "Browser data",
     "clearCache": "Clear embedded browser cache",

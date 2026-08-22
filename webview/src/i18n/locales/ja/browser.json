@@ -8,14 +8,6 @@
     "notInstalledShort": "未インストール",
     "readonlyHint": "ZCode クライアントと設定を共有します。変更は ZCode クライアントの設定で行ってください（新しいセッションに適用）"
   },
-  "security": {
-    "title": "セキュリティ",
-    "switchTitle": "証明書検証をスキップ",
-    "switchDesc": "内蔵ブラウザが HTTPS 証明書を検証しなくなります。内蔵ブラウザのみに影響します",
-    "restartHint": "変更の反映には IDE の再起動が必要です",
-    "onHint": "クリックで有効化（IDE 再起動後に反映）",
-    "offHint": "クリックで無効化（IDE 再起動後に反映）"
-  },
   "data": {
     "title": "ブラウザデータ",
     "clearCache": "内蔵ブラウザのキャッシュを削除",

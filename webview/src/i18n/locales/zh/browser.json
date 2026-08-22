@@ -8,14 +8,6 @@
     "notInstalledShort": "未安装",
     "readonlyHint": "与 ZCode 客户端共用配置，如需修改请在 ZCode 客户端的设置中操作（新会话生效）"
   },
-  "security": {
-    "title": "安全",
-    "switchTitle": "忽略证书校验",
-    "switchDesc": "开启后内置浏览器不再校验 HTTPS 证书，仅影响内置浏览器",
-    "restartHint": "修改后需重启 IDE 生效",
-    "onHint": "点击开启（重启 IDE 后生效）",
-    "offHint": "点击关闭（重启 IDE 后生效）"
-  },
   "data": {
     "title": "浏览器数据",
     "clearCache": "清除内置浏览器缓存",

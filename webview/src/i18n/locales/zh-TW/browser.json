@@ -8,14 +8,6 @@
     "notInstalledShort": "未安裝",
     "readonlyHint": "與 ZCode 客戶端共用設定，如需修改請在 ZCode 客戶端的設定中操作（新會話生效）"
   },
-  "security": {
-    "title": "安全性",
-    "switchTitle": "忽略憑證校驗",
-    "switchDesc": "開啟後內建瀏覽器不再校驗 HTTPS 憑證，僅影響內建瀏覽器",
-    "restartHint": "修改後需重啟 IDE 生效",
-    "onHint": "點擊開啟（重啟 IDE 後生效）",
-    "offHint": "點擊關閉（重啟 IDE 後生效）"
-  },
   "data": {
     "title": "瀏覽器資料",
     "clearCache": "清除內建瀏覽器快取",

@@ -258,10 +258,8 @@ export type JavaRequest =  | { op: 'askUserPendingState' }
   | { op: 'createMemoryFile'; path: string }
   /** 切换「工作区记忆」开关（写 ~/.zcode/v2/setting.json，与 ZCode 客户端共用）*/
   | { op: 'setMemoryEnabled'; enabled: boolean }
-  /** 浏览器设置快照（控制开关/插件安装态/忽略证书/待重启标记）*/
+  /** 浏览器设置快照（控制开关/插件安装态）*/
   | { op: 'browserConfig' }
-  /** 「忽略证书校验」：写 setting.json 公用键 + 同步 JCEF 启动参数（重启生效）*/
-  | { op: 'setInsecureCertificates'; enabled: boolean }
   /** 清除内置浏览器数据（mode=cache 保留 Cookie 与本地站点数据；all 全清）*/
   | { op: 'clearBrowserData'; mode: 'cache' | 'all' }
   /** 浏览器数据概览（清理条目旁「查看」按钮，只读）*/
@@ -635,8 +633,7 @@ export type JavaResponse =
   | { op: 'memoryEnabledChanged'; enabled: boolean }
   | { op: 'memoryFileCreated'; path: string }
   /** 浏览器设置快照（op=browserConfig 的响应）*/
-  | { op: 'browserConfig'; browserControlEnabled: boolean; pluginInstalled: boolean; insecureCertificates: boolean; insecurePendingRestart: boolean }
-  | { op: 'insecureCertificatesChanged'; enabled: boolean; pendingRestart: boolean }
+  | { op: 'browserConfig'; browserControlEnabled: boolean; pluginInstalled: boolean }
   /** op=clearBrowserData 的响应（sites=已清站点数据明细；httpCache/cookies 全局项）*/
   | { op: 'browserDataCleared'; ok: boolean; all: boolean; httpCache: boolean; cookies?: boolean; sites: BrowserClearedSite[] }
   /** op=browserDataOverview 的响应（概览：磁盘占用 + Cookie 计数 + 已打开站点计数）*/

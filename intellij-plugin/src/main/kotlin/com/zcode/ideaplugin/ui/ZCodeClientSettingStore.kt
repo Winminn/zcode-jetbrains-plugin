@@ -54,19 +54,6 @@ object ZCodeClientSettingStore {
     fun writeMemoryEnabled(enabled: Boolean, home: String = System.getProperty("user.home")): Boolean =
         writeBooleanField("memoryEnabled", enabled, home)
 
-    /**
-     * 内置浏览器「忽略证书校验」开关（与 ZCode 客户端共用；zod schema 默认 false）。
-     * 客户端侧消费它给自己的 BrowserView 传 --ignore-certificate-errors；
-     * 插件侧消费它同步 JCEF 启动参数（见 ZCodeBrowserSettingStore.applyInsecureCertificatesToRegistry）。
-     */
-    fun readEmbeddedBrowserInsecure(home: String = System.getProperty("user.home")): Boolean = synchronized(LOCK) {
-        val root = readRoot(home) ?: return false
-        root.booleanField("embeddedBrowserAllowInsecureCertificates") ?: false
-    }
-
-    fun writeEmbeddedBrowserInsecure(enabled: Boolean, home: String = System.getProperty("user.home")): Boolean =
-        writeBooleanField("embeddedBrowserAllowInsecureCertificates", enabled, home)
-
     /** 单布尔字段写入（保留其余键；文件缺失写最小片段——客户端按 zod schema 读缺失键走默认值）*/
     private fun writeBooleanField(key: String, value: Boolean, home: String): Boolean = synchronized(LOCK) {
         val file = settingPath(home)

@@ -641,7 +641,6 @@ if (!window.__ZCODE_LOG_HOOK__) {
                         "createMemoryFile" -> handleCreateMemoryFile(msg)
                         "setMemoryEnabled" -> handleSetMemoryEnabled(msg)
                         "browserConfig" -> handleBrowserConfig()
-                        "setInsecureCertificates" -> handleSetInsecureCertificates(msg)
                         "clearBrowserData" -> handleClearBrowserData(msg)
                         "browserDataOverview" -> handleBrowserDataOverview()
                         "listSkills" -> handleListSkills(msg)
@@ -2893,37 +2892,13 @@ if (!window.__ZCODE_LOG_HOOK__) {
 
     /**
      * op=browserConfig — 浏览器设置快照：
-     * browserControlEnabled（data 目录判据）/ pluginInstalled（cache 树校验）/
-     * insecureCertificates（setting.json 公用键）/ insecurePendingRestart（JCEF 参数
-     * 与期望值不一致 = 改动尚未重启生效）
+     * browserControlEnabled（data 目录判据）/ pluginInstalled（cache 树校验）
      */
     private fun handleBrowserConfig(): JsonObject {
         return buildJsonObject {
             put("op", "browserConfig")
             put("browserControlEnabled", ZCodeBrowserSettingStore.isBrowserControlEnabled())
             put("pluginInstalled", ZCodeBrowserSettingStore.isPluginInstalled())
-            put("insecureCertificates", ZCodeClientSettingStore.readEmbeddedBrowserInsecure())
-            put("insecurePendingRestart", ZCodeBrowserSettingStore.isIgnoreCertPendingRestart())
-        }
-    }
-
-
-    /**
-     * op=setInsecureCertificates — 「忽略证书校验」开关：写 setting.json 公用键。
-     * 生效通道是 JCEF 启动参数 provider（ZCodeJcefArgsProvider，JBCefApp 初始化时合并）
-     * ——进程级参数，重启 IDE 才重读（响应带 pendingRestart）。
-     */
-    private fun handleSetInsecureCertificates(msg: JsonObject): JsonObject {
-        val enabled = msg["enabled"]?.jsonPrimitive?.boolean
-            ?: return errorResponse("缺少 enabled")
-        if (!ZCodeClientSettingStore.writeEmbeddedBrowserInsecure(enabled)) {
-            return errorResponse("写入 setting.json 失败")
-        }
-        log.info("Embedded browser insecure certificates ${if (enabled) "allowed" else "blocked"} via JCEF args provider (restart required)")
-        return buildJsonObject {
-            put("op", "insecureCertificatesChanged")
-            put("enabled", enabled)
-            put("pendingRestart", ZCodeBrowserSettingStore.isIgnoreCertPendingRestart())
         }
     }
 

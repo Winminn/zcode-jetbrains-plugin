@@ -43,10 +43,6 @@
                     canCloseContents="true"/>
         <!-- 编辑器右键动作的气泡通知（复制AI引用结果反馈） -->
         <notificationGroup id="ZCode" displayType="BALLOON"/>
-        <!-- JCEF 启动参数 provider：内置浏览器「忽略证书校验」的 chromium 开关注入通道
-             （EP com.intellij.jcef.appRequiredArgumentsProvider，平台 SettingsHelper.loadArgs
-             在 JBCefApp 初始化时合并；改开关后重启 IDE 生效） -->
-        <appRequiredArgumentsProvider implementation="com.zcode.ideaplugin.ui.ZCodeJcefArgsProvider"/>
     </extensions>
 
     <actions>
