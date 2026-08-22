@@ -178,6 +178,7 @@ export function ChatView({ messages, loading, waiting, waitingSince, streamingMe
                 message={m}
                 streaming={m.info.id === streamingMessageId}
                 anchorAttr={m.info.role === 'user' && !isAgentNotification(m.info) ? m.info.id : undefined}
+                searchActive={!!searchOpen}
               />
             )
           })}

@@ -14,7 +14,7 @@
  *   走 mock 响应，方便纯前端调试。
  */
 
-import type { JavaRequest, JavaResponse, StreamEvent, EnvStatus } from '@/types/messages'
+import type { JavaRequest, JavaResponse, StreamEvent, EnvStatus, ZCodeMessage } from '@/types/messages'
 
 // ============ 全局类型声明 ============
 
@@ -227,6 +227,9 @@ export function getInitialSessionId(): string {
 
 // ============ Mock（纯前端开发用）============
 
+// #longuser 演示开关：send "#longuser" 置位后，messages 响应追加长用户消息
+let mockLongUserDemo = false
+
 const mockSessions = [
   {
     sessionId: 'sess_mock_1',
@@ -418,6 +421,23 @@ function mockRespond(req: JavaRequest): void {
     const doneB = streamTool(m2, callB, fileB, 'src/demo/BatchFileB.ts', doneA + 300)
     setTimeout(() => push('model.streaming', { kind: 'text_delta', delta: '两个文件已写入（mock）。', assistantMessageId: m2 }), doneB + 200)
     setTimeout(() => push('turn.completed', { response: 'ok' }), doneB + 400)
+    return
+  }
+
+  // send 文本 "#longuser"：模拟"用户粘贴大段内容"场景——回合结束后重拉历史时
+  // 注入一条长用户消息（45 行），验收聊天区长用户消息默认折叠 + 弹窗全文
+  if (req.op === 'send' && req.text.trim() === '#longuser') {
+    mockLongUserDemo = true
+    const turnId = `turn_longuser_${Date.now()}`
+    const msgId = `msg_longuser_${Date.now()}`
+    let seq = 0
+    const push = (type: string, payload: Record<string, unknown>) => {
+      streamListeners.forEach((fn) =>
+        fn(req.sessionId, { type, seq: seq++, sessionId: req.sessionId, turnId, timestamp: Date.now(), payload } as unknown as StreamEvent))
+    }
+    setTimeout(() => push('turn.started', { turnNumber: 1, messageId: msgId }), 150)
+    setTimeout(() => push('model.streaming', { kind: 'text_delta', delta: '收到，内容已展开确认（mock）。', assistantMessageId: msgId }), 400)
+    setTimeout(() => push('turn.completed', { response: 'ok' }), 600)
     return
   }
 
@@ -931,11 +951,8 @@ function mockResponse(req: JavaRequest): JavaResponse | null {
           },
         ],
       }
-    case 'messages':
-      return {
-        op: 'messages',
-        sessionId: req.sessionId,
-        messages: [
+    case 'messages': {
+      const mockMessages: ZCodeMessage[] = [
           {
             info: {
               role: 'user',
@@ -1314,8 +1331,54 @@ flowchart LR
                           cache: { read: 17344, write: 0 } } },
             ],
           },
-        ],
+      ]
+      // #longuser 演示：注入"用户粘贴大段内容"的长用户消息 + 简短回复，
+      // 验收聊天区长用户消息默认折叠 + 查看全文弹窗
+      if (mockLongUserDemo) {
+        const longPasted = [
+          '下面是我们生产环境的部署配置和报错日志，帮我分析一下：',
+          '',
+          '=== application.yml（生产）===',
+          ...Array.from({ length: 18 }, (_, i) =>
+            `server:\n  port: 808${i % 10}\nspring:\n  application:\n    name: order-service-${i + 1}`),
+          '',
+          '=== 报错日志（最近 30 分钟）===',
+          ...Array.from({ length: 12 }, (_, i) =>
+            `2026-08-22 10:${String(i + 10).padStart(2, '0')}:33 WARN  [order-service] Retry attempt ${i + 1} failed: connect timeout to nacos:8848`),
+          '',
+          '=== 问题 ===',
+          '1. 为什么 Nacos 连接一直超时？',
+          '2. 配置里有没有明显的坑？',
+        ].join('\n')
+        mockMessages.push(
+          {
+            info: {
+              role: 'user',
+              time: { created: Date.now() - 5000 },
+              id: 'msg_mock_longuser',
+              sessionID: req.sessionId,
+            },
+            parts: [{ type: 'text', text: longPasted }],
+          },
+          {
+            info: {
+              role: 'assistant',
+              time: { created: Date.now() - 4500, completed: Date.now() - 3000 },
+              modelID: 'GLM-5.2',
+              providerID: 'anthropic',
+              id: 'msg_mock_longuser_a',
+              sessionID: req.sessionId,
+            },
+            parts: [
+              { type: 'step-start' },
+              { type: 'text', text: '已收到完整配置与日志（mock）。从粘贴内容看，Nacos 超时大概率是网络段不通或 namespace 未配置，详见上文分析。' },
+              { type: 'step-finish', reason: 'stop', cost: 0.001, tokens: { total: 8100, input: 8000, output: 100, reasoning: 0 } },
+            ],
+          },
+        )
       }
+      return { op: 'messages', sessionId: req.sessionId, messages: mockMessages }
+    }
     case 'send':
       return { op: 'sendAccepted', sessionId: req.sessionId, accepted: 'true' }
     case 'getIdeTheme':

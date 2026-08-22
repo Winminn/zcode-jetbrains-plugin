@@ -23,7 +23,11 @@
     "emptyText": "(empty)",
     "working": "Working",
     "worked": "Worked",
-    "cachePercent": "Cache {{percent}}%"
+    "cachePercent": "Cache {{percent}}%",
+    "viewFull": "View full text ({{lines}} lines · {{count}} chars)",
+    "fullTextTitle": "Full user message ({{lines}} lines · {{count}} chars)",
+    "closeFull": "Close",
+    "fullTextAria": "Full user message dialog"
   },
   "thinking": {
     "thinking": "Thinking",

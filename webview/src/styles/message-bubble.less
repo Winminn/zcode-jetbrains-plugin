@@ -33,6 +33,54 @@
       line-height: 1.5;
       font-size: 12px;
     }
+
+    /* 长文折叠：全文仍在 DOM（搜索 TreeWalker 依赖），仅视觉裁剪到 9 行 + 渐隐 */
+    .msg__bubble--collapsed {
+      position: relative;
+      max-height: 13.5em; /* 9 行 × 1.5 行高 */
+      overflow: hidden;
+
+      &::after {
+        content: '';
+        position: absolute;
+        left: 0;
+        right: 0;
+        bottom: 0;
+        height: 3.5em;
+        background: linear-gradient(transparent, var(--color-message-user-bg));
+        pointer-events: none;
+      }
+    }
+  }
+
+  /* 折叠气泡上的"查看全文"按钮（叠在渐隐之上）*/
+  &__expand {
+    position: absolute;
+    right: 8px;
+    bottom: 6px;
+    z-index: 1;
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 3px 10px;
+    border: none;
+    border-radius: 10px;
+    background: var(--bg-elevated);
+    color: var(--text-secondary);
+    font-size: 11px;
+    line-height: 1.4;
+    cursor: pointer;
+    box-shadow: var(--shadow-card);
+    transition: color 0.15s, background 0.15s;
+
+    .codicon {
+      font-size: 12px;
+    }
+
+    &:hover {
+      color: var(--color-message-role-assistant);
+      background: var(--bg-secondary, var(--bg-elevated));
+    }
   }
 
   // ============ assistant 消息（左对齐满宽）============
@@ -92,4 +140,35 @@
 @keyframes msg-fade-in {
   from { opacity: 0; transform: translateY(4px); }
   to { opacity: 1; transform: translateY(0); }
+}
+
+/* ===== 用户消息全文弹窗（壳复用全局 .modal-overlay/.modal-content；宽度比例对齐子代理详情弹窗）=====
+   双类选择器提特异性：.modal-content 自带 max-width:420px（历史删除确认框），
+   同特异性下按加载顺序谁后谁赢、不可靠，必须显式压过。
+   __body 必须是顶层单类选择器：嵌套 &__body 会编译成 .modal-content.msg-fulltext__body
+   （要求元素同时带两个类，pre 不匹配 → 高度约束与 overflow 全部失效，内容撑破弹窗无滚动） */
+.modal-content.msg-fulltext {
+  display: flex;
+  flex-direction: column;
+  box-sizing: border-box;
+  width: 760px;
+  max-width: 92vw;
+  max-height: 82vh;
+}
+
+.msg-fulltext__body {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  margin: 0 0 16px;
+  padding: 12px;
+  background: var(--bg-primary);
+  border: 1px solid var(--border-primary);
+  border-radius: 6px;
+  font-family: inherit;
+  font-size: 12px;
+  line-height: 1.6;
+  white-space: pre-wrap;
+  word-break: break-word;
+  color: var(--text-secondary);
 }

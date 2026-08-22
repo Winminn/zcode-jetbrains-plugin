@@ -23,7 +23,11 @@
     "emptyText": "(空)",
     "working": "工作中",
     "worked": "已工作",
-    "cachePercent": "缓存 {{percent}}%"
+    "cachePercent": "缓存 {{percent}}%",
+    "viewFull": "查看全文（{{lines}} 行 · {{count}} 字符）",
+    "fullTextTitle": "用户消息全文（{{lines}} 行 · {{count}} 字符）",
+    "closeFull": "关闭",
+    "fullTextAria": "用户消息全文弹窗"
   },
   "thinking": {
     "thinking": "思考中",

@@ -23,7 +23,11 @@
     "emptyText": "（空）",
     "working": "処理中",
     "worked": "処理済み",
-    "cachePercent": "キャッシュ {{percent}}%"
+    "cachePercent": "キャッシュ {{percent}}%",
+    "viewFull": "全文を見る（{{lines}} 行・{{count}} 文字）",
+    "fullTextTitle": "ユーザーメッセージ全文（{{lines}} 行・{{count}} 文字）",
+    "closeFull": "閉じる",
+    "fullTextAria": "ユーザーメッセージ全文ダイアログ"
   },
   "thinking": {
     "thinking": "思考中",

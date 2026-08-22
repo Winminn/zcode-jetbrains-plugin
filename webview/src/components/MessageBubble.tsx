@@ -16,7 +16,8 @@
  * 规划文档第二节第 3 点（工具分组）：连续同类 tool part 合并成一个组（cc-gui 规则）。
  */
 
-import { memo, useMemo, useRef } from 'react'
+import { memo, useEffect, useMemo, useRef, useState } from 'react'
+import { createPortal } from 'react-dom'
 import { useTranslation } from 'react-i18next'
 import type { ZCodeMessage, MessagePart, TextPart } from '@/types/messages'
 import { MarkdownBlock } from './MarkdownBlock'
@@ -39,9 +40,11 @@ interface Props {
   streaming?: boolean
   /** user 消息的锚点 id（供 MessageAnchorRail 定位，assistant 不传）*/
   anchorAttr?: string
+  /** 会话内搜索面板激活（长用户消息临时展开，保 TreeWalker 高亮/定位）*/
+  searchActive?: boolean
 }
 
-export const MessageBubble = memo(function MessageBubble({ message, streaming, anchorAttr }: Props) {
+export const MessageBubble = memo(function MessageBubble({ message, streaming, anchorAttr, searchActive }: Props) {
   const { info, parts } = message
   const isUser = info.role === 'user'
   const time = clockTime(info.time?.created)
@@ -62,19 +65,99 @@ export const MessageBubble = memo(function MessageBubble({ message, streaming, a
     return <TimelineSeparator part={timelinePart} />
   }
   if (isUser) {
-    return <UserBubble text={collectUserText(parts)} time={time} anchorAttr={anchorAttr} />
+    return <UserBubble text={collectUserText(parts)} time={time} anchorAttr={anchorAttr} searchActive={searchActive} />
   }
   return <AssistantBubble message={message} time={time} streaming={streaming} />
 })
 
-/** user 消息：纯文本，右对齐蓝色气泡 */
-function UserBubble({ text, time, anchorAttr }: { text: string; time: string; anchorAttr?: string }) {
+/** 用户消息长文折叠阈值（对齐 InputBox 粘贴折叠 PASTE_* 常量：≥10 行或 ≥500 字符）*/
+const USER_COLLAPSE_LINES = 10
+const USER_COLLAPSE_CHARS = 500
+
+/**
+ * user 消息：纯文本，右对齐蓝色气泡。
+ *
+ * 长文折叠：全文仍完整渲染进 DOM（搜索 TreeWalker 依赖完整文本节点），
+ * 仅用 max-height+渐隐做视觉折叠；点击按钮 portal 弹窗看全文。
+ */
+function UserBubble({
+  text,
+  time,
+  anchorAttr,
+  searchActive,
+}: {
+  text: string
+  time: string
+  anchorAttr?: string
+  searchActive?: boolean
+}) {
   const { t } = useTranslation()
+  const [showFull, setShowFull] = useState(false)
+  const lines = useMemo(() => text.split('\n').length, [text])
+  const collapsible = lines >= USER_COLLAPSE_LINES || text.length >= USER_COLLAPSE_CHARS
+  // 搜索面板激活时强制展开：高亮 mark 与 scrollIntoView 定位需要全文可见
+  const collapsed = collapsible && !searchActive
+
   return (
     <div className="msg msg--user" data-anchor-msg={anchorAttr}>
       <div className="msg__time">{time}</div>
-      <div className="msg__bubble">{text || t('chat.message.emptyText')}</div>
+      <div className={`msg__bubble${collapsed ? ' msg__bubble--collapsed' : ''}`}>
+        {text || t('chat.message.emptyText')}
+        {collapsed && (
+          <button type="button" className="msg__expand" onClick={() => setShowFull(true)}>
+            <span className="codicon codicon-unfold" />
+            {t('chat.message.viewFull', { lines, count: text.length })}
+          </button>
+        )}
+      </div>
+      {showFull && (
+        <UserTextPreviewDialog text={text} lines={lines} onClose={() => setShowFull(false)} />
+      )}
     </div>
+  )
+}
+
+/**
+ * 用户消息全文弹窗。portal 挂 body（脱离 messages-container），
+ * 避免全文 pre/文本进入会话内搜索的 TreeWalker 与代码块匹配范围。
+ */
+function UserTextPreviewDialog({
+  text,
+  lines,
+  onClose,
+}: {
+  text: string
+  lines: number
+  onClose: () => void
+}) {
+  const { t } = useTranslation()
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') onClose()
+    }
+    document.addEventListener('keydown', onKey)
+    return () => document.removeEventListener('keydown', onKey)
+  }, [onClose])
+
+  return createPortal(
+    <div className="modal-overlay" role="presentation" onClick={onClose}>
+      <div
+        className="modal-content msg-fulltext"
+        role="dialog"
+        aria-label={t('chat.message.fullTextAria')}
+        onClick={(e) => e.stopPropagation()}
+      >
+        <h3>{t('chat.message.fullTextTitle', { lines, count: text.length })}</h3>
+        <pre className="msg-fulltext__body">{text}</pre>
+        <div className="modal-actions">
+          <button className="modal-btn modal-btn-primary" onClick={onClose} type="button">
+            {t('chat.message.closeFull')}
+          </button>
+        </div>
+      </div>
+    </div>,
+    document.body,
   )
 }
 

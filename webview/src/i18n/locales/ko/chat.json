@@ -23,7 +23,11 @@
     "emptyText": "(비어 있음)",
     "working": "작업 중",
     "worked": "작업 완료",
-    "cachePercent": "캐시 {{percent}}%"
+    "cachePercent": "캐시 {{percent}}%",
+    "viewFull": "전체 보기({{lines}}줄 · {{count}}자)",
+    "fullTextTitle": "사용자 메시지 전체({{lines}}줄 · {{count}}자)",
+    "closeFull": "닫기",
+    "fullTextAria": "사용자 메시지 전체 보기 대화상자"
   },
   "thinking": {
     "thinking": "생각 중",
