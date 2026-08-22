@@ -237,7 +237,6 @@ function handleToolInputStreaming(
   const tIdx = parts.findIndex(
     (part): part is ToolPart => part.type === 'tool' && part.callID === callId,
   )
-
   if (p.kind === 'tool_input_start') {
     if (tIdx >= 0) return { messages, streamingMessageId, turnEnded: false } // 已存在（scheduled 先到）
     // 工具输入出现 = 前一段思考结束，收尾思考计时

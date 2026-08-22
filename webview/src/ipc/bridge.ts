@@ -331,6 +331,96 @@ function mockRespond(req: JavaRequest): void {
     return
   }
 
+  // send 文本 "#write"：模拟大文件 Write 的工具输入流（tool_input_start/delta → tool_call），
+  // 验收"正在写入 + 已生成 N 行"实时累计、尾部预览与完成态衔接
+  if (req.op === 'send' && req.text.trim() === '#write') {
+    const turnId = `turn_write_${Date.now()}`
+    const msgId = `msg_write_${Date.now()}`
+    const callId = `call_write_${Date.now()}`
+    let seq = 0
+    const push = (type: string, payload: Record<string, unknown>) => {
+      streamListeners.forEach((fn) =>
+        fn(req.sessionId, { type, seq: seq++, sessionId: req.sessionId, turnId, timestamp: Date.now(), payload } as unknown as StreamEvent))
+    }
+    const fileContent = `${Array.from({ length: 60 }, (_, i) =>
+      i % 2 === 0
+        ? `// 第 ${i + 1} 行：示例模块代码（流式写入演示）`
+        : `const value${i + 1} = compute(${i + 1}); // 计算第 ${i + 1} 个值`,
+    ).join('\n')}\n`
+    const fullJson = JSON.stringify({ content: fileContent, file_path: 'src/demo/LargeModule.ts' })
+    // 真实行为（[tis] 诊断实测）：delta 被 zcode.cjs 聚合成大块一次性下发，
+    // 流式窗口约 1 秒内完成——前端靠渐进揭示回放呈现累计动画
+    setTimeout(() => push('turn.started', { turnNumber: 1, messageId: msgId }), 200)
+    setTimeout(() => push('model.streaming', { kind: 'tool_input_start', toolCallId: callId, toolName: 'Write' }), 500)
+    setTimeout(() => push('model.streaming', { kind: 'tool_input_delta', toolCallId: callId, delta: fullJson }), 1100)
+    const doneAt = 2600
+    setTimeout(() => push('model.streaming', {
+      kind: 'tool_call', toolCallId: callId, toolName: 'Write',
+      input: { file_path: 'src/demo/LargeModule.ts', content: fileContent },
+    }), doneAt)
+    setTimeout(() => push('tool.updated', { kind: 'started', toolCallId: callId, toolName: 'Write', startedAt: Date.now() }), doneAt + 100)
+    setTimeout(() => push('tool.updated', {
+      kind: 'result', toolCallId: callId, toolName: 'Write',
+      result: { success: true, content: '已写入 60 行（mock）' },
+    }), doneAt + 400)
+    setTimeout(() => push('turn.completed', { response: '大文件写入演示完成' }), doneAt + 600)
+    return
+  }
+
+  // send 文本 "#batch"：模拟连续两个 Write（diag-batch-write-stream.py 抓包同构序列：
+  // 每工具独立 assistantMessageId、第二个工具无 text/reasoning 前导），
+  // 验收组卡流式行数累计（第二个工具写入期间组内行应实时累计）
+  if (req.op === 'send' && req.text.trim() === '#batch') {
+    const turnId = `turn_batch_${Date.now()}`
+    let seq = 0
+    const push = (type: string, payload: Record<string, unknown>) => {
+      streamListeners.forEach((fn) =>
+        fn(req.sessionId, { type, seq: seq++, sessionId: req.sessionId, turnId, timestamp: Date.now(), payload } as unknown as StreamEvent))
+    }
+    const fileA = `${Array.from({ length: 40 }, (_, i) =>
+      i % 2 === 0 ? `// 文件A 第 ${i + 1} 行` : `const a${i + 1} = ${i + 1};`).join('\n')}\n`
+    const fileB = `${Array.from({ length: 35 }, (_, i) =>
+      i % 2 === 0 ? `// 文件B 第 ${i + 1} 行` : `const b${i + 1} = ${i + 1};`).join('\n')}\n`
+    const m1 = `msg_batch_m1_${Date.now()}`
+    const m2 = `msg_batch_m2_${Date.now()}`
+    const callA = `call_batch_a_${Date.now()}`
+    const callB = `call_batch_b_${Date.now()}`
+    const streamTool = (msgId: string, callId: string, file: string, path: string, t0: number) => {
+      const fullJson = JSON.stringify({ content: file, file_path: path })
+      setTimeout(() => push('model.streaming', { kind: 'tool_input_start', toolCallId: callId, toolName: 'Write', assistantMessageId: msgId }), t0)
+      // 大块聚合 delta（真实形态）：start 后 0.6s 整块到达
+      setTimeout(() => push('model.streaming', { kind: 'tool_input_delta', toolCallId: callId, delta: fullJson, assistantMessageId: msgId }), t0 + 600)
+      const done = t0 + 700
+      setTimeout(() => push('model.streaming', { kind: 'tool_input_end', toolCallId: callId, assistantMessageId: msgId }), done)
+      setTimeout(() => push('model.streaming', {
+        kind: 'tool_call', toolCallId: callId, toolName: 'Write', assistantMessageId: msgId,
+        input: { file_path: path, content: file },
+      }), done + 50)
+      setTimeout(() => push('tool.updated', { kind: 'scheduled', toolCallId: callId, toolName: 'Write', inputOmitted: true }), done + 150)
+      setTimeout(() => push('tool.updated', { kind: 'started', toolCallId: callId, toolName: 'Write' }), done + 250)
+      setTimeout(() => push('tool.updated', {
+        kind: 'result', toolCallId: callId,
+        result: { success: true, content: 'done (mock)' },
+      }), done + 500)
+      setTimeout(() => push('tool.updated', { kind: 'batch', toolCallIds: [callId], successCount: 1, errorCount: 0 }), done + 550)
+      return done + 600
+    }
+    setTimeout(() => push('turn.started', { turnNumber: 1, messageId: m1 }), 200)
+    // 第一轮：短思考 + 工具A（挂 m1）
+    setTimeout(() => push('model.streaming', { kind: 'reasoning_delta', delta: '准备写入文件A。', assistantMessageId: m1 }), 400)
+    const tA = 500
+    const doneA = streamTool(m1, callA, fileA, 'src/demo/BatchFileA.ts', tA)
+    // 第二轮：GLM-5.3 真实序列——工具B前有思考（m2），随后 tool_input_start(m2)；
+    // 前端 streamingMessageId 不随 assistantMessageId 切换，全部落同一流式消息
+    const tThink = doneA + 100
+    setTimeout(() => push('model.streaming', { kind: 'reasoning_delta', delta: '文件A写完，接下来准备文件B的内容，直接连续调用工具。', assistantMessageId: m2 }), tThink)
+    setTimeout(() => push('model.streaming', { kind: 'reasoning_delta', delta: '保持两次写入之间无正文输出。', assistantMessageId: m2 }), tThink + 150)
+    const doneB = streamTool(m2, callB, fileB, 'src/demo/BatchFileB.ts', doneA + 300)
+    setTimeout(() => push('model.streaming', { kind: 'text_delta', delta: '两个文件已写入（mock）。', assistantMessageId: m2 }), doneB + 200)
+    setTimeout(() => push('turn.completed', { response: 'ok' }), doneB + 400)
+    return
+  }
+
   // send：触发流式事件模拟（验收阶段 2.4 用）
   if (req.op === 'send') {
     // 先回 sendAccepted

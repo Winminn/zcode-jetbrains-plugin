@@ -11,6 +11,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import type { ToolPart } from '@/types/messages'
+import { parsePartialToolInput, lineCount } from '@/utils/partialToolInput'
 import { sendToJava } from '@/ipc/bridge'
 import { FileIcon } from './FileIcon'
 import '../styles/tool-call-card.less'
@@ -47,22 +48,39 @@ interface SearchItem {
   status: ToolPart['state']['status']
 }
 
-/** 行数统计（末尾换行不计）*/
-function lineCount(s: string): number {
-  if (!s) return 0
-  const t = s.replace(/\n$/, '')
-  return t ? t.split('\n').length : 0
-}
+/** 行数统计已移 utils/partialToolInput.ts（与单卡流式徽标共用口径）*/
 
 function fileNameOf(path: string): string {
   return path.replace(/\\/g, '/').split('/').pop() || path
 }
 
+/** open 中的字段取已解码前缀，否则取已完整字段（流式回退用）*/
+function partialText(
+  partial: ReturnType<typeof parsePartialToolInput> | null,
+  field: string,
+  ...aliases: string[]
+): string | undefined {
+  if (!partial) return undefined
+  if (partial.openField === field || aliases.includes(partial.openField ?? '')) {
+    return partial.openPrefix
+  }
+  return partial.fields[field] ?? (aliases.length ? aliases.map((a) => partial.fields[a]).find((v) => v !== undefined) : undefined)
+}
+
 function parseFileItem(part: ToolPart): FileItem {
   const input = (part.state.input ?? {}) as Record<string, unknown>
-  const filePath = String(input.file_path || input.path || '')
-  const oldContent = String(input.old_string ?? input.oldString ?? '')
-  const newContent = String(input.new_string ?? input.newString ?? input.content ?? '')
+  // 流式回退：input 未转正（tool_input 流累积中）时从部分 JSON 提取，
+  // 连续写多个文件的场景组内行与头部合计也能实时累计行数
+  const partial = part.state.input ? null : parsePartialToolInput(part.state.inputRaw ?? '')
+  const filePath = String(input.file_path || input.path || partial?.fields.file_path || partial?.fields.path || '')
+  const oldContent = String(
+    input.old_string ?? input.oldString ??
+    partialText(partial, 'old_string', 'oldString') ?? '',
+  )
+  const newContent = String(
+    input.new_string ?? input.newString ?? input.content ??
+    partialText(partial, 'new_string', 'newString', 'content') ?? '',
+  )
   return {
     filePath,
     fileName: fileNameOf(filePath),
@@ -178,13 +196,17 @@ export function FileToolGroupCard({ kind, parts }: { kind: FileGroupKind; parts:
               const st = statusChar(item.status)
               return (
                 <div key={parts[index].callID} className="file-group__row">
-                  <FileIcon path={item.filePath} className="file-type-icon file-group__file-ic" />
+                  {item.filePath ? (
+                    <FileIcon path={item.filePath} className="file-type-icon file-group__file-ic" />
+                  ) : (
+                    <span className="codicon codicon-loading tool-card__stream-spin file-group__file-ic" />
+                  )}
                   <span
                     className="file-group__file-name"
                     title={item.filePath}
                     onClick={handleOpenFile(item.filePath)}
                   >
-                    {item.fileName}
+                    {item.fileName || t('tool.generatingFile')}
                   </span>
                   {(item.additions > 0 || item.deletions > 0) && (
                     <span className="file-group__stats">

@@ -2080,6 +2080,83 @@ function handleStreamBatch(
   set: (partial: Partial<StoreState>) => void,
   get: () => StoreState,
 ) {
+  // ===== 工具输入大块 delta 的流式回放 =====
+  // 真实行为（2026-08-22 [tis] 诊断实测）：GLM 走 openai-compatible 的 tool call
+  // 在 zcode.cjs 侧被 normalization 聚合，tool_input_delta 以 1~2 个大块在一个
+  // 16ms batch 内到达（tool_call 转正紧随同秒）——自然流式窗口不存在，UI 无法
+  // 展示累计。这里把超阈值的大 delta 切片成原子事件队列，按 ~16ms/片回放
+  // （约 1 秒播完），后续事件（tool_call/tool.updated 等）排队保序——下游
+  // reducer/组件零改动，事件流被"重新流式化"。小 delta（真实逐块流式）直通。
+  const atoms = sliceBigToolInputDeltas(events)
+  if (atoms || replayQueue.length > 0) {
+    if (atoms) replayQueue.push(...atoms)
+    else replayQueue.push(...events)
+    if (replayTimer === null) startReplayPump(sessionId, set, get)
+    return
+  }
+  handleStreamBatchDirect(sessionId, events, set, get)
+}
+
+/** 回放队列与节拍器（模块级：跨批次保序） */
+let replayQueue: StreamEvent[] = []
+let replayTimer: number | null = null
+/** 触发切片的 delta 阈值（字符）；低于此视为自然流式直通 */
+const REPLAY_DELTA_THRESHOLD = 400
+const REPLAY_FRAME_MS = 16
+const REPLAY_TARGET_SLICES = 55
+
+/** 批内含超阈值 tool_input_delta 时，把大 delta 展开成切片原子序列 */
+function sliceBigToolInputDeltas(events: StreamEvent[]): StreamEvent[] | null {
+  const hasBig = events.some((e) => {
+    if (e.type !== 'model.streaming') return false
+    const p = e.payload as Record<string, unknown>
+    return p.kind === 'tool_input_delta' && typeof p.delta === 'string' && p.delta.length > REPLAY_DELTA_THRESHOLD
+  })
+  if (!hasBig) return null
+  const atoms: StreamEvent[] = []
+  for (const e of events) {
+    const p = e.payload as Record<string, unknown>
+    if (e.type === 'model.streaming' && p.kind === 'tool_input_delta'
+      && typeof p.delta === 'string' && p.delta.length > REPLAY_DELTA_THRESHOLD) {
+      const slices = Math.min(REPLAY_TARGET_SLICES, Math.max(2, Math.ceil(p.delta.length / 96)))
+      const size = Math.ceil(p.delta.length / slices)
+      for (let i = 0; i * size < p.delta.length; i++) {
+        atoms.push({
+          ...e,
+          payload: { ...p, delta: p.delta.slice(i * size, (i + 1) * size) },
+        } as StreamEvent)
+      }
+    } else {
+      atoms.push(e)
+    }
+  }
+  return atoms
+}
+
+/** 每拍派发一个原子事件，队列空则停表 */
+function startReplayPump(
+  sessionId: string,
+  set: (partial: Partial<StoreState>) => void,
+  get: () => StoreState,
+): void {
+  const pump = () => {
+    const next = replayQueue.shift()
+    if (next) handleStreamBatchDirect(sessionId, [next], set, get)
+    if (replayQueue.length > 0) {
+      replayTimer = window.setTimeout(pump, REPLAY_FRAME_MS)
+    } else {
+      replayTimer = null
+    }
+  }
+  replayTimer = window.setTimeout(pump, REPLAY_FRAME_MS)
+}
+
+function handleStreamBatchDirect(
+  sessionId: string,
+  events: StreamEvent[],
+  set: (partial: Partial<StoreState>) => void,
+  get: () => StoreState,
+) {
   // 标题更新通知：在会话过滤前处理（切走的会话也能更新列表标题），不走消息归约
   for (const event of events) {
     if (event.type === 'session.titleUpdated') applyTitleUpdated(sessionId, event, set, get)
@@ -2222,6 +2299,15 @@ function handleStreamEvent(
 
   // 看门狗心跳：当前会话有任何事件到达 = 回合活着（静默对账不会触发）
   lastStreamActivityAt = Date.now()
+
+  // ===== 工具输入大块 delta 的流式回放（同批量路径；mock/关键事件走单推）=====
+  const atoms = sliceBigToolInputDeltas([event])
+  if (atoms || replayQueue.length > 0) {
+    if (atoms) replayQueue.push(...atoms)
+    else replayQueue.push(event)
+    if (replayTimer === null) startReplayPump(sessionId, set, get)
+    return
+  }
 
   // 状态变化通知（panel 单推，低频即时）：模式/级别跟随服务端
   if (event.type === 'state.updated') {

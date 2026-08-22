@@ -202,6 +202,42 @@
     margin-top: 6px;
   }
 
+  /* Write/Edit 流式写入视图：spinner + 动作文案 + 已生成行数（随 delta 累计）*/
+  &__stream-line {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    margin-bottom: 4px;
+    font-size: 11px;
+    color: var(--text-secondary);
+
+    .file-group__add {
+      font-family: var(--font-mono);
+    }
+  }
+
+  &__stream-spin {
+    display: inline-flex;
+    font-size: 12px;
+    color: var(--status-warning);
+    animation: tool-spin 1s linear infinite;
+  }
+
+  /* 头部行数徽标（复用 file-group__stats 的增删配色）*/
+  &__lines {
+    margin-left: 2px;
+  }
+
+  /* 流式尾部预览的顶部截断指示 */
+  &__tail-clip {
+    text-align: center;
+    font-size: 10px;
+    color: var(--text-tertiary);
+    line-height: 1;
+    padding: 2px 0;
+    letter-spacing: 2px;
+  }
+
   /* Bash 终端风格（cc-gui bash-command-block / bash-output-block）*/
   &__bash-cmd {
     font-family: var(--font-mono);

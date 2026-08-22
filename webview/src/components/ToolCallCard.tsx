@@ -12,11 +12,12 @@
  *   折叠卡片，默认收起，点击展开看 input/output。
  */
 
-import { useState } from 'react'
+import { useMemo, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import type { TFunction } from 'i18next'
 import type { ToolPart } from '@/types/messages'
 import { relativeTime, formatToolDuration } from '@/utils/time'
+import { parsePartialToolInput, lineCount, tailLines } from '@/utils/partialToolInput'
 import { sendToJava } from '@/ipc/bridge'
 import { useStore } from '@/store/useStore'
 import { FileIcon } from './FileIcon'
@@ -142,7 +143,48 @@ export function ToolCallCard({ part }: Props) {
   // 流式期间的原始工具输入（tool_input_delta 累积的 JSON 片段，未完整无法解析）：
   // 回合中即可看到"在运行什么命令/读写什么文件"，回合结束全量刷新后被解析的 input 取代
   const rawInput = !state.input && state.inputRaw ? state.inputRaw : ''
+  // Write/Edit 流式增强：从部分 JSON 提取 file_path（很快完整）与 content/new_string
+  // 未闭合前缀——头部显示文件名格式、行数徽标随写入累计，展开区替代裸 JSON 原文
+  const isWriteEdit = tool === 'Write' || tool === 'Edit'
+  const partial = useMemo(
+    () => (rawInput && isWriteEdit ? parsePartialToolInput(rawInput) : null),
+    [rawInput, isWriteEdit],
+  )
+  const partialFields = partial?.fields ?? {}
+  // Edit/Write 文件操作（cc-gui EditToolBlock：文件名点击打开 / diff / 刷新）；
+  // 流式期间 file_path 从部分 JSON 提取（文件尚未落盘，不绑点击/刷新）
+  const input = state.input as Record<string, unknown> | undefined
+  const filePath = input
+    ? String(input.file_path || input.path || '')
+    : String(partialFields.file_path || partialFields.path || '')
+  const isFileTool = (tool === 'Edit' || tool === 'Write' || tool === 'Read') && filePath
+  const fileName = (p: string) => p.replace(/\\/g, '/').split('/').pop() || p
+  const oldContent = input
+    ? String(input.old_string ?? input.oldString ?? '')
+    : String(
+        partial?.openField === 'old_string' || partial?.openField === 'oldString'
+          ? partial.openPrefix
+          : partialFields.old_string ?? partialFields.oldString ?? '',
+      )
+  const newContent = input
+    ? String(input.new_string ?? input.newString ?? input.content ?? '')
+    : String(
+        partial?.openField === 'new_string' || partial?.openField === 'newString' || partial?.openField === 'content'
+          ? partial.openPrefix
+          : partialFields.new_string ?? partialFields.newString ?? partialFields.content ?? '',
+      )
+  // 流式临时标题：真实序列 content 先于 file_path 生成（rollout 实测 13/13），
+  // 写入期间拿不到路径——用已生成内容的首个非空行作占位标题，行数徽标表达进度
+  const streamTitle = (() => {
+    if (!isWriteEdit) return ''
+    const source = newContent || oldContent
+    if (!source) return ''
+    const firstLine = source.split('\n').find((l) => l.trim()) ?? ''
+    return firstLine.replace(/^\/\*\*?|^\*|^\/\/\s*/g, '').trim().slice(0, 40)
+  })()
   const summary = inputSummary(tool, state.input) ||
+    (isWriteEdit && filePath ? fileName(filePath) : '') ||
+    streamTitle ||
     (rawInput ? rawInput.replace(/\s+/g, ' ').slice(0, 80) : '')
   const badge = statusBadge(state.status)
   const hasOutput = !!state.output
@@ -152,13 +194,17 @@ export function ToolCallCard({ part }: Props) {
     ? state.time.end - state.time.start
     : null
 
-  // Edit/Write 文件操作（cc-gui EditToolBlock：文件名点击打开 / diff / 刷新）
-  const input = state.input as Record<string, unknown> | undefined
-  const filePath = input ? String(input.file_path || input.path || '') : ''
-  const isFileTool = (tool === 'Edit' || tool === 'Write' || tool === 'Read') && filePath
-  const oldContent = input ? String(input.old_string ?? input.oldString ?? '') : ''
-  const newContent = input ? String(input.new_string ?? input.newString ?? input.content ?? '') : ''
-  const hasDiff = tool === 'Edit' && oldContent && newContent
+  // diff 按钮只在完成态（input 已解析）有意义：流式期间内容还在生成
+  const hasDiff = !!input && tool === 'Edit' && oldContent && newContent
+
+  // 行数徽标（收起即可见）：流式期间随 delta 累计跳动，完成态定格收尾；
+  // lineCount 口径与组卡（FileToolGroupCard）一致，流式→完成数字不回跳
+  const lineStats = useMemo(() => {
+    if (!isWriteEdit) return null
+    const add = lineCount(newContent)
+    const del = tool === 'Edit' ? lineCount(oldContent) : 0
+    return add > 0 || del > 0 ? { add, del } : null
+  }, [isWriteEdit, tool, newContent, oldContent])
 
   const handleOpenFile = (e: React.MouseEvent) => {
     e.stopPropagation()
@@ -193,7 +239,7 @@ export function ToolCallCard({ part }: Props) {
             <span
               className="tool-card__summary tool-card__file-link"
               title={filePath}
-              onClick={handleOpenFile}
+              onClick={input ? handleOpenFile : undefined}
             >
               <FileIcon path={filePath} className="file-type-icon tool-card__file-ic" />
               <span className="tool-card__file-name">{summary}</span>
@@ -202,13 +248,21 @@ export function ToolCallCard({ part }: Props) {
             <span className="tool-card__summary" title={summary}>{summary}</span>
           )
         )}
+        {/* 行数徽标（Write/Edit）：流式期间累计跳动（"已写入 N 行"进度），完成态定格 */}
+        {lineStats && (
+          <span className="file-group__stats tool-card__lines">
+            {lineStats.add > 0 && <span className="file-group__add">+{lineStats.add}</span>}
+            {lineStats.add > 0 && lineStats.del > 0 && <span className="file-group__stats-sep" />}
+            {lineStats.del > 0 && <span className="file-group__del">−{lineStats.del}</span>}
+          </span>
+        )}
         {/* Edit/Write 的 diff + 刷新按钮（cc-gui EditToolBlock）*/}
         {hasDiff && (
           <button className="tool-card__action" onClick={handleShowDiff} title={t('tool.viewDiff')} aria-label={t('tool.viewDiff')}>
             <span className="codicon codicon-diff" />
           </button>
         )}
-        {isFileTool && (
+        {isFileTool && input && (
           <button className="tool-card__action" onClick={handleRefreshFile} title={t('tool.refreshInEditor')} aria-label={t('tool.refreshInEditor')}>
             <span className="codicon codicon-refresh" />
           </button>
@@ -292,8 +346,43 @@ export function ToolCallCard({ part }: Props) {
       )}
       {expandable && expanded && (
         <div className="tool-card__body">
-          {/* 流式中的原始输入（缺陷F）：解析版 input 未到时展示累积 JSON 片段 */}
-          {rawInput && (
+          {/* Write 流式写入视图：spinner + 已生成行数累计 + 内容尾部预览
+              （替代裸 JSON 原文"一行行变长"，大文件也不再撑爆 DOM）*/}
+          {partial && tool === 'Write' && (
+            <div className="tool-card__section">
+              <div className="tool-card__stream-line">
+                <span className="codicon codicon-loading tool-card__stream-spin" />
+                <span>{t('tool.writing')}</span>
+                {lineStats && lineStats.add > 0 && (
+                  <span className="file-group__add">+{lineStats.add}</span>
+                )}
+              </div>
+              {newContent && <StreamPreview text={newContent} />}
+            </div>
+          )}
+          {/* Edit 流式视图：修改前（生成中）+ 修改后（写入中）两段 */}
+          {partial && tool === 'Edit' && (
+            <>
+              {oldContent && (
+                <div className="tool-card__section">
+                  <div className="tool-card__label tool-card__label--del">{t('tool.beforeChange')}</div>
+                  <StreamPreview text={oldContent} />
+                </div>
+              )}
+              <div className="tool-card__section">
+                <div className="tool-card__stream-line">
+                  <span className="codicon codicon-loading tool-card__stream-spin" />
+                  <span>{t('tool.editing')}</span>
+                  {lineStats && lineStats.add > 0 && (
+                    <span className="file-group__add">+{lineStats.add}</span>
+                  )}
+                </div>
+                {newContent && <StreamPreview text={newContent} />}
+              </div>
+            </>
+          )}
+          {/* 流式中的原始输入（缺陷F）：Write/Edit 已有专用视图，其余工具展示累积 JSON 片段 */}
+          {rawInput && !partial && (
             <div className="tool-card__section">
               <div className="tool-card__label">{t('tool.inputStreaming')}</div>
               <pre className="tool-card__code">{rawInput}</pre>
@@ -309,12 +398,12 @@ export function ToolCallCard({ part }: Props) {
               )}
             </>
           )}
-          {/* Write：content 代码预览 */}
-          {tool === 'Write' && newContent && (
+          {/* Write：content 代码预览（流式期间走上方专用视图，不重复渲染）*/}
+          {tool === 'Write' && newContent && !partial && (
             <pre className="tool-card__code">{newContent}</pre>
           )}
-          {/* Edit：old → new 对比 */}
-          {tool === 'Edit' && (
+          {/* Edit：old → new 对比（同上，流式期间不渲染）*/}
+          {tool === 'Edit' && !partial && (
             <>
               {oldContent && (
                 <div className="tool-card__section">
@@ -361,11 +450,22 @@ export function ToolCallCard({ part }: Props) {
               <pre className="tool-card__code">{state.error.message}</pre>
             </div>
           )}
-          {state.time?.start && (
-            <div className="tool-card__time">{relativeTime(state.time.start)}</div>
-          )}
+      {state.time?.start && (
+        <div className="tool-card__time">{relativeTime(state.time.start)}</div>
+      )}
         </div>
       )}
     </div>
+  )
+}
+
+/** 流式内容预览：只渲染尾部 15 行窗口 + 顶部截断指示（DOM 恒定，大文件流式不卡）*/
+function StreamPreview({ text }: { text: string }) {
+  const { text: tail, truncated } = tailLines(text)
+  return (
+    <>
+      {truncated && <div className="tool-card__tail-clip">⋯</div>}
+      <pre className="tool-card__code">{tail}</pre>
+    </>
   )
 }
