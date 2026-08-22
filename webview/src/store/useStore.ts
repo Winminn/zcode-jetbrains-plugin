@@ -50,6 +50,40 @@ let reconcileProbeSentAt = 0
 let reconcileDeadCount = 0
 let reconcileLastFingerprint = ''
 
+/* ============ 压缩回合结束后的延迟 flush（快照落地优先于排队消息抢跑） ============
+ * 压缩摘要卡/时间线屏障只能靠回合结束后的重拉快照落地（压缩回合事件流全程静默、
+ * 不建流式气泡）。若 turn 结束立即 flushQueue，排队消息抢先开启新 turn，重拉响应
+ * 到达时 streaming=true 被 case 'messages' 丢弃（防断流/叠字的守卫不能放开）→
+ * 摘要卡整个新回合期间缺失（2026-08-22 实测：/compact 期间排队一条消息，压缩
+ * 结束消息立即发出，压缩结果显示丢失）。故压缩回合结束且队列非空时延迟 flush
+ * 到快照落地之后；快照迟迟未回由兜底超时照常 flush（队列不卡死）。 */
+let deferredCompactFlushSid: string | null = null
+let deferredCompactFlushTimer: ReturnType<typeof setTimeout> | null = null
+/** 压缩回合结束：登记延迟 flush（快照落地即触发；1.5s 兜底防快照丢失卡队列）*/
+function scheduleDeferredCompactFlush(sessionId: string): void {
+  deferredCompactFlushSid = sessionId
+  if (deferredCompactFlushTimer) clearTimeout(deferredCompactFlushTimer)
+  deferredCompactFlushTimer = setTimeout(() => {
+    deferredCompactFlushTimer = null
+    const sid = deferredCompactFlushSid
+    deferredCompactFlushSid = null
+    // 切会话后不代发（队列随会话切换处理，旧会话的延迟意图作废）
+    if (sid && sid === useStore.getState().currentSessionId) {
+      useStore.getState().flushQueue()
+    }
+  }, 1500)
+}
+/** 快照落地后触发延迟 flush（sessionId 不匹配则作废该意图）*/
+function tryRunDeferredCompactFlush(sessionId: string): void {
+  if (!deferredCompactFlushSid || deferredCompactFlushSid !== sessionId) return
+  if (deferredCompactFlushTimer) {
+    clearTimeout(deferredCompactFlushTimer)
+    deferredCompactFlushTimer = null
+  }
+  deferredCompactFlushSid = null
+  useStore.getState().flushQueue()
+}
+
 /** 排队消息（对话进行中 Enter 入队，回合结束自动发送；text 为拼好技能/文件引用的最终文本）*/
 export interface QueuedMessage {
   id: string
@@ -1580,6 +1614,9 @@ function handleResponse(
         // 丢弃——本轮 turn 结束还会再拉一次权威数据落地。
         if (get().streaming) break
         applyMessagesSnapshot(msg, set, get)
+        // 压缩回合结束后延迟的队列 flush 在此触发：摘要卡已随快照落地，排队消息
+        // 再发出的新 turn 不会丢它（scheduleDeferredCompactFlush 的正路径）
+        tryRunDeferredCompactFlush(msg.sessionId)
       }
       break
     }
@@ -2357,15 +2394,25 @@ function handleStreamBatchDirect(
     if (turnError) patch.lastError = formatTurnError(turnError)
   }
   if (modeEvent) applyModeEventToPatch(modeEvent, patch, get)
+  // set 前捕获（patch 已把 compacting 清 false）：压缩回合结束的判定依据
+  const wasCompacting = get().compacting
   set(patch)
   // exit_plan 不立即回读 settings：批准瞬间服务端 state 层仍是 plan，回读会把上面的
   // 推断值覆盖回去。推断值保持显示到回合结束，由下方 turnEnded 路径
-  // （state.updated 即时推送 + loadSettings）校正
+  //（state.updated 即时推送 + loadSettings）校正
 
   if (turnEnded) {
     console.log(`[store] turn 结束（批量），重新拉取消息确保一致`)
     // 本批未同时开启新 turn 时自动发送队列下一条（同批 completed+started 说明服务端已自动续轮）
-    if (!turnStarted) get().flushQueue()
+    if (!turnStarted) {
+      // 压缩回合结束：摘要卡只经下方重拉快照落地，队列非空时延迟到快照落地后再
+      // flush——立即发会让新 turn 抢先置 streaming，快照被丢弃、摘要卡整轮缺失
+      if (wasCompacting && get().queuedMessages.length > 0) {
+        scheduleDeferredCompactFlush(sessionId)
+      } else {
+        get().flushQueue()
+      }
+    }
     setTimeout(() => {
       sendToJava({ op: 'messages', sessionId, workspacePath: get().currentWorkspacePath })
       // 刷新会话列表：CLI 会根据对话内容更新标题（sess_xxx → 用户问题）
@@ -2490,6 +2537,7 @@ function handleStreamEvent(
 
   // turn 结束：重新拉完整消息确保数据一致，清除流式状态，自动发送队列下一条
   if (turnEnded) {
+    const wasCompacting = get().compacting
     set({
       streaming: false,
       streamingMessageId: null,
@@ -2499,7 +2547,14 @@ function handleStreamEvent(
       ...(turnError ? { lastError: formatTurnError(turnError) } : {}),
     })
     console.log(`[store] turn ${event.type}，重新拉取消息确保一致`)
-    get().flushQueue()
+    // 压缩回合结束：摘要卡只经下方重拉快照落地，队列非空时延迟到快照落地后再
+    // flush——立即发会让新 turn 抢先置 streaming，快照被丢弃、摘要卡整轮缺失
+    //（同批量路径 scheduleDeferredCompactFlush，2026-08-22 /compact 排队实测）
+    if (wasCompacting && get().queuedMessages.length > 0) {
+      scheduleDeferredCompactFlush(sessionId)
+    } else {
+      get().flushQueue()
+    }
     setTimeout(() => {
       sendToJava({
         op: 'messages',

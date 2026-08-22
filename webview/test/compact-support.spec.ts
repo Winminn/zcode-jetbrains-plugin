@@ -197,3 +197,76 @@ describe('compacting 状态机', () => {
     expect(st.messages.some((m) => m.info.id === 'm_marker')).toBe(true)
   })
 })
+
+describe('压缩回合结束 + 排队消息：延迟 flush 到快照落地后', () => {
+  /**
+   * 复现缺陷（2026-08-22 实测）：/compact 期间排队一条消息，压缩结束 turn.completed
+   * → flushQueue 立即发出 → 新 turn.started 抢先置 streaming → 300ms 重拉快照到达时
+   * 被 streaming 守卫丢弃 → 压缩摘要卡/时间线屏障整轮缺失（摘要只能靠快照落地）。
+   * 修复：压缩回合结束且队列非空时，flush 延迟到快照落地之后（兜底 1.5s）。
+   */
+
+  const queuedSpec = () => {
+    // 压缩进行中（send /compact 已置位），用户又排队一条消息
+    useStore.setState({ compacting: true, streaming: true, streamingMessageId: null, messages: [], queuedMessages: [] })
+    useStore.getState().sendMessage('压缩完继续这个问题')
+    expect(useStore.getState().queuedMessages).toHaveLength(1)
+    sentRequests.length = 0
+    pushEvent('turn.completed', {})
+    // 回合收尾：不再立即 flush（send 未发出是修复的核心断言前提）
+    expect(useStore.getState().streaming).toBe(false)
+    expect(useStore.getState().compacting).toBe(false)
+    expect(sentRequests.some((r) => r.op === 'send')).toBe(false)
+  }
+
+  it('快照落地摘要卡后才 flush 队列（send 不抢跑）', () => {
+    queuedSpec()
+
+    // 300ms 重拉发出，响应带回压缩摘要 + 屏障
+    vi.advanceTimersByTime(400)
+    expect(sentRequests.some((r) => r.op === 'messages')).toBe(true)
+    messageHandler!({
+      op: 'messages',
+      sessionId: SID,
+      messages: [
+        {
+          info: { id: 'm_sum', sessionID: SID, role: 'user', time: { created: 1 }, summary: { title: 'Compact summary', body: 'Summary: …' } },
+          parts: [{ type: 'text', text: 'This session is being continued…', synthetic: true }],
+        },
+        {
+          info: { id: 'm_marker', sessionID: SID, role: 'assistant', time: { created: 2 }, semantics: { origin: 'system', kind: 'timeline_event' } },
+          parts: [{ type: 'timeline', timelineType: 'context_compaction', display: 'separator' }],
+        },
+      ],
+    })
+
+    // 摘要卡已落地，且此刻（而非 turn.completed 瞬间）排队消息才发出
+    const st = useStore.getState()
+    expect(st.messages.some((m) => m.info.id === 'm_sum')).toBe(true)
+    expect(sentRequests.some((r) => r.op === 'send' && r.text === '压缩完继续这个问题')).toBe(true)
+    expect(st.queuedMessages).toHaveLength(0)
+
+    // 新回合照常开始（摘要卡不被 streaming 守卫丢快照波及）
+    pushEvent('turn.started', { turnNumber: 2, messageId: 'msg_after_compact' })
+    expect(useStore.getState().streaming).toBe(true)
+    expect(useStore.getState().messages.some((m) => m.info.id === 'm_sum')).toBe(true)
+  })
+
+  it('兜底：快照迟迟不回，1.5s 后照常 flush（队列不卡死）', () => {
+    queuedSpec()
+
+    // 不推快照响应，推进过兜底超时
+    vi.advanceTimersByTime(2000)
+    expect(sentRequests.some((r) => r.op === 'send' && r.text === '压缩完继续这个问题')).toBe(true)
+    expect(useStore.getState().queuedMessages).toHaveLength(0)
+  })
+
+  it('切会话后延迟意图作废：不代发别的会话上下文的队列', () => {
+    queuedSpec()
+
+    // 用户在快照回来前切走（延迟 flush 登记的是旧会话）
+    useStore.setState({ currentSessionId: 'sess_other', queuedMessages: [] })
+    vi.advanceTimersByTime(2000)
+    expect(sentRequests.some((r) => r.op === 'send')).toBe(false)
+  })
+})
