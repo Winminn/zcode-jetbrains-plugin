@@ -121,6 +121,47 @@ class ZCodeServiceImpl(private val project: Project) : ZCodeService, com.intelli
     @Volatile
     private var userInputHandlerRegistered = false
 
+    // ============ 对话结束提醒（ZCodeNotifyService；手动 stop 不打扰）============
+
+    /** 手动 stop 标记：sessionId → stop 时刻（handleStop 成功后写入，收尾事件 30s 内匹配即跳过提醒）*/
+    private val manualStopMarks = ConcurrentHashMap<String, Long>()
+
+    /** 已提醒过的回合收尾（防 deliveryKind 重投重复提醒）：turnKey → 时刻 */
+    private val notifiedTurnEnds = ConcurrentHashMap<String, Long>()
+
+    /** handleStop 成功停止后标记（对齐 cc-gui isManuallyInterrupted：手动打断不提醒）*/
+    override fun markManualStop(sessionId: String) {
+        manualStopMarks[sessionId] = System.currentTimeMillis()
+    }
+
+    /** 回合收尾提醒（全局事件线程调用；异常不影响事件链路）*/
+    private fun notifyTurnEndIfWanted(event: com.zcode.ideaplugin.protocol.model.SessionEvent) {
+        try {
+            val now = System.currentTimeMillis()
+            // resume/回放的旧事件不提醒（timestamp 距今超 5 分钟视为回放帧）
+            if (event.timestamp in 1..(now - 5 * 60_000L)) return
+            val stopMark = manualStopMarks[event.sessionId]
+            if (stopMark != null && now - stopMark < 30_000L) {
+                manualStopMarks.remove(event.sessionId)
+                return
+            }
+            val turnKey = "${event.sessionId}|${event.turnId ?: event.seq}"
+            if (notifiedTurnEnds.putIfAbsent(turnKey, now) != null) return
+            if (notifiedTurnEnds.size > 64) {
+                notifiedTurnEnds.entries.removeIf { now - it.value > 60_000L }
+            }
+            val failed = event.type == "turn.failed"
+            val body = if (failed) {
+                (event.payload["error"] as? JsonObject)?.get("message")?.jsonPrimitive?.contentOrNull
+            } else {
+                (event.payload["response"] as? JsonPrimitive)?.contentOrNull
+            }
+            com.zcode.ideaplugin.ui.ZCodeNotifyService.notifyTurnEnd(project, event.sessionId, body, failed)
+        } catch (e: Exception) {
+            log.warn("Turn-end notification failed: ${e.message}")
+        }
+    }
+
     override fun getClient(): ZCodeProtocolClient {
         client?.let { if (it.isAlive()) return it }
         return lock.withLock {
@@ -178,6 +219,7 @@ class ZCodeServiceImpl(private val project: Project) : ZCodeService, com.intelli
                         log.info("[askUser] Turn terminated (${event.type}, ${event.sessionId}), discarding pending ask dialog of that session")
                         abortPendingUserInputs(event.sessionId)
                     }
+                    notifyTurnEndIfWanted(event)
                 }
             }
             if (!browserHandlerRegistered) {

@@ -51,16 +51,32 @@ object ZCodeClientSettingStore {
     }
 
     /** 只改 memoryEnabled 一个字段，其余键原样保留；tmp + 原子 move 防写坏 */
-    fun writeMemoryEnabled(enabled: Boolean, home: String = System.getProperty("user.home")): Boolean = synchronized(LOCK) {
+    fun writeMemoryEnabled(enabled: Boolean, home: String = System.getProperty("user.home")): Boolean =
+        writeBooleanField("memoryEnabled", enabled, home)
+
+    /**
+     * 内置浏览器「忽略证书校验」开关（与 ZCode 客户端共用；zod schema 默认 false）。
+     * 客户端侧消费它给自己的 BrowserView 传 --ignore-certificate-errors；
+     * 插件侧消费它同步 JCEF 启动参数（见 ZCodeBrowserSettingStore.applyInsecureCertificatesToRegistry）。
+     */
+    fun readEmbeddedBrowserInsecure(home: String = System.getProperty("user.home")): Boolean = synchronized(LOCK) {
+        val root = readRoot(home) ?: return false
+        root.booleanField("embeddedBrowserAllowInsecureCertificates") ?: false
+    }
+
+    fun writeEmbeddedBrowserInsecure(enabled: Boolean, home: String = System.getProperty("user.home")): Boolean =
+        writeBooleanField("embeddedBrowserAllowInsecureCertificates", enabled, home)
+
+    /** 单布尔字段写入（保留其余键；文件缺失写最小片段——客户端按 zod schema 读缺失键走默认值）*/
+    private fun writeBooleanField(key: String, value: Boolean, home: String): Boolean = synchronized(LOCK) {
         val file = settingPath(home)
         val root = readRoot(home)
-        // 文件缺失时写最小片段：客户端按 zod schema 读，缺失键走默认值，不会互相破坏
         val newRoot = if (root == null) {
-            buildJsonObject { put("memoryEnabled", enabled) }
+            buildJsonObject { put(key, value) }
         } else {
             buildJsonObject {
-                root.forEach { (k, v) -> if (k != "memoryEnabled") put(k, v) }
-                put("memoryEnabled", enabled)
+                root.forEach { (k, v) -> if (k != key) put(k, v) }
+                put(key, value)
             }
         }
         try {

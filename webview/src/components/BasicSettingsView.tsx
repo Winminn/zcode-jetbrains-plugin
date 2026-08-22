@@ -27,6 +27,7 @@ import { getThemePreference, setThemePreference, type IdeTheme } from '@/hooks/u
 import { setLanguage } from '@/i18n/language'
 import { SUPPORTED_LANGUAGES, DEFAULT_LANGUAGE, isSupportedLanguage, type SupportedLanguage } from '@/i18n/config'
 import { useStore } from '@/store/useStore'
+import { BehaviorSettings } from './BehaviorSettings'
 import '../styles/basic-settings.less'
 
 const cx = (...c: (string | false | null | undefined)[]) => c.filter(Boolean).join(' ')
@@ -246,7 +247,7 @@ function ColorSection({ icon, label, hint, value, defaultColor, presets, onChang
 /* ============ 主视图 ============ */
 
 type ThemeOption = 'system' | 'light' | 'dark'
-type BasicTab = 'appearance' | 'environment'
+type BasicTab = 'appearance' | 'environment' | 'behavior'
 
 function readResolvedTheme(): IdeTheme {
   return (document.documentElement.getAttribute('data-theme') as IdeTheme) || 'dark'
@@ -329,9 +330,20 @@ export function BasicSettingsView() {
           <span className="codicon codicon-terminal" />
           <span>{t('settings.basicTabs.environment')}</span>
         </button>
+        <button
+          type="button"
+          role="tab"
+          aria-selected={tab === 'behavior'}
+          className={cx('basic-settings__tab', tab === 'behavior' && 'active')}
+          onClick={() => setTab('behavior')}
+        >
+          <span className="codicon codicon-bell" />
+          <span>{t('settings.basicTabs.behavior')}</span>
+        </button>
       </div>
 
       {tab === 'environment' && <EnvironmentSettings />}
+      {tab === 'behavior' && <BehaviorSettings />}
 
       {tab === 'appearance' && (
         <>

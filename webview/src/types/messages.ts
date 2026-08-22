@@ -258,6 +258,14 @@ export type JavaRequest =  | { op: 'askUserPendingState' }
   | { op: 'createMemoryFile'; path: string }
   /** 切换「工作区记忆」开关（写 ~/.zcode/v2/setting.json，与 ZCode 客户端共用）*/
   | { op: 'setMemoryEnabled'; enabled: boolean }
+  /** 浏览器设置快照（控制开关/插件安装态/忽略证书/待重启标记）*/
+  | { op: 'browserConfig' }
+  /** 「忽略证书校验」：写 setting.json 公用键 + 同步 JCEF 启动参数（重启生效）*/
+  | { op: 'setInsecureCertificates'; enabled: boolean }
+  /** 清除内置浏览器数据（mode=cache 保留 Cookie 与本地站点数据；all 全清）*/
+  | { op: 'clearBrowserData'; mode: 'cache' | 'all' }
+  /** 浏览器数据概览（清理条目旁「查看」按钮，只读）*/
+  | { op: 'browserDataOverview' }
   | { op: 'listSkills' }
   | { op: 'toggleSkill'; path: string; enabled: boolean }
   /** mode：status=状态快照（默认）| connect=真实连接（慢）*/
@@ -418,6 +426,38 @@ export interface SkillInfo {
   pluginName?: string
   /** false=config skill 节点显式禁用（enable:false）*/
   enabled: boolean
+}
+
+/** 清除浏览器数据的单站点明细（cache 模式只填缓存两项；-1=页面不支持该 API）*/
+export interface BrowserClearedSite {
+  url: string
+  cacheStorages: number
+  serviceWorkers: number
+  storage?: boolean
+}
+
+/** 概览里的单站点行（三来源归并：已打开 tab 实时计数 + Cookie 按域 + 磁盘标记；-1=仅有磁盘痕迹无实时计数）*/
+export interface BrowserOverviewSite {
+  /** origin（cookie 来源为裸域，其余为 scheme://host[:port]）*/
+  origin: string
+  /** 浏览器面板当前打开的站点 */
+  open: boolean
+  cookies: number
+  cacheStorages: number
+  serviceWorkers: number
+  localStorageEntries: number
+  /** 该站点 IndexedDB 磁盘占用（0=无）*/
+  indexedDbBytes: number
+  hasIndexedDb: boolean
+}
+
+/** 浏览器数据概览（清理条目旁「查看」按钮；cookieCount=-1=读取失败）*/
+export interface BrowserDataOverview {
+  httpCacheBytes: number
+  httpCacheEntries: number
+  codeCacheBytes: number
+  cookieCount: number
+  sites: BrowserOverviewSite[]
 }
 
 /**
@@ -594,6 +634,13 @@ export type JavaResponse =
   | { op: 'memoryFiles'; files: MemoryFileInfo[]; memoryEnabled: boolean; memorySettingPath: string }
   | { op: 'memoryEnabledChanged'; enabled: boolean }
   | { op: 'memoryFileCreated'; path: string }
+  /** 浏览器设置快照（op=browserConfig 的响应）*/
+  | { op: 'browserConfig'; browserControlEnabled: boolean; pluginInstalled: boolean; insecureCertificates: boolean; insecurePendingRestart: boolean }
+  | { op: 'insecureCertificatesChanged'; enabled: boolean; pendingRestart: boolean }
+  /** op=clearBrowserData 的响应（sites=已清站点数据明细；httpCache/cookies 全局项）*/
+  | { op: 'browserDataCleared'; ok: boolean; all: boolean; httpCache: boolean; cookies?: boolean; sites: BrowserClearedSite[] }
+  /** op=browserDataOverview 的响应（概览：磁盘占用 + Cookie 计数 + 已打开站点计数）*/
+  | { op: 'browserDataOverview' } & BrowserDataOverview
   | { op: 'skills'; skills: SkillInfo[] }
   | { op: 'skillToggled'; path: string; enabled: boolean }
   /** rpcError 存在 = mcp/list RPC 失败，servers 为磁盘配置降级清单 */

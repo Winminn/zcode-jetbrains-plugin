@@ -8,6 +8,7 @@
     "memory": "メモリ",
     "skills": "スキル",
     "mcp": "MCP",
+    "browser": "ブラウザ",
     "other": "その他"
   },
   "theme": {
@@ -97,7 +98,8 @@
   },
   "basicTabs": {
     "appearance": "外観",
-    "environment": "環境"
+    "environment": "環境",
+    "behavior": "動作"
   },
   "env": {
     "save": "保存",
@@ -119,6 +121,16 @@
       "ok": "有効 · {{model}}",
       "invalid": "未設定",
       "hint": "認証情報は ZCode クライアントのログインで生成されます（~/.zcode/v2/config.json）。ここでは状態表示のみ"
+    }
+  },
+  "behavior": {
+    "notifyTitle": "会話終了リマインダー",
+    "notifyEnabled": {
+      "title": "タスク完了のシステム通知",
+      "desc": "AI が 1 ターンを完了したとき常に IDE のシステム通知を表示します（返信プレビュー付き、クリックで会話へ）",
+      "hint": "デフォルトはオフ。システムメッセージのみ（サウンドなし）。手動停止したターンは通知しません",
+      "onHint": "クリックで通知を有効化",
+      "offHint": "クリックで通知を無効化"
     }
   }
 }

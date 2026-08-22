@@ -8,6 +8,7 @@
     "memory": "记忆",
     "skills": "技能",
     "mcp": "MCP",
+    "browser": "浏览器",
     "other": "其他设置"
   },
   "theme": {
@@ -97,7 +98,8 @@
   },
   "basicTabs": {
     "appearance": "外观",
-    "environment": "环境"
+    "environment": "环境",
+    "behavior": "行为"
   },
   "env": {
     "save": "保存",
@@ -119,6 +121,16 @@
       "ok": "有效 · {{model}}",
       "invalid": "未配置",
       "hint": "凭证由 ZCode 客户端登录生成（~/.zcode/v2/config.json），此页仅展示状态"
+    }
+  },
+  "behavior": {
+    "notifyTitle": "对话结束提醒",
+    "notifyEnabled": {
+      "title": "任务完成系统通知",
+      "desc": "AI 完成一轮对话时始终弹出 IDE 系统通知（含回复预览，点击直达对话）",
+      "hint": "默认关闭；仅系统消息提示（不含提示音），手动停止的回合不通知",
+      "onHint": "点击开启系统通知",
+      "offHint": "点击关闭系统通知"
     }
   }
 }

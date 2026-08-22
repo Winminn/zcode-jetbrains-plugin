@@ -1,0 +1,333 @@
+/* 浏览器设置页（设置页「浏览器」条目；区块结构对齐 memory-view 的 section 风格） */
+.browser-settings {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+
+  &__section-title {
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--text-secondary);
+    margin-bottom: 10px;
+  }
+
+  &__hint {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 12px;
+    color: var(--text-tertiary);
+    line-height: 1.5;
+
+    .codicon {
+      font-size: 12px;
+      flex-shrink: 0;
+    }
+
+    &--warn {
+      color: var(--accent-yellow, #e0a428);
+    }
+  }
+
+  /* 浏览器控制只读状态卡（修改在 ZCode 客户端进行）*/
+.browser-settings__readonly {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  margin: 4px 0 8px;
+  border: 1px dashed var(--border-primary);
+  border-radius: 8px;
+  background: var(--bg-secondary);
+
+  &.on {
+    border-style: solid;
+  }
+}
+
+.browser-settings__name-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.browser-settings__ro-icon {
+  font-size: 15px;
+  color: var(--text-tertiary);
+}
+
+.browser-settings__readonly.on .browser-settings__ro-icon {
+  color: var(--accent-primary, #3574f0);
+}
+
+.browser-settings__state {
+  flex-shrink: 0;
+  font-size: 10px;
+  padding: 0 6px;
+  border-radius: 4px;
+  line-height: 16px;
+  border: 1px solid var(--border-primary);
+  color: var(--text-tertiary);
+
+  &.on {
+    border-color: var(--accent-primary, #3574f0);
+    color: var(--accent-primary, #3574f0);
+  }
+}
+
+/* 数据清理条目：左说明右按钮 */
+  &__action-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 10px 12px;
+    border: 1px solid var(--border-primary);
+    border-radius: 8px;
+    background: var(--bg-secondary);
+    margin-bottom: 8px;
+  }
+
+  &__action-body {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+  }
+
+  &__action-name {
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--text-primary);
+  }
+
+  &__action-desc {
+    font-size: 12px;
+    color: var(--text-secondary);
+    line-height: 1.5;
+  }
+
+  /* 按钮组（查看 + 清除并排）*/
+  &__action-btns {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    flex-shrink: 0;
+  }
+
+  &__action-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    flex-shrink: 0;
+    padding: 4px 12px;
+    font-size: 12px;
+    border-radius: 6px;
+    border: 1px solid var(--border-primary);
+    background: var(--bg-tertiary, transparent);
+    color: var(--text-primary);
+    cursor: pointer;
+    transition: all 0.15s;
+
+    .codicon {
+      font-size: 13px;
+    }
+
+    &:hover:not(:disabled) {
+      background: var(--button-hover);
+      border-color: var(--border-hover);
+    }
+
+    &:disabled {
+      cursor: default;
+      opacity: 0.6;
+    }
+
+    &--ghost {
+      background: transparent;
+      color: var(--text-secondary);
+    }
+
+    &--danger {
+      color: var(--error-color, #e5545b);
+
+      &:hover:not(:disabled) {
+        border-color: var(--error-color, #e5545b);
+        background: rgba(229, 84, 91, 0.08);
+      }
+    }
+  }
+
+  &__error {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 12px;
+    color: var(--error-color, #e5545b);
+    cursor: pointer;
+    line-height: 1.5;
+
+    .codicon {
+      flex-shrink: 0;
+    }
+  }
+
+  &__cleared {
+    display: flex;
+    align-items: flex-start;
+    gap: 6px;
+    font-size: 12px;
+    color: var(--success-color, #5fb865);
+    line-height: 1.5;
+
+    .codicon {
+      flex-shrink: 0;
+    }
+  }
+}
+
+/* 数据概览弹窗（modal-overlay/modal-content 全局样式 + 本地行布局）*/
+.browser-overview {
+  min-width: 320px;
+
+  &__title {
+    font-size: 14px;
+    font-weight: 600;
+    color: var(--text-primary);
+    margin-bottom: 10px;
+  }
+
+  &__rows {
+    display: flex;
+    flex-direction: column;
+  }
+
+  &__row {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    gap: 16px;
+    padding: 6px 0;
+    border-bottom: 1px solid var(--border-primary, rgba(128, 128, 128, 0.2));
+
+    &:last-child {
+      border-bottom: none;
+    }
+  }
+
+  &__label {
+    font-size: 12px;
+    color: var(--text-secondary);
+    flex-shrink: 0;
+  }
+
+  &__value {
+    font-size: 12px;
+    color: var(--text-primary);
+    text-align: right;
+    word-break: break-all;
+  }
+
+  &__note {
+    font-size: 11px;
+    color: var(--text-tertiary);
+    margin: 8px 0 0;
+    line-height: 1.5;
+  }
+
+  /* 站点分组区（概览弹窗下半部分）*/
+  &__site-head {
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--text-secondary);
+    margin: 10px 0 4px;
+  }
+
+  &__empty {
+    font-size: 12px;
+    color: var(--text-tertiary);
+    padding: 6px 0;
+  }
+
+  &__sites {
+    max-height: 220px;
+    overflow-y: auto;
+  }
+
+  &__site {
+    padding: 6px 0;
+    border-bottom: 1px solid var(--border-primary, rgba(128, 128, 128, 0.2));
+
+    &:last-child {
+      border-bottom: none;
+    }
+  }
+
+  &__site-origin {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    min-width: 0;
+
+    .codicon {
+      font-size: 12px;
+      color: var(--text-tertiary);
+      flex-shrink: 0;
+    }
+  }
+
+  &__site-name {
+    font-size: 12px;
+    color: var(--text-primary);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  &__badge {
+    flex-shrink: 0;
+    font-size: 10px;
+    padding: 0 5px;
+    border-radius: 4px;
+    border: 1px solid var(--accent-primary, #3574f0);
+    color: var(--accent-primary, #3574f0);
+    line-height: 16px;
+  }
+
+  &__site-tags {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+    margin-top: 4px;
+    padding-left: 18px;
+  }
+
+  &__tag {
+    font-size: 10px;
+    padding: 1px 6px;
+    border-radius: 4px;
+    background: var(--bg-tertiary, rgba(128, 128, 128, 0.18));
+    color: var(--text-secondary);
+    line-height: 16px;
+  }
+
+  &__footer {
+    display: flex;
+    justify-content: flex-end;
+    margin-top: 12px;
+  }
+
+  &__close {
+    padding: 4px 16px;
+    font-size: 12px;
+    border-radius: 6px;
+    border: 1px solid var(--border-primary);
+    background: var(--accent-primary, #3574f0);
+    color: #fff;
+    cursor: pointer;
+
+    &:hover {
+      opacity: 0.9;
+    }
+  }
+}

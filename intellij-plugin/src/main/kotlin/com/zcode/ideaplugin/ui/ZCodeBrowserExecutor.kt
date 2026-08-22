@@ -16,6 +16,7 @@ import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.intOrNull
+import kotlinx.serialization.json.booleanOrNull
 import kotlinx.serialization.json.put
 import java.net.URI
 import java.net.http.HttpClient
@@ -121,6 +122,40 @@ class ZCodeBrowserExecutor(private val project: Project) {
             f.readText().trim().lineSequence().firstOrNull()?.trim()?.toIntOrNull()
         } catch (e: Exception) {
             null
+        }
+
+        /** IndexedDB 目录名 → origin（Chromium 编码：`https_example.com_443.indexeddb.leveldb`）*/
+        internal fun decodeIndexedDbDirName(name: String): String? {
+            val m = Regex("^([a-z]+)_(.+?)(?:_(\\d+))?\\.indexeddb\\.leveldb$").find(name) ?: return null
+            val (scheme, host, port) = m.destructured
+            if (scheme !in setOf("http", "https", "file")) return null
+            // file:// 无 host：目录名是 `file__<路径编码>`（如 file__0），统一归一为 file://
+            if (scheme == "file") return "file://"
+            return "$scheme://$host" + (if (port.isNotEmpty()) ":$port" else "")
+        }
+
+        /**
+         * leveldb 文件里的 origin 明文提取（Local Storage 的 `META:<origin>` key、
+         * Service Worker Database 的 URL）。防御：单文件超 32MB 跳过；读取失败跳过。
+         * 返回 origin 去重集合（SW 的 URL 截到 origin 部分）。
+         */
+        internal fun extractOriginsFromLevelDb(dir: java.nio.file.Path): Set<String> {
+            val d = dir.toFile()
+            if (!d.isDirectory) return emptySet()
+            val out = LinkedHashSet<String>()
+            for (f in d.listFiles() ?: return emptySet()) {
+                if (!f.isFile || f.length() > 32L * 1024 * 1024) continue
+                try {
+                    val text = f.readBytes().toString(Charsets.ISO_8859_1)
+                    Regex("META:([a-z]+://[\\w.:-]+)").findAll(text)
+                        .forEach { out.add(it.groupValues[1]) }
+                    Regex("https?://[\\w.-]+(?::\\d+)?").findAll(text)
+                        .forEach { m -> out.add(m.value) }
+                } catch (_: Exception) {
+                    /* 单文件失败跳过 */
+                }
+            }
+            return out
         }
     }
 
@@ -691,6 +726,11 @@ class ZCodeBrowserExecutor(private val project: Project) {
         ensurePanel: Boolean = true,
     ): JsonObject {
         val wsUrl = findPanelTargetWs(tabId, ensurePanel) ?: throw RuntimeException("CDP target 未找到（浏览器 tab 页面不存在）")
+        return cdpCommandOn(wsUrl, method, params)
+    }
+
+    /** 在指定 ws target 上执行一条 CDP 命令（命令路由 tab 与任意 target 通用）*/
+    private fun cdpCommandOn(wsUrl: String, method: String, params: JsonObject): JsonObject {
         val future = CompletableFuture<JsonObject>()
         val listener = object : WebSocket.Listener {
             private val buf = StringBuilder()
@@ -1580,6 +1620,285 @@ class ZCodeBrowserExecutor(private val project: Project) {
             }
         }
     }
+
+    // ============ 浏览器数据清理（设置页「浏览器」区块，非协议命令）============
+
+    /**
+     * 清理内置浏览器数据（对齐 ZCode 客户端两个清理按钮的能力边界）：
+     * - HTTP 缓存：CDP Network.clearBrowserCache，作用于整个 JCEF profile（任意 page
+     *   target 可下发，无浏览器 tab 时退回聊天 webview 的 target）。
+     * - Cache Storage / Service Worker：按 tab 的页面 origin 执行 JS（能力边界：只清
+     *   当前已打开 tab 的站点，未打开的站点数据残留）。
+     * - [all]=true 追加：Cookie（CDP clearBrowserCookies + JCEF deleteCookies(null,null)
+     *   双保险，全局生效）+ localStorage/sessionStorage/IndexedDB（同样按 tab）。
+     *
+     * 不主动上屏建面板（区别于 AI 命令路径的 ensureBrowserPanel）——清理是设置页操作，
+     * 无浏览器面板时只清全局项（HTTP 缓存/Cookie）。
+     */
+    fun clearBrowsingData(all: Boolean): JsonObject {
+        val panel = findExistingBrowserPanel()
+
+        // 1) 全局 HTTP 缓存（+ all 时 Cookie）
+        var httpCacheCleared = false
+        var cookiesCleared = false
+        try {
+            val ws = if (panel != null) findPanelTargetWs(null, ensurePanel = false) else findAnyPageTargetWs()
+            if (ws != null) {
+                cdpCommandOn(ws, "Network.clearBrowserCache", JsonObject(emptyMap()))
+                httpCacheCleared = true
+                if (all) {
+                    runCatching { cdpCommandOn(ws, "Network.clearBrowserCookies", JsonObject(emptyMap())) }
+                    runCatching { org.cef.network.CefCookieManager.getGlobalManager()?.deleteCookies(null, null) }
+                    cookiesCleared = true
+                }
+            }
+        } catch (e: Exception) {
+            log.warn("[browser-use] clearBrowserCache failed: ${e.message}")
+        }
+
+        // 2) 按 tab 清站点数据（欢迎页 tab 跳过）
+        val siteResults = mutableListOf<JsonObject>()
+        if (panel != null) {
+            val tabs = ArrayList<ZCodeBrowserPanel.TabSnapshot>()
+            SwingUtilities.invokeAndWait { tabs.addAll(panel.tabsSnapshot()) }
+            val script = if (all) CLEAR_ALL_SITE_DATA_JS else CLEAR_CACHE_JS
+            for (tab in tabs) {
+                val u = tab.url
+                if (u.isBlank() || u.startsWith("data:") || u == "about:blank" || u.startsWith("file:///jbcefbrowser/")) continue
+                try {
+                    val ret = cdpEvaluateValue(tab.tabId, script, awaitPromise = true)
+                    val parsed = (ret as? JsonPrimitive)?.contentOrNull?.let {
+                        runCatching { json.parseToJsonElement(it).jsonObject }.getOrNull()
+                    }
+                    siteResults.add(buildJsonObject {
+                        put("url", u.take(120))
+                        put("cacheStorages", parsed?.get("caches")?.jsonPrimitive?.intOrNull ?: 0)
+                        put("serviceWorkers", parsed?.get("sw")?.jsonPrimitive?.intOrNull ?: 0)
+                        if (all) put("storage", parsed?.get("ls")?.jsonPrimitive?.booleanOrNull != false)
+                    })
+                } catch (e: Exception) {
+                    log.warn("[browser-use] site data clear failed for $u: ${e.message}")
+                }
+            }
+        }
+
+        log.info("[browser-use] browsing data cleared (all=$all): httpCache=$httpCacheCleared cookies=$cookiesCleared sites=${siteResults.size}")
+        return buildJsonObject {
+            put("op", "browserDataCleared")
+            put("ok", httpCacheCleared || siteResults.isNotEmpty() || (all && cookiesCleared))
+            put("all", all)
+            put("httpCache", httpCacheCleared)
+            if (all) put("cookies", cookiesCleared)
+            put("sites", JsonArray(siteResults))
+        }
+    }
+
+    /**
+     * 浏览器数据概览（设置页清理条目的「查看」按钮，只读，按站点分组）：
+     * - 全局行：JCEF profile（systemDir/jcef_cache/Default）下 HTTP 缓存/代码缓存的
+     *   磁盘占用与文件数（浏览器并发写入下为近似值）。
+     * - 站点行（三个来源按 host:port 归并）：
+     *   1) 已打开 tab：页面 origin 上查 Cache Storage/SW/localStorage 实时计数
+     *      （CEF 无法查未打开 origin，这部分只覆盖已打开站点）；
+     *   2) Cookie：CDP Network.getAllCookies 全量按域聚合计数（不依赖页面打开）；
+     *   3) 磁盘：IndexedDB 目录名（origin 编码 + 该站点精确占用）、Local Storage/
+     *      Service Worker 的 leveldb 明文提取 origin（只标记有无，共享库无法按站点拆大小）。
+     */
+    fun browseDataOverview(): JsonObject {
+        val profile = com.intellij.openapi.application.PathManager.getSystemDir()
+            .resolve("jcef_cache").resolve("Default")
+        val (cacheBytes, cacheFiles) = dirStats(profile.resolve("Cache"))
+        val codeCacheBytes = dirSize(profile.resolve("Code Cache"))
+
+        // 站点归并表：key = host[:port]（scheme 忽略，http/https 同 host 合并）
+        val sites = LinkedHashMap<String, MutableSite>()
+
+        // 1) 已打开 tab 的实时计数
+        val panel = findExistingBrowserPanel()
+        if (panel != null) {
+            val tabs = ArrayList<ZCodeBrowserPanel.TabSnapshot>()
+            SwingUtilities.invokeAndWait { tabs.addAll(panel.tabsSnapshot()) }
+            for (tab in tabs) {
+                val u = tab.url
+                if (u.isBlank() || u.startsWith("data:") || u == "about:blank" || u.startsWith("file:///jbcefbrowser/")) continue
+                val origin = originOf(u)
+                val s = sites.getOrPut(siteKeyOf(origin)) { MutableSite(origin).apply { open = true } }
+                s.open = true
+                try {
+                    val ret = cdpEvaluateValue(tab.tabId, COUNT_SITE_DATA_JS, awaitPromise = true)
+                    val parsed = (ret as? JsonPrimitive)?.contentOrNull?.let {
+                        runCatching { json.parseToJsonElement(it).jsonObject }.getOrNull()
+                    }
+                    s.cacheStorages += maxOf(0, parsed?.get("caches")?.jsonPrimitive?.intOrNull ?: 0)
+                    s.serviceWorkers += maxOf(0, parsed?.get("sw")?.jsonPrimitive?.intOrNull ?: 0)
+                    s.localStorageEntries += maxOf(0, parsed?.get("ls")?.jsonPrimitive?.intOrNull ?: 0)
+                } catch (e: Exception) {
+                    log.warn("[browser-use] site data count failed for $u: ${e.message}")
+                }
+            }
+        }
+
+        // 2) Cookie 全量按域聚合
+        var cookieCount = -1
+        try {
+            val ws = findPanelTargetWs(null, ensurePanel = false) ?: findAnyPageTargetWs()
+            if (ws != null) {
+                val res = cdpCommandOn(ws, "Network.getAllCookies", JsonObject(emptyMap()))
+                val cookies = res["cookies"]?.jsonArray ?: JsonArray(emptyList())
+                cookieCount = cookies.size
+                for (c in cookies) {
+                    val domain = (c as? JsonObject)?.get("domain")?.jsonPrimitive?.contentOrNull ?: continue
+                    val host = domain.removePrefix(".").substringBefore(':')
+                    if (host.isBlank()) continue
+                    val s = sites.getOrPut(host) { MutableSite(host) }
+                    s.cookies += 1
+                }
+            }
+        } catch (e: Exception) {
+            log.warn("[browser-use] getAllCookies failed: ${e.message}")
+        }
+
+        // 3) 磁盘：IndexedDB 目录名（精确到站点占用）+ Local Storage/SW leveldb origin 标记
+        val idbRoot = profile.resolve("IndexedDB")
+        if (java.nio.file.Files.isDirectory(idbRoot)) {
+            idbRoot.toFile().listFiles()?.forEach { f ->
+                if (!f.isDirectory) return@forEach
+                val origin = decodeIndexedDbDirName(f.name) ?: return@forEach
+                val s = sites.getOrPut(siteKeyOf(origin)) { MutableSite(origin).apply { diskOnly = true } }
+                s.hasIndexedDb = true
+                s.indexedDbBytes += dirStats(f.toPath()).first
+            }
+        }
+        for (origin in extractOriginsFromLevelDb(profile.resolve("Local Storage").resolve("leveldb"))) {
+            val s = sites.getOrPut(siteKeyOf(origin)) { MutableSite(origin).apply { diskOnly = true } }
+            s.hasLocalStorage = true
+        }
+        for (origin in extractOriginsFromLevelDb(profile.resolve("Service Worker").resolve("Database"))) {
+            // SW 明文里混有脚本 URL（路径噪音），按 origin 归并后与实时注册数并列展示
+            val s = sites.getOrPut(siteKeyOf(origin)) { MutableSite(origin).apply { diskOnly = true } }
+            s.diskServiceWorker = true
+        }
+
+        return buildJsonObject {
+            put("op", "browserDataOverview")
+            put("httpCacheBytes", cacheBytes)
+            put("httpCacheEntries", cacheFiles)
+            put("codeCacheBytes", codeCacheBytes)
+            put("cookieCount", cookieCount)
+            put("sites", JsonArray(sites.values.map { it.toJson() }))
+        }
+    }
+
+    /** 站点归并中间结构（磁盘标记与实时计数合并后的展示形态）*/
+    private class MutableSite(val origin: String) {
+        var open = false
+        var diskOnly = false
+        var cookies = 0
+        var cacheStorages = 0
+        var serviceWorkers = 0
+        var localStorageEntries = 0
+        var hasLocalStorage = false
+        var hasIndexedDb = false
+        var diskServiceWorker = false
+        var indexedDbBytes = 0L
+
+        fun toJson(): JsonObject = buildJsonObject {
+            put("origin", origin)
+            put("open", open)
+            put("cookies", cookies)
+            put("cacheStorages", cacheStorages)
+            put("serviceWorkers", if (serviceWorkers > 0) serviceWorkers else if (diskServiceWorker) -1 else 0)
+            put("localStorageEntries", if (localStorageEntries > 0) localStorageEntries else if (hasLocalStorage) -1 else 0)
+            put("indexedDbBytes", indexedDbBytes)
+            put("hasIndexedDb", hasIndexedDb)
+        }
+    }
+
+    /** 归并键：origin → host[:port]（去 scheme；host-only 对齐）*/
+    private fun siteKeyOf(origin: String): String = try {
+        val u = java.net.URI(origin)
+        val port = if (u.port > 0) ":${u.port}" else ""
+        (u.host ?: origin) + port
+    } catch (_: Exception) {
+        origin
+    }
+
+    /** 目录大小 + 文件数（遍历失败的单文件跳过；浏览器并发写入下为近似值）*/
+    private fun dirStats(root: java.nio.file.Path): Pair<Long, Int> {
+        var bytes = 0L
+        var files = 0
+        try {
+            java.nio.file.Files.walkFileTree(root, object : java.nio.file.SimpleFileVisitor<java.nio.file.Path>() {
+                override fun visitFile(f: java.nio.file.Path, attrs: java.nio.file.attribute.BasicFileAttributes): java.nio.file.FileVisitResult {
+                    bytes += attrs.size()
+                    files++
+                    return java.nio.file.FileVisitResult.CONTINUE
+                }
+
+                override fun visitFileFailed(f: java.nio.file.Path, e: java.io.IOException?): java.nio.file.FileVisitResult =
+                    java.nio.file.FileVisitResult.CONTINUE
+            })
+        } catch (_: Exception) { /* 目录不存在/不可读：返回 0 */ }
+        return bytes to files
+    }
+
+    private fun dirSize(root: java.nio.file.Path): Long = dirStats(root).first
+
+    /** URL → origin（scheme://host[:port]，解析失败返回原串前 60 字符）*/
+    private fun originOf(url: String): String = try {
+        val u = java.net.URI(url)
+        val port = if (u.port > 0) ":${u.port}" else ""
+        "${u.scheme}://${u.host ?: ""}$port"
+    } catch (_: Exception) {
+        url.take(60)
+    }
+
+    /** 站点数据只读计数（Cache Storage 缓存数 / SW 注册数 / localStorage 条数）*/
+    private val COUNT_SITE_DATA_JS = """
+        (async () => {
+          const r = {};
+          try { r.caches = (await caches.keys()).length; } catch (e) { r.caches = -1; }
+          try { r.sw = (await navigator.serviceWorker.getRegistrations()).length; } catch (e) { r.sw = -1; }
+          try { r.ls = localStorage.length; } catch (e) { r.ls = -1; }
+          return JSON.stringify(r);
+        })()
+    """.trimIndent().replace("\n", " ")
+
+    /** 任意 page target 的 ws URL（无浏览器面板时清全局项用；含聊天 webview）*/
+    private fun findAnyPageTargetWs(): String? {
+        val base = cdpBaseUrl() ?: return null
+        val list = httpGetJson("$base/json/list") as? JsonArray ?: return null
+        return list.map { it.jsonObject }
+            .firstOrNull { it["type"]?.jsonPrimitive?.contentOrNull == "page" && it["webSocketDebuggerUrl"] != null }
+            ?.get("webSocketDebuggerUrl")?.jsonPrimitive?.content
+    }
+
+    /** 只清缓存（保留 Cookie 与本地站点数据）：Cache Storage + Service Worker */
+    private val CLEAR_CACHE_JS = """
+        (async () => {
+          const r = {};
+          try { const ks = await caches.keys(); await Promise.all(ks.map(k => caches.delete(k))); r.caches = ks.length; } catch (e) { r.caches = -1; }
+          try { const rs = await navigator.serviceWorker.getRegistrations(); await Promise.all(rs.map(x => x.unregister())); r.sw = rs.length; } catch (e) { r.sw = -1; }
+          return JSON.stringify(r);
+        })()
+    """.trimIndent().replace("\n", " ")
+
+    /** 清全部站点数据：上者 + localStorage/sessionStorage/IndexedDB */
+    private val CLEAR_ALL_SITE_DATA_JS = """
+        (async () => {
+          const r = {};
+          try { const ks = await caches.keys(); await Promise.all(ks.map(k => caches.delete(k))); r.caches = ks.length; } catch (e) { r.caches = -1; }
+          try { const rs = await navigator.serviceWorker.getRegistrations(); await Promise.all(rs.map(x => x.unregister())); r.sw = rs.length; } catch (e) { r.sw = -1; }
+          try { localStorage.clear(); r.ls = true; } catch (e) { r.ls = false; }
+          try { sessionStorage.clear(); } catch (e) {}
+          try {
+            const dbs = indexedDB.databases ? await indexedDB.databases() : [];
+            await Promise.all(dbs.map(d => d.name ? new Promise(res => { const q = indexedDB.deleteDatabase(d.name); q.onsuccess = q.onerror = q.onblocked = res; }) : null));
+            r.idb = true;
+          } catch (e) { r.idb = false; }
+          return JSON.stringify(r);
+        })()
+    """.trimIndent().replace("\n", " ")
 
     // ============ Phase 3：Playwright 透传 ============
 

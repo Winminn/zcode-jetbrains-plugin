@@ -1,0 +1,53 @@
+{
+  "control": {
+    "title": "浏览器控制",
+    "switchTitle": "开启内置浏览器控制",
+    "switchDesc": "启用 Browser Use 官方插件，让新会话可以通过内置浏览器访问和操作网页",
+    "stateOn": "已启用",
+    "stateOff": "已禁用",
+    "notInstalledShort": "未安装",
+    "readonlyHint": "与 ZCode 客户端共用配置，如需修改请在 ZCode 客户端的设置中操作（新会话生效）"
+  },
+  "security": {
+    "title": "安全",
+    "switchTitle": "忽略证书校验",
+    "switchDesc": "开启后内置浏览器不再校验 HTTPS 证书，仅影响内置浏览器",
+    "restartHint": "修改后需重启 IDE 生效",
+    "onHint": "点击开启（重启 IDE 后生效）",
+    "offHint": "点击关闭（重启 IDE 后生效）"
+  },
+  "data": {
+    "title": "浏览器数据",
+    "clearCache": "清除内置浏览器缓存",
+    "clearCacheDesc": "清除 HTTP 缓存、Cache Storage 和 Service Worker，保留 Cookie 和本地站点数据",
+    "clearCacheBtn": "清除缓存",
+    "clearAll": "清除全部浏览器数据",
+    "clearAllDesc": "删除内置浏览器中的 Cookie、站点数据和缓存。此操作不可撤销",
+    "clearAllBtn": "清除全部",
+    "clearing": "清除中…",
+    "cleared": "已清除{{httpCache}}{{cookies}}（覆盖 {{sites}} 个站点）",
+    "cachePart": "HTTP 缓存",
+    "cookiesPart": "、Cookie 与站点数据",
+    "timeout": "操作超时（内置浏览器或调试通道无响应），请重试或重启 IDE"
+  },
+  "overview": {
+    "title": "查看数据概览",
+    "btn": "查看",
+    "httpCache": "HTTP 缓存",
+    "codeCache": "代码缓存",
+    "cookies": "Cookie",
+    "cookieCount": "{{count}} 条",
+    "entries": "{{count}} 个文件",
+    "bySite": "按站点",
+    "noSites": "暂无站点数据",
+    "openBadge": "已打开",
+    "tagCookies": "Cookie {{count}}",
+    "tagCaches": "缓存 {{count}}",
+    "tagSw": "SW {{count}}",
+    "tagLs": "存储 {{count}}",
+    "tagIdb": "IndexedDB {{size}}",
+    "tagEmpty": "仅有访问痕迹",
+    "note": "占用为磁盘近似值（浏览器运行中会变化）；清理后仍在使用的页面会立即重新缓存资源，数值回升属正常现象。Cookie 为全量计数，缓存/存储条数仅统计当前已打开的标签页，磁盘站点为历史数据标记。"
+  },
+  "loading": "加载中…"
+}

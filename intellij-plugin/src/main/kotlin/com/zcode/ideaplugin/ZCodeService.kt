@@ -109,4 +109,10 @@ interface ZCodeService {
      * {op:"askUserPending", active:true}——新开标签/页面重载错过广播的看门狗豁免兜底。
      */
     fun pushAskUserPendingState(panel: ZCodeToolWindowPanel)
+
+    /**
+     * 标记某会话被用户手动 stop（对话结束提醒据此跳过：手动打断不提醒，
+     * 对齐 cc-gui isManuallyInterrupted 语义）。handleStop 成功后调用。
+     */
+    fun markManualStop(sessionId: String)
 }

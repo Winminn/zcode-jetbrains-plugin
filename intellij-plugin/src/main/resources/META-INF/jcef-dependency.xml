@@ -1,6 +1,8 @@
 <!-- 可选依赖 com.intellij.modules.jcef 的配置文件。
      当目标 IDE（2026.2+）存在该插件时加载此文件；不存在（2026.1 及以下）则跳过。
      本插件 JCEF 用法全在代码里直接 import com.intellij.ui.jcef.*，
-     无需在此注册 <extensions>，此文件仅满足 optional depends 的 config-file 语法要求。 -->
+     无需在此注册 <extensions>，此文件仅满足 optional depends 的 config-file 语法要求。
+     （ZCodeJcefArgsProvider 的 EP 声明在主 plugin.xml——2026.1 及以下该 optional
+     文件不加载，注册点必须在主文件才能覆盖主流版本。） -->
 <idea-plugin>
 </idea-plugin>

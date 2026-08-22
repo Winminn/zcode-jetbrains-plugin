@@ -1,0 +1,53 @@
+{
+  "control": {
+    "title": "ブラウザ制御",
+    "switchTitle": "内蔵ブラウザ制御を有効化",
+    "switchDesc": "公式 Browser Use プラグインを有効にし、新しいセッションが内蔵ブラウザで Web ページを閲覧・操作できるようにします",
+    "stateOn": "有効",
+    "stateOff": "無効",
+    "notInstalledShort": "未インストール",
+    "readonlyHint": "ZCode クライアントと設定を共有します。変更は ZCode クライアントの設定で行ってください（新しいセッションに適用）"
+  },
+  "security": {
+    "title": "セキュリティ",
+    "switchTitle": "証明書検証をスキップ",
+    "switchDesc": "内蔵ブラウザが HTTPS 証明書を検証しなくなります。内蔵ブラウザのみに影響します",
+    "restartHint": "変更の反映には IDE の再起動が必要です",
+    "onHint": "クリックで有効化（IDE 再起動後に反映）",
+    "offHint": "クリックで無効化（IDE 再起動後に反映）"
+  },
+  "data": {
+    "title": "ブラウザデータ",
+    "clearCache": "内蔵ブラウザのキャッシュを削除",
+    "clearCacheDesc": "HTTP キャッシュ・Cache Storage・Service Worker を削除し、Cookie とローカルサイトデータは保持します",
+    "clearCacheBtn": "キャッシュ削除",
+    "clearAll": "すべてのブラウザデータを削除",
+    "clearAllDesc": "内蔵ブラウザの Cookie・サイトデータ・キャッシュを削除します。元に戻せません",
+    "clearAllBtn": "すべて削除",
+    "clearing": "削除中…",
+    "cleared": "{{httpCache}}{{cookies}}を削除しました（{{sites}} サイト）",
+    "cachePart": "HTTP キャッシュ",
+    "cookiesPart": "・Cookie とサイトデータ",
+    "timeout": "操作がタイムアウトしました（内蔵ブラウザまたはデバッグチャネルが無応答）。再試行するか IDE を再起動してください"
+  },
+  "overview": {
+    "title": "データ概要を表示",
+    "btn": "表示",
+    "httpCache": "HTTP キャッシュ",
+    "codeCache": "コードキャッシュ",
+    "cookies": "Cookie",
+    "cookieCount": "{{count}} 件",
+    "entries": "{{count}} ファイル",
+    "bySite": "サイト別",
+    "noSites": "サイトデータはまだありません",
+    "openBadge": "開いている",
+    "tagCookies": "Cookie {{count}}",
+    "tagCaches": "キャッシュ {{count}}",
+    "tagSw": "SW {{count}}",
+    "tagLs": "ストレージ {{count}}",
+    "tagIdb": "IndexedDB {{size}}",
+    "tagEmpty": "アクセス痕迹のみ",
+    "note": "サイズはディスク上の概算値で、ブラウザ動作中に変動します。クリア後も使用中のページはリソースを即座に再キャッシュするため、値が戻るのは正常です。Cookie は全体カウント、キャッシュ/ストレージ件数は開いているタブのみ、ディスク検出サイトは履歴データの目印です。"
+  },
+  "loading": "読み込み中…"
+}

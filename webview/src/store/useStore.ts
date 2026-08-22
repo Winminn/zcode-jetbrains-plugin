@@ -14,7 +14,7 @@
 
 import { create } from 'zustand'
 import { onMessage, onStreamEvent, onStreamBatch, sendToJava, initBridge, isInJcef, getWorkspacePath, getInitialSessionId } from '@/ipc/bridge'
-import type { JavaResponse, SessionInfo, ZCodeMessage, StreamEvent, ModelOption, ModelManageProvider, TodoItem, AgentItem, FileChangeItem, QuotaData, ModelUsageData, ToolUsageData, UsageRange, ContextBreakdownItem, ThoughtLevelInfo, SubagentActivity, SubagentInfo, ToolUpdatedPayload, MemoryFileInfo, SkillInfo, McpServerInfo, McpToolsState, McpLogEntry, EnvStatus } from '@/types/messages'
+import type { JavaResponse, SessionInfo, ZCodeMessage, StreamEvent, ModelOption, ModelManageProvider, TodoItem, AgentItem, FileChangeItem, QuotaData, ModelUsageData, ToolUsageData, UsageRange, ContextBreakdownItem, ThoughtLevelInfo, SubagentActivity, SubagentInfo, ToolUpdatedPayload, MemoryFileInfo, SkillInfo, McpServerInfo, McpToolsState, McpLogEntry, EnvStatus, BrowserClearedSite, BrowserDataOverview } from '@/types/messages'
 import { applyStreamEvent, isSubagentToolEvent, applySubagentToolEvent, markActivityOutcome, finalizeActivitiesFromNotifications, asSubagentLifecycle, looksLikeQuotaError } from '@/utils/streamReducer'
 import type { TurnErrorInfo, SubagentLifecyclePayload } from '@/utils/streamReducer'
 import i18n from '@/i18n/config'
@@ -179,6 +179,20 @@ interface StoreState {
   /** 开关切换请求在途（防重复点击）*/
   memoryToggling: boolean
 
+  // 浏览器设置（设置视图「浏览器」条目；控制开关/忽略证书与 ZCode 客户端公用配置）
+  browserConfig: {
+    browserControlEnabled: boolean
+    pluginInstalled: boolean
+    insecureCertificates: boolean
+    insecurePendingRestart: boolean
+  } | null
+  /** 开关/清理请求在途（防重复点击；含失败回滚窗口）*/
+  browserBusy: 'insecure' | 'cache' | 'all' | 'overview' | null
+  browserError: string | null
+  /** 最近一次清理结果（toast 汇总展示用）*/
+  browserCleared: { all: boolean; httpCache: boolean; cookies?: boolean; sites: BrowserClearedSite[] } | null
+  /** 浏览器数据概览（清理条目旁「查看」按钮弹窗数据源；null=未加载）*/
+  browserOverview: BrowserDataOverview | null
   // 技能清单（设置视图「技能」条目，SkillScanner 三来源扫描）
   skills: SkillInfo[] | null
   skillsLoading: boolean
@@ -271,6 +285,16 @@ interface StoreState {
   createMemoryFile: (path: string) => void
   /** 切换「工作区记忆」开关（新会话生效）*/
   setMemoryEnabled: (enabled: boolean) => void
+  /** 拉取浏览器设置快照（设置视图「浏览器」条目）*/
+  loadBrowserConfig: () => void
+  /** 「忽略证书校验」开关（写共用 setting.json + JCEF 参数，重启生效）*/
+  setInsecureCertificates: (enabled: boolean) => void
+  /** 清除内置浏览器数据（cache=保留 Cookie 与本地站点数据；all=全清）*/
+  clearBrowserData: (mode: 'cache' | 'all') => void
+  /** 拉取浏览器数据概览（「查看」按钮弹窗）*/
+  loadBrowserOverview: () => void
+  /** 关闭浏览器设置的错误提示 */
+  clearBrowserError: () => void
   /** 拉取技能清单（设置视图「技能」条目）*/
   loadSkills: () => void
   /** 启用/禁用技能（写 config skill 节点，CLI 下次发现生效）*/
@@ -401,6 +425,12 @@ export const useStore = create<StoreState>((set, get) => ({
   memoryError: null,
   memoryEnabled: null,
   memoryToggling: false,
+
+  browserConfig: null,
+  browserBusy: null,
+  browserError: null,
+  browserCleared: null,
+  browserOverview: null,
 
   skills: null,
   skillsLoading: false,
@@ -891,6 +921,43 @@ export const useStore = create<StoreState>((set, get) => ({
     if (get().memoryToggling) return
     set({ memoryToggling: true, memoryError: null })
     sendToJava({ op: 'setMemoryEnabled', enabled })
+  },
+
+  loadBrowserConfig: () => {
+    sendToJava({ op: 'browserConfig' })
+  },
+
+  setInsecureCertificates: (enabled) => {
+    if (get().browserBusy) return
+    set({ browserBusy: 'insecure', browserError: null })
+    sendToJava({ op: 'setInsecureCertificates', enabled })
+  },
+
+  clearBrowserData: (mode) => {
+    if (get().browserBusy) return
+    set({ browserBusy: mode, browserError: null, browserCleared: null })
+    sendToJava({ op: 'clearBrowserData', mode })
+    // 兜底：30s 无响应复位（CDP 通道异常/浏览器 tab 无响应时不永远转圈；正常完成后 busy 已复位）
+    setTimeout(() => {
+      if (get().browserBusy === mode) {
+        set({ browserBusy: null, browserError: i18n.t('browser.data.timeout') })
+      }
+    }, 30_000)
+  },
+
+  loadBrowserOverview: () => {
+    if (get().browserBusy === 'overview') return
+    set({ browserBusy: 'overview', browserError: null })
+    sendToJava({ op: 'browserDataOverview' })
+    setTimeout(() => {
+      if (get().browserBusy === 'overview') {
+        set({ browserBusy: null, browserError: i18n.t('browser.data.timeout') })
+      }
+    }, 30_000)
+  },
+
+  clearBrowserError: () => {
+    set({ browserError: null })
   },
 
   loadSkills: () => {
@@ -1660,6 +1727,8 @@ function handleResponse(
         mcpLogsLoading: false,
         modelManageLoading: false,
         modelTogglingId: null,
+        // 浏览器设置请求失败（如插件未安装）：页面内联提示（browserBusy 在途时才归属该页）
+        ...(get().browserBusy ? { browserBusy: null, browserError: msg.message } : {}),
         ...(get().creatingSession ? { creatingSession: false, pendingFirstMessage: null } : {}),
       })
       console.error('[store] Java 错误:', msg.message)
@@ -1830,6 +1899,40 @@ function handleResponse(
       set({ memoryCreatingPath: null })
       get().loadMemoryFiles()
       break
+
+    case 'browserConfig':
+      set({ browserConfig: {
+        browserControlEnabled: msg.browserControlEnabled,
+        pluginInstalled: msg.pluginInstalled,
+        insecureCertificates: msg.insecureCertificates,
+        insecurePendingRestart: msg.insecurePendingRestart,
+      } })
+      break
+
+    case 'insecureCertificatesChanged':
+      {
+        const cfg = get().browserConfig
+        set({
+          browserConfig: cfg ? { ...cfg, insecureCertificates: msg.enabled, insecurePendingRestart: msg.pendingRestart } : cfg,
+          browserBusy: null,
+          browserError: null,
+        })
+      }
+      break
+
+    case 'browserDataCleared':
+      set({
+        browserBusy: null,
+        browserCleared: { all: msg.all, httpCache: msg.httpCache, cookies: msg.cookies, sites: msg.sites },
+        browserError: msg.ok ? null : 'clear failed',
+      })
+      break
+
+    case 'browserDataOverview': {
+      const { op: _overviewOp, ...overviewData } = msg
+      set({ browserBusy: null, browserOverview: overviewData })
+      break
+    }
 
     case 'skills':
       set({ skills: msg.skills, skillsLoading: false, skillsError: null })

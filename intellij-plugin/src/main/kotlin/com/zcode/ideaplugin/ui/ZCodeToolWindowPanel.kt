@@ -640,6 +640,10 @@ if (!window.__ZCODE_LOG_HOOK__) {
                         "listMemoryFiles" -> handleListMemoryFiles(msg)
                         "createMemoryFile" -> handleCreateMemoryFile(msg)
                         "setMemoryEnabled" -> handleSetMemoryEnabled(msg)
+                        "browserConfig" -> handleBrowserConfig()
+                        "setInsecureCertificates" -> handleSetInsecureCertificates(msg)
+                        "clearBrowserData" -> handleClearBrowserData(msg)
+                        "browserDataOverview" -> handleBrowserDataOverview()
                         "listSkills" -> handleListSkills(msg)
                         "toggleSkill" -> handleToggleSkill(msg)
                         "listMcpServers" -> handleListMcpServers(msg)
@@ -714,6 +718,25 @@ if (!window.__ZCODE_LOG_HOOK__) {
 
     /** 本面板是否订阅了指定会话（Service 层 askUser 弹窗路由用）*/
     fun isSubscribedTo(sessionId: String): Boolean = sessionId in subscribedSessions
+
+    /**
+     * 激活本面板对应的 Content 标签（对话结束通知点击定位用）。
+     * setSelectedContent 触发 selectionChanged 联动（activePanel 更新/懒加载/浏览器挂载迁移）。
+     * 必须在 EDT 调用；Content 已关闭/detached 返回 false（调用方回退仅显示工具窗）。
+     */
+    fun activateContent(requestFocus: Boolean = true): Boolean {
+        val content = attachedContent ?: return false
+        val cm = content.manager ?: return false
+        if (!SwingUtilities.isEventDispatchThread()) {
+            SwingUtilities.invokeLater { activateContent(requestFocus) }
+            return true
+        }
+        // Content 可能在 EDT 排队期间被关闭：选中失败按未命中处理（调用方仅显示工具窗）
+        return runCatching {
+            cm.setSelectedContent(content, requestFocus)
+            true
+        }.getOrDefault(false)
+    }
 
     /**
      * 「新建会话」延迟创建（对齐新标签）：前端清空 currentSessionId 进入待命态后通知本 op，
@@ -2600,6 +2623,8 @@ if (!window.__ZCODE_LOG_HOOK__) {
         try {
             client.stop(sessionId)
             log.info("Stopping current turn of session $sessionId")
+            // 手动打断不触发对话结束提醒（30s 内该会话的收尾事件被跳过）
+            project.zCodeService().markManualStop(sessionId)
         } catch (e: Exception) {
             log.warn("stop failed: ${e.message}")
             return errorResponse("停止失败: ${e.message}")
@@ -2825,6 +2850,75 @@ if (!window.__ZCODE_LOG_HOOK__) {
         return buildJsonObject {
             put("op", "memoryEnabledChanged")
             put("enabled", enabled)
+        }
+    }
+
+    // ============ 浏览器设置（设置页「浏览器」条目；与 ZCode 客户端公用配置）============
+
+    /**
+     * op=browserConfig — 浏览器设置快照：
+     * browserControlEnabled（data 目录判据）/ pluginInstalled（cache 树校验）/
+     * insecureCertificates（setting.json 公用键）/ insecurePendingRestart（JCEF 参数
+     * 与期望值不一致 = 改动尚未重启生效）
+     */
+    private fun handleBrowserConfig(): JsonObject {
+        return buildJsonObject {
+            put("op", "browserConfig")
+            put("browserControlEnabled", ZCodeBrowserSettingStore.isBrowserControlEnabled())
+            put("pluginInstalled", ZCodeBrowserSettingStore.isPluginInstalled())
+            put("insecureCertificates", ZCodeClientSettingStore.readEmbeddedBrowserInsecure())
+            put("insecurePendingRestart", ZCodeBrowserSettingStore.isIgnoreCertPendingRestart())
+        }
+    }
+
+    /**
+     * op=setInsecureCertificates — 「忽略证书校验」开关：写 setting.json 公用键。
+     * 生效通道是 JCEF 启动参数 provider（ZCodeJcefArgsProvider，JBCefApp 初始化时合并）
+     * ——进程级参数，重启 IDE 才重读（响应带 pendingRestart）。
+     */
+    private fun handleSetInsecureCertificates(msg: JsonObject): JsonObject {
+        val enabled = msg["enabled"]?.jsonPrimitive?.boolean
+            ?: return errorResponse("缺少 enabled")
+        if (!ZCodeClientSettingStore.writeEmbeddedBrowserInsecure(enabled)) {
+            return errorResponse("写入 setting.json 失败")
+        }
+        log.info("Embedded browser insecure certificates ${if (enabled) "allowed" else "blocked"} via JCEF args provider (restart required)")
+        return buildJsonObject {
+            put("op", "insecureCertificatesChanged")
+            put("enabled", enabled)
+            put("pendingRestart", ZCodeBrowserSettingStore.isIgnoreCertPendingRestart())
+        }
+    }
+
+    /**
+     * op=clearBrowserData — 清除内置浏览器数据（mode=cache 只清 HTTP 缓存 +
+     * Cache Storage + Service Worker；all 追加 Cookie/localStorage/IndexedDB）。
+     * 详情实现与能力边界见 ZCodeBrowserExecutor.clearBrowsingData。
+     */
+    private fun handleClearBrowserData(msg: JsonObject): JsonObject {
+        val all = msg["mode"]?.jsonPrimitive?.contentOrNull == "all"
+        val executor = project.zCodeService().getBrowserExecutor()
+            ?: return errorResponse("浏览器执行器未初始化（请先打开一次聊天界面）")
+        return try {
+            executor.clearBrowsingData(all)
+        } catch (e: Exception) {
+            log.warn("clearBrowserData failed: ${e.message}")
+            errorResponse("清除失败: ${e.message}")
+        }
+    }
+
+    /**
+     * op=browserDataOverview — 浏览器数据概览（清理条目旁「查看」按钮；只读）：
+     * 磁盘目录占用 + Cookie 计数与 top 域 + 已打开站点的缓存/SW/localStorage 计数。
+     */
+    private fun handleBrowserDataOverview(): JsonObject {
+        val executor = project.zCodeService().getBrowserExecutor()
+            ?: return errorResponse("浏览器执行器未初始化（请先打开一次聊天界面）")
+        return try {
+            executor.browseDataOverview()
+        } catch (e: Exception) {
+            log.warn("browserDataOverview failed: ${e.message}")
+            errorResponse("读取概览失败: ${e.message}")
         }
     }
 

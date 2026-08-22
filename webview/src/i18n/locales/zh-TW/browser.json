@@ -1,0 +1,53 @@
+{
+  "control": {
+    "title": "瀏覽器控制",
+    "switchTitle": "開啟內建瀏覽器控制",
+    "switchDesc": "啟用 Browser Use 官方外掛，讓新會話可以透過內建瀏覽器存取和操作網頁",
+    "stateOn": "已啟用",
+    "stateOff": "已停用",
+    "notInstalledShort": "未安裝",
+    "readonlyHint": "與 ZCode 客戶端共用設定，如需修改請在 ZCode 客戶端的設定中操作（新會話生效）"
+  },
+  "security": {
+    "title": "安全性",
+    "switchTitle": "忽略憑證校驗",
+    "switchDesc": "開啟後內建瀏覽器不再校驗 HTTPS 憑證，僅影響內建瀏覽器",
+    "restartHint": "修改後需重啟 IDE 生效",
+    "onHint": "點擊開啟（重啟 IDE 後生效）",
+    "offHint": "點擊關閉（重啟 IDE 後生效）"
+  },
+  "data": {
+    "title": "瀏覽器資料",
+    "clearCache": "清除內建瀏覽器快取",
+    "clearCacheDesc": "清除 HTTP 快取、Cache Storage 和 Service Worker，保留 Cookie 和本機站點資料",
+    "clearCacheBtn": "清除快取",
+    "clearAll": "清除全部瀏覽器資料",
+    "clearAllDesc": "刪除內建瀏覽器中的 Cookie、站點資料和快取。此操作不可撤銷",
+    "clearAllBtn": "清除全部",
+    "clearing": "清除中…",
+    "cleared": "已清除{{httpCache}}{{cookies}}（覆蓋 {{sites}} 個站點）",
+    "cachePart": "HTTP 快取",
+    "cookiesPart": "、Cookie 與站點資料",
+    "timeout": "操作逾時（內建瀏覽器或除錯通道無回應），請重試或重啟 IDE"
+  },
+  "overview": {
+    "title": "查看資料概覽",
+    "btn": "查看",
+    "httpCache": "HTTP 快取",
+    "codeCache": "程式碼快取",
+    "cookies": "Cookie",
+    "cookieCount": "{{count}} 條",
+    "entries": "{{count}} 個檔案",
+    "bySite": "按站點",
+    "noSites": "暫無站點資料",
+    "openBadge": "已開啟",
+    "tagCookies": "Cookie {{count}}",
+    "tagCaches": "快取 {{count}}",
+    "tagSw": "SW {{count}}",
+    "tagLs": "儲存 {{count}}",
+    "tagIdb": "IndexedDB {{size}}",
+    "tagEmpty": "僅有存取痕跡",
+    "note": "佔用為磁碟近似值（瀏覽器執行中會變化）；清理後仍在使用的頁面會立即重新快取資源，數值回升屬正常現象。Cookie 為全量計數，快取/儲存筆數僅統計目前已開啟的分頁，磁碟站點為歷史資料標記。"
+  },
+  "loading": "載入中…"
+}

@@ -8,6 +8,7 @@
     "memory": "記憶",
     "skills": "技能",
     "mcp": "MCP",
+    "browser": "瀏覽器",
     "other": "其他設定"
   },
   "theme": {
@@ -97,7 +98,8 @@
   },
   "basicTabs": {
     "appearance": "外觀",
-    "environment": "環境"
+    "environment": "環境",
+    "behavior": "行為"
   },
   "env": {
     "save": "儲存",
@@ -119,6 +121,16 @@
       "ok": "有效 · {{model}}",
       "invalid": "未設定",
       "hint": "憑證由 ZCode 用戶端登入產生（~/.zcode/v2/config.json），此頁僅顯示狀態"
+    }
+  },
+  "behavior": {
+    "notifyTitle": "對話結束提醒",
+    "notifyEnabled": {
+      "title": "任務完成系統通知",
+      "desc": "AI 完成一輪對話時始終彈出 IDE 系統通知（含回覆預覽，點擊直達對話）",
+      "hint": "預設關閉；僅系統訊息提示（不含提示音），手動停止的回合不通知",
+      "onHint": "點擊開啟系統通知",
+      "offHint": "點擊關閉系統通知"
     }
   }
 }

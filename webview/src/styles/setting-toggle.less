@@ -1,0 +1,92 @@
+/**
+ * 设置页通用开关卡片样式（SettingToggle；结构同 memory-toggle，独立类名供多页复用）
+ */
+.setting-toggle {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  margin: 4px 0 8px;
+  border: 1px solid var(--border-primary);
+  border-radius: 8px;
+  background: var(--bg-secondary);
+
+  &__body {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+  }
+
+  &__icon {
+    font-size: 16px;
+    color: var(--text-tertiary);
+  }
+
+  &.on &__icon {
+    color: var(--accent-primary, #3574f0);
+  }
+
+  &__name-row {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+
+  &__name {
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--text-primary);
+  }
+
+  &__desc {
+    font-size: 12px;
+    color: var(--text-secondary);
+    line-height: 1.5;
+  }
+
+  /* 胶囊开关：28×16，knob 用 codicon 圆点占位（loading 时替换为转圈）*/
+  &__switch {
+    position: relative;
+    width: 28px;
+    height: 16px;
+    border-radius: 8px;
+    border: 1px solid var(--border-primary);
+    background: var(--bg-tertiary, rgba(128, 128, 128, 0.25));
+    cursor: pointer;
+    flex-shrink: 0;
+    display: inline-flex;
+    align-items: center;
+    justify-content: flex-start;
+    padding: 0 2px;
+    transition: all 0.15s;
+
+    &.on {
+      background: var(--accent-primary, #3574f0);
+      border-color: var(--accent-primary, #3574f0);
+      justify-content: flex-end;
+    }
+
+    &:hover:not(:disabled) {
+      border-color: var(--text-tertiary);
+    }
+    &.on:hover:not(:disabled) {
+      border-color: var(--accent-primary, #3574f0);
+    }
+    &:disabled {
+      cursor: default;
+      opacity: 0.6;
+    }
+  }
+
+  &__knob {
+    font-size: 10px;
+    color: var(--text-secondary);
+    line-height: 1;
+  }
+
+  &.on &__knob {
+    color: #fff;
+  }
+}

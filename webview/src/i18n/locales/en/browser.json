@@ -1,0 +1,53 @@
+{
+  "control": {
+    "title": "Browser control",
+    "switchTitle": "Enable embedded browser control",
+    "switchDesc": "Enable the official Browser Use plugin so new sessions can visit and operate web pages via the embedded browser",
+    "stateOn": "Enabled",
+    "stateOff": "Disabled",
+    "notInstalledShort": "Not installed",
+    "readonlyHint": "Shared with the ZCode client. To change it, use the settings in the ZCode client (applies to new sessions)"
+  },
+  "security": {
+    "title": "Security",
+    "switchTitle": "Ignore certificate errors",
+    "switchDesc": "The embedded browser stops verifying HTTPS certificates. Only affects the embedded browser",
+    "restartHint": "Restart the IDE to apply changes",
+    "onHint": "Click to enable (after IDE restart)",
+    "offHint": "Click to disable (after IDE restart)"
+  },
+  "data": {
+    "title": "Browser data",
+    "clearCache": "Clear embedded browser cache",
+    "clearCacheDesc": "Clear HTTP cache, Cache Storage and Service Workers; keeps cookies and local site data",
+    "clearCacheBtn": "Clear cache",
+    "clearAll": "Clear all browser data",
+    "clearAllDesc": "Deletes cookies, site data and cache in the embedded browser. This cannot be undone",
+    "clearAllBtn": "Clear all",
+    "clearing": "Clearing…",
+    "cleared": "Cleared {{httpCache}}{{cookies}} ({{sites}} site(s) covered)",
+    "cachePart": "HTTP cache",
+    "cookiesPart": ", cookies & site data",
+    "timeout": "Operation timed out (embedded browser or debug channel unresponsive). Retry or restart the IDE"
+  },
+  "overview": {
+    "title": "View data overview",
+    "btn": "View",
+    "httpCache": "HTTP cache",
+    "codeCache": "Code cache",
+    "cookies": "Cookies",
+    "cookieCount": "{{count}} cookies",
+    "entries": "{{count}} files",
+    "bySite": "By site",
+    "noSites": "No site data yet",
+    "openBadge": "open",
+    "tagCookies": "Cookies {{count}}",
+    "tagCaches": "Caches {{count}}",
+    "tagSw": "SW {{count}}",
+    "tagLs": "Storage {{count}}",
+    "tagIdb": "IndexedDB {{size}}",
+    "tagEmpty": "visit traces only",
+    "note": "Sizes are approximate on-disk values and change while the browser runs; pages still in use re-cache their resources right after clearing, so values going back up is normal. Cookies are counted globally; cache/storage counts cover only open tabs; disk sites are markers of historical data."
+  },
+  "loading": "Loading…"
+}
