@@ -2240,6 +2240,19 @@ if (!window.__ZCODE_LOG_HOOK__) {
                     client.resume(sessionId, com.zcode.ideaplugin.protocol.model.Workspace(workspacePath))
                     log.info("send hit cold session (-32004), retrying after resume: $sessionId")
                 }
+                // 后端换代场景（进程重启后 send 才触发 getClient 重建）：订阅簿记此时才
+                // 失效——立即重挂全局监听器并重新订阅本会话，否则服务端正常产出而前端
+                // 收不到流式（一直转圈直到手动停止，2026-08-22 实测）
+                invalidateStaleSubscriptions(client)
+                if (!globalListenerRegistered) {
+                    client.addGlobalEventListener { event -> pushStreamEvent(event.sessionId, event) }
+                    registerBackendErrorHandler(client)
+                    globalListenerRegistered = true
+                }
+                if (sessionId !in subscribedSessions) {
+                    runCatching { client.subscribe(sessionId, onEvent = null) }
+                        .onSuccess { subscribedSessions.add(sessionId) }
+                }
                 client.send(sessionId, text, workspacePath, providerId = providerId, modelId = modelId)
             } catch (e2: Exception) {
                 log.error("send failed (still failing after recovery retry)", e2)
@@ -2363,6 +2376,27 @@ if (!window.__ZCODE_LOG_HOOK__) {
      * 表现为发送正常但收不到实时流，须重启 IDE 才恢复。
      */
     fun resetSubscriptionState() {
+        subscribedClientRef = null
+        globalListenerRegistered = false
+        subscribedSessions.clear()
+    }
+
+    /**
+     * 订阅簿记所属的协议客户端（app-server 换代检测）：
+     * 进程重启（显式 shutdown/崩溃自愈/CLI 升级）后 getClient 返回新实例，旧进程上的
+     * 订阅与全局监听器全部随进程消亡——簿记失效，须重新走完整订阅，否则"发送成功但
+     * 收不到实时流"（2026-08-22 实测：disable 浏览器控制触发 shutdown 后，发消息
+     * -32004 自愈重发成功、服务端正常产出，但前端 subscribe 被 already-subscribed
+     * 短路、监听器不重挂 → 一直转圈直到手动停止）。
+     */
+    @Volatile
+    private var subscribedClientRef: com.zcode.ideaplugin.protocol.ZCodeProtocolClient? = null
+
+    /** client 换代则清空订阅簿记（两个 subscribe 入口调用；换代后首访触发）*/
+    private fun invalidateStaleSubscriptions(client: com.zcode.ideaplugin.protocol.ZCodeProtocolClient) {
+        if (subscribedClientRef === client) return
+        log.info("Protocol client changed (app-server restarted), resetting subscription bookkeeping")
+        subscribedClientRef = client
         globalListenerRegistered = false
         subscribedSessions.clear()
     }
@@ -2380,6 +2414,7 @@ if (!window.__ZCODE_LOG_HOOK__) {
             ?: return errorResponse("缺少 sessionId")
         val workspacePath = effectiveWorkspacePath(msg)
         val client = project.zCodeService().getClient()
+        invalidateStaleSubscriptions(client)
 
         // 记录当前会话（标签持久化 + 生成中状态归属判断）+ 同步 TabState
         currentSessionId = sessionId
@@ -2446,6 +2481,7 @@ if (!window.__ZCODE_LOG_HOOK__) {
             ?: return errorResponse("缺少 sessionId")
         val workspacePath = effectiveWorkspacePath(msg)
         val client = project.zCodeService().getClient()
+        invalidateStaleSubscriptions(client)
 
         // 全局监听器（只注册一次，同 handleSubscribe）
         if (!globalListenerRegistered) {
@@ -2870,6 +2906,7 @@ if (!window.__ZCODE_LOG_HOOK__) {
             put("insecurePendingRestart", ZCodeBrowserSettingStore.isIgnoreCertPendingRestart())
         }
     }
+
 
     /**
      * op=setInsecureCertificates — 「忽略证书校验」开关：写 setting.json 公用键。
