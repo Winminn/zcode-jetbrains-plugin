@@ -76,7 +76,8 @@
   "compaction": {
     "compressing": "Compacting context… (AI is summarizing earlier conversation, no output meanwhile)",
     "title": "Context compacted",
-    "messagesSummarized": "{{count}} messages summarized"
+    "messagesSummarized": "{{count}} messages summarized",
+    "viewSummary": "View compaction summary"
   },
   "timeline": {
     "modelChanged": "Model switched",

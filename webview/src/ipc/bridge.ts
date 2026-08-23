@@ -229,6 +229,7 @@ export function getInitialSessionId(): string {
 
 // #longuser 演示开关：send "#longuser" 置位后，messages 响应追加长用户消息
 let mockLongUserDemo = false
+let mockCompactDemo = false
 
 const mockSessions = [
   {
@@ -421,6 +422,23 @@ function mockRespond(req: JavaRequest): void {
     const doneB = streamTool(m2, callB, fileB, 'src/demo/BatchFileB.ts', doneA + 300)
     setTimeout(() => push('model.streaming', { kind: 'text_delta', delta: '两个文件已写入（mock）。', assistantMessageId: m2 }), doneB + 200)
     setTimeout(() => push('turn.completed', { response: 'ok' }), doneB + 400)
+    return
+  }
+
+  // send 文本 "#compactdemo"：模拟 /compact 压缩完成场景——回合结束后重拉历史时
+  // 注入时间线分隔卡 + 压缩摘要消息，验收摘要卡书本图标 + 弹窗全文形态
+  if (req.op === 'send' && req.text.trim() === '#compactdemo') {
+    mockCompactDemo = true
+    const turnId = `turn_compact_${Date.now()}`
+    const msgId = `msg_compact_${Date.now()}`
+    let seq = 0
+    const push = (type: string, payload: Record<string, unknown>) => {
+      streamListeners.forEach((fn) =>
+        fn(req.sessionId, { type, seq: seq++, sessionId: req.sessionId, turnId, timestamp: Date.now(), payload } as unknown as StreamEvent))
+    }
+    setTimeout(() => push('turn.started', { turnNumber: 1, messageId: msgId }), 150)
+    setTimeout(() => push('model.streaming', { kind: 'text_delta', delta: '上下文已压缩（mock）。', assistantMessageId: msgId }), 400)
+    setTimeout(() => push('turn.completed', { response: 'ok' }), 600)
     return
   }
 
@@ -1373,6 +1391,54 @@ flowchart LR
               { type: 'step-start' },
               { type: 'text', text: '已收到完整配置与日志（mock）。从粘贴内容看，Nacos 超时大概率是网络段不通或 namespace 未配置，详见上文分析。' },
               { type: 'step-finish', reason: 'stop', cost: 0.001, tokens: { total: 8100, input: 8000, output: 100, reasoning: 0 } },
+            ],
+          },
+        )
+      }
+      // #compactdemo 演示：注入压缩 marker 分隔卡 + 压缩摘要消息
+      //（结构同 compact-render.spec.tsx 的 RPC 实测样例），验收弹窗全文形态
+      if (mockCompactDemo) {
+        const compactAt = Date.now() - 20000
+        mockMessages.push(
+          {
+            info: {
+              role: 'assistant',
+              time: { created: compactAt - 500, completed: compactAt },
+              semantics: { origin: 'system', kind: 'timeline_event', uiVisibility: 'visible' },
+              id: 'msg_mock_compact_marker',
+              sessionID: req.sessionId,
+            },
+            parts: [
+              { type: 'timeline', timelineType: 'context_compaction', display: 'separator', status: 'completed', preCompactTokenCount: 287247, truePostCompactTokenCount: 15751 },
+              { type: 'compaction', auto: false, trigger: 'manual' },
+            ],
+          },
+          {
+            info: {
+              role: 'user',
+              time: { created: compactAt },
+              id: 'msg_mock_compact_summary',
+              sessionID: req.sessionId,
+              summary: {
+                title: 'Compact summary',
+                body: [
+                  '## 会话摘要',
+                  '',
+                  '本段对话完成了 ZC-GUI 0.2.3 迭代的两项主功能：',
+                  '',
+                  '1. **提示词润色**：输入框发送按钮左侧新增润色按钮，调用当前模型生成增强版提示词，对比弹窗确认后回填。',
+                  '2. **子智能体配置**：设置页新增子智能体管理（用户/项目两级作用域），与 ZCode 客户端 `~/.zcode/agents/` 数据互通；发送时经输入框顶部选择器指定子代理，消息自动加 `@name` 前缀。',
+                  '',
+                  '### 遗留事项',
+                  '',
+                  '- Mac 平台 Node 自动探测待真机验证',
+                  '- 第三方 provider 窗口虚报问题（autocompact 报错）持续观察',
+                ].join('\n'),
+              },
+            },
+            parts: [
+              { type: 'text', text: 'This session is being continued from a previous conversation…', synthetic: true },
+              { type: 'compaction', auto: false, trigger: 'manual', compactBoundary: { summarizedMessageCount: 473, keptMessageCount: 0 } },
             ],
           },
         )

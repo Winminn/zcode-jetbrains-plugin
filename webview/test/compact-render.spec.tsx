@@ -8,7 +8,7 @@
  *     PartRenderer 识别 → 空壳气泡（只有 footer 时间/耗时）
  *
  * 断言：
- *   1. 摘要消息 → CompactionSummaryCard（折叠卡，非用户气泡），点击可展开正文
+ *   1. 摘要消息 → CompactionSummaryCard（单行卡，非用户气泡），点击弹窗看正文
  *   2. marker 消息 → TimelineSeparator（context_compaction 带 token 收缩文案）
  *   3. model_change marker → 模型切换分隔卡（顺带修复的空壳场景）
  */
@@ -58,7 +58,7 @@ beforeEach(() => { vi.useRealTimers() })
 afterEach(() => cleanup())
 
 describe('压缩摘要消息渲染（缺陷 C2）', () => {
-  it('渲染为折叠卡而非用户气泡：标题 + 被摘要消息数，正文默认收起', () => {
+  it('渲染为单行卡而非用户气泡：标题 + 被摘要消息数，正文默认不渲染', () => {
     const { container } = render(<MessageBubble message={SUMMARY_MSG} />)
     // 折叠卡类名（非 msg--user 用户气泡）
     expect(container.querySelector('.compact-card')).toBeTruthy()
@@ -70,10 +70,16 @@ describe('压缩摘要消息渲染（缺陷 C2）', () => {
     expect(screen.queryByText(/摘要正文/)).toBeNull()
   })
 
-  it('点击头部展开摘要正文（markdown 渲染）', () => {
+  it('点击头部弹出全文弹窗（markdown 渲染，Esc 关闭）', () => {
     render(<MessageBubble message={SUMMARY_MSG} />)
     fireEvent.click(screen.getByRole('button'))
+    // 弹窗（portal 挂 body）出现，正文在弹窗内 markdown 渲染
+    expect(document.querySelector('.subagent-detail-overlay')).toBeTruthy()
     expect(screen.getByText(/之前的对话完成了 0.2.2 发布/)).toBeTruthy()
+    // Esc 关闭，正文随之消失
+    fireEvent.keyDown(document, { key: 'Escape' })
+    expect(document.querySelector('.subagent-detail-overlay')).toBeFalsy()
+    expect(screen.queryByText(/之前的对话完成了 0.2.2 发布/)).toBeNull()
   })
 })
 

@@ -1,6 +1,7 @@
 /**
  * /compact 压缩相关样式（2026-08-21）：
- *   - compact-card：压缩摘要折叠卡（CompactionSummaryCard）
+ *   - compact-card：压缩摘要卡（CompactionSummaryCard，点击弹窗看全文，
+ *     弹窗壳复用 subagent-detail 系列类，样式在 subagent-detail.less）
  *   - tl-sep：时间线分隔符（TimelineSeparator，marker 消息）
  *   - compacting-indicator：压缩进行中状态条（ChatView 底部）
  */
@@ -66,16 +67,8 @@
 
   &__toggle {
     color: var(--text-tertiary);
-    font-size: 10px;
     flex-shrink: 0;
-  }
-
-  &__body {
-    padding: 4px 12px 10px;
-    border-top: 1px solid var(--border-secondary);
     font-size: 12px;
-    max-height: 400px;
-    overflow-y: auto;
   }
 }
 

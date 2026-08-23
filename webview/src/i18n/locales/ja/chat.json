@@ -76,7 +76,8 @@
   "compaction": {
     "compressing": "コンテキストを圧縮中…（AI がこれまでの会話を要約しています）",
     "title": "コンテキストを圧縮しました",
-    "messagesSummarized": "{{count}} 件のメッセージを要約"
+    "messagesSummarized": "{{count}} 件のメッセージを要約",
+    "viewSummary": "圧縮サマリーを表示"
   },
   "timeline": {
     "modelChanged": "モデルを切り替えました",

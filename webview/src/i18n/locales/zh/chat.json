@@ -76,7 +76,8 @@
   "compaction": {
     "compressing": "正在压缩上下文…（AI 正在总结之前的对话，期间无输出）",
     "title": "上下文已压缩",
-    "messagesSummarized": "{{count}} 条消息已摘要"
+    "messagesSummarized": "{{count}} 条消息已摘要",
+    "viewSummary": "查看压缩摘要"
   },
   "timeline": {
     "modelChanged": "模型已切换",
