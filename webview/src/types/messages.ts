@@ -187,7 +187,7 @@ export interface SessionInfo {
   messageCount?: number
   /** 内容大小（message+part 字节和；统计失败时字段缺省）*/
   sizeBytes?: number
-  /** 归档时间戳（毫秒）；缺省 = 未归档（仅已归档列表的项带此字段）*/
+  /** 归档标记时间戳（毫秒，取 ZCode 客户端任务索引 updated_at）；缺省 = 未归档（仅已归档列表的项带此字段）*/
   archivedAt?: number
 }
 

@@ -47,6 +47,12 @@ class ZCodeProtocolClient private constructor(
 
     private val json = Json { ignoreUnknownKeys = true }
 
+    /** app-server 会话库（session/list 数据源；删除、旧归档迁移直写） */
+    private val cliDbPath = Path.of(System.getProperty("user.home"), ".zcode", "cli", "db", "db.sqlite")
+
+    /** ZCode 客户端任务索引（归档/恢复与客户端共写同一数据源，见 TaskIndexStore） */
+    val taskIndex = TaskIndexStore(nodePath, Path.of(System.getProperty("user.home"), ".zcode", "v2", "tasks-index.sqlite"))
+
     // 请求 ID 生成器
     private val idCounter = AtomicLong(0)
 
@@ -955,14 +961,12 @@ class ZCodeProtocolClient private constructor(
      * 第一个命令行参数会被 Node 吃掉（实测），导致 node 用错误的路径创建空 DB。
      */
     private fun deleteSessionFromDb(sessionId: String) {
-        val home = System.getProperty("user.home")
-        val dbPath = Path.of(home, ".zcode", "cli", "db", "db.sqlite")
-        if (!java.nio.file.Files.exists(dbPath)) {
-            println("[ZCodeProtocolClient] db.sqlite not found, skipping persistent deletion: $dbPath")
+        if (!java.nio.file.Files.exists(cliDbPath)) {
+            println("[ZCodeProtocolClient] db.sqlite not found, skipping persistent deletion: $cliDbPath")
             return
         }
         val pb = ProcessBuilder(nodePath, "-e", DELETE_SESSION_JS)
-        pb.environment()["ZCODE_DELETE_DB"] = dbPath.toString()
+        pb.environment()["ZCODE_DELETE_DB"] = cliDbPath.toString()
         pb.environment()["ZCODE_DELETE_SID"] = sessionId
         val p = pb.start()
         val out = p.inputStream.bufferedReader().readText()
@@ -978,49 +982,41 @@ class ZCodeProtocolClient private constructor(
     }
 
     /**
-     * 归档会话：直接 UPDATE db.sqlite session.time_archived（标记归档，不删数据）
+     * 归档会话：写 ZCode 客户端任务索引（tasks.archived=1，无行补 UPSERT）
      *
-     * 与删除不同——归档是可逆的单行 UPDATE，不碰 app-server 内存/索引，不删任何关联表。
-     * session/list(includeArchived=false) 过滤 time_archived 非空的会话从而从历史列表隐藏；
-     * 恢复（restoreSession）置 NULL 即重新显示。ZCode 协议无归档方法，故直连 DB
-     *（同删除的无奈之举，但仅改一个字段，schema 耦合面极小，zcode 升级几乎不会破坏）。
+     * 与桌面客户端同一数据源（~/.zcode/v2/tasks-index.sqlite），两端列表一致：
+     * 客户端（下次重读库时）同步隐藏。session meta（title/时间/工作区）由脚本
+     * 从 cli db 读取。旧机制（session.time_archived）已废弃，见 migrateLegacyArchivesOnce。
      */
-    fun archiveSession(sessionId: String) = updateSessionArchived(sessionId, archive = true)
-
-    /** 恢复归档会话：置 time_archived = NULL，重新进入历史列表 */
-    fun restoreSession(sessionId: String) = updateSessionArchived(sessionId, archive = false)
-
-    private fun updateSessionArchived(sessionId: String, archive: Boolean) {
-        val dbPath = Path.of(System.getProperty("user.home"), ".zcode", "cli", "db", "db.sqlite")
-        if (!java.nio.file.Files.exists(dbPath)) {
-            throw IllegalStateException("db.sqlite 不存在: $dbPath")
-        }
-        val pb = ProcessBuilder(nodePath, "-e", ARCHIVE_SESSION_JS)
-        pb.environment()["ZCODE_ARCHIVE_DB"] = dbPath.toString()
-        pb.environment()["ZCODE_ARCHIVE_SID"] = sessionId
-        pb.environment()["ZCODE_ARCHIVE_MODE"] = if (archive) "archive" else "restore"
-        val p = pb.start()
-        val out = p.inputStream.bufferedReader().readText()
-        val err = p.errorStream.bufferedReader().readText()
-        val finished = p.waitFor(15, TimeUnit.SECONDS)
-        if (!finished) {
-            p.destroyForcibly()
-            throw IllegalStateException("${if (archive) "归档" else "恢复"}超时: $sessionId")
-        }
-        if (p.exitValue() != 0) {
-            throw IllegalStateException("${if (archive) "归档" else "恢复"}失败: ${err.ifBlank { out }}")
-        }
-    }
+    fun archiveSession(sessionId: String) = taskIndex.setArchived(sessionId, cliDbPath, archive = true)
 
     /**
-     * 列出已归档会话（includeArchived=true 拉全部后过滤 archivedAt>0）
+     * 恢复归档会话：置 tasks.archived=0 并清旧机制归档位（time_archived，老版本插件
+     * 归档的既有用户会话由此真正恢复；NULL 时幂等空操作）。客户端重启/刷新后同步可见。
+     */
+    fun restoreSession(sessionId: String) = taskIndex.setArchived(sessionId, cliDbPath, archive = false)
+
+    /**
+     * 列出已归档会话：双源合并（兼容既有用户的老机制归档）
      *
-     * zcode session/list 无"只查归档"选项，includeArchived=true 返回归档+未归档全部，
-     * 这里过滤出 archivedAt 非空的。归档列表低频访问，全量拉取可接受。
+     * - 新机制：tasks-index archived=1（ZCode 客户端归档/自动归档 + 新版插件归档），
+     *   archivedAt 取 tasks.updated_at（客户端同义，表无专门归档时间列）
+     * - 旧机制：session/list 响应的 archivedAt（session.time_archived，老版本插件归档）
+     *
+     * 客户端归档后会话在其侧无恢复入口——插件的「已归档」列表即恢复出口。
+     * tasks 里的 claude-import-* 等无 session 行的任务自然跳过。
      */
     fun listArchivedSessions(workspacePath: String? = null, limit: Int = 500, timeoutMs: Long = 10000): List<SessionInfo> {
         val all = listSessions(workspacePath, includeArchived = true, limit = limit, timeoutMs = timeoutMs)
-        return all.filter { (it.archivedAt ?: 0L) > 0L }
+        val archivedById = taskIndex.listTasks().filter { it.archived }.associateBy { it.taskId }
+        return all.mapNotNull { s ->
+            val t = archivedById[s.sessionId]
+            when {
+                t != null -> s.copy(archivedAt = t.updatedAt)   // 新机制（tasks-index）
+                (s.archivedAt ?: 0L) > 0L -> s                  // 旧机制（time_archived）
+                else -> null
+            }
+        }.sortedByDescending { it.archivedAt ?: 0L }
     }
 
     // 会话统计缓存：db 文件指纹（mtime:size，主库+WAL）→ 统计结果（见 getSessionStats）
@@ -1201,29 +1197,6 @@ private val DELETE_SESSION_JS = """
     db.exec('BEGIN IMMEDIATE');
     try { del(sid); db.exec('COMMIT'); console.log('deleted'); }
     catch (e) { try { db.exec('ROLLBACK'); } catch(_){} console.error('ERR: ' + e.message); process.exit(1); }
-""".trimIndent()
-
-/** node:sqlite 内联脚本：归档/恢复会话（单行 UPDATE session.time_archived）。
- * mode=archive 置当前毫秒时间戳，mode=restore 置 NULL；affected rows=0 报错（会话不存在）。
- * 参数经环境变量传入（同 DELETE_SESSION_JS 的 Windows 命令行参数坑）*/
-private val ARCHIVE_SESSION_JS = """
-    const {DatabaseSync} = require('node:sqlite');
-    const db = new DatabaseSync(process.env.ZCODE_ARCHIVE_DB);
-    db.exec('PRAGMA busy_timeout = 15000');
-    const mode = process.env.ZCODE_ARCHIVE_MODE;
-    const sid = process.env.ZCODE_ARCHIVE_SID;
-    db.exec('BEGIN IMMEDIATE');
-    try {
-      const res = mode === 'archive'
-        ? db.prepare('UPDATE session SET time_archived = ? WHERE id = ?').run(Date.now(), sid)
-        : db.prepare('UPDATE session SET time_archived = NULL WHERE id = ?').run(sid);
-      if (res.changes === 0) { db.exec('ROLLBACK'); console.error('ERR: session not found: ' + sid); process.exit(1); }
-      db.exec('COMMIT');
-      console.log('ok');
-    } catch (e) {
-      try { db.exec('ROLLBACK'); } catch(_){}
-      console.error('ERR: ' + e.message); process.exit(1);
-    }
 """.trimIndent()
 
 /** node:sqlite 内联脚本：按会话统计消息数与内容字节数（只读，表名硬编码，无注入）。

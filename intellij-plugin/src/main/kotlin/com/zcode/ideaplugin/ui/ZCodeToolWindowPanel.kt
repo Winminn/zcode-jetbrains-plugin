@@ -1463,12 +1463,20 @@ if (!window.__ZCODE_LOG_HOOK__) {
                 ws != null && normalizePath(ws) == normalized
             }
         }
-        log.info("workspace=$workspacePath filtered to ${filtered.size} session(s)")
+
+        // 归档/软删过滤（ZCode 客户端同源 tasks-index；task_id=会话 id 全局唯一，直接按 id 隐）。
+        // schema 不兼容时 listTasks 内部 fail-soft 返回空列表（不过滤，宁多显示不漏显示）
+        val hiddenIds = client.taskIndex.listTasks()
+            .filter { it.archived || it.deleted }
+            .map { it.taskId }
+            .toSet()
+        val visible = if (hiddenIds.isEmpty()) filtered else filtered.filter { it.sessionId !in hiddenIds }
+        log.info("workspace=$workspacePath filtered to ${filtered.size} session(s), ${filtered.size - visible.size} hidden by tasks-index")
 
         // 会话统计（消息数/内容大小，直读 db.sqlite；失败内部已降级空 map，字段缺省前端不显示）
         val stats: Map<String, SessionStat> = client.getSessionStats()
 
-        val sessionsJson = JsonArray(filtered.map { buildSessionJson(it, stats) })
+        val sessionsJson = JsonArray(visible.map { buildSessionJson(it, stats) })
         return buildJsonObject {
             put("op", "listSessions")
             put("sessions", sessionsJson)
@@ -1520,7 +1528,7 @@ if (!window.__ZCODE_LOG_HOOK__) {
         }
     }
 
-    /** 归档会话（UPDATE time_archived，不删数据，可恢复）*/
+    /** 归档会话（写 ZCode 客户端任务索引 tasks.archived=1，两端列表一致，可恢复）*/
     private fun handleArchiveSession(msg: JsonObject): JsonObject {
         val sessionId = msg["sessionId"]?.jsonPrimitive?.content
             ?: return errorResponse("缺少 sessionId")
@@ -1538,7 +1546,7 @@ if (!window.__ZCODE_LOG_HOOK__) {
         }
     }
 
-    /** 恢复归档会话（置 time_archived = NULL）*/
+    /** 恢复归档会话（置 tasks.archived=0，客户端重启/刷新后同步可见）*/
     private fun handleRestoreSession(msg: JsonObject): JsonObject {
         val sessionId = msg["sessionId"]?.jsonPrimitive?.content
             ?: return errorResponse("缺少 sessionId")
@@ -1556,7 +1564,7 @@ if (!window.__ZCODE_LOG_HOOK__) {
         }
     }
 
-    /** 列出已归档会话（includeArchived=true 过滤 archivedAt>0）*/
+    /** 列出已归档会话（双源合并：tasks-index 新机制 + time_archived 旧机制；含客户端归档的会话）*/
     private fun handleListArchivedSessions(msg: JsonObject): JsonObject {
         val workspacePath = msg["workspacePath"]?.jsonPrimitive?.content
             ?: project.basePath

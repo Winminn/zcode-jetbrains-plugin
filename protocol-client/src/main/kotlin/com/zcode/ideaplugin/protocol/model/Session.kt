@@ -29,7 +29,7 @@ data class SessionInfo(
     val updatedAt: Long = 0,
     val traceId: String? = null,
     val titleSource: String? = null,
-    /** 归档时间戳（毫秒）；null = 未归档。对应 db.sqlite session.time_archived */
+    /** 归档标记时间戳（毫秒，ZCode 客户端任务索引 tasks.updated_at）；null = 未归档 */
     val archivedAt: Long? = null
 )
 
