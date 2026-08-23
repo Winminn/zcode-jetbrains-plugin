@@ -26,6 +26,8 @@ import zhSkills from './locales/zh/skills.json'
 import zhUtils from './locales/zh/utils.json'
 import zhModels from './locales/zh/models.json'
 import zhBrowser from './locales/zh/browser.json'
+import zhEnhance from './locales/zh/enhance.json'
+import zhAgents from './locales/zh/agents.json'
 
 import zhTwCommon from './locales/zh-TW/common.json'
 import zhTwApp from './locales/zh-TW/app.json'
@@ -41,6 +43,8 @@ import zhTwSkills from './locales/zh-TW/skills.json'
 import zhTwUtils from './locales/zh-TW/utils.json'
 import zhTwModels from './locales/zh-TW/models.json'
 import zhTwBrowser from './locales/zh-TW/browser.json'
+import zhTwEnhance from './locales/zh-TW/enhance.json'
+import zhTwAgents from './locales/zh-TW/agents.json'
 
 import enCommon from './locales/en/common.json'
 import enApp from './locales/en/app.json'
@@ -56,6 +60,8 @@ import enSkills from './locales/en/skills.json'
 import enUtils from './locales/en/utils.json'
 import enModels from './locales/en/models.json'
 import enBrowser from './locales/en/browser.json'
+import enEnhance from './locales/en/enhance.json'
+import enAgents from './locales/en/agents.json'
 
 import jaCommon from './locales/ja/common.json'
 import jaApp from './locales/ja/app.json'
@@ -71,6 +77,8 @@ import jaSkills from './locales/ja/skills.json'
 import jaUtils from './locales/ja/utils.json'
 import jaModels from './locales/ja/models.json'
 import jaBrowser from './locales/ja/browser.json'
+import jaEnhance from './locales/ja/enhance.json'
+import jaAgents from './locales/ja/agents.json'
 
 import koCommon from './locales/ko/common.json'
 import koApp from './locales/ko/app.json'
@@ -86,6 +94,8 @@ import koSkills from './locales/ko/skills.json'
 import koUtils from './locales/ko/utils.json'
 import koModels from './locales/ko/models.json'
 import koBrowser from './locales/ko/browser.json'
+import koEnhance from './locales/ko/enhance.json'
+import koAgents from './locales/ko/agents.json'
 
 /** 支持的语言码（IDE 侧 ZCodeLanguageService 同款白名单）*/
 export const SUPPORTED_LANGUAGES = ['zh', 'zh-TW', 'en', 'ja', 'ko'] as const
@@ -110,8 +120,10 @@ function merge(
   utils: object,
   models: object,
   browser: object,
+  enhance: object,
+  agents: object,
 ) {
-  return { common, app, settings, input, chat, tool, history, mcp, usage, memory, skills, utils, models, browser }
+  return { common, app, settings, input, chat, tool, history, mcp, usage, memory, skills, utils, models, browser, enhance, agents }
 }
 
 /** IDE 注入的权威语言（buildBridgeJs 生成；无注入为 undefined）*/
@@ -144,11 +156,11 @@ export function getInitialLanguage(): SupportedLanguage {
 
 void i18n.use(initReactI18next).init({
   resources: {
-    zh: { translation: merge(zhCommon, zhApp, zhSettings, zhInput, zhChat, zhTool, zhHistory, zhMcp, zhUsage, zhMemory, zhSkills, zhUtils, zhModels, zhBrowser) },
-    'zh-TW': { translation: merge(zhTwCommon, zhTwApp, zhTwSettings, zhTwInput, zhTwChat, zhTwTool, zhTwHistory, zhTwMcp, zhTwUsage, zhTwMemory, zhTwSkills, zhTwUtils, zhTwModels, zhTwBrowser) },
-    en: { translation: merge(enCommon, enApp, enSettings, enInput, enChat, enTool, enHistory, enMcp, enUsage, enMemory, enSkills, enUtils, enModels, enBrowser) },
-    ja: { translation: merge(jaCommon, jaApp, jaSettings, jaInput, jaChat, jaTool, jaHistory, jaMcp, jaUsage, jaMemory, jaSkills, jaUtils, jaModels, jaBrowser) },
-    ko: { translation: merge(koCommon, koApp, koSettings, koInput, koChat, koTool, koHistory, koMcp, koUsage, koMemory, koSkills, koUtils, koModels, koBrowser) },
+    zh: { translation: merge(zhCommon, zhApp, zhSettings, zhInput, zhChat, zhTool, zhHistory, zhMcp, zhUsage, zhMemory, zhSkills, zhUtils, zhModels, zhBrowser, zhEnhance, zhAgents) },
+    'zh-TW': { translation: merge(zhTwCommon, zhTwApp, zhTwSettings, zhTwInput, zhTwChat, zhTwTool, zhTwHistory, zhTwMcp, zhTwUsage, zhTwMemory, zhTwSkills, zhTwUtils, zhTwModels, zhTwBrowser, zhTwEnhance, zhTwAgents) },
+    en: { translation: merge(enCommon, enApp, enSettings, enInput, enChat, enTool, enHistory, enMcp, enUsage, enMemory, enSkills, enUtils, enModels, enBrowser, enEnhance, enAgents) },
+    ja: { translation: merge(jaCommon, jaApp, jaSettings, jaInput, jaChat, jaTool, jaHistory, jaMcp, jaUsage, jaMemory, jaSkills, jaUtils, jaModels, jaBrowser, jaEnhance, jaAgents) },
+    ko: { translation: merge(koCommon, koApp, koSettings, koInput, koChat, koTool, koHistory, koMcp, koUsage, koMemory, koSkills, koUtils, koModels, koBrowser, koEnhance, koAgents) },
   },
   lng: getInitialLanguage(),
   fallbackLng: DEFAULT_LANGUAGE,

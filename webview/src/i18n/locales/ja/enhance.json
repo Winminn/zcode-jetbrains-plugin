@@ -1,0 +1,11 @@
+{
+  "tooltip": "プロンプトを改善（現在のモデルを使用）",
+  "title": "プロンプト改善",
+  "dialogAriaLabel": "プロンプト改善比較ダイアログ",
+  "original": "元のプロンプト",
+  "enhanced": "改善後のプロンプト",
+  "loading": "改善中…",
+  "keepOriginal": "元のまま",
+  "useEnhanced": "改善版を使用",
+  "timeout": "改善がタイムアウトしました。再試行してください"
+}

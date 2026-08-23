@@ -657,6 +657,67 @@ class ZCodeProtocolClient private constructor(
         }
     }
 
+    /**
+     * 一次性 CLI 问答（headless）：`zcode -p <prompt> --json --mode yolo`（不带 --resume）。
+     *
+     * 独立子进程、不接续任何会话，用于提示词润色等旁路模型调用——零会话污染。
+     * 实测输出为单个 JSON 对象，`response` 字段即回复文本（与 sendViaCliResume
+     * 同一解析方式）。stderr 单独 drain 防管道满卡死，且不混入 stdout 保 JSON 纯净。
+     *
+     * @param credentialsOverride 指定模型凭证（注入 ZCODE_MODEL 等 env，实现"用当前
+     *   选择的模型润色"）；null 用客户端启动时的凭证
+     * @param timeoutMs 进程超时：超时强杀并抛异常（真正的超时保护，stdout 异步读）
+     */
+    fun cliOneShot(
+        prompt: String,
+        workspacePath: String?,
+        credentialsOverride: ZCodeCredentials? = null,
+        timeoutMs: Long = 120_000,
+    ): JsonObject {
+        val args = mutableListOf(
+            nodePath, zcodePath.toString(),
+            "-p", prompt,
+            "--json",
+            "--mode", "yolo"
+        )
+        workspacePath?.let { args.addAll(listOf("--cwd", it)) }
+
+        val pb = ProcessBuilder(args)
+        pb.environment().clear()
+        pb.environment().putAll(credentialsOverride?.toEnvMap() ?: credentials.toEnvMap())
+        pb.redirectErrorStream(false)
+
+        val proc = pb.start()
+        val errText = StringBuilder()
+        Thread({
+            runCatching {
+                proc.errorStream.bufferedReader().forEachLine {
+                    if (errText.length < 8000) errText.appendLine(it)
+                }
+            }
+        }, "zcode-cli-oneshot-stderr").start()
+
+        val outputFuture = CompletableFuture.supplyAsync {
+            proc.inputStream.bufferedReader().readText()
+        }
+        try {
+            if (!proc.waitFor(timeoutMs, TimeUnit.SECONDS)) {
+                proc.destroyForcibly()
+                throw ZCodeProtocolException("CLI 一次性调用超时（${timeoutMs / 1000}s），进程已终止")
+            }
+            val output = outputFuture.get(5, TimeUnit.SECONDS)
+            return try {
+                Json.parseToJsonElement(output).jsonObject
+            } catch (e: Exception) {
+                throw ZCodeProtocolException(
+                    "CLI 一次性调用输出解析失败: stdout=${output.take(150)} stderr=${errText.toString().take(150)}"
+                )
+            }
+        } finally {
+            if (proc.isAlive) proc.destroyForcibly()
+        }
+    }
+
     /** session/messages — 读历史 */
     fun messages(sessionId: String, timeoutMs: Long = 15000): JsonArray {
         val params = buildJsonObject { put("sessionId", sessionId) }

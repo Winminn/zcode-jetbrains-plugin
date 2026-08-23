@@ -33,14 +33,22 @@ import { ThoughtLevelSelect } from './ThoughtLevelSelect'
 import { ModeSelect } from './ModeSelect'
 import { ContextRing } from './ContextRing'
 import { MessageQueue } from './MessageQueue'
+import { AgentSelect, AgentColorDot } from './AgentSelect'
+import { PromptEnhancerDialog } from './PromptEnhancerDialog'
 import { sendToJava, onMessage } from '@/ipc/bridge'
-import type { JavaResponse, SlashCommand } from '@/types/messages'
+import type { JavaResponse, SlashCommand, AgentDef } from '@/types/messages'
 import { insertChipAtCursor, convertCompletedPaths, serializeEditor } from '@/utils/inlineFileTags'
 import { PastedTextRef, PastedTextPreview, type PastedTextItem } from './PastedTextRef'
 import '../styles/input-box.less'
+import '../styles/agent-select.less'
 
 /** 内联 chip hover tooltip 的 DOM 节点 id（挂 document.body）*/
 const INLINE_CHIP_TIP_ID = 'zcode-inline-chip-tip'
+
+/** / 下拉条目：命令/技能（SlashCommand）+ 子智能体（kind='agent'，选择=设发送目标）*/
+type SlashItem =
+  | SlashCommand
+  | { name: string; description: string; kind: 'agent'; agent: AgentDef }
 
 /**
  * 粘贴折叠阈值：≥10 行或 ≥500 字符的粘贴文本折叠为顶部 chip（点击预览），
@@ -65,9 +73,11 @@ interface Props {
   currentModel?: { modelId: string; providerId: string } | null
   /** 切换模型回调 */
   onModelSelect?: (modelId: string, providerId: string) => void
+  /** 打开设置页「子智能体」管理（AgentSelect 下拉「管理」入口）*/
+  onOpenAgentSettings?: () => void
 }
 
-export function InputBox({ onSend, isStreaming = false, onStop, disabled = false, placeholder, currentModel, onModelSelect }: Props) {
+export function InputBox({ onSend, isStreaming = false, onStop, disabled = false, placeholder, currentModel, onModelSelect, onOpenAgentSettings }: Props) {
   const { t } = useTranslation()
   const editorRef = useRef<HTMLDivElement>(null)
   const wrapperRef = useRef<HTMLDivElement>(null)
@@ -135,6 +145,41 @@ export function InputBox({ onSend, isStreaming = false, onStop, disabled = false
     setGhostSuffix('')
   }, [sessionId, resetNav])
 
+  // ============ 子智能体选择（发送时消息前置 @<name>）============
+  const agents = useStore((s) => s.subagentDefs)
+  const selectedAgent = useStore((s) => s.selectedAgent)
+  const selectAgentAction = useStore((s) => s.selectAgent)
+
+  // ============ 提示词润色 ============
+  const enhancing = useStore((s) => s.enhancing)
+  const enhanceResult = useStore((s) => s.enhanceResult)
+  const enhancePromptAction = useStore((s) => s.enhancePrompt)
+  const clearEnhanceResult = useStore((s) => s.clearEnhanceResult)
+
+  /** 润色按钮：取编辑器正文（与 doSend 同源的序列化），触发一次性 CLI 调用 */
+  function handleEnhanceClick() {
+    if (enhancing || isStreaming) return
+    const text = serializeEditor(editorRef.current ?? document.createElement('div')).replace(/\s+$/, '')
+    if (!text.trim()) return
+    enhancePromptAction(text)
+  }
+
+  /** 使用润色结果：整体替换编辑器正文（路径文本回显内联 chip）*/
+  function applyEnhanced(text: string) {
+    const el = editorRef.current
+    if (el) {
+      el.innerText = text
+      setHasText(!!text.trim())
+      setMentionQuery(null)
+      setMentionFiles([])
+      setSlashQuery(null)
+      setGhostSuffix('')
+      convertCompletedPaths(el, true)
+      placeCursorEnd(el)
+    }
+    clearEnhanceResult()
+  }
+
   // ============ 发送 ============
   function doSend() {
     // 未选模型时不发送（引导用户先选择，避免 CLI 偷偷用默认模型）
@@ -143,9 +188,13 @@ export function InputBox({ onSend, isStreaming = false, onStop, disabled = false
     const text = serializeEditor(editorRef.current ?? document.createElement('div')).replace(/\s+$/, '')
     if (!text.trim() && fileRefs.length === 0 && skillRefs.length === 0 && pastedTexts.length === 0) return
 
-    // 技能引用拼到最前（/技能名），顶部文件引用次之（@路径），正文（含内联引用）最后，
+    // 子智能体引用拼最前（@名称，主 Agent 据此调度该子智能体——2026-08-23 协议实测），
+    // 技能引用次之（/技能名），顶部文件引用（@路径）再次，正文（含内联引用）最后，
     // 折叠的粘贴文本按粘贴顺序拼到正文末尾（CLI 收到完整原文）
     const parts: string[] = []
+    if (selectedAgent) {
+      parts.push(`@${selectedAgent.name}`)
+    }
     if (skillRefs.length > 0) {
       parts.push(skillRefs.map((s) => `/${s.name}`).join(' '))
     }
@@ -545,52 +594,77 @@ export function InputBox({ onSend, isStreaming = false, onStop, disabled = false
     return unsub
   }, [])
 
-  /** 按输入过滤（名称/描述，大小写不敏感），命令组排在技能组前（组内保持扫描顺序）*/
-  const filteredSlashItems = useMemo(() => {
-    const filtered =
-      slashQuery === null
-        ? slashItems
-        : slashItems.filter(
-            (c) =>
-              c.name.toLowerCase().includes(slashQuery.toLowerCase()) ||
-              (c.description ?? '').toLowerCase().includes(slashQuery.toLowerCase())
-          )
-    return [...filtered].sort((a, b) => (a.kind === b.kind ? 0 : a.kind === 'command' ? -1 : 1))
-  }, [slashItems, slashQuery])
+  /** / 下拉混合条目：命令 / 技能 / 子智能体（用户拍板：子智能体跟命令技能同下拉）*/
+  const filteredSlashItems = useMemo<SlashItem[]>(() => {
+    const q = slashQuery === null ? '' : slashQuery.toLowerCase()
+    const base: SlashItem[] = slashItems.filter(
+      (c) =>
+        !q ||
+        c.name.toLowerCase().includes(q) ||
+        (c.description ?? '').toLowerCase().includes(q),
+    )
+    const agentItems: SlashItem[] = (agents ?? [])
+      .filter(
+        (a) =>
+          !q ||
+          a.name.toLowerCase().includes(q) ||
+          a.description.toLowerCase().includes(q),
+      )
+      .map((a) => ({ name: a.name, description: a.description, kind: 'agent' as const, agent: a }))
+    // 用户拍板：子智能体组排最前，命令次之，技能最后
+    const order: Record<string, number> = { agent: 0, command: 1, skill: 2 }
+    return [...base, ...agentItems].sort(
+      (a, b) => (order[a.kind] ?? 9) - (order[b.kind] ?? 9),
+    )
+  }, [slashItems, slashQuery, agents])
 
-  /** 选中命令：把技能名加到 SkillRef chip 列表 + 清除输入框里的 /xxx 文本 */
-  function selectSlash(item: SlashCommand) {
+  // / 下拉打开时懒加载子智能体清单（首次；ZCode 客户端可能改过文件，每次打开刷新）
+  const loadAgentsAction = useStore((s) => s.loadAgents)
+  useEffect(() => {
+    if (slashQuery !== null) loadAgentsAction()
+  }, [slashQuery, loadAgentsAction])
+
+  /** 从编辑器删除光标前的 /xxx 触发文本（Selection API 精确删除）*/
+  function removeSlashTriggerText() {
+    const el = editorRef.current
+    if (!el) return
+    try {
+      const sel = window.getSelection()
+      if (sel && sel.rangeCount > 0) {
+        const beforeCursor = textBeforeCaret(el, sel.getRangeAt(0))
+        const m = beforeCursor.match(/(?:^|\n)\/([^\s/]*)$/)
+        const queryLen = m ? m[0].length : 0
+        if (queryLen > 0) {
+          const tmpRange = sel.getRangeAt(0).cloneRange()
+          tmpRange.collapse(true)
+          sel.removeAllRanges()
+          sel.addRange(tmpRange)
+          for (let i = 0; i < queryLen; i++) {
+            sel.modify('extend', 'backward', 'character')
+          }
+          sel.getRangeAt(0).deleteContents()
+        }
+      }
+    } catch {
+      // DOM Selection API 异常时降级：直接清空（单个 / 时有效）
+      el.textContent = el.textContent?.replace(/\/[^\s/]*$/, '') ?? ''
+    }
+    setHasText(!!el.textContent?.trim())
+    el.focus()
+  }
+
+  /** 选中下拉项：命令/技能 = SkillRef chip；子智能体 = 设为发送目标（发送时拼 @<name>）*/
+  function selectSlash(item: SlashItem) {
+    setSlashQuery(null)
+    if (item.kind === 'agent') {
+      selectAgentAction(item.agent)
+      removeSlashTriggerText()
+      return
+    }
     // 先加 chip（确保 UI 更新不受 DOM 操作异常影响）
     setSkillRefs((prev) => (prev.some((x) => x.name === item.name) ? prev : [...prev, item]))
-    setSlashQuery(null)
-
     // 再清除输入框里的 /xxx 文本（容错：失败不影响 chip）
-    const el = editorRef.current
-    if (el) {
-      try {
-        const sel = window.getSelection()
-        if (sel && sel.rangeCount > 0) {
-          const beforeCursor = textBeforeCaret(el, sel.getRangeAt(0))
-          const m = beforeCursor.match(/(?:^|\n)\/([^\s/]*)$/)
-          const queryLen = m ? m[0].length : 0
-          if (queryLen > 0) {
-            const tmpRange = sel.getRangeAt(0).cloneRange()
-            tmpRange.collapse(true)
-            sel.removeAllRanges()
-            sel.addRange(tmpRange)
-            for (let i = 0; i < queryLen; i++) {
-              sel.modify('extend', 'backward', 'character')
-            }
-            sel.getRangeAt(0).deleteContents()
-          }
-        }
-      } catch {
-        // DOM Selection API 异常时降级：直接清空（单个 / 时有效）
-        el.textContent = el.textContent?.replace(/\/[^\s/]*$/, '') ?? ''
-      }
-      setHasText(!!el.textContent?.trim())
-      el.focus()
-    }
+    removeSlashTriggerText()
   }
 
   // 监听文件列表响应
@@ -604,36 +678,40 @@ export function InputBox({ onSend, isStreaming = false, onStop, disabled = false
     return unsub
   }, [mentionQuery])
 
-  // ============ @ 补全选择 ============
+  // ============ @ 补全选择（纯文件引用；子智能体入口在 / 下拉与左下角 AgentSelect）============
+
+  /** 从编辑器删除光标前的 @xxx 触发文本（Selection API 精确删除，
+   * 不能 textContent 全量替换——会把已渲染的内联 chip 抹成纯文本）*/
+  function removeMentionTriggerText() {
+    const el = editorRef.current
+    if (!el) return
+    try {
+      const sel = window.getSelection()
+      if (sel && sel.rangeCount > 0) {
+        const beforeCursor = textBeforeCaret(el, sel.getRangeAt(0))
+        const m = beforeCursor.match(/@([^\s@]*)$/)
+        if (m) {
+          const tmpRange = sel.getRangeAt(0).cloneRange()
+          tmpRange.collapse(true)
+          sel.removeAllRanges()
+          sel.addRange(tmpRange)
+          for (let i = 0; i < m[0].length; i++) {
+            sel.modify('extend', 'backward', 'character')
+          }
+          sel.getRangeAt(0).deleteContents()
+        }
+      }
+    } catch {
+      // DOM Selection API 异常时降级：正则替换（无内联 chip 时等效）
+      el.textContent = el.textContent?.replace(/@([^\s@]*)$/, '') ?? ''
+    }
+    setHasText(!!el.textContent?.trim())
+    placeCursorEnd(el)
+  }
+
   function selectMention(file: string) {
     setFileRefs((prev) => (prev.includes(file) ? prev : [...prev, file]))
-    // 从编辑器删除光标前的 @xxx 文本（Selection API 精确删除，
-    // 不能 textContent 全量替换——会把已渲染的内联 chip 抹成纯文本）
-    const el = editorRef.current
-    if (el) {
-      try {
-        const sel = window.getSelection()
-        if (sel && sel.rangeCount > 0) {
-          const beforeCursor = textBeforeCaret(el, sel.getRangeAt(0))
-          const m = beforeCursor.match(/@([^\s@]*)$/)
-          if (m) {
-            const tmpRange = sel.getRangeAt(0).cloneRange()
-            tmpRange.collapse(true)
-            sel.removeAllRanges()
-            sel.addRange(tmpRange)
-            for (let i = 0; i < m[0].length; i++) {
-              sel.modify('extend', 'backward', 'character')
-            }
-            sel.getRangeAt(0).deleteContents()
-          }
-        }
-      } catch {
-        // DOM Selection API 异常时降级：正则替换（无内联 chip 时等效）
-        el.textContent = el.textContent?.replace(/@([^\s@]*)$/, '') ?? ''
-      }
-      setHasText(!!el.textContent?.trim())
-      placeCursorEnd(el)
-    }
+    removeMentionTriggerText()
     setMentionQuery(null)
     setMentionFiles([])
   }
@@ -704,7 +782,7 @@ export function InputBox({ onSend, isStreaming = false, onStop, disabled = false
         return
       }
     }
-    // @ 补全打开时，方向键/Enter/Escape 由补全处理
+    // @ 文件补全打开时，方向键/Enter/Escape 由补全处理
     if (mentionQuery !== null && mentionFiles.length > 0) {
       if (e.key === 'ArrowDown') {
         e.preventDefault()
@@ -759,11 +837,32 @@ export function InputBox({ onSend, isStreaming = false, onStop, disabled = false
         {/* 排队消息（streaming 中 Enter 入队的，回合结束自动发送）*/}
         <MessageQueue onEdit={editQueuedToInput} />
 
-        {/* 技能引用 chips（紫色调，笔图标）+ 文件引用 chips（蓝色）+ 粘贴文本（灰色）。
+        {/* 选中子智能体 chip + 技能引用 chips（紫色调，笔图标）+ 文件引用 chips（蓝色）+ 粘贴文本（灰色）。
             对齐 cc-gui ChatInputBoxHeader：AttachmentList 在 ContextBar 之上，
             不贴输入框 */}
-        {(skillRefs.length > 0 || fileRefs.length > 0 || pastedTexts.length > 0) && (
+        {(selectedAgent || skillRefs.length > 0 || fileRefs.length > 0 || pastedTexts.length > 0) && (
           <div className="input-box__refs">
+            {selectedAgent && (
+              <span
+                className="agent-ref-chip"
+                title={selectedAgent.description}
+                onClick={() => selectAgentAction(null)}
+              >
+                <AgentColorDot color={selectedAgent.color} />
+                <span className="agent-ref-chip__name">{selectedAgent.name}</span>
+                <button
+                  className="agent-ref-chip__remove"
+                  onClick={(e) => {
+                    e.stopPropagation()
+                    selectAgentAction(null)
+                  }}
+                  title={t('input.agent.clear')}
+                  type="button"
+                >
+                  ✕
+                </button>
+              </span>
+            )}
             {skillRefs.map((s) => (
               <SkillRef
                 key={`${s.kind}:${s.name}`}
@@ -791,7 +890,7 @@ export function InputBox({ onSend, isStreaming = false, onStop, disabled = false
           </div>
         )}
 
-        {/* 上方条（cc-gui ContextBar）：附件按钮 + 上下文圆环 */}
+        {/* 上方条（cc-gui ContextBar）：附件按钮 + 上下文圆环 + 子智能体下拉（左侧依次排列）*/}
         <div className="input-box-topbar">
           <button
             className="context-tool-btn"
@@ -802,6 +901,7 @@ export function InputBox({ onSend, isStreaming = false, onStop, disabled = false
             <span className="codicon codicon-attach" />
           </button>
           <ContextRing />
+          <AgentSelect onManage={onOpenAgentSettings} disabled={disabled} />
         </div>
 
         <div
@@ -829,7 +929,8 @@ export function InputBox({ onSend, isStreaming = false, onStop, disabled = false
         </div>
 
         <div className="button-area">
-          {/* 底部左区顺序对齐 cc-gui ButtonArea：权限模式 → 模型 → 思考深度 */}
+          {/* 底部左区顺序对齐 cc-gui ButtonArea：权限模式 → 模型 → 思考深度
+              （子智能体下拉在上方附件栏右侧，见 input-box-topbar-right）*/}
           <div className="button-area-left">
             <ModeSelect />
             {onModelSelect && (
@@ -843,6 +944,21 @@ export function InputBox({ onSend, isStreaming = false, onStop, disabled = false
           </div>
           <div className="button-area-right">
             <div className="button-divider" />
+            {/* 提示词润色（cc-gui enhance-prompt-button：发送按钮左侧，
+                一次性 CLI 调当前模型；结果弹对比窗确认后回填）*/}
+            <button
+              className="enhance-prompt-button"
+              onClick={handleEnhanceClick}
+              disabled={disabled || isStreaming || enhancing || !hasText}
+              title={t('enhance.tooltip')}
+              type="button"
+            >
+              <span
+                className={`codicon ${
+                  enhancing ? 'codicon-loading codicon-modifier-spin' : 'codicon-sparkle'
+                }`}
+              />
+            </button>
             {isStreaming ? (
               <button
                 className="submit-button stop-button"
@@ -865,7 +981,7 @@ export function InputBox({ onSend, isStreaming = false, onStop, disabled = false
           </div>
         </div>
 
-        {/* @ 文件补全下拉 */}
+        {/* @ 文件补全下拉（子智能体入口在 / 下拉与左下角 AgentSelect，不混入 @）*/}
         {mentionQuery !== null && mentionFiles.length > 0 && (
           <div className="input-box__mention">
             {mentionFiles.map((f, i) => (
@@ -885,14 +1001,18 @@ export function InputBox({ onSend, isStreaming = false, onStop, disabled = false
           </div>
         )}
 
-        {/* / 斜杠命令补全下拉（命令组在前、技能组在后，组切换处插入标题行；标题不占导航索引）*/}
+        {/* / 斜杠命令补全下拉（子智能体 → 命令 → 技能三组，组切换处插入标题行；标题不占导航索引）*/}
         {slashQuery !== null && filteredSlashItems.length > 0 && (
           <div className="input-box__slash">
             {filteredSlashItems.map((c, i) => (
               <Fragment key={`${c.kind}:${c.name}`}>
                 {(i === 0 || filteredSlashItems[i - 1].kind !== c.kind) && (
                   <div className="input-box__slash-group-title">
-                    {c.kind === 'command' ? t('input.slash.groupCommands') : t('input.slash.groupSkills')}
+                    {c.kind === 'command'
+                      ? t('input.slash.groupCommands')
+                      : c.kind === 'skill'
+                        ? t('input.slash.groupSkills')
+                        : t('input.slash.groupAgents')}
                   </div>
                 )}
                 <div
@@ -903,11 +1023,18 @@ export function InputBox({ onSend, isStreaming = false, onStop, disabled = false
                     selectSlash(c)
                   }}
                 >
-                  <span
-                    className={`codicon ${
-                      c.kind === 'skill' ? 'codicon-wand' : 'codicon-terminal'
-                    } input-box__slash-icon input-box__slash-icon--${c.kind}`}
-                  />
+                  {c.kind === 'agent' ? (
+                    <>
+                      <span className="codicon codicon-robot input-box__slash-icon input-box__slash-icon--agent" />
+                      <AgentColorDot color={c.agent.color} />
+                    </>
+                  ) : (
+                    <span
+                      className={`codicon ${
+                        c.kind === 'skill' ? 'codicon-wand' : 'codicon-terminal'
+                      } input-box__slash-icon input-box__slash-icon--${c.kind}`}
+                    />
+                  )}
                   <span className="input-box__slash-main">
                     <span className="input-box__slash-name">/{c.name}</span>
                     {c.description && (
@@ -929,6 +1056,16 @@ export function InputBox({ onSend, isStreaming = false, onStop, disabled = false
             <PastedTextPreview item={item} onClose={() => setPreviewPasteId(null)} />
           ) : null
         })()}
+
+      {/* 提示词润色对比弹窗（loading 转圈 / 错误态 / 结果确认回填）*/}
+      {enhanceResult && (
+        <PromptEnhancerDialog
+          enhancing={enhancing}
+          result={enhanceResult}
+          onUse={applyEnhanced}
+          onClose={clearEnhanceResult}
+        />
+      )}
     </div>
   )
 }

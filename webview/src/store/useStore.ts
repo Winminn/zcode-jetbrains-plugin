@@ -14,7 +14,7 @@
 
 import { create } from 'zustand'
 import { onMessage, onStreamEvent, onStreamBatch, sendToJava, initBridge, isInJcef, getWorkspacePath, getInitialSessionId } from '@/ipc/bridge'
-import type { JavaResponse, SessionInfo, ZCodeMessage, StreamEvent, ModelOption, ModelManageProvider, TodoItem, AgentItem, FileChangeItem, QuotaData, ModelUsageData, ToolUsageData, UsageRange, ContextBreakdownItem, ThoughtLevelInfo, SubagentActivity, SubagentInfo, ToolUpdatedPayload, MemoryFileInfo, SkillInfo, McpServerInfo, McpToolsState, McpLogEntry, EnvStatus, BrowserClearedSite, BrowserDataOverview } from '@/types/messages'
+import type { JavaResponse, SessionInfo, ZCodeMessage, StreamEvent, ModelOption, ModelManageProvider, TodoItem, AgentItem, FileChangeItem, QuotaData, ModelUsageData, ToolUsageData, UsageRange, ContextBreakdownItem, ThoughtLevelInfo, SubagentActivity, SubagentInfo, ToolUpdatedPayload, MemoryFileInfo, SkillInfo, McpServerInfo, McpToolsState, McpLogEntry, EnvStatus, BrowserClearedSite, BrowserDataOverview, AgentDef, AgentDefInput } from '@/types/messages'
 import { applyStreamEvent, isSubagentToolEvent, applySubagentToolEvent, markActivityOutcome, finalizeActivitiesFromNotifications, asSubagentLifecycle, looksLikeQuotaError } from '@/utils/streamReducer'
 import type { TurnErrorInfo, SubagentLifecyclePayload } from '@/utils/streamReducer'
 import i18n from '@/i18n/config'
@@ -103,7 +103,7 @@ interface StoreState {
   /** envSave 请求进行中（设置页环境 tab 保存按钮禁用/转圈）*/
   envSaving: boolean
   /** EnvBanner「去设置」的跳转意图：App 切 settings 视图同时置位，BasicSettingsView 消费后清除 */
-  pendingSettingsSection: 'env' | null
+  pendingSettingsSection: 'env' | 'agents' | null
 
   // 会话
   sessions: SessionInfo[]
@@ -232,6 +232,19 @@ interface StoreState {
   skillTogglingPath: string | null
   skillsError: string | null
 
+  // 提示词润色（InputBox 润色按钮 → 一次性 CLI 调用 → 对比确认弹窗）
+  enhancing: boolean
+  /** 润色结果弹窗数据（null = 关闭；error 非 null = 失败态）*/
+  enhanceResult: { original: string; text?: string; error?: string } | null
+
+  // 子智能体定义清单（磁盘扫描 + 发送选择；数据与 ZCode 客户端共用 agents/*.md，
+  // 与 129 行运行时 agents: AgentItem[] 不同名避免冲突）
+  subagentDefs: AgentDef[] | null
+  /** 输入框当前选中的子智能体（发送时消息前置 @<name>；null = 未选）*/
+  selectedAgent: AgentDef | null
+  /** 保存成功信号（写盘回包才置；AgentEditDialog 监听后关弹窗，覆盖 3s 超时提示）*/
+  agentSavedSignal: { name: string; scope: string; at: number } | null
+
   // MCP 服务器清单（设置视图「MCP」条目 = 磁盘配置 + mcp/list 状态合并）
   mcpServers: McpServerInfo[] | null
   mcpLoading: boolean
@@ -329,6 +342,22 @@ interface StoreState {
   loadSkills: () => void
   /** 启用/禁用技能（写 config skill 节点，CLI 下次发现生效）*/
   toggleSkill: (path: string, enabled: boolean) => void
+
+  // ============ 提示词润色 ============
+  /** 触发润色（一次性 CLI headless 调用；结果经 enhancePromptResult 回填弹窗）*/
+  enhancePrompt: (text: string) => void
+  /** 关闭润色弹窗（保留原始或使用增强后的清理动作）*/
+  clearEnhanceResult: () => void
+
+  // ============ 子智能体 ============
+  /** 拉取子智能体清单（AgentSelect 下拉 / @ 补全 / 设置页共用）*/
+  loadAgents: () => void
+  /** 选择/取消子智能体（选中后发送的消息前置 @<name> 触发主 Agent 调度）*/
+  selectAgent: (agent: AgentDef | null) => void
+  /** 保存子智能体（新建/更新/改名，写 <作用域>/agents/<name>.md）*/
+  saveAgent: (scope: 'user' | 'project', agent: AgentDefInput, originalName?: string) => void
+  /** 删除子智能体定义文件 */
+  deleteAgent: (scope: 'user' | 'project', name: string) => void
   /** 拉取 MCP 服务器清单（mode=connect 时真实连接各服务器，慢）*/
   loadMcpServers: (mode?: 'status' | 'connect') => void
   /** 拉单台服务器的工具清单（有缓存且非 force 直接跳过；loading 中防重入）*/
@@ -348,7 +377,7 @@ interface StoreState {
   /** 清除错误（错误栏关闭按钮）*/
   clearError: () => void
   /** 设置 EnvBanner「去设置」的跳转意图（BasicSettingsView 消费后清除）*/
-  setPendingSettingsSection: (section: 'env' | null) => void
+  setPendingSettingsSection: (section: 'env' | 'agents' | null) => void
   /** 检测运行环境三件套（init 时 / 提醒条「重新检测」触发）*/
   checkEnv: () => void
   /**
@@ -463,6 +492,11 @@ export const useStore = create<StoreState>((set, get) => ({
   browserOverview: null,
 
   skills: null,
+  enhancing: false,
+  enhanceResult: null,
+  subagentDefs: null,
+  selectedAgent: null,
+  agentSavedSignal: null,
   skillsLoading: false,
   skillTogglingPath: null,
   skillsError: null,
@@ -987,6 +1021,49 @@ export const useStore = create<StoreState>((set, get) => ({
   loadSkills: () => {
     set({ skillsLoading: true, skillsError: null })
     sendToJava({ op: 'listSkills' })
+  },
+
+  // ============ 提示词润色 ============
+  enhancePrompt: (text) => {
+    if (!text.trim() || get().enhancing) return
+    set({ enhancing: true, enhanceResult: { original: text } })
+    const cm = get().currentModel
+    sendToJava({
+      op: 'enhancePrompt',
+      text,
+      workspacePath: get().currentWorkspacePath ?? undefined,
+      ...(cm ? { providerId: cm.providerId, modelId: cm.modelId } : {}),
+    })
+    // 兜底：3 分钟无响应复位（CLI 卡死/超时漏网时弹窗不永远转圈）
+    setTimeout(() => {
+      if (get().enhancing) {
+        set({
+          enhancing: false,
+          enhanceResult: { original: text, error: i18n.t('enhance.timeout') },
+        })
+      }
+    }, 180_000)
+  },
+
+  clearEnhanceResult: () => {
+    set({ enhancing: false, enhanceResult: null })
+  },
+
+  // ============ 子智能体 ============
+  loadAgents: () => {
+    sendToJava({ op: 'listAgents' })
+  },
+
+  selectAgent: (agent) => {
+    set({ selectedAgent: agent })
+  },
+
+  saveAgent: (scope, agent, originalName) => {
+    sendToJava({ op: 'saveAgent', scope, agent, originalName })
+  },
+
+  deleteAgent: (scope, name) => {
+    sendToJava({ op: 'deleteAgent', scope, name })
   },
 
   toggleSkill: (path, enabled) => {
@@ -1964,6 +2041,34 @@ function handleResponse(
         })
       }
       break
+
+    case 'enhancePromptResult':
+      // 润色回包（含失败态）：关闭 loading，弹窗按 error 有无渲染错误/结果
+      set({
+        enhancing: false,
+        enhanceResult: msg.error
+          ? { original: msg.original ?? '', error: msg.error }
+          : { original: msg.original ?? '', text: msg.text },
+      })
+      break
+
+    case 'agents':
+      set({ subagentDefs: msg.agents })
+      break
+
+    case 'agentSaved':
+      // 写盘成功才回包：置保存完成信号（AgentEditDialog 监听后关弹窗）+ 重扫清单
+      set({ agentSavedSignal: { name: msg.name, scope: msg.scope, at: Date.now() } })
+      get().loadAgents()
+      break
+
+    case 'agentDeleted': {
+      // 清单同步 + 若删除的是当前选中项则取消选择
+      get().loadAgents()
+      const sel = get().selectedAgent
+      if (sel && sel.name === msg.name) set({ selectedAgent: null })
+      break
+    }
 
     case 'mcpServers':
       set({

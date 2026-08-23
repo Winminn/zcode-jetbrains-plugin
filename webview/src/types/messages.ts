@@ -266,6 +266,13 @@ export type JavaRequest =  | { op: 'askUserPendingState' }
   | { op: 'browserDataOverview' }
   | { op: 'listSkills' }
   | { op: 'toggleSkill'; path: string; enabled: boolean }
+  /** 提示词润色（一次性 CLI headless 调用，零会话污染；模型跟随当前选择）*/
+  | { op: 'enhancePrompt'; text: string; workspacePath?: string; providerId?: string; modelId?: string }
+  /** 子智能体清单（user + project 作用域磁盘扫描，disabled 已过滤）*/
+  | { op: 'listAgents' }
+  /** 新建/更新/改名子智能体（originalName 非空且 ≠ name = 改名）*/
+  | { op: 'saveAgent'; scope: 'user' | 'project'; agent: AgentDefInput; originalName?: string }
+  | { op: 'deleteAgent'; scope: 'user' | 'project'; name: string }
   /** mode：status=状态快照（默认）| connect=真实连接（慢）*/
   | { op: 'listMcpServers'; mode?: 'status' | 'connect' }
   /** 单台服务器工具清单（force=true 前端绕过缓存强制重拉）*/
@@ -425,6 +432,36 @@ export interface SkillInfo {
   /** false=config skill 节点显式禁用（enable:false）*/
   enabled: boolean
 }
+
+/**
+ * 子智能体定义（~/.zcode/agents/<name>.md 或 <项目>/.zcode/agents/<name>.md，
+ * 与 ZCode 客户端数据打通：frontmatter + 正文=系统提示词）。
+ * 发送时消息文本前置 `@<name> ` 触发主 Agent 调度（2026-08-23 协议实测）。
+ */
+export interface AgentDef {
+  name: string
+  description: string
+  /** 缺省 = 跟随主 Agent 当前模型 */
+  model?: string
+  thoughtLevel?: string
+  /** 预设色标记（blue/green/red/orange/yellow/purple/pink/cyan）*/
+  color?: string
+  /** 空 = 继承全部工具（含 MCP）；非空 = 仅列表内工具 */
+  tools: string[]
+  disallowedTools: string[]
+  maxTurns?: number
+  /** 是否注入 AGENTS.md（默认 true）*/
+  injectAgentsMd: boolean
+  mcpServers: string[]
+  /** Markdown 正文 = 系统提示词 */
+  systemPrompt: string
+  /** .md 绝对路径 */
+  path: string
+  scope: 'user' | 'project'
+}
+
+/** saveAgent 的写载荷（path/scope 由后端推导，无需前端携带）*/
+export type AgentDefInput = Omit<AgentDef, 'path' | 'scope'>
 
 /** 清除浏览器数据的单站点明细（cache 模式只填缓存两项；-1=页面不支持该 API）*/
 export interface BrowserClearedSite {
@@ -640,6 +677,11 @@ export type JavaResponse =
   | { op: 'browserDataOverview' } & BrowserDataOverview
   | { op: 'skills'; skills: SkillInfo[] }
   | { op: 'skillToggled'; path: string; enabled: boolean }
+  /** op=enhancePrompt 的响应（error 非 nil = 失败，弹窗错误态）*/
+  | { op: 'enhancePromptResult'; original?: string; text?: string; error?: string }
+  | { op: 'agents'; agents: AgentDef[] }
+  | { op: 'agentSaved'; name: string; scope: string }
+  | { op: 'agentDeleted'; name: string; scope: string }
   /** rpcError 存在 = mcp/list RPC 失败，servers 为磁盘配置降级清单 */
   | { op: 'mcpServers'; mode: string; servers: McpServerInfo[]; rpcError?: string }
   /** 单台服务器的工具清单（McpToolsClient 直连结果；失败只有 error）*/

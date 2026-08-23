@@ -12,8 +12,9 @@
  * 左侧 nav：「用量查询」「记忆」（预留扩展：常规/模型/MCP…）。
  */
 
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useTranslation } from 'react-i18next'
+import { useStore } from '@/store/useStore'
 import { BasicSettingsView } from './BasicSettingsView'
 import { OtherSettingsView } from './OtherSettingsView'
 import { UsageView } from './UsageView'
@@ -22,10 +23,11 @@ import { SkillListView } from './SkillListView'
 import { McpListView } from './McpListView'
 import { ModelListView } from './ModelListView'
 import { BrowserSettingsView } from './BrowserSettingsView'
+import { AgentListView } from './AgentListView'
 import { isInJcef } from '@/ipc/bridge'
 import '../styles/settings.less'
 
-type SettingsTab = 'basic' | 'models' | 'usage' | 'memory' | 'skills' | 'mcp' | 'browser' | 'other'
+type SettingsTab = 'basic' | 'models' | 'usage' | 'memory' | 'skills' | 'agents' | 'mcp' | 'browser' | 'other'
 
 const cx = (...c: (string | false | null | undefined)[]) => c.filter(Boolean).join(' ')
 
@@ -39,10 +41,21 @@ export function SettingsView({ onBack }: Props) {
   // JCEF 内 hash 恒空不影响生产
   const hashTab = window.location.hash.replace('#', '').split('/')[0] as SettingsTab
   const initialTab: SettingsTab =
-    !isInJcef() && ['basic', 'models', 'usage', 'memory', 'skills', 'mcp', 'browser', 'other'].includes(hashTab)
+    !isInJcef() && ['basic', 'models', 'usage', 'memory', 'skills', 'agents', 'mcp', 'browser', 'other'].includes(hashTab)
       ? hashTab
       : 'basic'
   const [tab, setTab] = useState<SettingsTab>(initialTab)
+
+  // 跳转意图消费：AgentSelect 下拉「管理」入口（env 由 BasicSettingsView 消费；
+  // 挂载时消费一次即清，避免切走再回重复跳转）
+  const pendingSection = useStore((s) => s.pendingSettingsSection)
+  const setPendingSection = useStore((s) => s.setPendingSettingsSection)
+  useEffect(() => {
+    if (pendingSection === 'agents') {
+      setTab('agents')
+      setPendingSection(null)
+    }
+  }, [pendingSection, setPendingSection])
 
   const navItems: { key: SettingsTab; icon: string }[] = [
     { key: 'basic', icon: 'codicon-paintcan' },
@@ -50,6 +63,7 @@ export function SettingsView({ onBack }: Props) {
     { key: 'usage', icon: 'codicon-graph' },
     { key: 'memory', icon: 'codicon-notebook' },
     { key: 'skills', icon: 'codicon-library' },
+    { key: 'agents', icon: 'codicon-robot' },
     { key: 'mcp', icon: 'codicon-plug' },
     { key: 'browser', icon: 'codicon-globe' },
     { key: 'other', icon: 'codicon-ellipsis' },
@@ -89,6 +103,7 @@ export function SettingsView({ onBack }: Props) {
           {tab === 'usage' && <UsageView />}
           {tab === 'memory' && <MemoryView />}
           {tab === 'skills' && <SkillListView />}
+          {tab === 'agents' && <AgentListView />}
           {tab === 'mcp' && <McpListView />}
           {tab === 'browser' && <BrowserSettingsView />}
           {tab === 'other' && <OtherSettingsView />}

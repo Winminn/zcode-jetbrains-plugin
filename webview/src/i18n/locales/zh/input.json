@@ -61,6 +61,13 @@
   },
   "slash": {
     "groupCommands": "命令",
-    "groupSkills": "技能"
+    "groupSkills": "技能",
+    "groupAgents": "子智能体"
+  },
+  "agent": {
+    "select": "智能体",
+    "empty": "暂无子智能体，去设置页新建",
+    "manage": "管理子智能体",
+    "clear": "取消选择"
   }
 }

@@ -7,6 +7,7 @@
     "usage": "用量查询",
     "memory": "记忆",
     "skills": "技能",
+    "agents": "子智能体",
     "mcp": "MCP",
     "browser": "浏览器",
     "other": "其他设置"

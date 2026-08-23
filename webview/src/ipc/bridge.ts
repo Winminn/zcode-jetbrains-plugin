@@ -1504,6 +1504,26 @@ flowchart LR
       }
     case 'toggleSkill':
       return { op: 'skillToggled', path: req.path, enabled: req.enabled }
+    case 'enhancePrompt':
+      // mock：同步返回（外层 200ms 延迟已能验收弹窗 loading 态）
+      return {
+        op: 'enhancePromptResult',
+        original: req.text,
+        text: `【润色】${req.text}\n\n（mock 结果：请补充目标产物的具体要求，例如输出格式、篇幅与读者对象。）`,
+      }
+    case 'listAgents':
+      // mock：user/project 两作用域 + 颜色/工具/模型各形态
+      return {
+        op: 'agents',
+        agents: [
+          { name: 'code-explorer', description: '只读探索代码库结构并输出调研报告', color: 'cyan', tools: [], disallowedTools: [], injectAgentsMd: false, mcpServers: [], systemPrompt: '你是代码库调研专家，只读不改。', path: 'C:\\Users\\mock\\.zcode\\agents\\code-explorer.md', scope: 'user' },
+          { name: 'deploy-guard', description: '检查部署清单与端口占用（mock 项目级）', color: 'orange', model: 'GLM-5-Turbo', tools: ['Bash', 'Read'], disallowedTools: [], injectAgentsMd: true, mcpServers: [], systemPrompt: '你是部署检查员。', path: 'G:\\mock\\project\\.zcode\\agents\\deploy-guard.md', scope: 'project' },
+        ],
+      }
+    case 'saveAgent':
+      return { op: 'agentSaved', name: req.agent.name, scope: req.scope }
+    case 'deleteAgent':
+      return { op: 'agentDeleted', name: req.name, scope: req.scope }
     case 'listMcpServers':
       // mock：stdio/http、connected/failed/disconnected/disabled、runtime 来源各形态
       return {

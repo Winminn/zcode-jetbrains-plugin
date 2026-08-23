@@ -1,0 +1,95 @@
+/**
+ * 提示词润色对比弹窗（壳复用全局 modal-overlay/modal-content，
+ * 双类 .modal-content.prompt-enhancer 提特异性突破 420px 高度钳制——
+ * 同 user-message-collapse 的双类方案）
+ */
+
+.modal-content.prompt-enhancer {
+  max-height: 70vh;
+  width: min(680px, 92vw);
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+
+  h3 {
+    margin: 0;
+    font-size: 14px;
+    color: var(--text-primary);
+    display: flex;
+    align-items: center;
+    gap: 6px;
+
+    &::before {
+      content: '\eb77'; // codicon-sparkle
+      font-family: codicon;
+      font-size: 16px;
+      color: var(--accent-primary);
+    }
+  }
+
+  .prompt-enhancer__section {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    min-height: 0;
+  }
+
+  .prompt-enhancer__section-title {
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--text-secondary);
+  }
+
+  .prompt-enhancer__body {
+    margin: 0;
+    padding: 10px 12px;
+    background: var(--bg-secondary, rgba(128, 128, 128, 0.08));
+    border: 1px solid var(--border-primary, rgba(128, 128, 128, 0.25));
+    border-radius: 6px;
+    font-size: 12.5px;
+    line-height: 1.6;
+    color: var(--text-primary);
+    white-space: pre-wrap;
+    word-break: break-word;
+    overflow-y: auto;
+    flex: 1;
+    min-height: 72px;
+    max-height: 22vh;
+  }
+
+  .prompt-enhancer__body--enhanced {
+    border-color: rgba(0, 127, 212, 0.55);
+    background: rgba(122, 162, 244, 0.08);
+  }
+
+  .prompt-enhancer__loading,
+  .prompt-enhancer__error {
+    flex: 1;
+    min-height: 72px;
+    max-height: 22vh;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    border: 1px dashed var(--border-primary, rgba(128, 128, 128, 0.3));
+    border-radius: 6px;
+    font-size: 12.5px;
+    color: var(--text-secondary);
+  }
+
+  .prompt-enhancer__error {
+    color: var(--error-color);
+    border-style: solid;
+    padding: 0 12px;
+    text-align: center;
+  }
+
+  /* codicon 基础样式 (0,2,0) 特异性压单类，后代选择器对齐字号 */
+  .prompt-enhancer__loading,
+  .prompt-enhancer__error {
+    .codicon {
+      font-size: 14px;
+      line-height: 1;
+    }
+  }
+}

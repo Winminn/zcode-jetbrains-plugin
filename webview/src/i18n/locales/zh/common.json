@@ -15,5 +15,9 @@
     "generating": "正在生成响应",
     "generatingWithModel": "{{model}} 正在生成响应",
     "elapsed": "（已 {{time}}）"
+  },
+  "actions": {
+    "save": "保存",
+    "loading": "加载中…"
   }
 }

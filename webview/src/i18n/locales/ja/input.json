@@ -61,6 +61,13 @@
   },
   "slash": {
     "groupCommands": "コマンド",
-    "groupSkills": "スキル"
+    "groupSkills": "スキル",
+    "groupAgents": "サブエージェント"
+  },
+  "agent": {
+    "select": "エージェント",
+    "empty": "サブエージェントがありません。設定で作成してください",
+    "manage": "サブエージェントを管理",
+    "clear": "選択を解除"
   }
 }

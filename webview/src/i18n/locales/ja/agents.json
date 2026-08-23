@@ -1,0 +1,46 @@
+{
+  "title": "サブエージェント",
+  "desc": "定義ファイルは ZCode クライアントと共通（ユーザー: ~/.zcode/agents、プロジェクト: .zcode/agents）。入力欄で選択すると、送信メッセージはそのサブエージェントに委任されます。定義の変更は既存セッションには反映されません。",
+  "new": "新規作成",
+  "empty": "サブエージェントが見つかりません。右上の「新規作成」から作成してください",
+  "searchPlaceholder": "名前 / 説明 / プロンプトを検索",
+  "card": {
+    "modelInherit": "メインに従う",
+    "allTools": "すべてのツール",
+    "toolsCount": "{{count}} 個のツール",
+    "edit": "編集",
+    "editTitle": "サブエージェントを編集",
+    "delete": "削除",
+    "deleteTitle": "サブエージェントを削除",
+    "injected": "注入あり",
+    "notInjected": "注入なし"
+  },
+  "edit": {
+    "titleNew": "サブエージェントを新規作成",
+    "titleEdit": "サブエージェントを編集",
+    "scope": "スコープ",
+    "name": "名前",
+    "nameInvalid": "小文字英数字・ドット・アンダースコア・ハイフンのみ。先頭は英数字",
+    "color": "カラー",
+    "model": "モデル",
+    "modelInherit": "メインに従う",
+    "description": "説明",
+    "descriptionPlaceholder": "このサブエージェントの得意分野（メインが選定の参考にします）",
+    "tools": "使用可能ツール",
+    "toolsHint": "このサブエージェントが呼び出せるツールの範囲",
+    "toolsSelected": "{{count}} 個選択（カスタム選択時は MCP ツール不可）",
+    "systemPrompt": "システムプロンプト",
+    "systemPromptPlaceholder": "このサブエージェントの役割・境界・ルールを定義…",
+    "injectAgentsMd": "AGENTS.md を注入",
+    "injectAgentsMdHint": "メインと同一（デフォルトで注入）",
+    "saveTimeout": "保存がタイムアウトしました。再試行してください",
+    "toolsAllOption": "デフォルトで全権限",
+    "toolsCustomOption": "カスタムツール",
+    "toolsCustomEmpty": "ツール未選択（1 つ以上選択するか、全権限に戻してください）"
+  },
+  "delete": {
+    "title": "サブエージェントを削除",
+    "message": "「{{name}}」を削除しますか？定義ファイルは復元できません。",
+    "confirm": "削除"
+  }
+}

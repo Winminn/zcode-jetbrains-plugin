@@ -645,6 +645,10 @@ if (!window.__ZCODE_LOG_HOOK__) {
                         "browserDataOverview" -> handleBrowserDataOverview()
                         "listSkills" -> handleListSkills(msg)
                         "toggleSkill" -> handleToggleSkill(msg)
+                        "enhancePrompt" -> handleEnhancePrompt(msg)
+                        "listAgents" -> handleListAgents(msg)
+                        "saveAgent" -> handleSaveAgent(msg)
+                        "deleteAgent" -> handleDeleteAgent(msg)
                         "listMcpServers" -> handleListMcpServers(msg)
                         "mcpServerTools" -> handleMcpServerTools(msg)
                         "getMcpLogs" -> handleGetMcpLogs(msg)
@@ -2985,6 +2989,192 @@ if (!window.__ZCODE_LOG_HOOK__) {
             put("enabled", enabled)
         }
     }
+
+    // ============ 提示词润色 ============
+
+    /**
+     * 润色系统指令（CC-GUI PromptEnhancerHandler 骨架中文化）。
+     * 关键实测教训：不带强约束时模型会输出大量解释/表格（2026-08-23 CLI 实测），
+     * 故规则前置且明确禁止解释、前后缀、Markdown 标题与追加提问。
+     */
+    private val enhanceSystemPrompt = """
+你是一名提示词优化专家。用户会发送一条待润色的提示词，请输出润色后的版本。
+
+[输出规则]
+1. 只输出润色后的提示词本身——不要任何解释、前言、后记、注释或确认语
+2. 不要使用「润色后的提示词：」等前缀，不要使用 Markdown 标题或列表包装（除非原文本身需要）
+3. 不要向用户提问，输出必须可直接复制使用
+4. 润色后的提示词必须与原始提示词使用相同的语言（中文→中文、英文→英文）
+
+[润色原则]
+1. 严格保留用户原意，不引入原文没有的新要求
+2. 修正错别字、标点与语病，使用清晰、专业的表达
+3. 补充必要的上下文指代与细节（把「这个」「它」等模糊指代具体化），但不过度扩写
+4. 原文过于简短含糊时，补充合理的假设与约束，使其成为一条完整可执行的指令
+5. 保持简洁——润色是打磨，不是扩写
+""".trim()
+
+    /** 润色单飞标志：同一时刻只允许一个润色子进程（按钮已禁用，双保险） */
+    private val enhanceInProgress = java.util.concurrent.atomic.AtomicBoolean(false)
+
+    /**
+     * op=enhancePrompt — 提示词润色（一次性 CLI headless 调用，零会话污染）
+     *
+     * 走 [ZCodeProtocolClient.cliOneShot]（`zcode -p --json --mode yolo`，无 --resume），
+     * 模型按前端 currentModel 透传的 providerId/modelId 从 config.json 取凭证注入
+     * ZCODE_MODEL 环境；取不到（未选模型/oauth provider）回退客户端启动凭证。
+     * 超时按输入长度动态放大：45s 基础 + 每 400 字符 1s，上限 120s。
+     */
+    private fun handleEnhancePrompt(msg: JsonObject): JsonObject {
+        val text = msg["text"]?.jsonPrimitive?.content
+            ?: return enhanceError("缺少 text")
+        if (text.isBlank()) return enhanceError("输入内容为空")
+        if (!enhanceInProgress.compareAndSet(false, true)) {
+            return enhanceError("润色进行中，请稍候")
+        }
+        try {
+            val providerId = msg["providerId"]?.jsonPrimitive?.contentOrNull
+            val modelId = msg["modelId"]?.jsonPrimitive?.contentOrNull
+            val credentialsOverride = if (!providerId.isNullOrBlank() && !modelId.isNullOrBlank()) {
+                com.zcode.ideaplugin.protocol.Credentials.credentialsFor(providerId, modelId)
+            } else null
+            if (providerId != null && credentialsOverride == null) {
+                log.info("enhancePrompt: credentials for $providerId/$modelId unavailable, falling back to default")
+            }
+            val timeoutMs = (45_000L + text.length / 400L * 1_000L).coerceAtMost(120_000L)
+            val prompt = buildString {
+                append(enhanceSystemPrompt)
+                append("\n\n待润色的原始提示词：\n")
+                append(text)
+            }
+            val client = project.zCodeService().getClient()
+            val result = client.cliOneShot(
+                prompt = prompt,
+                workspacePath = effectiveWorkspacePath(msg),
+                credentialsOverride = credentialsOverride,
+                timeoutMs = timeoutMs,
+            )
+            val enhanced = result["response"]?.jsonPrimitive?.contentOrNull
+                ?.takeIf { it.isNotBlank() }
+                ?: return enhanceError("润色结果为空")
+            log.info("enhancePrompt done (${enhanced.length} chars, model=${credentialsOverride?.model ?: "default"})")
+            return buildJsonObject {
+                put("op", "enhancePromptResult")
+                put("original", text)
+                put("text", enhanced)
+            }
+        } catch (e: Exception) {
+            log.warn("enhancePrompt failed: ${LogRedactor.redact(e.toString())}")
+            return enhanceError("润色失败: ${e.message}")
+        } finally {
+            enhanceInProgress.set(false)
+        }
+    }
+
+    /** 润色失败统一回包（专用 op：前端弹窗错误态与全局 error 栏分流）*/
+    private fun enhanceError(message: String): JsonObject = buildJsonObject {
+        put("op", "enhancePromptResult")
+        put("error", message)
+    }
+
+    // ============ 子智能体（数据打通 ZCode 客户端） ============
+
+    /** op=listAgents — 子智能体清单（user + project 作用域，disabled 已过滤） */
+    private fun handleListAgents(msg: JsonObject): JsonObject {
+        val agents = AgentScanner.scan(project.basePath)
+        log.info("Agent scan completed, ${agents.size} item(s)")
+        return buildJsonObject {
+            put("op", "agents")
+            put("agents", JsonArray(agents.map { a -> agentDefJson(a) }))
+        }
+    }
+
+    /**
+     * op=saveAgent — 新建/更新/改名子智能体（写 <作用域>/agents/<name>.md）
+     * 校验对齐 zcode.cjs：name 命中 NAME_RE、description 非空；改名时旧文件清理。
+     */
+    private fun handleSaveAgent(msg: JsonObject): JsonObject {
+        val scope = msg["scope"]?.jsonPrimitive?.content ?: "user"
+        if (scope !in setOf("user", "project")) return errorResponse("无效作用域: $scope")
+        val obj = msg["agent"]?.jsonObject ?: return errorResponse("缺少 agent")
+        val def = parseAgentDef(obj, scope) ?: return errorResponse(
+            "子智能体字段无效：名称必填且仅限小写字母/数字/._-（开头须字母或数字），描述与系统提示词不能为空"
+        )
+        val originalName = msg["originalName"]?.jsonPrimitive?.contentOrNull?.takeIf { it.isNotEmpty() }
+        if (originalName != null && !AgentScanner.NAME_RE.matches(originalName)) {
+            return errorResponse("原名称无效: $originalName")
+        }
+        // 同作用域重名（除自身改名场景）拒绝
+        val clash = AgentScanner.scan(project.basePath)
+            .any { it.scope == scope && it.name == def.name && it.name != originalName }
+        if (clash) return errorResponse("同名子智能体已存在: ${def.name}")
+        if (!AgentScanner.save(scope, def, originalName, project.basePath)) {
+            return errorResponse("写入失败（目录不可写？）")
+        }
+        log.info("Agent saved: ${def.name} (scope=$scope, renamedFrom=$originalName)")
+        return buildJsonObject {
+            put("op", "agentSaved")
+            put("name", def.name)
+            put("scope", scope)
+        }
+    }
+
+    /** op=deleteAgent — 删除子智能体定义文件 */
+    private fun handleDeleteAgent(msg: JsonObject): JsonObject {
+        val scope = msg["scope"]?.jsonPrimitive?.content ?: return errorResponse("缺少 scope")
+        val name = msg["name"]?.jsonPrimitive?.content ?: return errorResponse("缺少 name")
+        if (!AgentScanner.NAME_RE.matches(name)) return errorResponse("名称无效: $name")
+        if (!AgentScanner.delete(scope, name, project.basePath)) {
+            return errorResponse("删除失败（文件不存在或目录不可写）")
+        }
+        log.info("Agent deleted: $name (scope=$scope)")
+        return buildJsonObject {
+            put("op", "agentDeleted")
+            put("name", name)
+            put("scope", scope)
+        }
+    }
+
+    private fun agentDefJson(a: AgentScanner.AgentDef): JsonObject = buildJsonObject {
+        put("name", a.name)
+        put("description", a.description)
+        a.model?.let { put("model", it) }
+        a.thoughtLevel?.let { put("thoughtLevel", it) }
+        a.color?.let { put("color", it) }
+        put("tools", JsonArray(a.tools.map { JsonPrimitive(it) }))
+        put("disallowedTools", JsonArray(a.disallowedTools.map { JsonPrimitive(it) }))
+        a.maxTurns?.let { put("maxTurns", it) }
+        put("injectAgentsMd", a.injectAgentsMd)
+        put("mcpServers", JsonArray(a.mcpServers.map { JsonPrimitive(it) }))
+        put("systemPrompt", a.systemPrompt)
+        put("path", a.path)
+        put("scope", a.scope)
+    }
+
+    /** 前端 agent 对象 → AgentDef（null = 字段无效） */
+    private fun parseAgentDef(obj: JsonObject, scope: String): AgentScanner.AgentDef? {
+        val name = obj["name"]?.jsonPrimitive?.contentOrNull?.trim() ?: return null
+        val description = obj["description"]?.jsonPrimitive?.contentOrNull?.trim()?.takeIf { it.isNotEmpty() } ?: return null
+        val systemPrompt = obj["systemPrompt"]?.jsonPrimitive?.contentOrNull?.trim()?.takeIf { it.isNotEmpty() } ?: return null
+        if (!AgentScanner.NAME_RE.matches(name)) return null
+        val color = obj["color"]?.jsonPrimitive?.contentOrNull?.takeIf { it in AgentScanner.COLORS }
+        return AgentScanner.AgentDef(
+            name = name,
+            description = description,
+            model = obj["model"]?.jsonPrimitive?.contentOrNull?.takeIf { it.isNotEmpty() && it != "inherit" },
+            thoughtLevel = obj["thoughtLevel"]?.jsonPrimitive?.contentOrNull?.takeIf { it.isNotEmpty() },
+            color = color,
+            tools = obj["tools"]?.jsonArray?.mapNotNull { it.jsonPrimitive.contentOrNull } ?: emptyList(),
+            disallowedTools = obj["disallowedTools"]?.jsonArray?.mapNotNull { it.jsonPrimitive.contentOrNull } ?: emptyList(),
+            maxTurns = obj["maxTurns"]?.jsonPrimitive?.contentOrNull?.toIntOrNull(),
+            injectAgentsMd = obj["injectAgentsMd"]?.jsonPrimitive?.boolean ?: true,
+            mcpServers = obj["mcpServers"]?.jsonArray?.mapNotNull { it.jsonPrimitive.contentOrNull } ?: emptyList(),
+            systemPrompt = systemPrompt,
+            path = obj["path"]?.jsonPrimitive?.contentOrNull ?: "",
+            scope = scope,
+        )
+    }
+
 
     /**
      * op=listMcpServers — MCP 服务器清单（设置页「MCP」条目）

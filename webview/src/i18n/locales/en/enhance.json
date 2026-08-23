@@ -1,0 +1,11 @@
+{
+  "tooltip": "Enhance prompt (uses current model)",
+  "title": "Prompt Enhancer",
+  "dialogAriaLabel": "Prompt enhancement comparison dialog",
+  "original": "Original prompt",
+  "enhanced": "Enhanced prompt",
+  "loading": "Enhancing…",
+  "keepOriginal": "Keep original",
+  "useEnhanced": "Use enhanced",
+  "timeout": "Enhancement timed out, please retry"
+}

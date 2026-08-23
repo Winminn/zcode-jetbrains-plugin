@@ -1,0 +1,11 @@
+{
+  "tooltip": "프롬프트 개선(현재 모델 사용)",
+  "title": "프롬프트 개선",
+  "dialogAriaLabel": "프롬프트 개선 비교 대화상자",
+  "original": "원본 프롬프트",
+  "enhanced": "개선된 프롬프트",
+  "loading": "개선 중…",
+  "keepOriginal": "원본 유지",
+  "useEnhanced": "개선본 사용",
+  "timeout": "개선 시간이 초과되었습니다. 다시 시도하세요"
+}

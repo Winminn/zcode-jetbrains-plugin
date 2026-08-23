@@ -15,5 +15,9 @@
     "generating": "응답 생성 중",
     "generatingWithModel": "{{model}} 응답 생성 중",
     "elapsed": "({{time}} 경과)"
+  },
+  "actions": {
+    "save": "저장",
+    "loading": "불러오는 중…"
   }
 }

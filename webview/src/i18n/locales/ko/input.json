@@ -61,6 +61,13 @@
   },
   "slash": {
     "groupCommands": "명령어",
-    "groupSkills": "스킬"
+    "groupSkills": "스킬",
+    "groupAgents": "서브 에이전트"
+  },
+  "agent": {
+    "select": "에이전트",
+    "empty": "서브 에이전트가 없습니다. 설정에서 생성하세요",
+    "manage": "서브 에이전트 관리",
+    "clear": "선택 해제"
   }
 }

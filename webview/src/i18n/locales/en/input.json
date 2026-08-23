@@ -61,6 +61,13 @@
   },
   "slash": {
     "groupCommands": "Commands",
-    "groupSkills": "Skills"
+    "groupSkills": "Skills",
+    "groupAgents": "Subagents"
+  },
+  "agent": {
+    "select": "Agent",
+    "empty": "No subagents yet — create one in Settings",
+    "manage": "Manage subagents",
+    "clear": "Clear selection"
   }
 }

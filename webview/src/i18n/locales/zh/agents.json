@@ -1,0 +1,46 @@
+{
+  "title": "子智能体",
+  "desc": "与 ZCode 客户端共用定义文件（用户级 ~/.zcode/agents、项目级 .zcode/agents）。输入框选择后，发送的消息会交给该子智能体处理；修改定义对已创建的会话不生效。",
+  "new": "新建",
+  "empty": "未发现任何子智能体，点击右上角「新建」创建",
+  "searchPlaceholder": "搜索名称 / 描述 / 提示词",
+  "card": {
+    "modelInherit": "跟随主智能体",
+    "allTools": "全部工具",
+    "toolsCount": "{{count}} 个工具",
+    "edit": "编辑",
+    "editTitle": "编辑子智能体",
+    "delete": "删除",
+    "deleteTitle": "删除子智能体",
+    "injected": "已注入",
+    "notInjected": "未注入"
+  },
+  "edit": {
+    "titleNew": "新建子智能体",
+    "titleEdit": "编辑子智能体",
+    "scope": "作用域",
+    "name": "名称",
+    "nameInvalid": "仅限小写字母、数字、点、下划线、连字符，且以字母或数字开头",
+    "color": "颜色标记",
+    "model": "模型",
+    "modelInherit": "跟随主智能体",
+    "description": "描述",
+    "descriptionPlaceholder": "这个子智能体擅长做什么（主智能体据此选用）",
+    "tools": "可用工具",
+    "toolsHint": "控制该子智能体可以调用的工具范围",
+    "toolsSelected": "已选 {{count}} 个工具（勾选自定义后 MCP 工具不可用）",
+    "systemPrompt": "系统提示词",
+    "systemPromptPlaceholder": "定义该子智能体的角色、边界与规则…",
+    "injectAgentsMd": "注入 AGENTS.md",
+    "injectAgentsMdHint": "与主智能体保持一致（默认注入）",
+    "saveTimeout": "保存超时，请重试",
+    "toolsAllOption": "默认所有权限",
+    "toolsCustomOption": "自定义可用工具",
+    "toolsCustomEmpty": "尚未勾选任何工具（至少勾选一个，或改回默认所有权限）"
+  },
+  "delete": {
+    "title": "删除子智能体",
+    "message": "确定删除「{{name}}」？将删除其定义文件，不可恢复。",
+    "confirm": "删除"
+  }
+}

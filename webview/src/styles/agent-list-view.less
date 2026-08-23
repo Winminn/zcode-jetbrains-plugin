@@ -1,0 +1,294 @@
+/**
+ * 子智能体管理面板样式（布局复用 skill-list-view.less 的卡片/工具栏体系，
+ * 仅补：标题行、编辑弹窗表单、色板、工具勾选、删除确认）
+ */
+
+.agent-list-view__title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-primary);
+  align-self: center;
+}
+
+.agent-list-view__desc {
+  margin: 0 0 8px;
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: var(--text-muted);
+}
+
+.agent-list-view__new {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 10px;
+  background: var(--button-primary, var(--accent-primary));
+  border: none;
+  border-radius: 4px;
+  color: #fff;
+  font-size: 12px;
+  cursor: pointer;
+  flex-shrink: 0;
+
+  &:hover {
+    background: var(--accent-primary-hover);
+  }
+
+  .codicon {
+    font-size: 13px;
+    line-height: 1;
+  }
+}
+
+/* 卡片详情布局覆盖（skill-card 体系 label 固定 width:56px，放不下「系统提示词」5 字
+   换行、「注入 AGENTS.md」更长标签直接溢出与值重叠——覆盖为 width:auto 按内容
+   自适应 + nowrap，min-width 保证短标签对齐，值区占满剩余宽度）*/
+.agent-card {
+  .skill-card__row {
+    align-items: flex-start;
+  }
+
+  .skill-card__row-label {
+    width: auto;
+    min-width: 72px;
+    white-space: nowrap;
+  }
+
+  .skill-card__row-value {
+    flex: 1;
+    min-width: 0;
+  }
+}
+
+/* 卡片头部 tools 摘要（skill-card__path 之后的补充段）*/
+.agent-card__tools-hint {
+  font-size: 10.5px;
+  color: var(--text-muted);
+  flex-shrink: 0;
+}
+
+.agent-card__prompt {
+  margin: 0;
+  padding: 8px 10px;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-primary);
+  border-radius: 4px;
+  font-size: 12px;
+  line-height: 1.55;
+  color: var(--text-primary);
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 180px;
+  overflow-y: auto;
+  /* 占满 row 剩余宽度（与 label 并排时的值区）*/
+  flex: 1;
+  min-width: 0;
+  width: 100%;
+}
+
+/* 危险操作按钮（删除）*/
+.skill-card__action--danger {
+  color: var(--error-color);
+
+  &:hover {
+    background: rgba(244, 67, 54, 0.12);
+  }
+}
+
+/* ===== 编辑弹窗（modal 壳 + 双类提特异性，同 prompt-enhancer 方案）===== */
+.modal-content.agent-edit-dialog {
+  max-height: 82vh;
+  width: min(620px, 94vw);
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  overflow-y: auto;
+
+  h3 {
+    margin: 0;
+    font-size: 14px;
+    color: var(--text-primary);
+    display: flex;
+    align-items: center;
+    gap: 6px;
+
+    &::before {
+      content: '\eb9b'; // codicon-robot
+      font-family: codicon;
+      font-size: 16px;
+      color: var(--accent-primary);
+    }
+  }
+
+  .agent-edit-dialog__grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 10px;
+  }
+
+  .agent-edit-dialog__field {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    min-width: 0;
+  }
+
+  .agent-edit-dialog__field--grow {
+    flex: 1;
+    min-height: 0;
+  }
+
+  .agent-edit-dialog__label {
+    font-size: 11.5px;
+    font-weight: 600;
+    color: var(--text-secondary);
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+    /* 标题词（如「系统提示词」）不换行；hint 允许收缩换行 */
+    white-space: nowrap;
+    flex-shrink: 0;
+  }
+
+  .agent-edit-dialog__hint {
+    font-size: 10.5px;
+    font-weight: 400;
+    color: var(--text-muted);
+    white-space: normal;
+    min-width: 0;
+  }
+
+  input[type='text'],
+  input:not([type]),
+  select,
+  textarea {
+    padding: 6px 8px;
+    background: var(--bg-secondary);
+    border: 1px solid var(--border-primary);
+    border-radius: 4px;
+    color: var(--text-primary);
+    font-size: 12.5px;
+    font-family: inherit;
+    outline: none;
+
+    &:focus {
+      border-color: var(--accent-primary);
+    }
+
+    &:disabled {
+      opacity: 0.55;
+      cursor: not-allowed;
+    }
+  }
+
+  textarea {
+    resize: vertical;
+    min-height: 160px;
+    line-height: 1.55;
+    white-space: pre-wrap;
+  }
+
+  .agent-edit-dialog__colors {
+    display: flex;
+    gap: 8px;
+    padding: 4px 0;
+  }
+
+  .agent-edit-dialog__color {
+    width: 22px;
+    height: 16px;
+    border-radius: 3px;
+    border: 1px solid rgba(128, 128, 128, 0.4);
+    cursor: pointer;
+    padding: 0;
+
+    &.selected {
+      border-color: var(--text-primary);
+      box-shadow: 0 0 0 2px var(--bg-elevated, var(--bg-primary)), 0 0 0 3.5px var(--accent-primary);
+    }
+  }
+
+  .agent-edit-dialog__tools {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+  }
+
+  .agent-edit-dialog__tool {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 3px 8px;
+    background: var(--bg-secondary);
+    border: 1px solid var(--border-primary);
+    border-radius: 3px;
+    font-size: 11.5px;
+    color: var(--text-secondary);
+    cursor: pointer;
+    user-select: none;
+
+    &.checked {
+      border-color: var(--accent-primary);
+      color: var(--text-primary);
+      background: rgba(0, 127, 212, 0.12);
+    }
+
+    input {
+      margin: 0;
+      accent-color: var(--accent-primary);
+    }
+  }
+
+  .agent-edit-dialog__switch {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 12.5px;
+    color: var(--text-primary);
+    cursor: pointer;
+
+    input {
+      margin: 0;
+      accent-color: var(--accent-primary);
+    }
+  }
+
+  .agent-edit-dialog__error {
+    font-size: 11px;
+    color: var(--error-color);
+  }
+
+  .agent-edit-dialog__error--block {
+    padding: 6px 8px;
+    background: rgba(244, 67, 54, 0.1);
+    border-radius: 4px;
+  }
+}
+
+/* ===== 删除确认弹窗 ===== */
+.modal-content.agent-delete-dialog {
+  width: min(420px, 92vw);
+
+  h3 {
+    margin: 0 0 8px;
+    font-size: 14px;
+    color: var(--text-primary);
+  }
+
+  .agent-delete-dialog__message {
+    margin: 0 0 12px;
+    font-size: 12.5px;
+    line-height: 1.6;
+    color: var(--text-secondary);
+  }
+
+  .modal-btn-danger {
+    background: var(--error-color);
+    color: #fff;
+    border: none;
+
+    &:hover {
+      opacity: 0.9;
+    }
+  }
+}

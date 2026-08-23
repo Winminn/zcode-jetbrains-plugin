@@ -7,6 +7,7 @@
     "usage": "사용량",
     "memory": "메모리",
     "skills": "스킬",
+    "agents": "서브 에이전트",
     "mcp": "MCP",
     "browser": "브라우저",
     "other": "기타 설정"

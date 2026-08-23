@@ -79,6 +79,38 @@ object Credentials {
      */
     fun defaultConfigPath(): Path = configPathFor(System.getProperty("user.home"))
 
+    /**
+     * ZCode 用户级数据根（dataBaseDir 感知）：`~/.zcode` 或 `<dataBaseDir>/.zcode`。
+     * agents/ 等顶层资源目录的父路径，与 zcode.cjs 的 storageRoot 同语义。
+     */
+    fun storageRoot(): Path {
+        val home = System.getProperty("user.home") ?: return Path.of(".zcode")
+        val dir = readDataBaseDir(home)
+        return if (dir != null) Path.of(dir, ".zcode") else Path.of(home, ".zcode")
+    }
+
+    /**
+     * 按 providerId + modelId 构造凭证（provider 定义取自 config.json）。
+     * 提示词润色等一次性 CLI 调用按前端当前选择模型注入 ZCODE_MODEL 环境用。
+     *
+     * @return provider 不存在 / baseURL / apiKey 缺失或为空（oauth 等走凭据存储的
+     *   provider 无法用 env 注入）时返回 null，调用方回退 [load] 默认凭证
+     */
+    fun credentialsFor(providerId: String, modelId: String, configPath: Path = defaultConfigPath()): ZCodeCredentials? {
+        if (!configPath.exists()) return null
+        return try {
+            val config = json.parseToJsonElement(configPath.readText()).jsonObject
+            val pv = config["provider"]?.jsonObject?.get(providerId)?.jsonObject ?: return null
+            val options = pv["options"]?.jsonObject ?: return null
+            val baseURL = options["baseURL"]?.jsonPrimitive?.content ?: return null
+            val apiKey = options["apiKey"]?.jsonPrimitive?.content ?: return null
+            if (baseURL.isBlank() || apiKey.isBlank()) return null
+            ZCodeCredentials(model = modelId, baseURL = baseURL, apiKey = apiKey)
+        } catch (e: Exception) {
+            null
+        }
+    }
+
     /** 同 [defaultConfigPath]，home 参数化便于单测（真实 home 无法在测试内替换） */
     internal fun configPathFor(home: String): Path {
         val legacy = Path.of(home, ".zcode", "v2", "config.json")

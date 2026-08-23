@@ -1,0 +1,11 @@
+{
+  "tooltip": "潤色提示詞（呼叫目前模型）",
+  "title": "提示詞潤色",
+  "dialogAriaLabel": "提示詞潤色對比彈窗",
+  "original": "原始提示詞",
+  "enhanced": "潤色後提示詞",
+  "loading": "正在潤色…",
+  "keepOriginal": "保留原始",
+  "useEnhanced": "使用潤色",
+  "timeout": "潤色逾時，請重試"
+}

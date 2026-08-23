@@ -15,5 +15,9 @@
     "generating": "Generating response",
     "generatingWithModel": "{{model}} is generating a response",
     "elapsed": "({{time}} elapsed)"
+  },
+  "actions": {
+    "save": "Save",
+    "loading": "Loading…"
   }
 }

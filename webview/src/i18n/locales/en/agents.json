@@ -1,0 +1,46 @@
+{
+  "title": "Subagents",
+  "desc": "Definition files are shared with the ZCode client (user: ~/.zcode/agents, project: .zcode/agents). Select one in the input box to route your message to that subagent; changes don't affect existing sessions.",
+  "new": "New",
+  "empty": "No subagents found. Click \"New\" to create one",
+  "searchPlaceholder": "Search name / description / prompt",
+  "card": {
+    "modelInherit": "Follow main agent",
+    "allTools": "All tools",
+    "toolsCount": "{{count}} tools",
+    "edit": "Edit",
+    "editTitle": "Edit subagent",
+    "delete": "Delete",
+    "deleteTitle": "Delete subagent",
+    "injected": "Injected",
+    "notInjected": "Not injected"
+  },
+  "edit": {
+    "titleNew": "New Subagent",
+    "titleEdit": "Edit Subagent",
+    "scope": "Scope",
+    "name": "Name",
+    "nameInvalid": "Lowercase letters, digits, dot, underscore, hyphen only; must start with a letter or digit",
+    "color": "Color",
+    "model": "Model",
+    "modelInherit": "Follow main agent",
+    "description": "Description",
+    "descriptionPlaceholder": "What this subagent is good at (used by the main agent to pick it)",
+    "tools": "Available tools",
+    "toolsHint": "Controls which tools this subagent can call",
+    "toolsSelected": "{{count}} tools selected (MCP tools unavailable with a custom selection)",
+    "systemPrompt": "System prompt",
+    "systemPromptPlaceholder": "Define the role, boundaries and rules of this subagent…",
+    "injectAgentsMd": "Inject AGENTS.md",
+    "injectAgentsMdHint": "Same as the main agent (injected by default)",
+    "saveTimeout": "Save timed out, please retry",
+    "toolsAllOption": "All permissions (default)",
+    "toolsCustomOption": "Custom tools",
+    "toolsCustomEmpty": "No tools selected yet (pick at least one, or switch back to all permissions)"
+  },
+  "delete": {
+    "title": "Delete Subagent",
+    "message": "Delete \"{{name}}\"? Its definition file will be removed and cannot be recovered.",
+    "confirm": "Delete"
+  }
+}
