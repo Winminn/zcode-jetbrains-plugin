@@ -3026,12 +3026,28 @@ if (!window.__ZCODE_LOG_HOOK__) {
     private val enhanceInProgress = java.util.concurrent.atomic.AtomicBoolean(false)
 
     /**
+     * 润色专用固定临时工作区：不存在则创建（幂等）。
+     * 创建失败返回 null → CLI 不带 --cwd（回退进程当前目录），润色仍可用。
+     */
+    private fun enhanceWorkspacePath(): String? = runCatching {
+        java.nio.file.Files.createDirectories(
+            java.nio.file.Path.of(System.getProperty("java.io.tmpdir"), "zcode-gui-enhance"),
+        ).toString()
+    }.onFailure { log.warn("enhancePrompt: create temp workspace failed: ${it.message}" ) }
+        .getOrNull()
+
+    /**
      * op=enhancePrompt — 提示词润色（一次性 CLI headless 调用，零会话污染）
      *
      * 走 [ZCodeProtocolClient.cliOneShot]（`zcode -p --json --mode yolo`，无 --resume），
      * 模型按前端 currentModel 透传的 providerId/modelId 从 config.json 取凭证注入
      * ZCODE_MODEL 环境；取不到（未选模型/oauth provider）回退客户端启动凭证。
      * 超时按输入长度动态放大：45s 基础 + 每 400 字符 1s，上限 120s。
+     *
+     * workspace 固定为临时目录 %TEMP%/zcode-gui-enhance（2026-08-23 sqlite 实测）：
+     * CLI 会话按 --cwd 归属 project，挂当前项目会令每次润色在会话列表多出一条记录；
+     * 挂固定临时目录则会话归到独立 temp project，不出现在任何真实项目列表，
+     * 所有润色共用一个 temp project 也避免了 project 记录累积。
      */
     private fun handleEnhancePrompt(msg: JsonObject): JsonObject {
         val text = msg["text"]?.jsonPrimitive?.content
@@ -3058,7 +3074,7 @@ if (!window.__ZCODE_LOG_HOOK__) {
             val client = project.zCodeService().getClient()
             val result = client.cliOneShot(
                 prompt = prompt,
-                workspacePath = effectiveWorkspacePath(msg),
+                workspacePath = enhanceWorkspacePath(),
                 credentialsOverride = credentialsOverride,
                 timeoutMs = timeoutMs,
             )
