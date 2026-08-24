@@ -658,8 +658,9 @@ export type JavaResponse =
   | { op: 'modeSet'; sessionId: string; mode: string }
   // hitRate 缺省 = 服务端暂无统计（新 turn 首次模型调用完成前聚合器为空），
   // Kotlin 端对 JSON null 不输出该字段——前端据此显示"—"，而非误导性的 0%
-  // activeTurnKind：当前回合类型（'compact' = 上下文压缩中，前端压缩状态条依据）
-  | { op: 'usage'; sessionId?: string; used: number; size: number; hitRate?: number; breakdown?: ContextBreakdownItem[]; activeTurnKind?: string }
+  // activeTurnKind/activeTurnId：当前回合类型与 id（'compact' = 上下文压缩中，前端
+  // 压缩状态条依据；turnId 供滞后读数比对——见 useStore case 'usage'）
+  | { op: 'usage'; sessionId?: string; used: number; size: number; hitRate?: number; breakdown?: ContextBreakdownItem[]; activeTurnKind?: string; activeTurnId?: string }
   | { op: 'quota'; data?: QuotaData | null; error?: string }
   | { op: 'modelUsage'; data?: ModelUsageData | null; error?: string }
   | { op: 'toolUsage'; data?: ToolUsageData | null; error?: string }

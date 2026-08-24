@@ -49,6 +49,13 @@ let reconcileProbeInFlight = false
 let reconcileProbeSentAt = 0
 let reconcileDeadCount = 0
 let reconcileLastFingerprint = ''
+/** 客户端最近处理过 turn.completed/failed 的回合 id：usage 响应的 activeTurnId
+ *  与之相同 = 服务端清算滞后的「已完成那轮」读数，不得据此复活压缩指示器 */
+let lastCompletedTurnId: string | null = null
+/** 本轮压缩态是否被服务端 activeTurnKind 确认过（滞后读数不算）：只允许"确认过
+ *  后的缺失"清除压缩指示器——旧版 zcode.cjs 不上报该字段，无条件清会把 /compact
+ *  的指示器在首个轮询样本就抹掉（维持旧客户端"字段缺失不动作"语义） */
+let compactingServerConfirmed = false
 
 /* ============ 压缩回合结束后的延迟 flush（快照落地优先于排队消息抢跑） ============
  * 压缩摘要卡/时间线屏障只能靠回合结束后的重拉快照落地（压缩回合事件流全程静默、
@@ -710,6 +717,7 @@ export const useStore = create<StoreState>((set, get) => ({
     // 不置位的话 UI 只有空气泡转圈、看门狗还会误判流丢失。
     // 权威校正走 usage 轮询的 activeTurnKind（覆盖 autocompact）
     const isCompactCmd = /^\/compact\b/.test(text.trim())
+    if (isCompactCmd) compactingServerConfirmed = false // 新一轮压缩：服务端确认闩复位
     set({
       streaming: true,
       streamingMessageId: null,
@@ -2017,10 +2025,28 @@ function handleResponse(
       // 流式轮询期间切会话：旧会话的迟到响应直接丢弃，避免污染新会话圆环
       if (msg.sessionId && msg.sessionId !== get().currentSessionId) break
       // 压缩态权威同步（session/read → runtime.activeTurnKind，5s 轮询通道）：
-      // 覆盖 autocompact（send 未识别）与异常残留；null（旧 Java 包不带字段）不动作
-      if (msg.activeTurnKind !== undefined) {
+      // 覆盖 autocompact（send 未识别）与异常残留
+      if (msg.activeTurnKind === undefined) {
+        // 字段缺失 = 服务端已无活动回合（滞后窗口里字段是"仍在"而非缺失，实测
+        // eventSeq=816 落后时 activeTurnKind 仍报 compact）。仅当本轮压缩曾被
+        // 服务端确认过才清除——防 turn.completed 丢失后 compacting 卡 true、看门狗
+        // 被豁免的永久转圈盲区；未确认过（旧 CLI 不上报字段）维持不动作
+        if (get().compacting && compactingServerConfirmed) set({ compacting: false })
+        compactingServerConfirmed = false
+      } else {
         const compacting = msg.activeTurnKind === 'compact'
-        if (get().compacting !== compacting) set({ compacting })
+        // 滞后读数复活防护：服务端 runtime 清算异步于 turn.completed 下发（实测
+        // eventSeq 816<820，滞后 ~1.3s），回合结束重拉批的 getUsage 可能仍报
+        // 「已完成那轮」的 activeTurnKind=compact——按 activeTurnId 与客户端最近
+        // 完成的 turnId 比对识别，滞后读数不复活指示器。否则 compacting 永久卡
+        // true 并连锁毒化下一回合（turn.started 被压缩守卫吞掉、delta 无处落地
+        // → 只转圈，2026-08-24 缺陷）。真实的新压缩回合（autocompact 紧接上一
+        // 回合结束）带新 turnId，不受影响
+        const staleCompact = compacting && msg.activeTurnId != null && msg.activeTurnId === lastCompletedTurnId
+        compactingServerConfirmed = compacting && !staleCompact
+        if (!staleCompact && get().compacting !== compacting) {
+          set({ compacting })
+        }
       }
       if (msg.breakdown) {
         // 构成明细来自 session/read 的 runtime.breakdown（turn 后 CLI 构建）：
@@ -2513,7 +2539,10 @@ function handleStreamBatchDirect(
       const result = applyStreamEvent(messages, event, streamingMessageId)
       messages = result.messages
       streamingMessageId = result.streamingMessageId
-      if (result.turnEnded) turnEnded = true
+      if (result.turnEnded) {
+        turnEnded = true
+        if (event.turnId) lastCompletedTurnId = event.turnId
+      }
       if (result.modeEvent) modeEvent = result.modeEvent
       if (result.turnError) turnError = result.turnError
     }
@@ -2666,6 +2695,7 @@ function handleStreamEvent(
     event,
     get().streamingMessageId,
   )
+  if (turnEnded && event.turnId) lastCompletedTurnId = event.turnId
 
   // turn.started：进入流式，清除 waiting（开始有内容了）
   if (event.type === 'turn.started') {
