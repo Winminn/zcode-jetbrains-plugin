@@ -8,9 +8,11 @@
  * 数据来源：~/.zcode/v2/config.json 的 provider 注册表（setModel 只能切已注册 provider）
  */
 
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { createPortal } from 'react-dom'
 import { useTranslation } from 'react-i18next'
 import { useStore } from '@/store/useStore'
+import { fmtTokens } from '@/utils/format'
 import type { ModelOption } from '@/types/messages'
 import { ModelIcon } from './ModelIcon'
 import { PlanBadge } from './PlanBadge'
@@ -80,13 +82,58 @@ export function ModelSelect({ currentModel, onSelect, disabled = false }: Props)
   // 是否有确定的模型（currentModel 或消息推断的 modelID）
   const hasModel = !!(currentModel || displayName)
 
+  // 悬停信息卡：选中模型的三行详情（供应商/模型名/上下文窗口）。JCEF 不渲染原生
+  // title 提示，走 createPortal + fixed（ContextRing 同款方案）；仅在选中且能匹配到
+  // 模型条目时展示
+  const [hovered, setHovered] = useState(false)
+  const [tipPos, setTipPos] = useState<{ left: number; bottom: number } | null>(null)
+  const btnRef = useRef<HTMLButtonElement>(null)
+  const tipRef = useRef<HTMLDivElement>(null)
+
+  const currentOption = currentModel
+    ? models.find((m) => m.modelId === currentModel.modelId && m.providerId === currentModel.providerId)
+    : displayName
+      ? models.find((m) => m.modelId === displayName)
+      : undefined
+
+  // useMemo 稳定引用：数组字面量每次渲染都是新引用，作 layout effect 依赖会无限重渲染
+  const tipLines = useMemo(() => {
+    if (!currentOption) return []
+    return [
+      `${t('input.model.provider')}${currentOption.providerName}`,
+      `${t('input.model.model')}${currentOption.modelName}`,
+      currentOption.contextWindow
+        ? `${t('input.model.contextWindow')}${fmtTokens(currentOption.contextWindow)} tokens`
+        : null,
+    ].filter((l): l is string => l !== null)
+  }, [currentOption, t])
+
+  // 渲染后量宽定位：左对齐按钮、越界右移；弹上方（按钮在底部栏），与下拉同时打开时隐藏
+  useLayoutEffect(() => {
+    if (!hovered || tipLines.length === 0 || open) {
+      setTipPos(null)
+      return
+    }
+    const b = btnRef.current?.getBoundingClientRect()
+    const tip = tipRef.current
+    if (!b || !tip) return
+    const left = Math.max(8, Math.min(b.left, window.innerWidth - tip.offsetWidth - 8))
+    const bottom = window.innerHeight - b.top + 6
+    // 值未变不重设：setState 新对象同样触发重渲染
+    setTipPos((prev) => (prev && prev.left === left && prev.bottom === bottom ? prev : { left, bottom }))
+  }, [hovered, open, tipLines])
+
   return (
     <div className="selector-button-wrap" ref={rootRef}>
       <button
         className="selector-button"
+        ref={btnRef}
         onClick={() => setOpen((v) => !v)}
         disabled={disabled || models.length === 0}
-        title={displayName ?? t('input.model.selectModel')}
+        onMouseEnter={() => {
+          if (!open) setHovered(true)
+        }}
+        onMouseLeave={() => setHovered(false)}
       >
         {hasModel && (
           <ModelIcon
@@ -100,6 +147,25 @@ export function ModelSelect({ currentModel, onSelect, disabled = false }: Props)
         </span>
         <span className="codicon codicon-chevron-down selector-button-chevron" />
       </button>
+
+      {/* 悬停信息卡（先隐形渲染量宽，useLayoutEffect 定位后才可见）*/}
+      {hovered && tipLines.length > 0 &&
+        createPortal(
+          <div
+            ref={tipRef}
+            className="model-info-tip"
+            style={
+              tipPos
+                ? { position: 'fixed', left: tipPos.left, bottom: tipPos.bottom }
+                : { position: 'fixed', visibility: 'hidden', top: 0, left: 0 }
+            }
+          >
+            {tipLines.map((line, i) => (
+              <div key={i}>{line}</div>
+            ))}
+          </div>,
+          document.body,
+        )}
 
       {open && models.length > 0 && (
         <div className="selector-dropdown">

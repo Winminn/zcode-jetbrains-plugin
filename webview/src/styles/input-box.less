@@ -328,6 +328,10 @@
   align-items: center;
   gap: 3px;
   padding: 4px 6px;
+  /* 行高统一压成 1（继承到文字/chevron；图标自带）：codicon 简写 16px/1 与各元素
+     font-size 覆盖叠加后，normal 行盒基线落点不一致（实测 icon/chev 基线比文字低
+     2~3px），flex 只居中盒不居中墨迹——图标视觉偏上、箭头偏下 */
+  line-height: 1;
   font-size: 11px;
   color: var(--text-secondary);
   background: transparent;
@@ -352,16 +356,47 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  /* 13px（≈1.18em）让 CJK 墨迹在行盒内居中：实测 11px 汉字 ink 分布为 ascent10/
+     descent1，line-height:1 时墨迹中心高出盒心 ~1.5px（字形整体偏上），13px 时
+     墨迹中心与盒心差 ~0.5px——与 codicon 图标（0.64px）基本重合 */
+  line-height: 13px;
 
-  /* 无模型时的占位文案（请选择模型）*/
+  /* 无模型时的占位文案（请选择模型）：仅弱化色，不用斜体（中文斜体观感差）*/
   &--placeholder {
     color: var(--text-muted);
-    font-style: italic;
   }
 }
 
-.selector-button-chevron {
+/* 提特异性压 codicon.css 的 .codicon[class*='codicon-'] 简写（0,2,0）——单类
+   (0,1,0) 的 font-size:10px 从未生效，箭头一直按 16px 渲染 */
+.selector-button .selector-button-chevron {
   font-size: 10px;
+  line-height: 1;
+  flex-shrink: 0;
+}
+
+/* 模型按钮悬停信息卡（JCEF 不渲染原生 title：createPortal + fixed，同 ctx-popover /
+   inline-chip-tip 方案；pointer-events:none 防闪烁）*/
+.model-info-tip {
+  z-index: 1200;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-primary);
+  border-radius: 4px;
+  padding: 6px 10px;
+  font-size: 11px;
+  line-height: 1.6;
+  color: var(--text-primary);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
+  pointer-events: none;
+  white-space: nowrap;
+}
+
+/* 思考级别图标（按钮与下拉同款）：codicon 简写默认 16px 在 11px 文案旁偏大——
+   火箭（最高）满框绘制尤其明显，压到 13px（嵌套提特异性压 codicon 0,2,0 简写）*/
+.selector-button .thought-level-icon,
+.selector-dropdown-item .thought-level-icon {
+  font-size: 13px;
+  line-height: 1;
   flex-shrink: 0;
 }
 
@@ -445,8 +480,11 @@
   flex-shrink: 0;
 }
 
-.selector-dropdown-item-check {
+/* 嵌套提特异性压 codicon 简写（同 selector-button-chevron 的坑）：单类 0,1,0 失效，
+   实际一直按 16px 渲染；下拉内 check 期望 12px */
+.selector-dropdown .selector-dropdown-item-check {
   font-size: 12px;
+  line-height: 1;
   color: var(--accent-secondary);
   flex-shrink: 0;
 }

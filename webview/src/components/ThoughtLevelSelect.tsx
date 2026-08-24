@@ -85,7 +85,7 @@ export function ThoughtLevelSelect() {
         onClick={() => setOpen((v) => !v)}
         title={isDefault ? t('input.thought.titleWithDefault', { level: displayText }) : t('input.thought.title')}
       >
-        <span className={`codicon ${current ? levelIcon(current) : 'codicon-lightbulb'}`} />
+        <span className={`codicon ${current ? levelIcon(current) : 'codicon-lightbulb'} thought-level-icon`} />
         <span className="selector-button-text">{displayText}</span>
         <span className="codicon codicon-chevron-down selector-button-chevron" />
       </button>
@@ -101,7 +101,7 @@ export function ThoughtLevelSelect() {
                 setOpen(false)
               }}
             >
-              <span className={`codicon ${levelIcon(l.value)}`} />
+              <span className={`codicon ${levelIcon(l.value)} thought-level-icon`} />
               <div className="selector-dropdown-item-main">
                 <span className="selector-dropdown-item-name">{levelLabel(l.value, t)}</span>
                 {l.value === thoughtLevel.defaultLevel && (

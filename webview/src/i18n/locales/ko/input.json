@@ -6,7 +6,10 @@
   "send": "전송 (Enter)",
   "stop": "생성 중지",
   "model": {
-    "selectModel": "모델 선택"
+    "selectModel": "모델 선택",
+    "provider": "공급자: ",
+    "model": "모델: ",
+    "contextWindow": "컨텍스트 창: "
   },
   "mode": {
     "title": "권한 모드",

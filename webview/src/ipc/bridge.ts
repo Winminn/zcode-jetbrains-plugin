@@ -739,14 +739,15 @@ function mockResponse(req: JavaRequest): JavaResponse | null {
     case 'restoreSession':
       return { op: 'sessionRestored', sessionId: req.sessionId }
     case 'listModels':
-      // 模拟 ~/.zcode/v2/config.json 的 provider 注册表（验收模型下拉用；内置套餐带 plan 标记）
+      // 模拟 ~/.zcode/v2/config.json 的 provider 注册表（验收模型下拉用；内置套餐带 plan 标记；
+      // limit.context/output 与生产 handleListModels 同口径，悬停 tooltip 可验上下文窗口行）
       return {
         op: 'models',
         models: [
-          { providerId: 'builtin:bigmodel-coding-plan', providerName: 'BigModel - Coding Plan', plan: 'personal', modelId: 'GLM-5.3', modelName: 'GLM-5.3' },
-          { providerId: 'builtin:bigmodel-coding-plan', providerName: 'BigModel - Coding Plan', plan: 'personal', modelId: 'GLM-5-Turbo', modelName: 'glm-5-turbo' },
-          { providerId: 'builtin:bigmodel-start-plan', providerName: 'BigModel - Coding Plan', plan: 'trial', modelId: 'glm-5.3', modelName: 'glm-5.3' },
-          { providerId: '27d2ecde-5da2-43bd-b2d8-dae985bfaf8f', providerName: 'DeepSeek', modelId: 'deepseek-v4-flash', modelName: 'deepseek-v4-flash' },
+          { providerId: 'builtin:bigmodel-coding-plan', providerName: 'BigModel - Coding Plan', plan: 'personal', modelId: 'GLM-5.3', modelName: 'GLM-5.3', contextWindow: 1000000, maxOutput: 128000 },
+          { providerId: 'builtin:bigmodel-coding-plan', providerName: 'BigModel - Coding Plan', plan: 'personal', modelId: 'GLM-5-Turbo', modelName: 'glm-5-turbo', contextWindow: 204800, maxOutput: 128000 },
+          { providerId: 'builtin:bigmodel-start-plan', providerName: 'BigModel - Coding Plan', plan: 'trial', modelId: 'glm-5.3', modelName: 'glm-5.3', contextWindow: 1000000, maxOutput: 128000 },
+          { providerId: '27d2ecde-5da2-43bd-b2d8-dae985bfaf8f', providerName: 'DeepSeek', modelId: 'deepseek-v4-flash', modelName: 'deepseek-v4-flash', contextWindow: 1000000, maxOutput: 384000 },
         ],
       }
     case 'modelToggleProvider': {

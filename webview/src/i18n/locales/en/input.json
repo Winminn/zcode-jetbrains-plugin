@@ -6,7 +6,10 @@
   "send": "Send (Enter)",
   "stop": "Stop generating",
   "model": {
-    "selectModel": "Select a model"
+    "selectModel": "Select a model",
+    "provider": "Provider: ",
+    "model": "Model: ",
+    "contextWindow": "Context window: "
   },
   "mode": {
     "title": "Permission mode",

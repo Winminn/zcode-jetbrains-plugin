@@ -6,7 +6,10 @@
   "send": "送信 (Enter)",
   "stop": "生成を停止",
   "model": {
-    "selectModel": "モデルを選択"
+    "selectModel": "モデルを選択",
+    "provider": "プロバイダー：",
+    "model": "モデル：",
+    "contextWindow": "コンテキストウィンドウ："
   },
   "mode": {
     "title": "権限モード",
