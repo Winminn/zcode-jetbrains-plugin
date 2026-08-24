@@ -6,6 +6,44 @@
 
 最新版本块的中文段会被 `patchPluginXml` 提取为插件 change-notes（展示在 Marketplace 与 IDE 插件详情页，行内 Markdown 转换为 HTML），保持格式：`## [版本] - 日期` + `### 节` + `- ` 列表。
 
+## [0.2.3] - 2026-08-24
+
+中文:
+
+### Added
+
+- **上下文压缩（/compact）全程可视**：压缩中显示状态提示，完成后生成摘要卡片（书本图标），点击弹窗查看摘要全文
+- **提示词润色与子智能体引用**：输入框新增「润色」按钮（在独立临时会话中处理，不污染项目会话列表）；`@` 可引用 ZCode 客户端配置的子智能体，子智能体定义与客户端数据互通
+- **版本更新弹窗（What's New）**：升级后首次启动自动弹窗展示新版本改动，CHANGELOG 随之双语化
+- **归档与 ZCode 客户端同源**：插件与客户端共用归档索引，支持恢复客户端归档的历史会话
+- **过程可视化增强**：AI 写入大文件时实时显示流式行数进度；超长用户消息默认折叠、点击查看全文；斜杠下拉按「命令 / 技能」分组
+- **对话结束通知与浏览器数据管理**：回合完成发送系统通知（可在设置关闭）；内嵌浏览器支持清除浏览数据与查看站点概览
+
+### Fixed
+
+- **app-server 进程换代后发消息无限转圈**：CLI 自动升级或重启后订阅簿记失效，现按进程实例自动失效并重新订阅
+- **计划审批意见反馈错位**：拒绝计划时填写的反馈意见曾钉在流式输出尾部，现固定显示于审批卡之后，后续修订内容自然衔接
+- **关闭项目后 AI 回合变僵尸自主续跑**：关闭项目窗口时强制停止 app-server 遗留回合
+- **版本更新弹窗每次重启误弹**：已读标记读取竞态修复，仅在升级后首次启动弹出
+
+English:
+
+### Added
+
+- **Fully visible context compaction (/compact)**: a status hint shows while compacting, a summary card (book icon) appears when done, and clicking it opens the full summary in a dialog
+- **Prompt polish & subagent references**: the input box gains a "Polish" button (runs in a detached temporary session that never pollutes the project session list); `@` references subagents configured in the ZCode client, with subagent definitions shared with the client
+- **What's New dialog**: after upgrading, the new version's changes are shown once on first launch; CHANGELOG became bilingual along the way
+- **Unified archive with the ZCode client**: the plugin and the client share one archive index; sessions archived by the client can be restored inside the plugin
+- **Richer progress visualization**: streaming line-count progress while the AI writes large files; overlong user messages collapse by default with a full-text dialog; the slash dropdown is grouped into commands / skills
+- **Turn-finished notifications & browser data management**: a system notification fires when a turn completes (disableable in Settings); the embedded browser supports clearing browsing data and a site overview
+
+### Fixed
+
+- **Messages spinning forever after app-server process replacement**: subscription bookkeeping went stale after the CLI auto-upgraded or restarted; it is now invalidated per process instance and re-subscribed automatically
+- **Plan-review feedback misplaced**: feedback typed when rejecting a plan used to be pinned at the tail of the streaming output; it now sits right after the approval card with subsequent revisions flowing naturally
+- **Zombie AI turns after closing a project**: closing the project window now forcibly stops leftover app-server turns
+- **What's New dialog reappearing on every restart**: a read-marker race was fixed; it only shows once after an upgrade
+
 ## [0.2.2] - 2026-08-21
 
 中文:
