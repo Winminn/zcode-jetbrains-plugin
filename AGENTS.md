@@ -70,8 +70,8 @@ cd webview && npm test                # webview 测试（vitest，test/ 与 *.te
      -F "pluginId=33622" \
      -F "file=@intellij-plugin/build/distributions/ZC-GUI-<版本>-signed.zip"
    ```
-   期望 HTTP 201；返回 `approve:false` = 待审核（≤2 工作日），verifier 平台自动跑。**环境变量里的 MARKETPLACE_TOKEN 可能是失效旧 token（403 Invalid token 时向用户要新 token，不入库不落盘）**。
-7. **覆盖发版（例外操作，如 0.2.1 重发）**：Marketplace 先网页删除旧版本再 API 重传同号；GitHub release 移 tag（force push）+ 换 asset + 改 notes 注明重发。默认走升版本，覆盖需用户明确要求。
+   期望 HTTP 201；返回 `approve:false` = 待审核（≤2 工作日），verifier 平台自动跑。**环境变量里的 MARKETPLACE_TOKEN 可能是失效旧 token（403 Invalid token 时向用户要新 token，不入库不落盘）**。changeNotes 由 build.gradle.kts 从 CHANGELOG 最新块提取**中英双语并列**（中文段 + `<h3>English</h3>` + 英文段；Marketplace 该字段单语无语言切换）。
+7. **覆盖发版（例外操作，如 0.2.3 改 notes 重传）**：Marketplace 可用 API 直接删旧版本 `curl -X DELETE https://plugins.jetbrains.com/api/updates/<id> -H "Authorization: Bearer $MARKETPLACE_TOKEN"`（HTTP 200 即删，无需网页；PATCH/PUT 直改 notes 均 405 不支持）→ 重新构建签名 → API 重传同号（重新排队审核，id 会变）；GitHub release 移 tag（force push）+ 换 asset + 改 notes 注明重发。默认走升版本，覆盖需用户明确要求。
 
 ## 外部参考
 

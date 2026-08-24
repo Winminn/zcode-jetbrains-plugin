@@ -8,71 +8,80 @@ plugins {
 group = "com.zcode.ideaplugin"
 version = "0.2.3.1"
 
-// 从仓库根 CHANGELOG.md 提取「最新一个版本块」（## 标题到下一个 ## 之前）的中文段
-// （English: 标记之前；无语言标记的块整块兼容），把 markdown 粗转成 HTML 片段，
-// 作为 patchPluginXml 的 change-notes 注入。Marketplace 渲染 changeNotes 的 HTML
-// 子集但不解析 markdown——**加粗** / `代码` / [链接] 必须在此转换为 <b>/<code>/<a>，
-// 否则星号反引号原样显示；先做 HTML 转义防 CHANGELOG 里的 <depends> 等文本破坏 XML
+// 从仓库根 CHANGELOG.md 提取「最新一个版本块」（## 标题到下一个 ## 之前），
+// 输出中英双语并列的 HTML：中文段在前（主用户群），<h3>English</h3> 分隔后接英文段
+// （Marketplace changeNotes 是单字段、无语言切换，双语并列为通行做法）；无语言标记的
+// 旧块整块兼容、单语输出。Marketplace 渲染 changeNotes 的 HTML 子集但不解析 markdown
+// ——**加粗** / `代码` / [链接] 必须在此转换为 <b>/<code>/<a>，否则星号反引号原样显示；
+// 先做 HTML 转义防 CHANGELOG 里的 <depends> 等文本破坏 XML
 fun latestChangelogSection(): String {
     val changelog = rootProject.file("CHANGELOG.md").readText()
     val headings = Regex("(?m)^## ").findAll(changelog).toList()
     if (headings.isEmpty()) return ""
     val start = headings.first().range.first
     val end = if (headings.size > 1) headings[1].range.first else changelog.length
-    var section = changelog.substring(start, end).trim()
+    val section = changelog.substring(start, end).trim()
 
-    // 双语块只取中文段（保留版本头行，仅移除语言标记行与 English: 段）
+    // 按语言标记拆段：标记行本身移除；English: 之前（含 ## 版本头）为中文段，之后为英文段
     val zhLines = mutableListOf<String>()
+    val enLines = mutableListOf<String>()
     var inEnglish = false
     for (line in section.lines()) {
         when (line.trim()) {
             "English:" -> inEnglish = true
             "中文:" -> Unit // 标记行本身移除
-            else -> if (!inEnglish) zhLines.add(line)
+            else -> (if (inEnglish) enLines else zhLines).add(line)
         }
     }
-    section = zhLines.joinToString("\n").trim()
+    // 英文段不再重复 ## 版本头行
+    enLines.removeAll { it.startsWith("## ") }
 
-    fun inline(s: String): String = s
-        .replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
-        .let { Regex("\\*\\*([^*]+)\\*\\*").replace(it, "<b>$1</b>") }
-        .let { Regex("`([^`]+)`").replace(it, "<code>$1</code>") }
-        .let { Regex("\\[([^\\]]+)\\]\\((https?://[^)\\s]+)\\)").replace(it, "<a href=\"$2\">$1</a>") }
+    fun markdownToHtml(lines: List<String>): String {
+        fun inline(s: String): String = s
+            .replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+            .let { Regex("\\*\\*([^*]+)\\*\\*").replace(it, "<b>$1</b>") }
+            .let { Regex("`([^`]+)`").replace(it, "<code>$1</code>") }
+            .let { Regex("\\[([^\\]]+)\\]\\((https?://[^)\\s]+)\\)").replace(it, "<a href=\"$2\">$1</a>") }
 
-    val html = StringBuilder()
-    var inList = false
-    fun closeList() {
-        if (inList) {
-            html.append("</ul>\n")
-            inList = false
+        val html = StringBuilder()
+        var inList = false
+        fun closeList() {
+            if (inList) {
+                html.append("</ul>\n")
+                inList = false
+            }
         }
-    }
-    for (line in section.lines()) {
-        when {
-            line.startsWith("## ") -> {
-                closeList()
-                html.append("<h3>").append(inline(line.removePrefix("## "))).append("</h3>\n")
-            }
-            line.startsWith("### ") -> {
-                closeList()
-                html.append("<h4>").append(inline(line.removePrefix("### "))).append("</h4>\n")
-            }
-            line.startsWith("- ") -> {
-                if (!inList) {
-                    html.append("<ul>\n")
-                    inList = true
+        for (line in lines) {
+            when {
+                line.startsWith("## ") -> {
+                    closeList()
+                    html.append("<h3>").append(inline(line.removePrefix("## "))).append("</h3>\n")
                 }
-                html.append("<li>").append(inline(line.removePrefix("- "))).append("</li>\n")
-            }
-            line.isBlank() -> { /* 空行：段落间隔，列表边界在下一内容行处理 */ }
-            else -> {
-                closeList()
-                html.append("<div>").append(inline(line.trim())).append("</div>\n")
+                line.startsWith("### ") -> {
+                    closeList()
+                    html.append("<h4>").append(inline(line.removePrefix("### "))).append("</h4>\n")
+                }
+                line.startsWith("- ") -> {
+                    if (!inList) {
+                        html.append("<ul>\n")
+                        inList = true
+                    }
+                    html.append("<li>").append(inline(line.removePrefix("- "))).append("</li>\n")
+                }
+                line.isBlank() -> { /* 空行：段落间隔，列表边界在下一内容行处理 */ }
+                else -> {
+                    closeList()
+                    html.append("<div>").append(inline(line.trim())).append("</div>\n")
+                }
             }
         }
+        closeList()
+        return html.toString().trim()
     }
-    closeList()
-    return html.toString().trim()
+
+    val zhHtml = markdownToHtml(zhLines)
+    if (enLines.all { it.isBlank() }) return zhHtml
+    return zhHtml + "\n<h3>English</h3>\n" + markdownToHtml(enLines)
 }
 
 // gradle-intellij-plugin 会注入自己的 repository（指向本地 SDK），
