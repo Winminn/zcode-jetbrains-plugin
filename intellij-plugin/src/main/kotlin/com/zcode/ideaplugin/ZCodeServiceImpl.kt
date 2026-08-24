@@ -241,6 +241,12 @@ class ZCodeServiceImpl(private val project: Project) : ZCodeService, com.intelli
         lock.withLock {
             client?.close()
             client = null
+            // handler 注册标志随旧实例作废：getClient 换代后 registerProtocolHandlersLocked
+            // 须在新 client 上重挂 askUser / browser-use handler。旧版不重置——环境变更
+            // 触发 shutdown 后新 client 缺 handler，AskUserQuestion 被服务端自动 decline、
+            // browser-use 反向请求报"宿主未注册"
+            userInputHandlerRegistered = false
+            browserHandlerRegistered = false
         }
     }
 
@@ -285,7 +291,14 @@ class ZCodeServiceImpl(private val project: Project) : ZCodeService, com.intelli
     }
 
     override fun dispose() {
-        // 项目级服务销毁：从宿主探针聚合集中摘除（先于释放浏览器实例）
+        // 项目级服务销毁：先停协议客户端（杀 app-server 进程树）。
+        // 不停的后果（2026-08-24 实战）：正在执行的回合在无 UI 监督的僵尸进程上自主
+        // 续跑，其反向请求打到已 dispose 的容器（browser-use 全废），事件仍被转发、
+        // 污染重开项目后的 webview（同会话双流交错）
+        try { shutdown() } catch (e: Exception) {
+            log.warn("Failed to stop protocol client on project dispose: ${e.message}")
+        }
+        // 从宿主探针聚合集中摘除（先于释放浏览器实例）
         activeInstances.remove(this)
         // 释放共享浏览器实例（所有标签共用这一个）
         sharedBrowserPanel?.let {

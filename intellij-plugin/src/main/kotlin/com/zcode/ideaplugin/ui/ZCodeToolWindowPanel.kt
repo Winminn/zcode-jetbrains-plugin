@@ -1364,6 +1364,14 @@ if (!window.__ZCODE_LOG_HOOK__) {
         disposed = true
         activePanels.remove(this)
         log.info("Releasing tab panel (sessionId=$currentSessionId)")
+        // 摘掉挂在协议客户端上的全局流式监听器：杀进程是异步的，竞态窗口内残留
+        // 监听器会继续把事件推向本面板已释放的 JCEF。只从记录过的 client 上摘
+        // （不能调 getClient——那会为项目再拉起新 app-server）
+        try {
+            globalStreamListener?.let { l -> globalStreamListenerClient?.removeGlobalEventListener(l) }
+        } catch (_: Exception) {}
+        globalStreamListener = null
+        globalStreamListenerClient = null
         try {
             // 内嵌浏览器是全局共享单例：只摘除挂载（还原 TW 宽度），实例交由 Service 释放
             if (embeddedSplit != null) {
@@ -2255,11 +2263,7 @@ if (!window.__ZCODE_LOG_HOOK__) {
                 // 失效——立即重挂全局监听器并重新订阅本会话，否则服务端正常产出而前端
                 // 收不到流式（一直转圈直到手动停止，2026-08-22 实测）
                 invalidateStaleSubscriptions(client)
-                if (!globalListenerRegistered) {
-                    client.addGlobalEventListener { event -> pushStreamEvent(event.sessionId, event) }
-                    registerBackendErrorHandler(client)
-                    globalListenerRegistered = true
-                }
+                ensureGlobalStreamListener(client)
                 if (sessionId !in subscribedSessions) {
                     runCatching { client.subscribe(sessionId, onEvent = null) }
                         .onSuccess { subscribedSessions.add(sessionId) }
@@ -2412,6 +2416,30 @@ if (!window.__ZCODE_LOG_HOOK__) {
         subscribedSessions.clear()
     }
 
+    /** 已挂到协议客户端上的全局流式监听器及其宿主 client（dispose 时成对摘除用）*/
+    @Volatile
+    private var globalStreamListener: ((com.zcode.ideaplugin.protocol.model.SessionEvent) -> Unit)? = null
+
+    @Volatile
+    private var globalStreamListenerClient: com.zcode.ideaplugin.protocol.ZCodeProtocolClient? = null
+
+    /**
+     * 挂全局流式监听器（幂等，两个 subscribe 入口共用）。
+     * 保存监听器与宿主 client 的引用，dispose 时成对摘除——匿名监听器摘不掉，
+     * client 存活期间会一直把事件推向已释放的 JCEF。
+     */
+    private fun ensureGlobalStreamListener(client: com.zcode.ideaplugin.protocol.ZCodeProtocolClient) {
+        if (globalListenerRegistered) return
+        val listener: (com.zcode.ideaplugin.protocol.model.SessionEvent) -> Unit =
+            { event -> pushStreamEvent(event.sessionId, event) }
+        client.addGlobalEventListener(listener)
+        globalStreamListener = listener
+        globalStreamListenerClient = client
+        registerBackendErrorHandler(client)
+        globalListenerRegistered = true
+        log.info("Global event listener registered")
+    }
+
     /**
      * 订阅会话的流式事件（阶段 2.4 核心）
      *
@@ -2432,14 +2460,7 @@ if (!window.__ZCODE_LOG_HOOK__) {
         persistSelfTabState()
 
         // 注册全局监听器（只注册一次，所有会话的事件都通过它推给前端）
-        if (!globalListenerRegistered) {
-            client.addGlobalEventListener { event ->
-                pushStreamEvent(event.sessionId, event)
-            }
-            registerBackendErrorHandler(client)
-            globalListenerRegistered = true
-            log.info("Global event listener registered")
-        }
+        ensureGlobalStreamListener(client)
 
         // 每个 session 只 subscribe 一次（不 unsubscribe，避免切回时丢事件）
         if (sessionId in subscribedSessions) {
@@ -2495,14 +2516,7 @@ if (!window.__ZCODE_LOG_HOOK__) {
         invalidateStaleSubscriptions(client)
 
         // 全局监听器（只注册一次，同 handleSubscribe）
-        if (!globalListenerRegistered) {
-            client.addGlobalEventListener { event ->
-                pushStreamEvent(event.sessionId, event)
-            }
-            registerBackendErrorHandler(client)
-            globalListenerRegistered = true
-            log.info("Global event listener registered")
-        }
+        ensureGlobalStreamListener(client)
 
         if (sessionId in subscribedSessions) {
             log.info("subscribeChild: child session $sessionId already subscribed, skipping")
@@ -2562,6 +2576,8 @@ if (!window.__ZCODE_LOG_HOOK__) {
      * 关键事件（turn.started/completed/failed）立即 flush，保证生命周期即时。
      */
     private fun pushStreamEvent(sessionId: String, event: com.zcode.ideaplugin.protocol.model.SessionEvent) {
+        // 面板已释放：dispose 摘监听器与杀进程之间存在竞态窗口，双保险在此拦断
+        if (disposed) return
         // 多标签隔离：只推本面板订阅过的会话（其他标签的事件由各自的监听器推送）
         if (sessionId !in subscribedSessions) return
 

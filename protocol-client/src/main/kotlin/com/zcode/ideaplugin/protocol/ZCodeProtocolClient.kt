@@ -1146,15 +1146,60 @@ class ZCodeProtocolClient private constructor(
         globalListeners.add(listener)
     }
 
+    /** 移除全局事件监听器（面板 dispose 时摘除，防事件继续推向已释放的 JCEF）*/
+    fun removeGlobalEventListener(listener: (SessionEvent) -> Unit) {
+        globalListeners.remove(listener)
+    }
+
     // ============ 生命周期 ============
 
     override fun close() {
         closed = true
-        try {
-            process.destroy()
-        } catch (_: Exception) {}
+        // 先断全部回调再杀进程：杀进程是异步的，竞态窗口里残留监听器会把事件继续
+        // 转发到已释放的面板（重开项目后双流污染），反向请求 handler 也会打到已
+        // dispose 的 Service 容器（browser-use 全废）；摘空后未知反向请求自动走
+        // 优雅降级应答（decline / 空浏览器列表）
+        globalListeners.clear()
+        eventListeners.clear()
+        userInputRequestHandler = null
+        browserListHandler = null
+        browserExecuteHandler = null
+        backendErrorHandler = null
         // 唤醒所有等待的 future
         pendingResponses.values.forEach { it.completeExceptionally(IOException("client closed")) }
+        destroyProcessTree()
+    }
+
+    /**
+     * 终止 app-server 进程树。仅 process.destroy() 只杀 node 主进程：app-server
+     * 派生的 __zcode-plugin-host 子进程（browser-use 宿主等）不会随主进程退出——
+     * 项目关闭后整棵子树存活，正在执行的回合变成无 UI 监督的"僵尸代理"自主续跑
+     * （2026-08-24 实战：旧回合自跑 15 分钟、自起 vite 与无头 Edge、与重开项目的
+     * 新客户端双线并行烧额度）。
+     * Windows：taskkill /PID /T /F 连树强杀（destroy() 本身也只是 TerminateProcess，
+     * 不通知子进程）；Unix：先 TERM 子进程与主进程、5s 未退强杀。
+     * 全程异步不等待——close 可能运行在 EDT（项目 dispose 路径）。
+     */
+    private fun destroyProcessTree() {
+        val pid = try { process.pid() } catch (_: Exception) { -1L }
+        val isWin = System.getProperty("os.name").lowercase().contains("win")
+        try {
+            when {
+                pid > 0 && isWin ->
+                    ProcessBuilder("taskkill", "/PID", pid.toString(), "/T", "/F")
+                        .redirectErrorStream(true).start()
+                pid > 0 -> {
+                    ProcessBuilder("sh", "-c", "pkill -TERM -P $pid; kill -TERM $pid")
+                        .redirectErrorStream(true).start()
+                    Thread({
+                        try { if (!process.waitFor(5, TimeUnit.SECONDS)) process.destroyForcibly() } catch (_: Exception) {}
+                    }, "zcode-cli-kill-escalate").apply { isDaemon = true }.start()
+                }
+                else -> process.destroyForcibly()
+            }
+        } catch (_: Exception) {
+            try { process.destroyForcibly() } catch (_: Exception) {}
+        }
     }
 
     /** 进程是否存活 */
