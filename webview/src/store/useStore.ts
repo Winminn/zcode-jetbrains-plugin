@@ -415,6 +415,13 @@ interface StoreState {
   sendQueuedNow: (id: string) => void
   /** 回合结束（streaming→false）后自动发送队头 */
   flushQueue: () => void
+  /**
+   * 计划审批「意见式继续规划」的反馈消息插入。意见应答（answer≠approve 反馈式拒绝）
+   * 服务端回合不终止：反馈被合成 user 消息插入 transcript，AI 的后续输出仍在同一
+   * turn 流式——反馈必须插在流式消息拆分处，直接 append 尾部会钉在流式尾部直到
+   * 回合结束重拉才归位（缺陷Q，2026-08-24 实测）。
+   */
+  insertFeedbackMessage: (text: string) => void
 }
 
 let bridgeInitialized = false
@@ -749,6 +756,51 @@ export const useStore = create<StoreState>((set, get) => ({
         }))
       }
     }
+  },
+
+  /**
+   * 意见反馈插入（缺陷Q）：对齐服务端消息树序——当前流式 assistant 消息就此
+   * 封段（保留已累积 parts，含 ExitPlanMode 卡），反馈插在其后，再新建空
+   * assistant 消息接管后续 delta。流式期间即呈现 [旧输出, 反馈, 新输出]，
+   * 回合结束重拉落地权威顺序时无位置跳动。旧消息里 ExitPlanMode 的拒绝
+   * 收尾由 turn 结束的 finalizePendingTools 兜底（batch 按 streamingMessageId
+   * 定位不回旧消息，不会卡转圈）。
+   */
+  insertFeedbackMessage: (text) => {
+    const trimmed = text.trim()
+    const sid = get().currentSessionId
+    if (!sid || !trimmed) return
+    const { messages, streamingMessageId } = get()
+    const userMsg: ZCodeMessage = {
+      info: {
+        role: 'user',
+        time: { created: Date.now() },
+        id: `local_u_${Date.now()}`,
+        sessionID: sid,
+      },
+      parts: [{ type: 'text', text: trimmed }],
+    }
+    // 兜底：无流式消息或指向非 assistant（意见应答时回合必在流式，防御性处理）→ 尾部追加
+    const idx = streamingMessageId
+      ? messages.findIndex((m) => m.info.id === streamingMessageId)
+      : -1
+    if (idx < 0 || messages[idx].info.role !== 'assistant') {
+      set((s) => ({ messages: [...s.messages, userMsg] }))
+      return
+    }
+    // 新流式消息用独立命名空间 id：不与协议 messageId 撞车（撞上会被 turn.started
+    // 复用逻辑误判），回合结束重拉时随乐观消息一并被服务端权威数据替换
+    const newStreamingId = `stream_local_${Date.now()}`
+    const next: ZCodeMessage[] = [
+      ...messages.slice(0, idx + 1),
+      userMsg,
+      {
+        info: { role: 'assistant', time: { created: Date.now() }, id: newStreamingId, sessionID: sid },
+        parts: [],
+      },
+      ...messages.slice(idx + 1),
+    ]
+    set({ messages: next, streamingMessageId: newStreamingId })
   },
 
   createSession: () => {

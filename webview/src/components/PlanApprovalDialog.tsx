@@ -22,7 +22,6 @@ import { useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { sendToJava } from '@/ipc/bridge'
 import { useStore } from '@/store/useStore'
-import type { ZCodeMessage } from '@/types/messages'
 import { MarkdownBlock } from './MarkdownBlock'
 import { DialogCountdown } from './DialogCountdown'
 import '../styles/plan-approval-dialog.less'
@@ -65,21 +64,11 @@ export function PlanApprovalDialog({ requestId, plan, deadlineMs, onClose }: Pro
       action: 'accept',
       answer: text,
     })
-    // 意见立即可见于主 UI：interaction 应答只回传服务端，消息流重拉前用户输入无踪影；
-    // 乐观插入 user 消息（与 sendMessage 同构），turn 结束重拉时由服务端权威数据覆盖
-    const sid = useStore.getState().currentSessionId
-    if (sid) {
-      const userMsg: ZCodeMessage = {
-        info: {
-          role: 'user',
-          time: { created: Date.now() },
-          id: `local_u_${Date.now()}`,
-          sessionID: sid,
-        },
-        parts: [{ type: 'text', text }],
-      }
-      useStore.setState((s) => ({ messages: [...s.messages, userMsg] }))
-    }
+    // 意见立即可见于主 UI：interaction 应答只回传服务端，消息流重拉前用户输入无踪影。
+    // 插入走 store 的 insertFeedbackMessage——反馈式拒绝不终止回合，AI 后续输出仍在
+    // 同一 turn 流式，反馈须插在流式消息拆分处；append 尾部会钉在流式尾部直到回合
+    // 结束重拉才归位（缺陷Q）
+    useStore.getState().insertFeedbackMessage(text)
     // 不做模式切换：反馈路径仍留在 plan 模式（服务端未批准，currentMode 不变）
     onClose()
   }
