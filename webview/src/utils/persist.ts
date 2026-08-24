@@ -29,6 +29,9 @@ import { sendToJava, isInJcef, onMessage } from '@/ipc/bridge'
 /** 水合完成事件（localStorage 写回后派发；缓存了空初始值的模块据此丢弃缓存重读）*/
 export const KV_HYDRATED_EVENT = 'zcode:kv-hydrated'
 
+/** persist 终止事件（等桥超时按 dev/mock 放弃水合时派发；消费方据此走 localStorage 判定）*/
+export const KV_DISABLED_EVENT = 'zcode:kv-disabled'
+
 /** 外观配置专用 key（由 appearance.ts 通道管理，kv 回存时排除）*/
 const APPEARANCE_KEYS = new Set([
   'zcode-theme-pref',
@@ -160,7 +163,30 @@ function scheduleKvFlush(): void {
  * 权威快照，若放行 flush 会把 IDE 存量冲掉（重装清空事故的根因，宁丢增量不清存量）。
  */
 export function initPersist(): void {
-  if (!isInJcef()) return
+  // JCEF 桥经 executeJavaScript 注入，时序不稳（冷启动可能晚于前端模块加载甚至丢失）：
+  // 未见到桥之前不能断定是 dev/mock（生产随机端口 origin 下 localStorage 为空，提前
+  // 放弃会导致本会话水合/回存全停——版本更新弹窗误弹、输入历史冷读为空的根因之一）。
+  // 轮询等桥最多 5s；超时仍无桥按 dev/mock 处理并派发终止事件（localStorage 即权威源）。
+  let bridgeAttempts = 0
+  const waitBridge = () => {
+    if (isInJcef()) {
+      startInit()
+      return
+    }
+    if (++bridgeAttempts <= 100) {
+      setTimeout(waitBridge, 50)
+      return
+    }
+    try {
+      window.dispatchEvent(new Event(KV_DISABLED_EVENT))
+    } catch {
+      /* 事件派发失败不影响放弃本身 */
+    }
+  }
+  waitBridge()
+}
+
+function startInit(): void {
   let retries = 0
   let pullAttempts = 0
   let settled = false

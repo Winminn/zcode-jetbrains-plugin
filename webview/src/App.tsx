@@ -28,7 +28,7 @@ import { ConfirmDialog } from '@/components/ConfirmDialog'
 import { ChangelogDialog, CHANGELOG_LAST_SEEN_KEY } from '@/components/ChangelogDialog'
 import { EnvBanner } from '@/components/EnvBanner'
 import { sendToJava, isInJcef } from '@/ipc/bridge'
-import { getPersisted, setPersisted, isKvHydrated, KV_HYDRATED_EVENT } from '@/utils/persist'
+import { getPersisted, setPersisted, isKvHydrated, KV_HYDRATED_EVENT, KV_DISABLED_EVENT } from '@/utils/persist'
 import { APP_VERSION } from '@/version/version'
 import './styles/global.less'
 import './styles/buttons.less'
@@ -103,17 +103,24 @@ export default function App() {
 
   // 升级后首次打开自动弹「版本更新」：已读标记走 persist kv 通道（IDE 侧持久——
   // 内置 server 随机端口致 localStorage 跨重启失效）。JCEF 内等权威 kv 水合完成再比对
-  // （注入 2.8s 兜底失败时 persist 停用，本会话宁可不弹不误弹）；dev/mock 直读 localStorage
+  // （注入兜底失败时 persist 停用，本会话宁可不弹不误弹）。桥注入时序不稳（可能晚于
+  // React 挂载到达），启动判定不得按「未见桥 = dev/mock」直读 localStorage——生产空
+  // origin 下会读到空值，每次重启误弹。统一等 persist 的终止信号：水合完成事件（权威
+  // kv 已写回）或放弃事件（dev/mock，localStorage 即权威源）
   useEffect(() => {
     const check = () => {
       if (getPersisted(CHANGELOG_LAST_SEEN_KEY) !== APP_VERSION) openChangelog()
     }
-    if (!isInJcef() || isKvHydrated()) {
+    if (isKvHydrated()) {
       check()
       return
     }
     window.addEventListener(KV_HYDRATED_EVENT, check, { once: true })
-    return () => window.removeEventListener(KV_HYDRATED_EVENT, check)
+    window.addEventListener(KV_DISABLED_EVENT, check, { once: true })
+    return () => {
+      window.removeEventListener(KV_HYDRATED_EVENT, check)
+      window.removeEventListener(KV_DISABLED_EVENT, check)
+    }
   }, [openChangelog])
 
   const currentSession = sessions.find((s) => s.sessionId === currentSessionId)
