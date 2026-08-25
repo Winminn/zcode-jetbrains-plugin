@@ -474,9 +474,11 @@ class ZCodeProtocolClient private constructor(
      * 活跃会话挤出前 50 名窗口（表现为历史会话"丢失"）。传 workspacePath 让服务
      * 端按项目过滤，limit 放大取全量。
      *
-     * 注意：服务端底层是 SQL `directory = ?` 精确匹配，DB 记录的是 CLI 写入的原生
-     * 分隔符形态（Windows 反斜杠），而 IDE basePath 是 VFS 正斜杠形态——这里统一
-     * 转成原生形态再传，否则 0 命中。
+     * 分隔符形态（0.16.5 装机实测定案，缺陷 U）：服务端底层是 SQL `directory = ?`
+     * 精确匹配；≤0.16.3 的 CLI 会把传入 workspacePath 规范化为原生分隔符（Windows
+     * 反斜杠）后落库，0.16.5 起原样记录——DB 里同一项目存在反斜杠（历史行 + 本客户
+     * 端统一原生形态写入）与正斜杠（IDE basePath VFS 形态直传）两种行，单形态查询
+     * 各丢一半。这里两种形态各查一次，按 sessionId 去重取并集。
      */
     fun listSessions(
         workspacePath: String? = null,
@@ -484,12 +486,36 @@ class ZCodeProtocolClient private constructor(
         limit: Int = 500,
         timeoutMs: Long = 10000
     ): List<SessionInfo> {
+        if (workspacePath.isNullOrBlank()) {
+            return listSessionsOnce(null, includeArchived, limit, timeoutMs)
+        }
+        val nativePath = workspacePath.replace('/', File.separatorChar)
+        val primary = listSessionsOnce(nativePath, includeArchived, limit, timeoutMs)
+        val altPath = workspacePath.replace('\\', '/')
+        if (altPath.equals(nativePath, ignoreCase = true)) return primary
+        val primaryIds = primary.mapTo(HashSet()) { it.sessionId }
+        // 补查 fail-soft：老 CLI（≤0.16.3）库中只有反斜杠行，主查已覆盖全量；若旧版本
+        // 对正斜杠参数报协议错误，补查失败不能拖垮主结果（整列表清空的回归比丢补集严重）
+        val alt = try {
+            listSessionsOnce(altPath, includeArchived, limit, timeoutMs)
+        } catch (e: Exception) {
+            println("[ZCodeProtocolClient] listSessions alt-form query failed, keep primary only: ${e.message?.take(120)}")
+            emptyList()
+        }
+        return primary + alt.filter { it.sessionId !in primaryIds }
+    }
+
+    private fun listSessionsOnce(
+        workspacePath: String?,
+        includeArchived: Boolean,
+        limit: Int,
+        timeoutMs: Long
+    ): List<SessionInfo> {
         val params = buildJsonObject {
             if (!workspacePath.isNullOrBlank()) {
-                val nativePath = workspacePath.replace('/', File.separatorChar)
                 put("workspace", buildJsonObject {
-                    put("workspacePath", nativePath)
-                    put("workspaceKey", nativePath)
+                    put("workspacePath", workspacePath)
+                    put("workspaceKey", workspacePath)
                 })
             }
             put("includeArchived", includeArchived)
@@ -509,12 +535,17 @@ class ZCodeProtocolClient private constructor(
     /**
      * session/create — 创建新会话
      * 注意：服务器会反向发 requestRuntimePreferences，本客户端会自动应答
+     *
+     * workspacePath 统一转原生分隔符形态写入（0.16.5 起 directory 原样记录传入值，
+     * IDE basePath 的正斜杠直传会产生正斜杠行，与历史数据撕裂；project_id 规范化
+     * 折叠斜杠差异，两形态同 id，归一写入无归属风险）
      */
     fun createSession(workspace: Workspace, mode: PermissionMode = PermissionMode.BUILD, timeoutMs: Long = 20000): String {
+        val nativePath = workspace.workspacePath.replace('/', File.separatorChar)
         val params = buildJsonObject {
             put("workspace", buildJsonObject {
-                put("workspacePath", workspace.workspacePath)
-                put("workspaceKey", workspace.workspaceKey)
+                put("workspacePath", nativePath)
+                put("workspaceKey", nativePath)
             })
             put("mode", mode.value)
         }
@@ -749,11 +780,13 @@ class ZCodeProtocolClient private constructor(
 
     /** session/resume — 续会话（命门） */
     fun resume(sessionId: String, workspace: Workspace, timeoutMs: Long = 15000): JsonObject {
+        // 归一原生分隔符（同 createSession：防 0.16.5 原样落库造成同项目双形态行）
+        val nativePath = workspace.workspacePath.replace('/', File.separatorChar)
         val params = buildJsonObject {
             put("sessionId", sessionId)
             put("workspace", buildJsonObject {
-                put("workspacePath", workspace.workspacePath)
-                put("workspaceKey", workspace.workspaceKey)
+                put("workspacePath", nativePath)
+                put("workspaceKey", nativePath)
             })
         }
         val r = request("session/resume", params, timeoutMs)
@@ -1007,6 +1040,10 @@ class ZCodeProtocolClient private constructor(
      * tasks 里的 claude-import-* 等无 session 行的任务自然跳过。
      */
     fun listArchivedSessions(workspacePath: String? = null, limit: Int = 500, timeoutMs: Long = 10000): List<SessionInfo> {
+        // 归档列表必须限定工作区：无 workspace 的全库 session/list ∪ tasks-index 的
+        // 全局归档 id 交集会把**所有项目**的归档会话并进当前列表（0.3.0 装机实测缺陷：
+        // 冷启动 workspacePath 空串直落全库）。空路径直接返回空，宁可空显示不跨项目污染
+        if (workspacePath.isNullOrBlank()) return emptyList()
         val all = listSessions(workspacePath, includeArchived = true, limit = limit, timeoutMs = timeoutMs)
         val archivedById = taskIndex.listTasks().filter { it.archived }.associateBy { it.taskId }
         return all.mapNotNull { s ->

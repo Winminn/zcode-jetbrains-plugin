@@ -1574,9 +1574,9 @@ if (!window.__ZCODE_LOG_HOOK__) {
 
     /** 列出已归档会话（双源合并：tasks-index 新机制 + time_archived 旧机制；含客户端归档的会话）*/
     private fun handleListArchivedSessions(msg: JsonObject): JsonObject {
-        val workspacePath = msg["workspacePath"]?.jsonPrimitive?.content
-            ?: project.basePath
-            ?: ""
+        // effectiveWorkspacePath（空串回退 basePath）：冷启动桥注入竞态下前端 projectPath
+        // 为空串，`?:` 不回退 → 空串落入 listArchivedSessions 的全库分支 → 跨项目归档混入
+        val workspacePath = effectiveWorkspacePath(msg)
         val client = project.zCodeService().getClient()
         val sessions = if (workspacePath.isEmpty()) {
             client.listArchivedSessions()

@@ -27,10 +27,12 @@ class McpConfigReaderTest {
     @Test
     fun `marketplaces 市场索引不算已配置`() {
         // marketplaces/claude-plugins-official/external_plugins/ 下有 context7/discord 等
-        // 市场清单（未安装），扫描结果不应包含它们
+        // 市场清单，未安装时扫描结果不应包含。断言只用确认未安装的条目（discord）：
+        // context7 等会被官方客户端随升级安装（plugins/data 启用判据，2026-08-25 环境实证），
+        // 出现在扫描结果是正确行为，不能当"未安装代表"
         val servers = McpConfigReader.scan(null)
         val names = servers.map { it.name }.toSet()
-        assertTrue("context7" !in names && "discord" !in names, "市场索引条目不应出现: $names")
+        assertTrue("discord" !in names, "市场索引条目不应出现: $names")
     }
 
     @Test
