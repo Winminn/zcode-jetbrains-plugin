@@ -6,7 +6,7 @@ plugins {
 }
 
 group = "com.zcode.ideaplugin"
-version = "0.2.3"
+version = "0.2.3.1"
 
 // 从仓库根 CHANGELOG.md 提取「最新一个版本块」（## 标题到下一个 ## 之前）的中文段
 // （English: 标记之前；无语言标记的块整块兼容），把 markdown 粗转成 HTML 片段，

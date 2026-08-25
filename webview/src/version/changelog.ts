@@ -23,6 +23,32 @@ export interface ChangelogEntry {
 
 export const CHANGELOG_DATA: ChangelogEntry[] = [
   {
+    "version": "0.2.3.1",
+    "date": "2026-08-25",
+    "zh": {
+      "sections": [
+        {
+          "title": "修复",
+          "items": [
+            "**会话列表兼容新版 ZCode CLI（0.16.5+）**：新版 CLI 不再把工作区路径规范化为系统分隔符后落库，导致重启 IDE 后当天新建的会话从会话列表消失（数据未丢，仅查询不命中）。会话列表查询现同时兼容正/反斜杠两种存储形态，并向后兼容旧版 CLI。",
+            "**归档列表跨项目混入**：特定时序下（如 IDE 重启初期）归档列表可能显示其他项目的归档会话。归档查询现强制限定当前项目，不再回退全库。"
+          ]
+        }
+      ]
+    },
+    "en": {
+      "sections": [
+        {
+          "title": "Fixed",
+          "items": [
+            "**Session list compatibility with new ZCode CLI (0.16.5+)**: the new CLI no longer normalizes workspace path separators when persisting sessions, which made newly created sessions disappear from the session list after restarting the IDE (data was intact, only the query missed). The session list now queries both slash forms and stays backward-compatible with older CLIs.",
+            "**Cross-project entries in the archived list**: under certain timing (e.g. right after IDE restart), the archived list could show archived sessions from other projects. Archive queries are now hard-scoped to the current project instead of falling back to the whole database."
+          ]
+        }
+      ]
+    }
+  },
+  {
     "version": "0.2.3",
     "date": "2026-08-24",
     "zh": {

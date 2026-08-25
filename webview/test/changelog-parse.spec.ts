@@ -98,6 +98,19 @@ describe('parseChangelog', () => {
   it('空文本返回空数组', () => {
     expect(parseChangelog('')).toEqual([])
   })
+
+  it('四段热修复版本号（0.2.3.1）与预发布后缀均可识别为版本块', () => {
+    // 回归：四段号曾被版本头正则跳过，块内容被并入上一块（0.2.3.1 弹窗显示 0.2.3 内容）
+    const md = [
+      '## [0.2.3] - 2026-08-24', '', '中文:', '', '### Fixed', '', '- 旧块', '',
+      '## [0.2.3.1] - 2026-08-25', '', '中文:', '', '### Fixed', '', '- 热修复块', '',
+      '## [0.3.0-beta.1] - 2026-09-01', '', '中文:', '', '### Added', '', '- 预发布块',
+    ].join('\n')
+    const entries = parseChangelog(md)
+    expect(entries.map((e) => e.version)).toEqual(['0.2.3', '0.2.3.1', '0.3.0-beta.1'])
+    expect(entries[1].zh.sections[0].items).toEqual(['热修复块'])
+    expect(entries[2].zh.sections[0].items).toEqual(['预发布块'])
+  })
 })
 
 describe('extractGradleVersion', () => {

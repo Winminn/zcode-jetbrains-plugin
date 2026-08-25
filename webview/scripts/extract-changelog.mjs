@@ -1,4 +1,3 @@
-#!/usr/bin/env node
 /**
  * 从根 CHANGELOG.md 生成「版本更新」弹窗数据（What's New，参考 cc-gui extract-changelog.mjs，
  * 适配本项目 Keep a Changelog 格式 + 中英双语段）：
@@ -51,7 +50,8 @@ export function parseChangelog(md) {
 
   for (const raw of lines) {
     const line = raw.trimEnd()
-    const versionMatch = line.match(/^## \[(\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?)\] - (\d{4}-\d{2}-\d{2})/)
+    // 四段版本号（0.2.3.1 热修复号）为可选第四组；预发布后缀（-beta.1）保留兼容
+    const versionMatch = line.match(/^## \[(\d+\.\d+\.\d+(?:\.\d+)?(?:-[0-9A-Za-z.-]+)?)\] - (\d{4}-\d{2}-\d{2})/)
     if (versionMatch) {
       cur = { version: versionMatch[1], date: versionMatch[2] }
       entries.push(cur)
