@@ -1514,8 +1514,10 @@ function handleResponse(
   switch (msg.op) {
     case 'listSessions': {
       // 标题合并优先级：手动重命名（persist）> 服务端正式标题（顺带清临时标题）
-      // > 本地临时标题（乐观占位，见 sendMessage）> 服务端占位（空/会话 id）
+      // > 本地临时标题（乐观占位，见 sendMessage）> 上一帧完整标题（防服务端空值
+      // 覆盖，见下）> 服务端占位（空/会话 id）
       const prevProvisionals = get().provisionalTitles
+      const prevSessions = get().sessions
       const nextProvisionals = { ...prevProvisionals }
       const merged = msg.sessions.map((s) => {
         const stored = getPersisted(`zcode.sessionTitle.${s.sessionId}`)
@@ -1528,7 +1530,18 @@ function handleResponse(
           return s
         }
         const provisional = prevProvisionals[s.sessionId]
-        return provisional ? { ...s, title: provisional } : s
+        if (provisional) return { ...s, title: provisional }
+        // 服务端运行中会话内存序列化缺陷（缺陷X 残留，2026-08-25 PyCharm 实测）：
+        // zcode.cjs session/list 对运行中的会话用内存对象补列（dee({app})），title
+        // 恒空；0.16.5 创建的正斜杠行会话在主查询（反斜杠形态）缺失，alt 补查的
+        // sqlite 完整行又被 sessionId 去重丢弃 → 响应里该会话 title 空 → header/
+        // 历史列表回退会话 id 前缀，且随会话运行状态反复横跳。上一帧已有非占位
+        // 标题时沿用（服务端权威值由 titleUpdated / 后续刷新校正，此处仅防空值覆盖）
+        const prev = prevSessions.find((x) => x.sessionId === s.sessionId)
+        if (prev && !isDefaultSessionTitle(prev.title, s.sessionId)) {
+          return { ...s, title: prev.title }
+        }
+        return s
       })
       // 并发时序防御：listSessions 响应是"请求发出时刻"的服务端快照，可能早于本标签的
       // 乐观创建（init/早前发出的慢响应晚于 createSession 响应到达）——若直接全量替换，

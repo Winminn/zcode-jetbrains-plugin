@@ -1,7 +1,6 @@
 package com.zcode.ideaplugin.ui
 
 import com.intellij.notification.NotificationGroupManager
-import com.intellij.notification.NotificationListener
 import com.intellij.notification.NotificationType
 import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.project.Project
@@ -98,9 +97,6 @@ object ZCodeNotifyService {
                         openConversationTab(project, sessionId)
                         notification.expire()
                     }
-                })
-                notification.setListener(NotificationListener { _, _ ->
-                    openConversationTab(project, sessionId)
                 })
                 com.intellij.notification.Notifications.Bus.notify(notification, project)
             } catch (e: Exception) {
