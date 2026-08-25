@@ -14,6 +14,8 @@
 
 - **会话列表兼容新版 ZCode CLI（0.16.5+）**：新版 CLI 不再把工作区路径规范化为系统分隔符后落库，导致重启 IDE 后当天新建的会话从会话列表消失（数据未丢，仅查询不命中）。会话列表查询现同时兼容正/反斜杠两种存储形态，并向后兼容旧版 CLI。
 - **归档列表跨项目混入**：特定时序下（如 IDE 重启初期）归档列表可能显示其他项目的归档会话。归档查询现强制限定当前项目，不再回退全库。
+- **会话标题刷新后回退会话 id（会话运行中）**：会话处于运行中时刷新会话列表，标题可能被服务端返回的空值覆盖，回退显示为会话 id 前缀（如 `sess_37b3cf8`），且随会话运行状态反复闪变。现在空标题会沿用上一帧的完整标题，不再闪变；服务端权威标题仍由标题更新事件 / 后续刷新正常生效。
+- **移除弃用 API 调用**：移除回合结束通知中的弃用 `setListener` 调用（纯文本通知下从不触发的死代码），消除 Marketplace 兼容性校验告警。
 
 English:
 
@@ -21,6 +23,8 @@ English:
 
 - **Session list compatibility with new ZCode CLI (0.16.5+)**: the new CLI no longer normalizes workspace path separators when persisting sessions, which made newly created sessions disappear from the session list after restarting the IDE (data was intact, only the query missed). The session list now queries both slash forms and stays backward-compatible with older CLIs.
 - **Cross-project entries in the archived list**: under certain timing (e.g. right after IDE restart), the archived list could show archived sessions from other projects. Archive queries are now hard-scoped to the current project instead of falling back to the whole database.
+- **Session title falling back to the session id while the session is running**: when a session is active, refreshing the session list could overwrite its title with an empty value from the server, showing the session-id prefix (e.g. `sess_37b3cf8`) and flickering as the session's running state changed. Empty titles now keep the previously known full title instead of flickering; server-authoritative titles still apply via title-updated events / later refreshes.
+- **Removed a deprecated API call**: removed the deprecated `setListener` call in the turn-end notification (dead code that never fired for plain-text bodies), clearing the Marketplace verifier warning.
 
 ## [0.2.3] - 2026-08-24
 
