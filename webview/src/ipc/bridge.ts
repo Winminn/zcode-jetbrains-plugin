@@ -41,6 +41,8 @@ declare global {
     __ZCODE_INITIAL_SESSION__?: string
     /** Java 推送环境状态变化的回调（envSave 保存后 IDE 广播多标签同步）*/
     onEnvStatusChanged?: (status: EnvStatus) => void
+    /** Java 推送模型 provider 启用/禁用变更的回调（modelToggleProvider 写回后广播多标签同步）*/
+    onModelsChanged?: (changes: { providerId: string; enabled: boolean }[]) => void
   }
 }
 

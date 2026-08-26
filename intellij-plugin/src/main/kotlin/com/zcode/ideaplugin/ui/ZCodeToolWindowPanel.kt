@@ -1844,14 +1844,35 @@ if (!window.__ZCODE_LOG_HOOK__) {
             log.warn("Failed to write back config.json: ${e.message}")
             return errorResponse("写回失败: ${e.message}")
         }
+        val changesJson = JsonArray(changes.map { c ->
+            buildJsonObject {
+                put("providerId", c.id)
+                put("enabled", c.newEnabled)
+            }
+        })
+        // 多标签同步：发起标签由下方 modelToggled 应答合并，其余已开标签靠
+        // window.onModelsChanged 广播就地合并 + 重拉下拉（同 broadcastAppearance 模式）
+        broadcastModelChanges(changesJson.toString())
         return buildJsonObject {
             put("op", "modelToggled")
-            put("changes", JsonArray(changes.map { c ->
-                buildJsonObject {
-                    put("providerId", c.id)
-                    put("enabled", c.newEnabled)
+            put("changes", changesJson)
+        }
+    }
+
+    /** 模型 provider 启用/禁用变更广播到所有已开标签（modelToggleProvider 写回后调用）*/
+    private fun broadcastModelChanges(changesJson: String) {
+        SwingUtilities.invokeLater {
+            activePanels.forEach { panel ->
+                try {
+                    if (panel.disposed || !panel::jbCefBrowser.isInitialized) return@forEach
+                    panel.jbCefBrowser.cefBrowser.executeJavaScript(
+                        "window.onModelsChanged && window.onModelsChanged($changesJson);",
+                        "zcode-model-sync", 0
+                    )
+                } catch (e: Exception) {
+                    log.warn("Model sync push failed (tab sessionId=${panel.currentSessionId}): ${e.message}")
                 }
-            }))
+            }
         }
     }
 

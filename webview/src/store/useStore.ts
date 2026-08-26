@@ -590,6 +590,18 @@ export const useStore = create<StoreState>((set, get) => ({
     // node 测试环境（vitest）无 window，跳过注册
     if (typeof window !== 'undefined') {
       window.onEnvStatusChanged = (status: EnvStatus) => set({ envStatus: status })
+      // IDE 广播：其他标签切换 provider 启用/禁用后多标签同步（Panel broadcastModelChanges）。
+      // 与 modelToggled 应答同款合并，但不碰 modelTogglingId（由本标签自己的应答清除）；
+      // modelProviders 未加载（null，未开过模型管理页）时不初始化列表、仍重拉下拉；
+      // 幂等（发起标签应答后广播再达一次无害）
+      window.onModelsChanged = (changes: { providerId: string; enabled: boolean }[]) => {
+        const byId = new Map(changes.map((c) => [c.providerId, c.enabled]))
+        const providers = get().modelProviders?.map((p) =>
+          byId.has(p.providerId) ? { ...p, enabled: byId.get(p.providerId)! } : p,
+        )
+        if (providers) set({ modelProviders: providers })
+        get().loadModels()
+      }
     }
 
     /**
