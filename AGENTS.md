@@ -59,7 +59,7 @@ cd webview && npm test                # webview 测试（vitest，test/ 与 *.te
      -cert ~/.zcode/plugin-signing/chain.crt   # 期望无输出 exit=0
    ```
 3. **本机实测**：IDE 磁盘安装 signed.zip，跑通本次改动主路径后才继续。
-4. **提交合并**：分支提交（git-commit-format skill）→ 合并回 master → `git push origin master feature/x.y.z`。
+4. **提交合并**：分支提交（git-commit-format skill）→ 合并回 master → `git push origin master feature/x.y.z`。**构建签名后、push 前必须再 `git status` 检查一次**：prebuild 生成的 `webview/src/version/changelog.ts`（入库产物）落在升版本提交之后的工作区，不补提交会让 master/tag 滞后一个版本块（0.2.4 实踩）。
 5. **GitHub release**（csuftt/zcode-jetbrains-plugin，gh 全路径 `"/c/Program Files/GitHub CLI/gh.exe"`）：
    - `git tag vx.y.z <合并提交>` + push tag；
    - `gh release create` 或覆盖旧版（移 tag / `delete-asset`+`upload` / `edit --notes-file`）；notes 写 CHANGELOG 块 + 附件说明，**用 `--notes-file` 别用 `--body`**。

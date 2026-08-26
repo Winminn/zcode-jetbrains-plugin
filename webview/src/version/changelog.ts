@@ -23,6 +23,50 @@ export interface ChangelogEntry {
 
 export const CHANGELOG_DATA: ChangelogEntry[] = [
   {
+    "version": "0.2.4",
+    "date": "2026-08-26",
+    "zh": {
+      "sections": [
+        {
+          "title": "修复",
+          "items": [
+            "**切换 Qwen 模型频繁触发自动上下文清理**：切到 Qwen 等自定义 provider 后每次请求都被压缩、响应变慢，反复 3 次后报「Autocompact stopped」。根因：模型切换时只传了 `modelId`，服务端用残缺模型定义覆盖完整定义，导致上下文窗口归零。现在切模型时携带完整定义（上下文容量、最大输出、能力位）。",
+            "**压缩指示器滞后读数复活卡死**：`/compact` 压缩结束后指示器永久卡住，下一回合用户只看到转圈。根因：回合结束时读到的服务端清算数据带 ~1.3s 滞后，把已结束的压缩回合「复活」，下一回合被守卫吞掉。现在读数按 turnId 校验滞后，复活不再发生。",
+            "**看门狗误判后台任务等待为流中断**：Bash 后台化后进度事件被拦截，回合静默超过 60s 即被判死，长任务被提前掐断。现在服务端活跃回合信号豁免判死，并放宽判死阈值到 ~140s（对合法慢响应更宽容）。",
+            "**后台任务识别误报致徽标永久残留**：普通命令的输出里若恰好包含 `background with ID: xxx` 字样（如 git diff/diff 到源码注释），会被误认为后台任务，徽标永久残留。识别判据收紧为「官方动作前缀 + 标准 UUID 形态任务 ID」双条件，占位/短 ID 一律拒绝。"
+          ]
+        },
+        {
+          "title": "新增",
+          "items": [
+            "**后台任务指示器**：工具卡片行内显示「后台运行中」徽标 + 真实运行时间（秒级跳动）；任务完成后徽标变为「后台完成」并定格耗时。连续 Bash 聚组卡头部显示「后台运行中 N 个」计数。",
+            "**历史消息静态识别「后台完成」徽标**：重装 IDE 或重载会话后，历史消息中的后台任务也能识别并显示「后台完成」徽标（不计时）。"
+          ]
+        }
+      ]
+    },
+    "en": {
+      "sections": [
+        {
+          "title": "Fixed",
+          "items": [
+            "**Qwen model switching repeatedly triggers autocompact**: After switching to Qwen or other custom providers, every request was compressed and slowed down, failing with \"Autocompact stopped\" after 3 consecutive compressions. Root cause: model switching only passed `modelId`, causing the server to overwrite complete model definitions with incomplete ones, zeroing the context window. Now the full definition (context window, max output, capability flags) is carried on switch.",
+            "**Compact indicator stuck after turn ends**: `/compact` indicator permanently frozen, next turn showed only a spinner. Root cause: server-side settlement data arrived with ~1.3s lag, \"reviving\" an ended compact turn, whose guard then swallowed the next turn. Readings are now validated against turnId to prevent revival.",
+            "**Watchdog falsely flags background task wait as stream interruption**: After `run_in_background` Bash, progress events are intercepted and silence beyond 60s tripped the watchdog, killing long tasks early. Now server-active turn signal exempts the watchdog, and the threshold is relaxed to ~140s (more tolerant of legitimately slow responses).",
+            "**Background task false positive leaves permanent badge**: When a command's output happened to contain `background with ID: xxx` (e.g. from grep/diff against source comments), it was treated as a background task and the badge stuck forever. Detection tightened to require both the official action prefix and a standard-UUID task ID; placeholder/short IDs are rejected."
+          ]
+        },
+        {
+          "title": "Added",
+          "items": [
+            "**Background task indicator**: Inline \"Running in background\" badge with live elapsed time (ticks per second) on tool cards; flips to \"Background completed\" with frozen duration when done. Grouped Bash cards show \"N running in background\" count at the header.",
+            "**Historical messages static \"Background completed\" badge**: After IDE restart or session reload, past background tasks in message history are also recognized and shown with a static badge (no duration)."
+          ]
+        }
+      ]
+    }
+  },
+  {
     "version": "0.2.3.1",
     "date": "2026-08-25",
     "zh": {
