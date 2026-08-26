@@ -69,14 +69,31 @@ export function ThoughtLevelSelect() {
     }
   }, [open])
 
-  // 模型不支持思考级别 / 无数据时整个隐藏（待命态无缓存的新模型即此态，首个会话后补缓存）
-  const levels = thoughtLevel?.available ?? []
-  if (!thoughtLevel?.enabled || levels.length === 0) return null
+  // 思考级别数据源：config.json models[].reasoning.variants（按模型精确，权威）
+  // settings.thoughtLevel.available 是 provider 级粗粒度，仅用于查 i18n label（不能过滤 value：
+  // 同 provider 独有档位会被去重丢，如 deepseek-v4-flash 的 off）
+  const currentModel = useStore((s) => s.currentModel)
+  const models = useStore((s) => s.models)
+  const matchedModel = currentModel
+    ? models.find((m) => m.modelId === currentModel.modelId && m.providerId === currentModel.providerId)
+    : undefined
+  const reasoning = matchedModel?.reasoning
+  const available = thoughtLevel?.available ?? []
+  const levels = reasoning
+    ? reasoning.variants.map((v) => {
+        const fromAvailable = available.find((a) => a.value === v)
+        return { value: v, label: fromAvailable?.label ?? v }
+      })
+    : (currentModel && matchedModel ? [] : available)
+  const defaultLevel = reasoning?.defaultVariant ?? thoughtLevel?.defaultLevel
+  const enabled = !!reasoning || !!thoughtLevel?.enabled
+  // 当前模型无 reasoning 段（不支持思考）/ 级别集为空 → 整组件隐藏
+  if (!enabled || levels.length === 0) return null
 
   // 显示值：current → defaultLevel（标注默认）→ 兜底「思考」
-  const current = thoughtLevel.current ?? thoughtLevel.defaultLevel
+  const current = thoughtLevel?.current ?? defaultLevel
   const displayText = current ? levelLabel(current, t) : t('input.thought.enabled')
-  const isDefault = !thoughtLevel.current && !!thoughtLevel.defaultLevel
+  const isDefault = !thoughtLevel?.current && !!defaultLevel
 
   return (
     <div className="selector-button-wrap" ref={rootRef}>
@@ -104,7 +121,7 @@ export function ThoughtLevelSelect() {
               <span className={`codicon ${levelIcon(l.value)} thought-level-icon`} />
               <div className="selector-dropdown-item-main">
                 <span className="selector-dropdown-item-name">{levelLabel(l.value, t)}</span>
-                {l.value === thoughtLevel.defaultLevel && (
+                {l.value === thoughtLevel?.defaultLevel && (
                   <span className="selector-dropdown-item-sub">{t('input.thought.default')}</span>
                 )}
                 {current === l.value && <span className="codicon codicon-check selector-dropdown-item-check" />}

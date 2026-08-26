@@ -23,6 +23,30 @@ export interface ChangelogEntry {
 
 export const CHANGELOG_DATA: ChangelogEntry[] = [
   {
+    "version": "0.2.4.1",
+    "date": "2026-08-26",
+    "zh": {
+      "sections": [
+        {
+          "title": "修复",
+          "items": [
+            "**不支持思考级别的模型误显示档位下拉**：选用无 `reasoning` 段的模型时下拉仍展示 `max` 等档位，切换模型会触发 `[-32603] Unsupported reasoning effort: max` 报错。根因：插件只透传 app-server 提供的粗粒度 `available`，未读 `~/.zcode/v2/config.json` 模型自带的 `reasoning.variants`。现在补透传 `reasoning` 段，下拉以 `reasoning.variants` 为权威数据源；当前模型无 `reasoning` 段时整下拉隐藏。"
+          ]
+        }
+      ]
+    },
+    "en": {
+      "sections": [
+        {
+          "title": "Fixed",
+          "items": [
+            "**Models without thinking levels still show the level dropdown**: Selecting a model without a `reasoning` block still surfaced levels like `max`, triggering `[-32603] Unsupported reasoning effort: max` on switch. Root cause: the plugin only forwarded app-server's coarse `available` and ignored per-model `reasoning.variants` from `~/.zcode/v2/config.json`. The `reasoning` block is now passed through, the dropdown uses `reasoning.variants` as the authoritative source, and is hidden when the current model has no `reasoning` block."
+          ]
+        }
+      ]
+    }
+  },
+  {
     "version": "0.2.3.1",
     "date": "2026-08-25",
     "zh": {

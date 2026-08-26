@@ -1004,16 +1004,28 @@ export const useStore = create<StoreState>((set, get) => ({
   hydrateThoughtLevelStandby: () => {
     // 有会话时级别集以 settings 权威（loadSettings 会覆盖），无需水合
     if (get().currentSessionId) return
-    const cached = readThoughtLevelCache(get().currentModel?.modelId)
-    if (!cached) {
-      // 该模型未用过/不支持思考：清掉旧模型的 info，选择器隐藏（首个会话的 settings 补缓存）
-      if (get().thoughtLevel) set({ thoughtLevel: null })
+    const cm = get().currentModel
+    // 优先：config.json models.<id>.reasoning.variants（按模型精确，权威）
+    // 无 reasoning 段= 不支持思考，不展示下拉
+    const m = cm ? get().models.find((x) => x.modelId === cm.modelId && x.providerId === cm.providerId) : null
+    if (m?.reasoning) {
+      const available = m.reasoning.variants.map((v) => ({ value: v, label: v }))
+      const saved = getPersisted('zcode.thoughtLevel')
+      const current = saved && m.reasoning.variants.includes(saved) ? saved : undefined
+      set({
+        thoughtLevel: {
+          enabled: true,
+          available,
+          defaultLevel: m.reasoning.defaultVariant ?? m.reasoning.variants[0],
+          ...(current ? { current } : {}),
+        },
+      })
       return
     }
-    // 记忆级别对当前模型仍有效则作为 current 显示，否则显示 defaultLevel（标注「默认」）
-    const saved = getPersisted('zcode.thoughtLevel')
-    const current = saved && cached.available.some((a) => a.value === saved) ? saved : undefined
-    set({ thoughtLevel: { ...cached, ...(current ? { current } : {}) } })
+    // 当前模型无 reasoning 段→ 不支持思考，整组件隐藏
+    // 不读 cache：cache 是按 modelId 写的，但服务端对不支持模型可能返回粗粒度兜底（如 enabled=true+available=[high]），
+    // 信任它会让"不支持"模型也显示下拉、甚至用不存在的档位触发 -32603
+    if (get().thoughtLevel) set({ thoughtLevel: null })
   },
 
   setMode: (mode) => {
@@ -1038,13 +1050,17 @@ export const useStore = create<StoreState>((set, get) => ({
     if (get().thoughtLevelAppliedForSession === sessionId) return
     const saved = getPersisted('zcode.thoughtLevel')
     if (!saved) return
-    // 等级别列表就绪，且记忆值仍有效（切模型后级别集会变，如 off/high/max ↔ enabled/off）
+    // 服务端权威：以 settings.thoughtLevel.available（zcode.cjs session/read 返回）校验
+    // config.json reasoning.variants 是 UI 档位提示源，可能与 zcode.cjs 服务端实际可用集不一致
     const info = get().thoughtLevel
     if (!info || info.available.length === 0) return
     if (!info.available.some((a) => a.value === saved)) return
-    set({ thoughtLevelAppliedForSession: sessionId })
     // 与当前一致则只标记不下发（服务端已生效）
-    if (info.current === saved) return
+    if (info.current === saved) {
+      set({ thoughtLevelAppliedForSession: sessionId })
+      return
+    }
+    set({ thoughtLevelAppliedForSession: sessionId })
     sendToJava({ op: 'setThoughtLevel', sessionId, thoughtLevel: saved })
   },
 
@@ -1486,20 +1502,17 @@ function inferCurrentMode(messages: ZCodeMessage[]): string | null {
 /* ============ 思考级别 info 按模型缓存 ============
  * settings（session/read）需要会话，待命态（新标签/新建会话，懒创建前）拿不到级别集。
  * settings 响应时按当前模型把 available/defaultLevel 落 persist，待命态恢复显示，
- * 让思考深度在无会话时也可预选（与模型预选对齐）。current 是会话态不入缓存。 */
+ * 让思考深度在无会话时也可预选（与模型预选对齐）。current 是会话态不入缓存。
+ * 注意：cache 仅供 UI 待命态显示用，不能作为下发 setThoughtLevel 的校验源
+ *  （zcode.cjs 服务端真实可用集可能与 cache 不一致，必须以 session/read 返回的 available 为准）*/
 const THOUGHT_LEVEL_CACHE_PREFIX = 'zcode.thoughtLevelInfo.'
 
-/** 读某模型的缓存级别集（无缓存/模型不支持思考 → null）*/
-function readThoughtLevelCache(modelId: string | null | undefined): ThoughtLevelInfo | null {
-  if (!modelId) return null
-  try {
-    const raw = getPersisted(THOUGHT_LEVEL_CACHE_PREFIX + modelId)
-    if (!raw) return null
-    const info = JSON.parse(raw) as ThoughtLevelInfo
-    return info?.enabled && info.available?.length ? info : null
-  } catch {
-    return null
-  }
+/** 当前模型支持的思考级别（config.json reasoning.variants 权威）。
+ *  无 reasoning 段→ 返回空数组（不视为支持，避免误用服务端粗粒度 available）*/
+function currentModelVariants(state: { models: ModelOption[]; currentModel: { modelId: string; providerId: string } | null }): string[] {
+  const cm = state.currentModel
+  const m = cm ? state.models.find((x) => x.modelId === cm.modelId && x.providerId === cm.providerId) : null
+  return m?.reasoning?.variants ?? []
 }
 
 /** 写缓存（settings 响应时按当前模型记录）*/
@@ -1676,15 +1689,9 @@ function handleResponse(
         get().applyModelIfReady(sid)
         // 待命态预选的模式补下发——必须先于首条消息，预选 plan 时首问就按计划模式跑
         if (preselectedMode) get().setMode(preselectedMode)
-        // 记忆的思考级别同样先于首条消息下发（否则首问跑在服务端默认级别上）；
-        // 用待命态 info / 按模型缓存校验有效性，settings 到达后 applyThoughtLevelIfReady
-        // 被 appliedForSession 标记拦下不重发；无效（无缓存/不在列表）则留给该校准路径兜底
-        const savedLevel = getPersisted('zcode.thoughtLevel')
-        const info = standbyThought ?? readThoughtLevelCache(get().currentModel?.modelId)
-        if (savedLevel && info?.enabled && info.available.some((a) => a.value === savedLevel)) {
-          set({ thoughtLevelAppliedForSession: sid, thoughtLevel: { ...info, current: savedLevel } })
-          sendToJava({ op: 'setThoughtLevel', sessionId: sid, thoughtLevel: savedLevel })
-        }
+        // 思考级别下发走 settings 事件路径：loadSettings 拿服务端真实档位集 + current，
+        // applyThoughtLevelIfReady 用 info.available 校验后再下发——比 config.json reasoning.variants 准
+        // （config.json 是 UI 档位提示源，可能与 zcode.cjs 服务端实际可用集不一致，如 deepseek 服务端只支持 off/low）
         // 拉取上下文用量（圆环显示）
         get().loadUsage()
         // 拉取运行时设置（新会话默认模式 + 级别集）
@@ -2032,12 +2039,21 @@ function handleResponse(
     case 'settings': {
       // 过期的 settings 响应（切会话竞态）直接丢弃
       if (msg.sessionId !== get().currentSessionId) break
+      // 当前模型无 reasoning 段→ 强制清空 thoughtLevel（隐藏下拉 + 阻止旧档下发）
+      // 即使服务端对这种模型返回了非空 thoughtLevel（app-server 粗粒度兜底），也不能信任/下发
+      const variants = currentModelVariants(get())
+      const safeThoughtLevel = variants.length === 0 ? null : msg.thoughtLevel
       set({
         currentMode: msg.mode?.current ?? null,
-        thoughtLevel: msg.thoughtLevel,
+        thoughtLevel: safeThoughtLevel,
       })
-      // 按当前模型缓存级别集（待命态/懒创建首问前的显示与校验用）
-      writeThoughtLevelCache(get().currentModel?.modelId, msg.thoughtLevel)
+      // 按当前模型缓存级别集（待命态/懒创建首问前的显示与校验用）—— 仅当模型有 reasoning 段才写
+      if (variants.length > 0) writeThoughtLevelCache(get().currentModel?.modelId, msg.thoughtLevel)
+      else {
+        // 主动清掉旧 cache（之前可能因服务端粗粒度兜底写过 enabled=true 的脏数据）
+        const mid = get().currentModel?.modelId
+        if (mid) removePersisted(THOUGHT_LEVEL_CACHE_PREFIX + mid)
+      }
       // 设置就绪：把记忆的思考级别下发给该会话（available 已知，仿 applyModelIfReady 门控）
       get().applyThoughtLevelIfReady(msg.sessionId)
       break

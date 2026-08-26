@@ -300,6 +300,13 @@ export type JavaRequest =  | { op: 'askUserPendingState' }
   /** 保存环境路径配置：字段缺席=不改该项，空串=清除（回退自动探测）；后端验证通过才落盘 */
   | { op: 'envSave'; nodePath?: string; cliPath?: string }
 
+/** 模型支持的思考级别（config.json models.<id>.reasoning 段）。缺省 = 不支持。*/
+export interface ModelReasoning {
+  enabled: true
+  variants: string[]
+  defaultVariant?: string
+}
+
 /** 可切换的模型选项（来自 ~/.zcode/v2/config.json 的 provider 注册表）*/
 export interface ModelOption {
   providerId: string
@@ -312,6 +319,8 @@ export interface ModelOption {
   contextWindow?: number
   /** 最大输出 token（config.json limit.output）*/
   maxOutput?: number
+  /** 模型支持的思考级别（config.json reasoning 段）— 下拉权威数据源，优先于 settings.thoughtLevel.available */
+  reasoning?: ModelReasoning
 }
 
 /** 模型管理条目（config.json provider.models 节点，设置页只读展示）*/
@@ -320,6 +329,7 @@ export interface ModelManageModel {
   modelName: string
   contextWindow?: number
   maxOutput?: number
+  reasoning?: ModelReasoning
 }
 
 /** 模型管理 provider 分组（与聊天 listModels 的差异：不去重、含 disabled、保留无 baseURL 项）*/

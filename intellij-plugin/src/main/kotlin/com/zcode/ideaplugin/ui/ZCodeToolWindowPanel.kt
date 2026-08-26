@@ -1627,6 +1627,26 @@ if (!window.__ZCODE_LOG_HOOK__) {
         else -> null
     }
 
+    /**
+     * 从 config.json model 节点提取 reasoning 段。
+     * reasoning.enabled=false 或无 variants 段时返回 null（前端整组件隐藏）。
+     */
+    private fun buildReasoningField(modelObj: JsonObject): JsonObject? {
+        val reasoning = modelObj["reasoning"]?.jsonObject ?: return null
+        if (reasoning["enabled"]?.jsonPrimitive?.contentOrNull?.toBoolean() != true) return null
+        val variants = reasoning["variants"]?.jsonArray
+            ?.mapNotNull { (it as? JsonPrimitive)?.contentOrNull }
+            ?.filter { it.isNotBlank() }
+            ?: return null
+        if (variants.isEmpty()) return null
+        val defaultVariant = reasoning["defaultVariant"]?.jsonPrimitive?.contentOrNull
+        return buildJsonObject {
+            put("enabled", true)
+            put("variants", JsonArray(variants.map { JsonPrimitive(it) }))
+            defaultVariant?.let { put("defaultVariant", it) }
+        }
+    }
+
     /** op=listModels — 读取 config.json 的 provider 注册表，返回可切换的模型列表 */
     private fun handleListModels(msg: JsonObject): JsonObject {
         // 路径跟随 dataBaseDir 迁移（setting.json 重定向后旧位置是冻结快照），与环境检测同一来源
@@ -1675,6 +1695,7 @@ if (!window.__ZCODE_LOG_HOOK__) {
                     put("modelName", modelName)
                     limit?.get("context")?.jsonPrimitive?.content?.toLongOrNull()?.let { put("contextWindow", it) }
                     limit?.get("output")?.jsonPrimitive?.content?.toLongOrNull()?.let { put("maxOutput", it) }
+                    buildReasoningField(modelObj)?.let { put("reasoning", it) }
                 }
             }
         }.flatten())
@@ -1730,6 +1751,7 @@ if (!window.__ZCODE_LOG_HOOK__) {
                     put("modelName", modelName)
                     limit?.get("context")?.jsonPrimitive?.contentOrNull?.toLongOrNull()?.let { put("contextWindow", it) }
                     limit?.get("output")?.jsonPrimitive?.contentOrNull?.toLongOrNull()?.let { put("maxOutput", it) }
+                    buildReasoningField(modelObj)?.let { put("reasoning", it) }
                 }
             } ?: emptyList())
             buildJsonObject {
