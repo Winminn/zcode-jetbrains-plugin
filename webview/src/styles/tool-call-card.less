@@ -119,12 +119,37 @@
     &--err { color: var(--status-error); }
     &--running { color: var(--status-warning); animation: tool-spin 1s linear infinite; }
     &--pending { color: var(--text-tertiary); }
+    // 后台任务标识（缺陷Y 体验增强）：醒目提示命令在后台运行
+    &--bg {
+      display: inline-flex;
+      align-items: center;
+      gap: 3px;
+      color: var(--status-info, #4fc3f7);
+      font-weight: 600;
+      padding: 1px 6px;
+      border: 1px dashed var(--status-info, #4fc3f7);
+      border-radius: 4px;
+      .codicon { font-size: 11px; }
+    }
+    // 已完成后台任务：绿色实线（定格，不再跳动）
+    &--bg-done {
+      color: var(--status-success);
+      border-style: solid;
+      border-color: var(--status-success);
+    }
   }
 
   &__dur {
     color: var(--text-tertiary);
     font-size: 10px;
     flex-shrink: 0;
+
+    // 后台任务真实运行时间（tick 跳动中）：与标识同色强调
+    &--bg {
+      color: var(--status-info, #4fc3f7);
+      font-weight: 600;
+      font-variant-numeric: tabular-nums;
+    }
   }
 
   &__toggle {
@@ -341,6 +366,8 @@
 
     &--ok { color: var(--status-success); }
     &--error { color: var(--status-error); }
+    /* 后台任务计数（缺陷Y：后台化确认后任务仍在跑，进度摘要不能被 ✓ 全完成误导）*/
+    &--bg { color: var(--status-info, #4fc3f7); font-weight: 600; }
   }
 
   /* ===== 时间线列表 ===== */
@@ -412,6 +439,12 @@
       animation: bash-node-breathing 1.5s ease-in-out infinite;
     }
 
+    /* 后台任务：强调色呼吸（区别于普通运行中的警告色）*/
+    &--bg {
+      background: var(--status-info, #4fc3f7);
+      animation: bash-node-breathing 1.5s ease-in-out infinite;
+    }
+
     &--completed { background: var(--status-success); }
     &--error { background: var(--status-error); }
   }
@@ -462,6 +495,19 @@
     &--pending { color: var(--status-warning); animation: tool-spin 1s linear infinite; }
     &--completed { color: var(--status-success); }
     &--error { color: var(--status-error); }
+    /* 后台任务徽标 + 真实运行时间（缺陷Y；比行文本小一号，紧凑不抢行）*/
+    &--bg {
+      display: inline-flex;
+      align-items: center;
+      gap: 3px;
+      color: var(--status-info, #4fc3f7);
+      font-size: 11px;
+      font-weight: 600;
+      font-variant-numeric: tabular-nums;
+      white-space: nowrap;
+
+      .codicon { font-size: 11px; }
+    }
   }
 
   /* 单项展开详情 */

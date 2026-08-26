@@ -27,6 +27,8 @@
   "viewSkillContent": "弹窗查看技能内容",
   "skillDoc": "技能文档",
   "viewSubagentProcess": "查看子代理执行过程",
+  "backgroundRunning": "后台运行中",
+  "backgroundCompleted": "后台完成",
   "status": {
     "running": "运行中",
     "error": "失败",
@@ -54,7 +56,8 @@
     "allDone": "全部完成",
     "progress": "{{done}}/{{total}} 已完成",
     "waitingInput": "(等待输入…)",
-    "unparsed": "(未解析)"
+    "unparsed": "(未解析)",
+    "backgroundCount": "后台运行中 {{count}} 个"
   },
   "fileGroup": {
     "read": "批量读取文件",
