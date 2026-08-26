@@ -27,6 +27,8 @@
   "viewSkillContent": "View skill content in dialog",
   "skillDoc": "Skill document",
   "viewSubagentProcess": "View subagent execution",
+  "backgroundRunning": "Running in background",
+  "backgroundCompleted": "Completed in background",
   "status": {
     "running": "Running",
     "error": "Failed",
@@ -54,7 +56,8 @@
     "allDone": "All completed",
     "progress": "{{done}}/{{total}} completed",
     "waitingInput": "(waiting for input…)",
-    "unparsed": "(unparsed)"
+    "unparsed": "(unparsed)",
+    "backgroundCount": "{{count}} running in background"
   },
   "fileGroup": {
     "read": "Batch file reads",

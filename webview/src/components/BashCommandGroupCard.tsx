@@ -13,6 +13,10 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import type { TFunction } from 'i18next'
 import type { ToolPart } from '@/types/messages'
+import { useStore } from '@/store/useStore'
+import { useTick } from '@/hooks/useTick'
+import { formatToolDuration } from '@/utils/time'
+import { isBackgroundTaskOutput } from '@/utils/backgroundTask'
 import '../styles/tool-call-card.less'
 
 /** 列表最大可见高度（3.5 项 × 32px/项），超出内部滚动 */
@@ -72,6 +76,16 @@ export function BashCommandGroupCard({ parts }: { parts: ToolPart[] }) {
 
   const items = useMemo(() => parts.map(parseBashItem), [parts])
 
+  // 后台任务账本（缺陷Y 体验增强）：按 callID 查各行的后台任务（run_in_background）。
+  // 组卡路径下多个后台任务各自独立标识 + 独立计时；任一**运行中**时秒级跳动
+  //（已完成后台任务定格显示，见行内 endedAt 分支）
+  const backgroundTasks = useStore((s) => s.backgroundTasks)
+  const hasBgRunning = items.some((i) => {
+    const bg = backgroundTasks[i.callID]
+    return !!bg && !bg.endedAt
+  })
+  const bgNow = useTick(hasBgRunning, 1000)
+
   // 流式追加新命令时自动滚到底部（新命令总是出现在尾部）
   useEffect(() => {
     if (listRef.current && items.length > prevCountRef.current) {
@@ -81,8 +95,18 @@ export function BashCommandGroupCard({ parts }: { parts: ToolPart[] }) {
   }, [items.length])
 
   const totalCount = items.length
-  const doneCount = items.filter((i) => i.status === 'completed' || i.status === 'error').length
+  // 后台化确认的 result 已回（part 状态变 completed）但任务仍在后台跑——
+  // 不算「已完成」，避免「✓ 全部完成」误导；已完成的后台任务（endedAt 有值）算完成
+  const doneCount = items.filter((i) => {
+    const bg = backgroundTasks[i.callID]
+    if (bg && !bg.endedAt) return false
+    return i.status === 'completed' || i.status === 'error'
+  }).length
   const errorCount = items.filter((i) => i.status === 'error').length
+  const bgCount = items.filter((i) => {
+    const bg = backgroundTasks[i.callID]
+    return !!bg && !bg.endedAt
+  }).length
 
   // 列表高度：有项展开时放宽（详情可能很高），否则按可见项数封顶
   const baseHeight = (totalCount > MAX_VISIBLE_ITEMS ? MAX_VISIBLE_ITEMS : totalCount) * ITEM_HEIGHT
@@ -101,7 +125,11 @@ export function BashCommandGroupCard({ parts }: { parts: ToolPart[] }) {
         </span>
         <span className="bash-group__title">{t('tool.bash.groupTitle', { count: totalCount })}</span>
         <span className="bash-group__spacer" />
-        {errorCount > 0 ? (
+        {bgCount > 0 ? (
+          <span className="bash-group__progress bash-group__progress--bg">
+            <span className="codicon codicon-debug-alt" /> {t('tool.bash.backgroundCount', { count: bgCount })}
+          </span>
+        ) : errorCount > 0 ? (
           <span className="bash-group__progress bash-group__progress--error">
             <span className="codicon codicon-warning" /> {t('tool.bash.failedCount', { count: errorCount })}
           </span>
@@ -125,10 +153,16 @@ export function BashCommandGroupCard({ parts }: { parts: ToolPart[] }) {
           {items.map((item, index) => {
             const isLast = index === totalCount - 1
             const isItemExpanded = expandedIdx === index
+            // 后台任务行：运行中 → 徽标 + 跳秒；已完成（endedAt）→ 「后台完成」+ 定格耗时；
+            // 历史静态（无账本条目，会话重载后）→ 从行输出识别 → 「后台完成」徽标不计时
+            const bg = backgroundTasks[item.callID]
+            const bgDone = !!bg && !!bg.endedAt
+            const bgStatic = !bg && isBackgroundTaskOutput(item.output)
             const nodeCls =
-              item.status === 'error' ? 'error'
-                : item.status === 'completed' ? 'completed'
-                  : 'pending'
+              bg && !bgDone ? 'bg'
+                : item.status === 'error' ? 'error'
+                  : item.status === 'completed' ? 'completed'
+                    : 'pending'
             return (
               <div key={item.callID || `bash-${index}`} className="bash-group__item">
                 <div className="bash-group__connector">
@@ -146,9 +180,27 @@ export function BashCommandGroupCard({ parts }: { parts: ToolPart[] }) {
                     >
                       {itemSummary(item, t)}
                     </span>
-                    {/* 行尾状态角标（与节点色一致的文字态）*/}
+                    {/* 行尾状态角标：后台任务 = 徽标 + 耗时（运行中跳秒 / 完成定格），否则 ✓/⟳/✗ */}
                     <span className={`bash-group__status bash-group__status--${nodeCls}`}>
-                      {item.status === 'error' ? '✗' : item.status === 'completed' ? '✓' : '⟳'}
+                      {bg ? (
+                        bgDone ? (
+                          <>
+                            <span className="codicon codicon-check" />
+                            {t('tool.backgroundCompleted')} {formatToolDuration(bg.endedAt! - bg.startedAt)}
+                          </>
+                        ) : (
+                          <>
+                            <span className="codicon codicon-debug-alt" />
+                            {t('tool.backgroundRunning')} {formatToolDuration(bgNow - bg.startedAt)}
+                          </>
+                        )
+                      ) : bgStatic ? (
+                        // 历史静态（无账本条目）：后台化确认已回 → 徽标不计时
+                        <>
+                          <span className="codicon codicon-check" />
+                          {t('tool.backgroundCompleted')}
+                        </>
+                      ) : item.status === 'error' ? '✗' : item.status === 'completed' ? '✓' : '⟳'}
                     </span>
                   </div>
                   {isItemExpanded && (
