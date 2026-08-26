@@ -100,6 +100,10 @@
   &:disabled {
     opacity: 0.4;
     cursor: default;
+    /* Chromium 对 disabled 元素不派发鼠标事件 → onMouseEnter 不触发，空输入态的
+       portal 悬浮提示（JCEF 无原生 title）无法弹出；恢复 pointer-events 让 hover
+       事件可达（click 仍被 disabled 吞掉，hover 高亮由 :hover:not(:disabled) 挡住）*/
+    pointer-events: auto;
   }
 
   .codicon {

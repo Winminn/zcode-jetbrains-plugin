@@ -132,6 +132,14 @@
       "hint": "Off by default; system message only (no sound); manually stopped turns are not notified",
       "onHint": "Click to enable notifications",
       "offHint": "Click to disable notifications"
+    },
+    "enhanceTitle": "Prompt Enhancer",
+    "enhanceEnabled": {
+      "title": "Enhance button (✨)",
+      "desc": "Show the AI enhance button in the input box: click to let AI polish your input, then apply after review",
+      "hint": "Off by default; enhancement uses the currently selected model via the resident channel (no extra session records)",
+      "onHint": "Click to hide the enhance button",
+      "offHint": "Click to show the enhance button in the input box"
     }
   }
 }

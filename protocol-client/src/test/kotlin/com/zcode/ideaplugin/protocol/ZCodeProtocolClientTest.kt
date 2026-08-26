@@ -172,4 +172,59 @@ class ZCodeProtocolClientTest {
         // resume 应该返回带 messages 的结果
         assertTrue(result.containsKey("messages") || result.isNotEmpty(), "resume 应该返回历史")
     }
+
+    @Test
+    @Order(7)
+    fun `7 - generateText provider 未注册时 upsert 后重试成功`() {
+        val runtimeModel = RuntimeModels.defaultRuntimeModel()
+            ?: return assumeTrue(false, "config.json 无 enabled anthropic provider，跳过")
+        val modelObj = runtimeModel["model"]!!.jsonObject
+        val pid = modelObj["providerId"]!!.jsonPrimitive.content
+        val mid = modelObj["modelId"]!!.jsonPrimitive.content
+        val wsPath = workspace.workspacePath
+
+        // 首调：目录无该 provider 时应 -32603（润色快速通道的注册判定依据）；
+        // 若先前测试已注册则直接成功，两种结果都合法
+        val direct = try {
+            val r = client.generateText(wsPath, pid, mid, prompt = "回答：1+1=? 只说数字", timeoutMs = 60000)
+            println("✅ generateText 直接成功（provider 已在 workspace 目录）: ${r["text"]?.jsonPrimitive?.content?.take(30)}")
+            return
+        } catch (e: ZCodeProtocolException) {
+            println("   首调按预期被拒: [${e.code}] ${e.message?.take(80)}")
+            e
+        }
+        assertEquals(-32603, direct.code, "未注册 provider 应报 -32603")
+
+        // upsert 注册 + 重试（润色快速通道的自愈路径）
+        val providerDef = runtimeModel["provider"]!!.jsonObject
+        client.upsertModelProvider(wsPath, providerDef)
+        println("✅ upsertModelProvider 注册成功")
+        val r2 = client.generateText(wsPath, pid, mid, prompt = "回答：1+1=? 只说数字", timeoutMs = 60000)
+        val text = r2["text"]?.jsonPrimitive?.content ?: fail("generateText 重试应返回 text")
+        println("✅ generateText 重试成功: \"$text\" usage=${r2["usage"]}")
+        assertTrue(text.isNotBlank(), "text 非空")
+        assertEquals(mid, r2["modelRef"]?.jsonObject?.get("modelId")?.jsonPrimitive?.content, "响应 modelId 应与请求一致")
+    }
+
+    @Test
+    @Order(8)
+    fun `8 - generateText messages 形态 system+user`() {
+        val runtimeModel = RuntimeModels.defaultRuntimeModel()
+            ?: return assumeTrue(false, "config.json 无 enabled anthropic provider，跳过")
+        val modelObj = runtimeModel["model"]!!.jsonObject
+        val pid = modelObj["providerId"]!!.jsonPrimitive.content
+        val mid = modelObj["modelId"]!!.jsonPrimitive.content
+
+        val r = client.generateText(
+            workspacePath = workspace.workspacePath,
+            providerId = pid,
+            modelId = mid,
+            prompt = "回答：2+2=? 只说数字",
+            systemPrompt = "你只回答阿拉伯数字，不输出任何其他字符。",
+            timeoutMs = 60000,
+        )
+        val text = r["text"]?.jsonPrimitive?.content ?: fail("messages 形态应返回 text")
+        println("✅ generateText messages 形态: \"$text\" usage=${r["usage"]}")
+        assertTrue(text.isNotBlank(), "text 非空")
+    }
 }

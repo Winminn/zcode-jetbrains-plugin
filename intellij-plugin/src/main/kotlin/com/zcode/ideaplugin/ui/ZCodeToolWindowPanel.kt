@@ -3168,17 +3168,23 @@ if (!window.__ZCODE_LOG_HOOK__) {
         .getOrNull()
 
     /**
-     * op=enhancePrompt — 提示词润色（一次性 CLI headless 调用，零会话污染）
+     * op=enhancePrompt — 提示词润色
      *
-     * 走 [ZCodeProtocolClient.cliOneShot]（`zcode -p --json --mode yolo`，无 --resume），
-     * 模型按前端 currentModel 透传的 providerId/modelId 从 config.json 取凭证注入
-     * ZCODE_MODEL 环境；取不到（未选模型/oauth provider）回退客户端启动凭证。
-     * 超时按输入长度动态放大：45s 基础 + 每 400 字符 1s，上限 120s。
+     * 通道优先级（2026-08-26 实测定案）：
+     * 1. **快速通道**：常驻 app-server 的 `workspace/generateText`（裸 AI SDK 调用，
+     *    实测 input 30 token vs CLI 通道 14858，无进程冷启动，不产生会话记录）。
+     *    provider 未注册时经 `workspace/upsertModelProvider` 幂等补注册后重试一次。
+     * 2. **降级通道**：CLI 一次性 headless 调用（`zcode -p --json --mode yolo`，无 --resume），
+     *    快速通道不可用（app-server 未起/协议错/超时）时兜底，零会话污染。
+     *
+     * 模型按前端 currentModel 透传的 providerId/modelId；缺失时回退 config.json 默认
+     * provider。CLI 通道超时按输入长度动态放大：45s 基础 + 每 400 字符 1s，上限 120s。
      *
      * workspace 固定为临时目录 %TEMP%/zcode-gui-enhance（2026-08-23 sqlite 实测）：
      * CLI 会话按 --cwd 归属 project，挂当前项目会令每次润色在会话列表多出一条记录；
      * 挂固定临时目录则会话归到独立 temp project，不出现在任何真实项目列表，
      * 所有润色共用一个 temp project 也避免了 project 记录累积。
+     * （generateText 通道不产生会话，workspace 用当前项目以复用会话的 warm app。）
      */
     private fun handleEnhancePrompt(msg: JsonObject): JsonObject {
         val text = msg["text"]?.jsonPrimitive?.content
@@ -3190,29 +3196,10 @@ if (!window.__ZCODE_LOG_HOOK__) {
         try {
             val providerId = msg["providerId"]?.jsonPrimitive?.contentOrNull
             val modelId = msg["modelId"]?.jsonPrimitive?.contentOrNull
-            val credentialsOverride = if (!providerId.isNullOrBlank() && !modelId.isNullOrBlank()) {
-                com.zcode.ideaplugin.protocol.Credentials.credentialsFor(providerId, modelId)
-            } else null
-            if (providerId != null && credentialsOverride == null) {
-                log.info("enhancePrompt: credentials for $providerId/$modelId unavailable, falling back to default")
-            }
-            val timeoutMs = (45_000L + text.length / 400L * 1_000L).coerceAtMost(120_000L)
-            val prompt = buildString {
-                append(enhanceSystemPrompt)
-                append("\n\n待润色的原始提示词：\n")
-                append(text)
-            }
-            val client = project.zCodeService().getClient()
-            val result = client.cliOneShot(
-                prompt = prompt,
-                workspacePath = enhanceWorkspacePath(),
-                credentialsOverride = credentialsOverride,
-                timeoutMs = timeoutMs,
-            )
-            val enhanced = result["response"]?.jsonPrimitive?.contentOrNull
-                ?.takeIf { it.isNotBlank() }
-                ?: return enhanceError("润色结果为空")
-            log.info("enhancePrompt done (${enhanced.length} chars, model=${credentialsOverride?.model ?: "default"})")
+            val enhanced = enhanceViaGenerateText(providerId, modelId, text)
+                ?: enhanceViaCliOneShot(providerId, modelId, text)
+                    ?: return enhanceError("润色结果为空")
+            log.info("enhancePrompt done (${enhanced.length} chars)")
             return buildJsonObject {
                 put("op", "enhancePromptResult")
                 put("original", text)
@@ -3224,6 +3211,96 @@ if (!window.__ZCODE_LOG_HOOK__) {
         } finally {
             enhanceInProgress.set(false)
         }
+    }
+
+    /**
+     * 快速通道：常驻 app-server 的 workspace/generateText。
+     *
+     * @return 润色文本；通道不可用（无 workspace/无可用模型/provider 注册失败/协议错）返回
+     *         null 交上层降级 CLI，异常不上抛。
+     */
+    private fun enhanceViaGenerateText(providerId: String?, modelId: String?, text: String): String? {
+        val workspacePath = project.basePath ?: return null
+        return try {
+            val client = project.zCodeService().getClient()
+            // 前端未透传模型时回退 config.json 默认 provider（与 CLI 通道凭证回退同语义）
+            val effective = if (!providerId.isNullOrBlank() && !modelId.isNullOrBlank()) {
+                providerId to modelId
+            } else {
+                val fallback = com.zcode.ideaplugin.protocol.RuntimeModels.defaultRuntimeModel()
+                    ?.get("model")?.jsonObject ?: return null
+                val pid = fallback["providerId"]?.jsonPrimitive?.contentOrNull ?: return null
+                val mid = fallback["modelId"]?.jsonPrimitive?.contentOrNull ?: return null
+                pid to mid
+            }
+            val timeoutMs = (45_000L + text.length / 400L * 1_000L).coerceAtMost(120_000L)
+            try {
+                callGenerateText(client, workspacePath, effective.first, effective.second, text, timeoutMs)
+            } catch (e: com.zcode.ideaplugin.protocol.ZCodeProtocolException) {
+                // -32603 = modelRef 指向的 provider 不在 workspace 目录（如 app-server 刚起
+                // 还没有任何会话 setModel 过）：幂等补注册后重试一次，仍失败才放弃本通道
+                if (e.code != -32603 || !e.message.orEmpty().contains("not configured", ignoreCase = true)) throw e
+                log.info("enhancePrompt: provider not in workspace catalog, upserting and retrying")
+                val providerDef = com.zcode.ideaplugin.protocol.RuntimeModels
+                    .buildRuntimeModel(effective.first, effective.second)
+                    ?.get("provider")?.jsonObject ?: return null
+                client.upsertModelProvider(workspacePath, providerDef)
+                callGenerateText(client, workspacePath, effective.first, effective.second, text, timeoutMs)
+            }
+        } catch (e: Exception) {
+            log.info("enhancePrompt: generateText channel unavailable (${e.message?.take(150)}), falling back to CLI")
+            null
+        }
+    }
+
+    /** generateText 调用 + 空结果判定（空文本按通道失败处理） */
+    private fun callGenerateText(
+        client: com.zcode.ideaplugin.protocol.ZCodeProtocolClient,
+        workspacePath: String,
+        providerId: String,
+        modelId: String,
+        text: String,
+        timeoutMs: Long,
+    ): String {
+        val result = client.generateText(
+            workspacePath = workspacePath,
+            providerId = providerId,
+            modelId = modelId,
+            prompt = text,
+            systemPrompt = enhanceSystemPrompt,
+            querySource = "workspace_prompt_enhance",
+            timeoutMs = timeoutMs,
+        )
+        return result["text"]?.jsonPrimitive?.contentOrNull?.takeIf { it.isNotBlank() }
+            ?: throw com.zcode.ideaplugin.protocol.ZCodeProtocolException("generateText 返回空文本")
+    }
+
+    /**
+     * 降级通道：CLI 一次性 headless 调用（原润色实现，保留为兜底）。
+     *
+     * @return 润色文本；结果为空返回 null（上层转「润色结果为空」错误）。
+     */
+    private fun enhanceViaCliOneShot(providerId: String?, modelId: String?, text: String): String? {
+        val credentialsOverride = if (!providerId.isNullOrBlank() && !modelId.isNullOrBlank()) {
+            com.zcode.ideaplugin.protocol.Credentials.credentialsFor(providerId, modelId)
+        } else null
+        if (providerId != null && credentialsOverride == null) {
+            log.info("enhancePrompt: credentials for $providerId/$modelId unavailable, falling back to default")
+        }
+        val timeoutMs = (45_000L + text.length / 400L * 1_000L).coerceAtMost(120_000L)
+        val prompt = buildString {
+            append(enhanceSystemPrompt)
+            append("\n\n待润色的原始提示词：\n")
+            append(text)
+        }
+        val client = project.zCodeService().getClient()
+        val result = client.cliOneShot(
+            prompt = prompt,
+            workspacePath = enhanceWorkspacePath(),
+            credentialsOverride = credentialsOverride,
+            timeoutMs = timeoutMs,
+        )
+        return result["response"]?.jsonPrimitive?.contentOrNull?.takeIf { it.isNotBlank() }
     }
 
     /** 润色失败统一回包（专用 op：前端弹窗错误态与全局 error 栏分流）*/

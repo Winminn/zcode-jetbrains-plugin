@@ -337,7 +337,7 @@ export function BasicSettingsView() {
           className={cx('basic-settings__tab', tab === 'behavior' && 'active')}
           onClick={() => setTab('behavior')}
         >
-          <span className="codicon codicon-bell" />
+          <span className="codicon codicon-zap" />
           <span>{t('settings.basicTabs.behavior')}</span>
         </button>
       </div>

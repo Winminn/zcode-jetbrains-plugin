@@ -1,5 +1,6 @@
 {
-  "tooltip": "Enhance prompt (uses current model)",
+  "tooltip": "Enhance with AI: polishes your input, apply after review",
+  "tooltipDisabled": "Enhance with AI: available once you type something",
   "title": "Prompt Enhancer",
   "dialogAriaLabel": "Prompt enhancement comparison dialog",
   "original": "Original prompt",

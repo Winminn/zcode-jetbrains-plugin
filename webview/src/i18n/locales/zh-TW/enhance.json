@@ -1,5 +1,6 @@
 {
-  "tooltip": "潤色提示詞（呼叫目前模型）",
+  "tooltip": "AI 潤色：最佳化輸入框內容，確認後取代",
+  "tooltipDisabled": "AI 潤色：輸入內容後可用",
   "title": "提示詞潤色",
   "dialogAriaLabel": "提示詞潤色對比彈窗",
   "original": "原始提示詞",

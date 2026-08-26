@@ -30,7 +30,21 @@ import { useStore } from '@/store/useStore'
 import { PromptEnhancerDialog } from '@/components/PromptEnhancerDialog'
 import { AgentSelect } from '@/components/AgentSelect'
 import { InputBox } from '@/components/InputBox'
+import { writeEnhanceConfig } from '@/utils/enhanceConfig'
 import type { AgentDef } from '@/types/messages'
+
+// jsdom 29 的 window.localStorage 是空壳（setItem 等方法缺失）：Map 实现替换，
+// 供润色开关（persist kv）读写（breakdown-cache.spec 同款手法）
+const storage = new Map<string, string>()
+const lsMock = {
+  getItem: (k: string) => storage.get(k) ?? null,
+  setItem: (k: string, v: string) => { storage.set(k, v) },
+  removeItem: (k: string) => { storage.delete(k) },
+  key: (i: number) => Array.from(storage.keys())[i] ?? null,
+  get length() { return storage.size },
+  clear: () => storage.clear(),
+}
+Object.defineProperty(window, 'localStorage', { configurable: true, value: lsMock })
 
 const agentDef = (over: Partial<AgentDef> = {}): AgentDef => ({
   name: 'test-agent',
@@ -48,6 +62,9 @@ const agentDef = (over: Partial<AgentDef> = {}): AgentDef => ({
 
 beforeEach(() => {
   sentRequests.length = 0
+  storage.clear()
+  // 润色按钮默认关闭（设置→行为开关）：既有 InputBox 用例统一预置开启
+  storage.set('zcode.enhance.config', JSON.stringify({ enhanceEnabled: true }))
   // jsdom 不实现 innerText（InputBox 幽灵补全读取），polyfill 成 textContent
   if (!('innerText' in HTMLDivElement.prototype)) {
     Object.defineProperty(HTMLDivElement.prototype, 'innerText', {
@@ -251,5 +268,52 @@ describe('InputBox 发送拼装（@<name> 前缀）', () => {
     fireEvent.click(document.querySelector('.enhance-prompt-button')!)
     const req = sentRequests.find((r) => r.op === 'enhancePrompt')
     expect(req).toMatchObject({ text: '写一个排序函数' })
+  })
+
+  it('润色按钮悬浮提示：有文本=功能说明（portal 信息卡，JCEF 无原生 title）', () => {
+    const { } = setup(null)
+    const btn = document.querySelector('.enhance-prompt-button') as HTMLButtonElement
+    expect(btn.disabled).toBe(false)
+    fireEvent.mouseEnter(btn)
+    const tip = document.body.querySelector('.model-info-tip') as HTMLDivElement
+    expect(tip).toBeTruthy()
+    expect(tip.textContent).toBe('AI 润色：优化输入框内容，确认后替换')
+    fireEvent.mouseLeave(btn)
+    expect(document.body.querySelector('.model-info-tip')).toBeNull()
+  })
+
+  it('润色按钮悬浮提示：空输入禁用态=引导文案（pointer-events 保 hover 可达）', () => {
+    // 直接渲染、从不填入文本：按钮初始即 disabled
+    render(
+      <InputBox
+        onSend={() => {}}
+        currentModel={{ modelId: 'GLM-5.2', providerId: 'p1' }}
+        onModelSelect={() => {}}
+      />,
+    )
+    const btn = document.querySelector('.enhance-prompt-button') as HTMLButtonElement
+    expect(btn.disabled).toBe(true)
+    fireEvent.mouseEnter(btn)
+    const tip = document.body.querySelector('.model-info-tip') as HTMLDivElement
+    expect(tip).toBeTruthy()
+    expect(tip.textContent).toBe('AI 润色：输入内容后可用')
+  })
+
+  it('功能开关：默认关闭不渲染按钮；开启事件即时显示', async () => {
+    storage.delete('zcode.enhance.config')
+    render(
+      <InputBox
+        onSend={() => {}}
+        currentModel={{ modelId: 'GLM-5.2', providerId: 'p1' }}
+        onModelSelect={() => {}}
+      />,
+    )
+    // 默认关闭：按钮与悬浮提示逻辑都不在 DOM
+    expect(document.querySelector('.enhance-prompt-button')).toBeNull()
+    // 设置页写入（dispatch 同标签变更事件）→ InputBox 重读即时显示
+    writeEnhanceConfig({ enhanceEnabled: true })
+    await waitFor(() => {
+      expect(document.querySelector('.enhance-prompt-button')).toBeTruthy()
+    })
   })
 })

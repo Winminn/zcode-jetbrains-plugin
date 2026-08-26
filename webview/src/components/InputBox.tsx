@@ -21,7 +21,8 @@
  * 发送时拼回 /技能名 前缀（由 ZCode CLI 解析）。
  */
 
-import { Fragment, useEffect, useRef, useState, useCallback, useMemo } from 'react'
+import { Fragment, useEffect, useLayoutEffect, useRef, useState, useCallback, useMemo } from 'react'
+import { createPortal } from 'react-dom'
 import { useTranslation } from 'react-i18next'
 import { useKeyboard } from '@/hooks/useKeyboard'
 import { useInputHistory, findHistorySuggestion } from '@/hooks/useInputHistory'
@@ -38,6 +39,8 @@ import { PromptEnhancerDialog } from './PromptEnhancerDialog'
 import { sendToJava, onMessage } from '@/ipc/bridge'
 import type { JavaResponse, SlashCommand, AgentDef, ImageAttachmentInput } from '@/types/messages'
 import { insertChipAtCursor, convertCompletedPaths, serializeEditor } from '@/utils/inlineFileTags'
+import { KV_HYDRATED_EVENT, KV_DISABLED_EVENT } from '@/utils/persist'
+import { readEnhanceConfig, ENHANCE_CONFIG_CHANGED_EVENT } from '@/utils/enhanceConfig'
 import { PastedTextRef, PastedTextPreview, type PastedTextItem } from './PastedTextRef'
 import { readImageFile, decodeBase64Size, type ImageAttachmentResult } from '@/utils/imageAttachment'
 import { ImagePreview } from './ImagePreview'
@@ -180,6 +183,66 @@ export function InputBox({ onSend, isStreaming = false, onStop, disabled = false
   const enhanceResult = useStore((s) => s.enhanceResult)
   const enhancePromptAction = useStore((s) => s.enhancePrompt)
   const clearEnhanceResult = useStore((s) => s.clearEnhanceResult)
+
+  // 功能开关（设置→行为，默认关闭）：按钮仅在开启时渲染。初始读 localStorage，
+  // 三路重读保状态正确——KV_HYDRATED/KV_DISABLED（启动权威值写回后）、
+  // 同标签设置页改动事件、跨标签 storage 同步
+  const [enhanceEnabled, setEnhanceEnabled] = useState(() => readEnhanceConfig().enhanceEnabled)
+  useEffect(() => {
+    const reread = () => setEnhanceEnabled(readEnhanceConfig().enhanceEnabled)
+    window.addEventListener(KV_HYDRATED_EVENT, reread)
+    window.addEventListener(KV_DISABLED_EVENT, reread)
+    window.addEventListener(ENHANCE_CONFIG_CHANGED_EVENT, reread)
+    const onStorage = (e: StorageEvent) => {
+      if (e.key === 'zcode.enhance.config') reread()
+    }
+    window.addEventListener('storage', onStorage)
+    return () => {
+      window.removeEventListener(KV_HYDRATED_EVENT, reread)
+      window.removeEventListener(KV_DISABLED_EVENT, reread)
+      window.removeEventListener(ENHANCE_CONFIG_CHANGED_EVENT, reread)
+      window.removeEventListener('storage', onStorage)
+    }
+  }, [])
+
+  // 悬浮提示：JCEF 不渲染原生 title（ModelSelect 悬停信息卡同款坑），走
+  // createPortal + fixed 挂 body；有文本=功能说明、空输入=引导文案
+  const [enhanceHovered, setEnhanceHovered] = useState(false)
+  const [enhanceTipPos, setEnhanceTipPos] = useState<{ left: number; bottom: number } | null>(null)
+  const enhanceBtnRef = useRef<HTMLButtonElement>(null)
+  const enhanceTipRef = useRef<HTMLDivElement>(null)
+  const enhanceTipText = hasText ? t('enhance.tooltip') : t('enhance.tooltipDisabled')
+
+  // 渲染后量宽定位：左对齐按钮、越界右移，弹上方（按钮在底部栏）——ModelSelect 同款
+  useLayoutEffect(() => {
+    if (!enhanceHovered) {
+      setEnhanceTipPos(null)
+      return
+    }
+    const b = enhanceBtnRef.current?.getBoundingClientRect()
+    const tip = enhanceTipRef.current
+    if (!b || !tip) return
+    const left = Math.max(8, Math.min(b.left, window.innerWidth - tip.offsetWidth - 8))
+    const bottom = window.innerHeight - b.top + 6
+    setEnhanceTipPos((prev) => (prev && prev.left === left && prev.bottom === bottom ? prev : { left, bottom }))
+  }, [enhanceHovered])
+
+  // 空/禁用态的引导提示依赖 hover 事件可达：React 对 disabled 表单元素屏蔽合成
+  // onMouseEnter（shouldPreventMouseEvent），须挂原生监听；配合 less :disabled
+  // { pointer-events: auto } 恢复命中后，JCEF/Chromium 才会对灰按钮派发 mouseenter。
+  // 依赖 enhanceEnabled：默认关闭时按钮不在 DOM（ref 为 null），开启后重挂监听
+  useEffect(() => {
+    const btn = enhanceBtnRef.current
+    if (!btn) return
+    const enter = () => setEnhanceHovered(true)
+    const leave = () => setEnhanceHovered(false)
+    btn.addEventListener('mouseenter', enter)
+    btn.addEventListener('mouseleave', leave)
+    return () => {
+      btn.removeEventListener('mouseenter', enter)
+      btn.removeEventListener('mouseleave', leave)
+    }
+  }, [enhanceEnabled])
 
   /** 润色按钮：取编辑器正文（与 doSend 同源的序列化），触发一次性 CLI 调用 */
   function handleEnhanceClick() {
@@ -1095,21 +1158,41 @@ export function InputBox({ onSend, isStreaming = false, onStop, disabled = false
           </div>
           <div className="button-area-right">
             <div className="button-divider" />
-            {/* 提示词润色（cc-gui enhance-prompt-button：发送按钮左侧，
-                一次性 CLI 调当前模型；结果弹对比窗确认后回填）*/}
-            <button
-              className="enhance-prompt-button"
-              onClick={handleEnhanceClick}
-              disabled={disabled || isStreaming || enhancing || !hasText}
-              title={t('enhance.tooltip')}
-              type="button"
-            >
-              <span
-                className={`codicon ${
-                  enhancing ? 'codicon-loading codicon-modifier-spin' : 'codicon-sparkle'
-                }`}
-              />
-            </button>
+            {/* 提示词润色（cc-gui enhance-prompt-button：发送按钮左侧，设置→行为默认
+                关闭；开启后走常驻 app-server 的 workspace/generateText，结果弹对比窗确认后回填）*/}
+            {enhanceEnabled && (
+              <>
+                <button
+                  className="enhance-prompt-button"
+                  ref={enhanceBtnRef}
+                  onClick={handleEnhanceClick}
+                  disabled={disabled || isStreaming || enhancing || !hasText}
+                  type="button"
+                >
+                  <span
+                    className={`codicon ${
+                      enhancing ? 'codicon-loading codicon-modifier-spin' : 'codicon-sparkle'
+                    }`}
+                  />
+                </button>
+                {/* 润色按钮悬浮提示（先隐形渲染量宽，useLayoutEffect 定位后才可见）*/}
+                {enhanceHovered &&
+                  createPortal(
+                    <div
+                      ref={enhanceTipRef}
+                      className="model-info-tip"
+                      style={
+                        enhanceTipPos
+                          ? { position: 'fixed', left: enhanceTipPos.left, bottom: enhanceTipPos.bottom }
+                          : { position: 'fixed', visibility: 'hidden', top: 0, left: 0 }
+                      }
+                    >
+                      {enhanceTipText}
+                    </div>,
+                    document.body,
+                  )}
+              </>
+            )}
             {isStreaming ? (
               <button
                 className="submit-button stop-button"

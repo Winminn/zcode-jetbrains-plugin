@@ -1,5 +1,6 @@
 {
-  "tooltip": "プロンプトを改善（現在のモデルを使用）",
+  "tooltip": "AI改善：入力内容を整え、確認してから置き換えます",
+  "tooltipDisabled": "AI改善：入力後に使用できます",
   "title": "プロンプト改善",
   "dialogAriaLabel": "プロンプト改善比較ダイアログ",
   "original": "元のプロンプト",
