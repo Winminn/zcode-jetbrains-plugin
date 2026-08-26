@@ -773,7 +773,7 @@ export type JavaResponse =
   | { op: 'skills'; skills: SkillInfo[] }
   | { op: 'skillToggled'; path: string; enabled: boolean }
   /** op=enhancePrompt 的响应（error 非 nil = 失败，弹窗错误态）*/
-  | { op: 'enhancePromptResult'; original?: string; text?: string; error?: string }
+  | { op: 'enhancePromptResult'; original?: string; text?: string; error?: string; model?: string }
   | { op: 'agents'; agents: AgentDef[] }
   | { op: 'agentSaved'; name: string; scope: string }
   | { op: 'agentDeleted'; name: string; scope: string }

@@ -140,6 +140,11 @@
       "hint": "Off by default; enhancement uses the currently selected model via the resident channel (no extra session records)",
       "onHint": "Click to hide the enhance button",
       "offHint": "Click to show the enhance button in the input box"
+    },
+    "enhanceModel": {
+      "title": "Enhance model",
+      "followSession": "Follow session model",
+      "invalidHint": "Selected model is unavailable; enhancement falls back to the default model"
     }
   }
 }

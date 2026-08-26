@@ -27,6 +27,21 @@
     }
   }
 
+  // 标题行右侧的润色模型徽标（弱化色，不与标题抢视觉）
+  .prompt-enhancer__model {
+    margin-left: auto;
+    font-size: 11px;
+    font-weight: normal;
+    color: var(--text-secondary);
+    background: var(--bg-hover, rgba(128, 128, 128, 0.12));
+    border-radius: 4px;
+    padding: 2px 8px;
+    max-width: 220px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
   .prompt-enhancer__section {
     display: flex;
     flex-direction: column;

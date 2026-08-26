@@ -22,6 +22,7 @@ import { parseTodos, parseAgents, parseFileChanges, mergeAgentItems } from '@/ut
 import { isHiddenSyntheticMessage } from '@/utils/parseNotification'
 import { mergeTurnMessages } from '@/utils/mergeTurnMessages'
 import { getPersisted, setPersisted, removePersisted, entriesWithPrefix } from '@/utils/persist'
+import { readEnhanceConfig } from '@/utils/enhanceConfig'
 import { extractBackgroundTaskIdFromContent } from '@/utils/backgroundTask'
 
 export type ConnectionStatus = 'connecting' | 'connected' | 'mock' | 'error'
@@ -270,10 +271,10 @@ interface StoreState {
   skillTogglingPath: string | null
   skillsError: string | null
 
-  // 提示词润色（InputBox 润色按钮 → 一次性 CLI 调用 → 对比确认弹窗）
+  // 提示词润色（InputBox 润色按钮 → generateText/CLI 通道 → 对比确认弹窗）
   enhancing: boolean
-  /** 润色结果弹窗数据（null = 关闭；error 非 null = 失败态）*/
-  enhanceResult: { original: string; text?: string; error?: string } | null
+  /** 润色结果弹窗数据（null = 关闭；error 非 null = 失败态；model = 实际润色模型）*/
+  enhanceResult: { original: string; text?: string; error?: string; model?: string } | null
 
   // 子智能体定义清单（磁盘扫描 + 发送选择；数据与 ZCode 客户端共用 agents/*.md，
   // 与 129 行运行时 agents: AgentItem[] 不同名避免冲突）
@@ -1189,8 +1190,11 @@ export const useStore = create<StoreState>((set, get) => ({
   // ============ 提示词润色 ============
   enhancePrompt: (text) => {
     if (!text.trim() || get().enhancing) return
-    set({ enhancing: true, enhanceResult: { original: text } })
-    const cm = get().currentModel
+    // 模型优先级：设置→行为的润色专用模型 > 会话当前所选模型（专用模型失效由
+    // 后端兜底回退默认 provider，结果回包 model 字段带实际用到的模型）
+    const dedicated = readEnhanceConfig().enhanceModel
+    const cm = dedicated ?? get().currentModel
+    set({ enhancing: true, enhanceResult: { original: text, model: cm?.modelId } })
     sendToJava({
       op: 'enhancePrompt',
       text,
@@ -2333,12 +2337,17 @@ function handleResponse(
       break
 
     case 'enhancePromptResult':
-      // 润色回包（含失败态）：关闭 loading，弹窗按 error 有无渲染错误/结果
+      // 润色回包（含失败态）：关闭 loading，弹窗按 error 有无渲染错误/结果；
+      // 回包不带 model（CLI 降级通道）时保留发起时的占位模型
       set({
         enhancing: false,
-        enhanceResult: msg.error
-          ? { original: msg.original ?? '', error: msg.error }
-          : { original: msg.original ?? '', text: msg.text },
+        enhanceResult: {
+          original: msg.original ?? '',
+          model: msg.model ?? get().enhanceResult?.model,
+          ...(msg.error
+            ? { error: msg.error }
+            : { text: msg.text }),
+        },
       })
       break
 

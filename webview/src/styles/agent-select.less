@@ -78,8 +78,7 @@
   }
 }
 
-/* ===== 发送按钮左的润色按钮（cc-gui enhance-prompt-button）===== */
-.enhance-prompt-button {
+/* ===== 发送按钮左的润色按钮（cc-gui enhance-prompt-button）===== */.enhance-prompt-button {
   display: flex;
   align-items: center;
   justify-content: center;
@@ -154,5 +153,44 @@
     &:hover {
       color: var(--text-primary);
     }
+  }
+}
+
+/* ===== 行为设置：润色专用模型选择（selector 通用结构 + 设置页布局适配）===== */
+.behavior-enhance-model {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 10px;
+
+  &__label {
+    font-size: 12px;
+    color: var(--text-secondary);
+    white-space: nowrap;
+  }
+
+  .selector-button {
+    /* 输入框域的 selector 默认按 28px 控件设计，设置页文字型选择器放大到表单尺寸 */
+    height: 26px;
+    padding: 0 8px;
+    font-size: 12px;
+    gap: 4px;
+  }
+
+  &__dropdown {
+    /* 相对 selector-button-wrap（relative）绝对定位，设置页无底部栏约束——向下弹
+       （基础 .selector-dropdown 是 bottom:100% 向上弹，须显式清 bottom）*/
+    top: calc(100% + 4px);
+    bottom: auto;
+    max-height: 260px;
+    overflow-y: auto;
+  }
+
+  &__invalid {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    font-size: 11px;
+    color: var(--warning, #cca700);
   }
 }

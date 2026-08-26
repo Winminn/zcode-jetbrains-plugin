@@ -3196,14 +3196,16 @@ if (!window.__ZCODE_LOG_HOOK__) {
         try {
             val providerId = msg["providerId"]?.jsonPrimitive?.contentOrNull
             val modelId = msg["modelId"]?.jsonPrimitive?.contentOrNull
-            val enhanced = enhanceViaGenerateText(providerId, modelId, text)
+            val result = enhanceViaGenerateText(providerId, modelId, text)
                 ?: enhanceViaCliOneShot(providerId, modelId, text)
                     ?: return enhanceError("润色结果为空")
-            log.info("enhancePrompt done (${enhanced.length} chars)")
+            val (enhanced, model) = result
+            log.info("enhancePrompt done (${enhanced.length} chars, model=$model)")
             return buildJsonObject {
                 put("op", "enhancePromptResult")
                 put("original", text)
                 put("text", enhanced)
+                put("model", model)
             }
         } catch (e: Exception) {
             log.warn("enhancePrompt failed: ${LogRedactor.redact(e.toString())}")
@@ -3216,36 +3218,42 @@ if (!window.__ZCODE_LOG_HOOK__) {
     /**
      * 快速通道：常驻 app-server 的 workspace/generateText。
      *
-     * @return 润色文本；通道不可用（无 workspace/无可用模型/provider 注册失败/协议错）返回
-     *         null 交上层降级 CLI，异常不上抛。
+     * 模型解析优先级：前端透传（润色专用模型 > 会话当前模型）→ config.json 默认
+     * provider；透传模型失效（provider 已删/订阅过期，config.json 构造不出
+     * runtimeModel）时直接回退默认 provider，不降级 CLI。
+     *
+     * @return 润色文本 to 实际模型；通道不可用返回 null 交上层降级 CLI，异常不上抛。
      */
-    private fun enhanceViaGenerateText(providerId: String?, modelId: String?, text: String): String? {
+    private fun enhanceViaGenerateText(providerId: String?, modelId: String?, text: String): Pair<String, String>? {
         val workspacePath = project.basePath ?: return null
         return try {
             val client = project.zCodeService().getClient()
-            // 前端未透传模型时回退 config.json 默认 provider（与 CLI 通道凭证回退同语义）
-            val effective = if (!providerId.isNullOrBlank() && !modelId.isNullOrBlank()) {
-                providerId to modelId
-            } else {
-                val fallback = com.zcode.ideaplugin.protocol.RuntimeModels.defaultRuntimeModel()
-                    ?.get("model")?.jsonObject ?: return null
-                val pid = fallback["providerId"]?.jsonPrimitive?.contentOrNull ?: return null
-                val mid = fallback["modelId"]?.jsonPrimitive?.contentOrNull ?: return null
-                pid to mid
+            val fallbackModel = com.zcode.ideaplugin.protocol.RuntimeModels.defaultRuntimeModel()
+                ?.get("model")?.jsonObject
+            var pid = providerId?.takeIf { it.isNotBlank() }
+            var mid = modelId?.takeIf { it.isNotBlank() }
+            if (pid == null || mid == null) {
+                pid = fallbackModel?.get("providerId")?.jsonPrimitive?.contentOrNull ?: return null
+                mid = fallbackModel?.get("modelId")?.jsonPrimitive?.contentOrNull ?: return null
+            } else if (com.zcode.ideaplugin.protocol.RuntimeModels.buildRuntimeModel(pid, mid) == null) {
+                // 专用/会话模型已失效：回退默认 provider（fallback 不可用才放弃本通道）
+                log.info("enhancePrompt: model $pid/$mid unavailable in config.json, falling back to default")
+                pid = fallbackModel?.get("providerId")?.jsonPrimitive?.contentOrNull ?: return null
+                mid = fallbackModel?.get("modelId")?.jsonPrimitive?.contentOrNull ?: return null
             }
             val timeoutMs = (45_000L + text.length / 400L * 1_000L).coerceAtMost(120_000L)
             try {
-                callGenerateText(client, workspacePath, effective.first, effective.second, text, timeoutMs)
+                callGenerateText(client, workspacePath, pid, mid, text, timeoutMs)
             } catch (e: com.zcode.ideaplugin.protocol.ZCodeProtocolException) {
                 // -32603 = modelRef 指向的 provider 不在 workspace 目录（如 app-server 刚起
                 // 还没有任何会话 setModel 过）：幂等补注册后重试一次，仍失败才放弃本通道
                 if (e.code != -32603 || !e.message.orEmpty().contains("not configured", ignoreCase = true)) throw e
                 log.info("enhancePrompt: provider not in workspace catalog, upserting and retrying")
                 val providerDef = com.zcode.ideaplugin.protocol.RuntimeModels
-                    .buildRuntimeModel(effective.first, effective.second)
+                    .buildRuntimeModel(pid, mid)
                     ?.get("provider")?.jsonObject ?: return null
                 client.upsertModelProvider(workspacePath, providerDef)
-                callGenerateText(client, workspacePath, effective.first, effective.second, text, timeoutMs)
+                callGenerateText(client, workspacePath, pid, mid, text, timeoutMs)
             }
         } catch (e: Exception) {
             log.info("enhancePrompt: generateText channel unavailable (${e.message?.take(150)}), falling back to CLI")
@@ -3253,7 +3261,7 @@ if (!window.__ZCODE_LOG_HOOK__) {
         }
     }
 
-    /** generateText 调用 + 空结果判定（空文本按通道失败处理） */
+    /** generateText 调用 + 空结果判定（空文本按通道失败处理）；返回 文本 to modelId */
     private fun callGenerateText(
         client: com.zcode.ideaplugin.protocol.ZCodeProtocolClient,
         workspacePath: String,
@@ -3261,7 +3269,7 @@ if (!window.__ZCODE_LOG_HOOK__) {
         modelId: String,
         text: String,
         timeoutMs: Long,
-    ): String {
+    ): Pair<String, String> {
         val result = client.generateText(
             workspacePath = workspacePath,
             providerId = providerId,
@@ -3271,16 +3279,18 @@ if (!window.__ZCODE_LOG_HOOK__) {
             querySource = "workspace_prompt_enhance",
             timeoutMs = timeoutMs,
         )
-        return result["text"]?.jsonPrimitive?.contentOrNull?.takeIf { it.isNotBlank() }
+        val enhanced = result["text"]?.jsonPrimitive?.contentOrNull?.takeIf { it.isNotBlank() }
             ?: throw com.zcode.ideaplugin.protocol.ZCodeProtocolException("generateText 返回空文本")
+        val actualModel = result["modelRef"]?.jsonObject?.get("modelId")?.jsonPrimitive?.contentOrNull ?: modelId
+        return enhanced to actualModel
     }
 
     /**
      * 降级通道：CLI 一次性 headless 调用（原润色实现，保留为兜底）。
      *
-     * @return 润色文本；结果为空返回 null（上层转「润色结果为空」错误）。
+     * @return 润色文本 to 模型；结果为空返回 null（上层转「润色结果为空」错误）。
      */
-    private fun enhanceViaCliOneShot(providerId: String?, modelId: String?, text: String): String? {
+    private fun enhanceViaCliOneShot(providerId: String?, modelId: String?, text: String): Pair<String, String>? {
         val credentialsOverride = if (!providerId.isNullOrBlank() && !modelId.isNullOrBlank()) {
             com.zcode.ideaplugin.protocol.Credentials.credentialsFor(providerId, modelId)
         } else null
@@ -3300,7 +3310,8 @@ if (!window.__ZCODE_LOG_HOOK__) {
             credentialsOverride = credentialsOverride,
             timeoutMs = timeoutMs,
         )
-        return result["response"]?.jsonPrimitive?.contentOrNull?.takeIf { it.isNotBlank() }
+        val enhanced = result["response"]?.jsonPrimitive?.contentOrNull?.takeIf { it.isNotBlank() } ?: return null
+        return enhanced to (credentialsOverride?.model ?: "default")
     }
 
     /** 润色失败统一回包（专用 op：前端弹窗错误态与全局 error 栏分流）*/

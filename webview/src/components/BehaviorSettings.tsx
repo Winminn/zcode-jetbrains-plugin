@@ -6,25 +6,52 @@
  * 触发通知时即时读同一 key——前端无请求往返，改动即时生效。
  * 手动 stop 的回合不通知（Kotlin 侧 markManualStop 语义，无需前端配置）。
  *
- * 提示词润色开关（默认关闭，utils/enhanceConfig.ts）：控制输入框润色按钮（✨）
- * 是否显示；开启即时生效（InputBox 监听变更事件重读）。
+ * 提示词润色（默认关闭，utils/enhanceConfig.ts）：控制输入框润色按钮（✨）
+ * 是否显示；可配润色专用模型（默认跟随会话当前所选模型，失效后端回退默认
+ * provider）；思考深度不设——generateText 为裸 AI SDK 调用天然不思考。开启
+ * 即时生效（InputBox 监听变更事件重读）。
  */
-import { useState } from 'react'
+import { useMemo, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { SettingToggle } from './SettingToggle'
 import { readNotifyConfig, writeNotifyConfig } from '@/utils/notifyConfig'
-import { readEnhanceConfig, writeEnhanceConfig } from '@/utils/enhanceConfig'
+import { readEnhanceConfig, writeEnhanceConfig, type EnhanceModel } from '@/utils/enhanceConfig'
+import { useStore } from '@/store/useStore'
 
 export function BehaviorSettings() {
   const { t } = useTranslation()
   const [config, setConfig] = useState(readNotifyConfig)
   const [enhance, setEnhance] = useState(readEnhanceConfig)
+  const models = useStore((s) => s.models)
+  const [modelOpen, setModelOpen] = useState(false)
 
   const update = (patch: Partial<typeof config>) => {
     const next = { ...config, ...patch }
     setConfig(next)
     writeNotifyConfig(next)
   }
+
+  const updateEnhance = (patch: Partial<typeof enhance>) => {
+    const next = { ...enhance, ...patch }
+    setEnhance(next)
+    writeEnhanceConfig(next)
+  }
+
+  /** 按选中模型是否仍在模型清单里判失效（provider 删除/订阅过期后清单不再含它）*/
+  const selectedInvalid =
+    enhance.enhanceModel != null &&
+    !models.some((m) => m.providerId === enhance.enhanceModel!.providerId && m.modelId === enhance.enhanceModel!.modelId)
+
+  // 按供应商分组（ModelSelect 同款展示结构）
+  const groups = useMemo(() => {
+    const map = new Map<string, typeof models>()
+    for (const m of models) {
+      const arr = map.get(m.providerId) ?? []
+      arr.push(m)
+      map.set(m.providerId, arr)
+    }
+    return [...map.entries()]
+  }, [models])
 
   return (
     <>
@@ -57,11 +84,7 @@ export function BehaviorSettings() {
           title={t('settings.behavior.enhanceEnabled.title')}
           desc={t('settings.behavior.enhanceEnabled.desc')}
           on={enhance.enhanceEnabled}
-          onToggle={() => {
-            const next = { enhanceEnabled: !enhance.enhanceEnabled }
-            setEnhance(next)
-            writeEnhanceConfig(next)
-          }}
+          onToggle={() => updateEnhance({ enhanceEnabled: !enhance.enhanceEnabled })}
           onHint={t('settings.behavior.enhanceEnabled.offHint')}
           offHint={t('settings.behavior.enhanceEnabled.onHint')}
         />
@@ -69,6 +92,65 @@ export function BehaviorSettings() {
           <span className="codicon codicon-info" />
           <span>{t('settings.behavior.enhanceEnabled.hint')}</span>
         </small>
+        {enhance.enhanceEnabled && (
+          <div className="selector-button-wrap behavior-enhance-model">
+            <span className="behavior-enhance-model__label">{t('settings.behavior.enhanceModel.title')}</span>
+            <button
+              type="button"
+              className="selector-button"
+              onClick={() => setModelOpen((v) => !v)}
+            >
+              {enhance.enhanceModel
+                ? models.find(
+                    (m) => m.providerId === enhance.enhanceModel!.providerId && m.modelId === enhance.enhanceModel!.modelId,
+                  )?.modelName ?? enhance.enhanceModel.modelId
+                : t('settings.behavior.enhanceModel.followSession')}
+              <span className="codicon codicon-chevron-down selector-button-chevron" />
+            </button>
+            {selectedInvalid && (
+              <small className="behavior-enhance-model__invalid">
+                <span className="codicon codicon-warning" />
+                <span>{t('settings.behavior.enhanceModel.invalidHint')}</span>
+              </small>
+            )}
+            {modelOpen && (
+              <div className="selector-dropdown behavior-enhance-model__dropdown">
+                <div className="selector-dropdown-group">
+                  <div
+                    className={`selector-dropdown-item ${enhance.enhanceModel == null ? 'is-selected' : ''}`}
+                    onClick={() => {
+                      updateEnhance({ enhanceModel: null })
+                      setModelOpen(false)
+                    }}
+                  >
+                    {t('settings.behavior.enhanceModel.followSession')}
+                  </div>
+                </div>
+                {groups.map(([providerId, items]) => (
+                  <div key={providerId} className="selector-dropdown-group">
+                    <div className="selector-dropdown-group-title">{items[0]?.providerName ?? providerId}</div>
+                    {items.map((m) => (
+                      <div
+                        key={`${m.providerId}/${m.modelId}`}
+                        className={`selector-dropdown-item ${
+                          enhance.enhanceModel?.providerId === m.providerId && enhance.enhanceModel?.modelId === m.modelId
+                            ? 'is-selected'
+                            : ''
+                        }`}
+                        onClick={() => {
+                          updateEnhance({ enhanceModel: { providerId: m.providerId, modelId: m.modelId } as EnhanceModel })
+                          setModelOpen(false)
+                        }}
+                      >
+                        {m.modelName}
+                      </div>
+                    ))}
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
       </section>
     </>
   )

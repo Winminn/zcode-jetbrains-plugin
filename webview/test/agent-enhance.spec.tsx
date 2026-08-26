@@ -94,7 +94,7 @@ beforeEach(() => {
 afterEach(cleanup)
 
 describe('润色状态机（store）', () => {
-  it('enhancePrompt 发请求带当前模型，置 enhancing + 弹窗占位', () => {
+  it('enhancePrompt 发请求带当前模型，置 enhancing + 弹窗占位（含模型徽标占位）', () => {
     useStore.getState().enhancePrompt('帮我写个函数')
     const req = sentRequests.find((r) => r.op === 'enhancePrompt')
     expect(req).toBeTruthy()
@@ -104,7 +104,24 @@ describe('润色状态机（store）', () => {
       modelId: 'GLM-5.2',
     })
     expect(useStore.getState().enhancing).toBe(true)
-    expect(useStore.getState().enhanceResult).toEqual({ original: '帮我写个函数' })
+    expect(useStore.getState().enhanceResult).toEqual({ original: '帮我写个函数', model: 'GLM-5.2' })
+  })
+
+  it('配置润色专用模型：请求优先带专用模型而非会话模型', () => {
+    storage.set(
+      'zcode.enhance.config',
+      JSON.stringify({ enhanceEnabled: true, enhanceModel: { providerId: 'p-other', modelId: 'GLM-4.7' } }),
+    )
+    useStore.getState().enhancePrompt('用专用模型润色')
+    const req = sentRequests.find((r) => r.op === 'enhancePrompt')
+    expect(req).toMatchObject({ providerId: 'p-other', modelId: 'GLM-4.7' })
+    expect(useStore.getState().enhanceResult?.model).toBe('GLM-4.7')
+    // 专用模型格式坏（缺 providerId）：按未配置处理回退会话模型
+    messageHandler!({ op: 'enhancePromptResult', original: '用专用模型润色', text: 'ok' })
+    storage.set('zcode.enhance.config', JSON.stringify({ enhanceEnabled: true, enhanceModel: { modelId: 'GLM-4.7' } }))
+    useStore.getState().enhancePrompt('坏配置回退')
+    const req2 = sentRequests.find((r) => r.op === 'enhancePrompt' && (r as any).text === '坏配置回退')
+    expect(req2).toMatchObject({ providerId: 'builtin:bigmodel-coding-plan', modelId: 'GLM-5.2' })
   })
 
   it('空文本不触发请求；enhancing 中防重入', () => {
@@ -115,20 +132,21 @@ describe('润色状态机（store）', () => {
     expect(sentRequests.filter((r) => r.op === 'enhancePrompt')).toHaveLength(1)
   })
 
-  it('enhancePromptResult 成功落地（关闭 loading 带文本）', () => {
+  it('enhancePromptResult 成功落地：model 覆盖占位（后端兜底回退时徽标更新）', () => {
     useStore.getState().enhancePrompt('原文')
-    messageHandler!({ op: 'enhancePromptResult', original: '原文', text: '润色后' })
+    messageHandler!({ op: 'enhancePromptResult', original: '原文', text: '润色后', model: 'GLM-5.3' })
     const s = useStore.getState()
     expect(s.enhancing).toBe(false)
-    expect(s.enhanceResult).toEqual({ original: '原文', text: '润色后' })
+    expect(s.enhanceResult).toEqual({ original: '原文', text: '润色后', model: 'GLM-5.3' })
   })
 
-  it('enhancePromptResult 失败落地（错误态）', () => {
+  it('enhancePromptResult 失败落地（错误态，model 保留占位）', () => {
     useStore.getState().enhancePrompt('原文')
     messageHandler!({ op: 'enhancePromptResult', error: 'CLI 超时' })
     const s = useStore.getState()
     expect(s.enhancing).toBe(false)
     expect(s.enhanceResult?.error).toBe('CLI 超时')
+    expect(s.enhanceResult?.model).toBe('GLM-5.2')
   })
 
   it('clearEnhanceResult 关弹窗', () => {
@@ -166,6 +184,17 @@ describe('PromptEnhancerDialog 交互', () => {
     )
     expect(document.querySelector('.prompt-enhancer__error')?.textContent).toContain('boom')
     expect((screen.getByRole('button', { name: /使用润色|Use enhanced/ }) as HTMLButtonElement).disabled).toBe(true)
+  })
+
+  it('模型徽标：有 model 时标题行右侧渲染，无 model 不渲染', () => {
+    const { rerender } = render(
+      <PromptEnhancerDialog enhancing={false} result={{ original: '原文', text: '结果', model: 'GLM-5.3' }} onUse={() => {}} onClose={() => {}} />,
+    )
+    expect(document.querySelector('.prompt-enhancer__model')?.textContent).toBe('GLM-5.3')
+    rerender(
+      <PromptEnhancerDialog enhancing={false} result={{ original: '原文', text: '结果' }} onUse={() => {}} onClose={() => {}} />,
+    )
+    expect(document.querySelector('.prompt-enhancer__model')).toBeNull()
   })
 
   it('结果态：Enter=使用、Esc=关闭、点击「使用」回调带文本', () => {
