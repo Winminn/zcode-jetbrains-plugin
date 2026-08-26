@@ -27,6 +27,8 @@
   "viewSkillContent": "ダイアログでスキル内容を表示",
   "skillDoc": "スキルドキュメント",
   "viewSubagentProcess": "サブエージェントの実行過程を表示",
+  "backgroundRunning": "バックグラウンド実行中",
+  "backgroundCompleted": "バックグラウンド完了",
   "status": {
     "running": "実行中",
     "error": "失敗",
@@ -54,7 +56,8 @@
     "allDone": "すべて完了",
     "progress": "{{done}}/{{total}} 完了",
     "waitingInput": "（入力待ち…）",
-    "unparsed": "（未解析）"
+    "unparsed": "（未解析）",
+    "backgroundCount": "{{count}} 個バックグラウンド実行中"
   },
   "fileGroup": {
     "read": "ファイル一括読み取り",

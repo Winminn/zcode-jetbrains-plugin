@@ -27,6 +27,8 @@
   "viewSkillContent": "대화상자에서 스킬 내용 보기",
   "skillDoc": "스킬 문서",
   "viewSubagentProcess": "서브에이전트 실행 과정 보기",
+  "backgroundRunning": "백그라운드 실행 중",
+  "backgroundCompleted": "백그라운드 완료",
   "status": {
     "running": "실행 중",
     "error": "실패",
@@ -54,7 +56,8 @@
     "allDone": "모두 완료",
     "progress": "{{done}}/{{total}} 완료",
     "waitingInput": "(입력 대기 중…)",
-    "unparsed": "(파싱 안 됨)"
+    "unparsed": "(파싱 안 됨)",
+    "backgroundCount": "백그라운드 실행 중 {{count}}개"
   },
   "fileGroup": {
     "read": "파일 일괄 읽기",

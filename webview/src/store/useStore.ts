@@ -22,6 +22,7 @@ import { parseTodos, parseAgents, parseFileChanges, mergeAgentItems } from '@/ut
 import { isHiddenSyntheticMessage } from '@/utils/parseNotification'
 import { mergeTurnMessages } from '@/utils/mergeTurnMessages'
 import { getPersisted, setPersisted, removePersisted, entriesWithPrefix } from '@/utils/persist'
+import { extractBackgroundTaskIdFromContent } from '@/utils/backgroundTask'
 
 export type ConnectionStatus = 'connecting' | 'connected' | 'mock' | 'error'
 
@@ -41,7 +42,10 @@ const QUOTA_POLL_INTERVAL = 60_000
 // → 判定流丢失，收尾并提示。事件正常流动时阈值永不满足，探测是纯兜底。
 const STREAM_SILENCE_MS = 60_000
 const STREAM_PROBE_INTERVAL_MS = 10_000
-const STREAM_DEAD_PROBES = 4
+// 判死轮数 4→8（2026-08-26 用户决策）：60s 探测启动不变，但死亡判定更谨慎——
+// 无进展快照累计 8 轮（≈140s）才判死；服务端回合活跃（activeTurnId）随时清零。
+// 对「服务端还活着只是慢」的合法静默更宽容，真断流发现延迟 ~100s → ~140s
+const STREAM_DEAD_PROBES = 8
 /** 最近一次当前会话流式活动（事件到达/消息发出）时刻——看门狗静默计时基准 */
 let lastStreamActivityAt = 0
 let streamWatchTimer: ReturnType<typeof setInterval> | null = null
@@ -49,6 +53,18 @@ let reconcileProbeInFlight = false
 let reconcileProbeSentAt = 0
 let reconcileDeadCount = 0
 let reconcileLastFingerprint = ''
+/** 最近 usage 轮询确认的服务端活跃回合 id（null = 无活跃回合 / 旧 CLI 不上报）。
+ *  后台任务等待、长工具执行等合法静默段，activeTurnId 持续有值（实测 sleep 90
+ *  全程 activeTurnKind=regular）——看门狗据此区分"可预期等待"与"真流丢失"：
+ *  快照无进展但服务端回合仍活跃 = 继续等待，不判死（见 classifyReconcileSnapshot） */
+let serverActiveTurnId: string | null = null
+/** 客户端最近处理过 turn.completed/failed 的回合 id：usage 响应的 activeTurnId
+ *  与之相同 = 服务端清算滞后的「已完成那轮」读数，不得据此复活压缩指示器 */
+let lastCompletedTurnId: string | null = null
+/** 本轮压缩态是否被服务端 activeTurnKind 确认过（滞后读数不算）：只允许"确认过
+ *  后的缺失"清除压缩指示器——旧版 zcode.cjs 不上报该字段，无条件清会把 /compact
+ *  的指示器在首个轮询样本就抹掉（维持旧客户端"字段缺失不动作"语义） */
+let compactingServerConfirmed = false
 
 /* ============ 压缩回合结束后的延迟 flush（快照落地优先于排队消息抢跑） ============
  * 压缩摘要卡/时间线屏障只能靠回合结束后的重拉快照落地（压缩回合事件流全程静默、
@@ -90,6 +106,11 @@ export interface QueuedMessage {
   text: string
   queuedAt: number
 }
+
+/** 后台任务账本：key = 触发任务的 toolCallId（同一回合并发多个后台任务互不覆盖）。
+ *  endedAt 有值 = 任务已完成（完成通知标记）：UI 保留「后台完成」标识与定格耗时；
+ *  会话级清除点（切/删会话等）整本清空 */
+type BackgroundTaskMap = Record<string, { id: string; startedAt: number; endedAt?: number }>
 
 interface StoreState {
   // 连接
@@ -168,6 +189,15 @@ interface StoreState {
    * （权威，覆盖 autocompact）；清除：turn.completed/failed 或 usage 轮询转非 compact。
    */
   compacting: boolean
+  /**
+   * 后台任务运行中（体验增强，缺陷Y 配套）：Bash run_in_background 的工具
+   * result 内容带任务 ID（"moved to the background with ID: xxx"），等待段
+   * 事件流静默（progress 被 backgrounded 拦截）、快照不动——指示器明确告知
+   * 用户在跑什么。key = 触发任务的 toolCallId（同一回合并发/连续多个后台任务
+   * 各自独立记账、独立计时）。置位：工具 result 解析出 ID；清除：对应任务的
+   * 完成通知（session.updated taskId/toolCallId + status 离开 running）/切会话。
+   */
+  backgroundTasks: BackgroundTaskMap
   /** 排队消息（streaming 中 Enter 入队，回合结束自动发队头）*/
   queuedMessages: QueuedMessage[]
 
@@ -467,6 +497,7 @@ export const useStore = create<StoreState>((set, get) => ({
   streamingMessageId: null,
   waitingSince: null,
   compacting: false,
+  backgroundTasks: {},
   queuedMessages: [],
   askUser: null,
   exitPlanApproval: null,
@@ -626,6 +657,9 @@ export const useStore = create<StoreState>((set, get) => ({
     // 且 streaming 被复位后重拉的 messages 响应不再被丢弃，全量替换会抹掉
     // 流式中的 assistant 消息（断流/叠字），重发 subscribe 还会打扰运行中的回合
     if (session.sessionId === get().currentSessionId) return
+    // 服务端活跃信号绑定会话：切走后旧会话 usage 响应被丢弃，信号一并清空
+    // （新会话的 loadUsage 会重新建立；防残留信号豁免新会话的判死判定）
+    serverActiveTurnId = null
     const workspacePath = session.workspacePath || get().projectPath
     set({
       currentSessionId: session.sessionId,
@@ -637,6 +671,7 @@ export const useStore = create<StoreState>((set, get) => ({
       streamingMessageId: null,
       waitingSince: null,
       compacting: false,
+      backgroundTasks: {},
       queuedMessages: [], // 队列绑定会话上下文，切会话丢弃
       contextUsage: null, // 清空旧会话数据，等 getUsage 回来更新
       contextBreakdown: null,
@@ -710,6 +745,7 @@ export const useStore = create<StoreState>((set, get) => ({
     // 不置位的话 UI 只有空气泡转圈、看门狗还会误判流丢失。
     // 权威校正走 usage 轮询的 activeTurnKind（覆盖 autocompact）
     const isCompactCmd = /^\/compact\b/.test(text.trim())
+    if (isCompactCmd) compactingServerConfirmed = false // 新一轮压缩：服务端确认闩复位
     set({
       streaming: true,
       streamingMessageId: null,
@@ -826,6 +862,7 @@ export const useStore = create<StoreState>((set, get) => ({
       streamingMessageId: null,
       waitingSince: null,
       compacting: false,
+      backgroundTasks: {},
       queuedMessages: [], // 队列绑定旧会话上下文，丢弃
       contextUsage: null,
       contextBreakdown: null,
@@ -1595,6 +1632,7 @@ function handleResponse(
           streamingMessageId: null,
           waitingSince: null,
           compacting: false,
+          backgroundTasks: {},
           queuedMessages: [], // 队列绑定旧会话上下文，新建会话丢弃
           contextUsage: null, // 清空旧会话数据，等 getUsage 回来更新
           contextBreakdown: null,
@@ -1670,7 +1708,7 @@ function handleResponse(
         sessions: cur.sessions.filter((x) => x.sessionId !== msg.sessionId),
         ...(deletedCurrent
           ? {
-            currentSessionId: null, messages: [], streaming: false, streamingMessageId: null, waitingSince: null, compacting: false,
+            currentSessionId: null, messages: [], streaming: false, streamingMessageId: null, waitingSince: null, compacting: false, backgroundTasks: {},
             queuedMessages: [],
             contextUsage: null, contextBreakdown: null, thoughtLevel: null, currentMode: null,
             todos: [], agents: [], fileChanges: [], // 底部栏派生状态随会话删除清零
@@ -1720,9 +1758,11 @@ function handleResponse(
       if (msg.reconcile) {
         reconcileProbeInFlight = false
         if (msg.sessionId === get().currentSessionId && get().streaming) {
-          const verdict = classifyReconcileSnapshot(msg.messages)
+          // serverActiveTurnId 由 5s usage 轮询维护：服务端回合活跃（后台任务等待/
+          // 长工具执行）时豁免判死；真断流（app-server 死/回合结束）时信号消失
+          const verdict = classifyReconcileSnapshot(msg.messages, serverActiveTurnId !== null)
           if (verdict !== 'progress') {
-            set({ streaming: false, streamingMessageId: null, waitingSince: null, compacting: false })
+            set({ streaming: false, streamingMessageId: null, waitingSince: null, compacting: false, backgroundTasks: {} })
             if (verdict === 'dead') {
               console.warn('[store] 流式对账：长时间无事件且服务端无进展，判定流丢失并收尾')
               set({ lastError: i18n.t('app.streamLost') })
@@ -1811,7 +1851,7 @@ function handleResponse(
       // 发送被接受，等待流式事件（turn.started 即将到来）
       // CLI fallback 模式（带 cliResponse）：直接重新拉消息，并串行发送队列下一条
       if ('cliResponse' in msg && msg.cliResponse) {
-        set({ streaming: false, waitingSince: null, compacting: false })
+        set({ streaming: false, waitingSince: null, compacting: false, backgroundTasks: {} })
         const sid = get().currentSessionId
         if (sid) {
           setTimeout(() => {
@@ -1886,6 +1926,7 @@ function handleResponse(
         streaming: false,
         waitingSince: null,
         compacting: false,
+        backgroundTasks: {},
         memoryLoading: false,
         memoryCreatingPath: null,
         memoryToggling: false,
@@ -2017,10 +2058,33 @@ function handleResponse(
       // 流式轮询期间切会话：旧会话的迟到响应直接丢弃，避免污染新会话圆环
       if (msg.sessionId && msg.sessionId !== get().currentSessionId) break
       // 压缩态权威同步（session/read → runtime.activeTurnKind，5s 轮询通道）：
-      // 覆盖 autocompact（send 未识别）与异常残留；null（旧 Java 包不带字段）不动作
-      if (msg.activeTurnKind !== undefined) {
+      // 覆盖 autocompact（send 未识别）与异常残留
+      if (msg.activeTurnKind === undefined) {
+        // 字段缺失 = 服务端已无活动回合（滞后窗口里字段是"仍在"而非缺失，实测
+        // eventSeq=816 落后时 activeTurnKind 仍报 compact）。仅当本轮压缩曾被
+        // 服务端确认过才清除——防 turn.completed 丢失后 compacting 卡 true、看门狗
+        // 被豁免的永久转圈盲区；未确认过（旧 CLI 不上报字段）维持不动作
+        if (get().compacting && compactingServerConfirmed) set({ compacting: false })
+        compactingServerConfirmed = false
+        serverActiveTurnId = null
+      } else {
         const compacting = msg.activeTurnKind === 'compact'
-        if (get().compacting !== compacting) set({ compacting })
+        // 滞后读数复活防护：服务端 runtime 清算异步于 turn.completed 下发（实测
+        // eventSeq 816<820，滞后 ~1.3s），回合结束重拉批的 getUsage 可能仍报
+        // 「已完成那轮」的 activeTurnKind=compact——按 activeTurnId 与客户端最近
+        // 完成的 turnId 比对识别，滞后读数不复活指示器。否则 compacting 永久卡
+        // true 并连锁毒化下一回合（turn.started 被压缩守卫吞掉、delta 无处落地
+        // → 只转圈，2026-08-24 缺陷）。真实的新压缩回合（autocompact 紧接上一
+        // 回合结束）带新 turnId，不受影响
+        const staleCompact = compacting && msg.activeTurnId != null && msg.activeTurnId === lastCompletedTurnId
+        compactingServerConfirmed = compacting && !staleCompact
+        if (!staleCompact && get().compacting !== compacting) {
+          set({ compacting })
+        }
+        // 服务端活跃信号（看门狗用）：同一滞后校验对任意 activeTurnId 生效——
+        // 回合结束清算滞后的读数不算活跃（否则真断流收尾被豁免成永久转圈）
+        const staleTurnId = msg.activeTurnId != null && msg.activeTurnId === lastCompletedTurnId
+        serverActiveTurnId = staleTurnId ? null : (msg.activeTurnId ?? null)
       }
       if (msg.breakdown) {
         // 构成明细来自 session/read 的 runtime.breakdown（turn 后 CLI 构建）：
@@ -2438,6 +2502,15 @@ function startReplayPump(
   replayTimer = window.setTimeout(pump, REPLAY_FRAME_MS)
 }
 
+/** 从工具 result 内容解析后台任务 ID（Bash run_in_background / 手动后台化）。
+ *  判据单点定义在 utils/backgroundTask（缺陷Z 教训：判据注释勿逐字引用官方句子，
+ *  否则 grep 源码输出会构成自指假阳性）。此处仅做 kind 过滤与字段取值。 */
+function extractBackgroundTaskId(p: ToolUpdatedPayload): string | null {
+  if (p.kind !== 'result') return null
+  const content = typeof p.result?.content === 'string' ? p.result.content : ''
+  return extractBackgroundTaskIdFromContent(content)
+}
+
 function handleStreamBatchDirect(
   sessionId: string,
   events: StreamEvent[],
@@ -2468,6 +2541,8 @@ function handleStreamBatchDirect(
   let turnEnded = false
   let modeEvent: 'enter_plan' | 'exit_plan' | undefined
   let turnError: TurnErrorInfo | undefined
+  let bgTasks: BackgroundTaskMap | null = null
+  let bgDirty = false // 本批内后台任务有增删（有变更才 patch，保持引用稳定防多余重渲染）
   const childKeyPatch: Record<string, string> = {}
 
   for (const event of events) {
@@ -2483,6 +2558,25 @@ function handleStreamBatchDirect(
       if (lc) {
         applySubagentLifecycle(lc, event.timestamp, set, get)
         continue
+      }
+      // 后台任务完成通知（zcode.cjs 任务生命周期推送，实测字段：taskId/toolCallId/
+      // toolName/taskKind/status=running|completed|failed...）：toolCallId 精确匹配
+      // 指示器（通知带 toolCallId，兜底 taskId 反查），状态离开 running → 标记
+      // endedAt（不删除——UI 保留「后台完成」标识与定格耗时；会话级清除点清整本）。
+      // turn.completed 不再清：后台化确认后回合可能立即结束（行为B），任务仍在后台
+      // 跑——完成通知才是权威收尾信号
+      const tp = event.payload as { taskId?: string; toolCallId?: string; status?: string }
+      if (tp.status && tp.status !== 'running') {
+        const curTasks: BackgroundTaskMap = bgTasks ?? get().backgroundTasks
+        const key = tp.toolCallId && tp.toolCallId in curTasks
+          ? tp.toolCallId
+          : tp.taskId
+            ? Object.keys(curTasks).find((k) => curTasks[k].id === tp.taskId)
+            : undefined
+        if (key) {
+          bgTasks = { ...curTasks, [key]: { ...curTasks[key], endedAt: Date.now() } }
+          bgDirty = true
+        }
       }
     }
     // 子代理转发工具事件（source=subagent）：不进主聊天 parts（防刷屏），
@@ -2506,6 +2600,17 @@ function handleStreamBatchDirect(
       if (p.kind === 'result' && p.toolCallId && activities.some((a) => a.key === p.toolCallId)) {
         activities = markActivityOutcome(activities, p.toolCallId, p.result?.success === false, event.timestamp)
       }
+      // 后台任务识别（体验增强，缺陷Y 配套）：Bash run_in_background 的工具 result
+      // 内容带官方后台化确认（Command 动作前缀 + exec_ UUID 任务 ID，判据见
+      // extractBackgroundTaskId，注释不再逐字引用官方句子以免 grep 自指误报）。
+      // 此后回合挂起等 <task-notification>，事件流静默——指示器让等待可见。
+      // 同一回合并发/连续多个后台任务各自独立记账（key = toolCallId，互不覆盖）
+      const bgId = extractBackgroundTaskId(p)
+      if (bgId && p.toolCallId) {
+        const curTasks: BackgroundTaskMap = bgTasks ?? get().backgroundTasks
+        bgTasks = { ...curTasks, [p.toolCallId]: { id: bgId, startedAt: Date.now() } }
+        bgDirty = true
+      }
     }
     if (event.type === 'turn.started') turnStarted = true
     // 压缩回合不建流式 assistant 消息（同单推路径：零 delta 空气泡，CompactingIndicator 表达）
@@ -2513,7 +2618,10 @@ function handleStreamBatchDirect(
       const result = applyStreamEvent(messages, event, streamingMessageId)
       messages = result.messages
       streamingMessageId = result.streamingMessageId
-      if (result.turnEnded) turnEnded = true
+      if (result.turnEnded) {
+        turnEnded = true
+        if (event.turnId) lastCompletedTurnId = event.turnId
+      }
       if (result.modeEvent) modeEvent = result.modeEvent
       if (result.turnError) turnError = result.turnError
     }
@@ -2537,9 +2645,13 @@ function handleStreamBatchDirect(
     patch.streamingMessageId = null
     patch.waitingSince = null
     patch.compacting = false
+    // 后台任务指示器不在回合结束清除（后台化确认后回合可能立即结束，
+    // 任务仍在后台跑——由任务完成通知清除，见 bgCompleted 分支）
     // 失败回合展示错误详情（同批 failed+started 的自动续轮不打扰）
     if (turnError) patch.lastError = formatTurnError(turnError)
   }
+  // 后台任务指示器（多任务并发，key = toolCallId）：本批有增删才 patch
+  if (bgDirty && bgTasks) patch.backgroundTasks = bgTasks
   if (modeEvent) applyModeEventToPatch(modeEvent, patch, get)
   // set 前捕获（patch 已把 compacting 清 false）：压缩回合结束的判定依据
   const wasCompacting = get().compacting
@@ -2619,6 +2731,21 @@ function handleStreamEvent(
       applySubagentLifecycle(lc, event.timestamp, set, get)
       return
     }
+    // 后台任务完成通知（同批量路径）：toolCallId 精确匹配（兜底 taskId 反查）+
+    // 状态离开 running → 标记 endedAt（不删除，UI 保留「后台完成」标识与定格耗时）。
+    // 回合结束不再清（后台化确认后回合可能立即结束，任务仍在后台跑）
+    const tp = event.payload as { taskId?: string; toolCallId?: string; status?: string }
+    if (tp.status && tp.status !== 'running') {
+      const curTasks: BackgroundTaskMap = get().backgroundTasks
+      const key = tp.toolCallId && tp.toolCallId in curTasks
+        ? tp.toolCallId
+        : tp.taskId
+          ? Object.keys(curTasks).find((k) => curTasks[k].id === tp.taskId)
+          : undefined
+      if (key) {
+        set({ backgroundTasks: { ...curTasks, [key]: { ...curTasks[key], endedAt: Date.now() } } })
+      }
+    }
   }
 
   // 子代理转发工具事件分流（同批量路径）：聚合不进主聊天
@@ -2651,6 +2778,12 @@ function handleStreamEvent(
       const activities = markActivityOutcome(st.subagentActivities, p.toolCallId, p.result?.success === false, event.timestamp)
       set({ subagentActivities: activities, ...refreshStatus(st.messages, activities, st.subagents) })
     }
+    // 后台任务识别（同批量路径）：单推防御（正常链路 tool.updated 走批量，
+    // 但未来若 Java 端把工具事件改单推，指示器不能丢）
+    const bgId = extractBackgroundTaskId(p)
+    if (bgId && p.toolCallId) {
+      set({ backgroundTasks: { ...get().backgroundTasks, [p.toolCallId]: { id: bgId, startedAt: Date.now() } } })
+    }
   }
 
   // 压缩回合不进消息归约：turn.started 建的流式 assistant 消息在摘要生成期间
@@ -2666,6 +2799,7 @@ function handleStreamEvent(
     event,
     get().streamingMessageId,
   )
+  if (turnEnded && event.turnId) lastCompletedTurnId = event.turnId
 
   // turn.started：进入流式，清除 waiting（开始有内容了）
   if (event.type === 'turn.started') {
@@ -2690,6 +2824,7 @@ function handleStreamEvent(
       streamingMessageId: null,
       waitingSince: null,
       compacting: false,
+      // 后台任务指示器不在回合结束清除（同批量路径：由任务完成通知清除）
       // 失败回合展示错误详情（此前 payload.error 被丢弃，失败只表现为"转圈停了"）
       ...(turnError ? { lastError: formatTurnError(turnError) } : {}),
     })
@@ -2814,9 +2949,14 @@ function fingerprintMessages(raw: ZCodeMessage[]): string {
  * 判定对账快照（内部维护连续无进展计数，仅在 streaming 期间调用）：
  * - ended：末尾是带正文的 assistant 回复 → 回合已在服务端完成
  * - dead：快照连续 STREAM_DEAD_PROBES 轮无变化且始终没有 assistant 产出 → 疑似流丢失
- * - progress：其他（工具步骤推进 / 静默长任务）→ 继续等待，不打扰
+ * - progress：其他（工具步骤推进 / 静默长任务 / 服务端回合活跃）→ 继续等待，不打扰
+ *
+ * serverActive：usage 轮询（5s）确认服务端回合仍活跃（activeTurnId 有值且非滞后）。
+ * 后台任务等待/长命令执行期间事件流静默、快照不动是常态（progress 事件被
+ * backgrounded 拦截、工具未完成无新消息），若没有这个信号会被误判流丢失提前
+ * 收尾（2026-08-25 实测：run_in_background 等待段 60s+ 静默，服务端 turn 仍挂起）。
  */
-function classifyReconcileSnapshot(raw: ZCodeMessage[]): 'ended' | 'dead' | 'progress' {
+function classifyReconcileSnapshot(raw: ZCodeMessage[], serverActive: boolean): 'ended' | 'dead' | 'progress' {
   const fp = fingerprintMessages(raw)
   if (fp !== reconcileLastFingerprint) {
     reconcileLastFingerprint = fp
@@ -2825,6 +2965,12 @@ function classifyReconcileSnapshot(raw: ZCodeMessage[]): 'ended' | 'dead' | 'pro
   const visible = raw.filter((m) => !isHiddenSyntheticMessage(m.info))
   const last = visible[visible.length - 1]
   if (last && last.info.role === 'assistant' && hasVisibleText(last)) return 'ended'
+  // 服务端回合仍活跃 = 合法等待，清零无进展计数（真断流时回合结束 activeTurnId
+  // 消失、快照出现完整回复或计数累计，两条路径都照常收尾）
+  if (serverActive) {
+    reconcileDeadCount = 0
+    return 'progress'
+  }
   reconcileDeadCount += 1
   return reconcileDeadCount >= STREAM_DEAD_PROBES ? 'dead' : 'progress'
 }

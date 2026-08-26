@@ -97,6 +97,45 @@ class RuntimeModelRecoveryTest {
     }
 
     @Test
+    fun `buildRuntimeModel 携带模型 limit 与 modalities 防止服务端模型属性被覆盖残缺`() {
+        // 缺陷回归（2026-08-26）：只传 modelId 会让服务端覆盖完整模型定义 → contextWindow 归零
+        // → autocompact 阈值=0 每请求必压缩。完整定义（limit/modalities）必须随 runtimeModel 送达。
+        val config = tempDir.resolve("config.json").also { it.writeText("""
+            {
+              "provider": {
+                "p-qwen": {
+                  "enabled": true, "kind": "anthropic", "name": "千问", "source": "custom",
+                  "options": { "baseURL": "https://qwen.example/anthropic", "apiKey": "sk-qwen" },
+                  "models": {
+                    "qwen3.7-plus": {
+                      "limit": { "context": 200000, "output": 128000 },
+                      "modalities": { "input": ["text", "image"], "output": ["text"] }
+                    },
+                    "plain-model": {}
+                  }
+                }
+              }
+            }
+        """.trimIndent()) }
+        val rt = RuntimeModels.buildRuntimeModel("p-qwen", "qwen3.7-plus", config)
+        val models = rt?.get("provider")?.jsonObject?.get("models")?.jsonArray!!
+        assertEquals(2, models.size, "provider 全部模型都注册")
+
+        val qwen = models.first { it.jsonObject["modelId"]?.jsonPrimitive?.content == "qwen3.7-plus" }.jsonObject
+        assertEquals(200000, qwen["contextWindow"]?.jsonPrimitive?.contentOrNull?.toIntOrNull(),
+            "limit.context 必须映射为 contextWindow（否则 autocompact 阈值=0 每请求必压缩）")
+        assertEquals(128000, qwen["maxOutputTokens"]?.jsonPrimitive?.contentOrNull?.toIntOrNull(),
+            "limit.output 必须映射为 maxOutputTokens")
+        assertEquals("true", qwen["supportsImages"]?.jsonPrimitive?.content,
+            "modalities.input 含 image 必须映射为 supportsImages=true")
+
+        // 无 limit 的模型保持最小定义（兼容旧配置）
+        val plain = models.first { it.jsonObject["modelId"]?.jsonPrimitive?.content == "plain-model" }.jsonObject
+        assertEquals(null, plain["contextWindow"], "无 limit 的模型不携带 contextWindow")
+        assertEquals(null, plain["supportsImages"], "无 modalities 的模型不携带 supportsImages")
+    }
+
+    @Test
     fun `buildRuntimeModel 按 providerId 从 config 构造指定 provider 的完整定义`() {
         // hermetic：注入临时 config（两个 enabled provider，验证 buildRuntimeModel 取的是指定 provider 而非第一个）
         val config = tempDir.resolve("config.json").also { it.writeText("""

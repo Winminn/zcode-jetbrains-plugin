@@ -2198,9 +2198,14 @@ if (!window.__ZCODE_LOG_HOOK__) {
                 val breakdownEl = runtime["breakdown"] ?: ctx["breakdown"]
                 if (breakdownEl != null) put("breakdown", breakdownEl)
                 // 当前回合类型（activeTurnKind，实测见 /compact：值为 "compact" 时正在
-                // 压缩上下文）：前端压缩状态条/看门狗豁免的权威信号，覆盖 autocompact
+                // 压缩上下文）：前端压缩状态条/看门狗豁免的权威信号，覆盖 autocompact。
+                // activeTurnId 一并透传：服务端 runtime 清算滞后于 turn.completed 下发，
+                // 前端按"读数 turnId == 已完成回合 id"识别滞后读数，防压缩指示器复活卡死
                 val turnKind = runtime["activeTurnKind"]?.jsonPrimitive?.content
-                if (turnKind != null) put("activeTurnKind", turnKind)
+                if (turnKind != null) {
+                    put("activeTurnKind", turnKind)
+                    runtime["activeTurnId"]?.jsonPrimitive?.contentOrNull?.let { put("activeTurnId", it) }
+                }
             }
         } catch (e: Exception) {
             log.warn("Failed to fetch context usage: ${e.message}")

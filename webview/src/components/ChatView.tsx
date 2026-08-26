@@ -189,7 +189,9 @@ export function ChatView({ messages, loading, waiting, waitingSince, streamingMe
               {t('chat.compaction.compressing')}
             </div>
           ) : (
-            waiting && <WaitingIndicator since={waitingSince} />
+            <>
+              {waiting && <WaitingIndicator since={waitingSince} />}
+            </>
           )}
           <div ref={bottomRef} />
         </div>

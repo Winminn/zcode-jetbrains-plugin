@@ -51,3 +51,4 @@ gui-test-screenshots/
 # ===== webview 构建产物（不入库：npm build 生成，见 build.sh；避免 hash 文件名每次变更污染历史）=====
 intellij-plugin/src/main/resources/webview/
 intellij-plugin/src/main/resources/webview-single/
+zcode.z.ai.har

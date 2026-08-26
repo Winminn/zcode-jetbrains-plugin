@@ -18,8 +18,10 @@ import type { TFunction } from 'i18next'
 import type { ToolPart } from '@/types/messages'
 import { relativeTime, formatToolDuration } from '@/utils/time'
 import { parsePartialToolInput, lineCount, tailLines } from '@/utils/partialToolInput'
+import { isBackgroundTaskOutput } from '@/utils/backgroundTask'
 import { sendToJava } from '@/ipc/bridge'
 import { useStore } from '@/store/useStore'
+import { useTick } from '@/hooks/useTick'
 import { FileIcon } from './FileIcon'
 import '../styles/tool-call-card.less'
 
@@ -119,6 +121,19 @@ export function ToolCallCard({ part }: Props) {
   const { t } = useTranslation()
   const [expanded, setExpanded] = useState(false)
   const { tool, state } = part
+  // 后台任务（缺陷Y 体验增强）：Bash run_in_background 的 result 解析出的任务，
+  // 按 toolCallId 索引（同一回合并发多个后台任务各自独立记账）。
+  // 匹配本卡片 callID → 头部打后台标识：运行中「后台运行中」+ 真实运行时间（秒级
+  // 跳动）；完成通知标记 endedAt 后保留为「后台完成」+ 定格耗时（不再跳动）。
+  // 不受回合结束影响（后台化确认后回合可能立即结束，任务仍在后台跑）
+  const backgroundTasks = useStore((s) => s.backgroundTasks)
+  const backgroundTask = part.callID ? backgroundTasks[part.callID] : undefined
+  // 历史消息静态识别（持久化标识）：会话重载后账本为空，从 part 输出内容识别
+  // 官方后台化确认 → 静态「后台完成」徽标（不计时——startedAt 不可考）
+  const bgFromPart = isBackgroundTaskOutput(part.state.output)
+  const isBackground = tool === 'Bash' && (!!backgroundTask || bgFromPart)
+  const bgRunning = isBackground && !!backgroundTask && !backgroundTask.endedAt
+  const bgElapsed = useTick(bgRunning, 1000)
   // Agent/Task 卡片的子代理摘要（实时聚合活动 + RPC 状态），点击查看原始过程。
   // ⚠️ selector 必须返回原始值：返回新对象会破坏 useSyncExternalStore 的
   // snapshot 引用稳定性 → Maximum update depth exceeded（React 整树卸载）
@@ -320,8 +335,36 @@ export function ToolCallCard({ part }: Props) {
             <span className="codicon codicon-book" />
           </button>
         )}
-        <span className={`tool-card__badge tool-card__badge--${badge.cls}`}>{badge.text}</span>
-        {durMs != null && <span className="tool-card__dur">{formatToolDuration(durMs)}</span>}
+        {isBackground ? (
+          backgroundTask?.endedAt ? (
+            <>
+              <span className="tool-card__badge tool-card__badge--bg tool-card__badge--bg-done">
+                <span className="codicon codicon-check" />
+                {t('tool.backgroundCompleted')}
+              </span>
+              <span className="tool-card__dur tool-card__dur--bg">{formatToolDuration(backgroundTask.endedAt - backgroundTask.startedAt)}</span>
+            </>
+          ) : bgRunning ? (
+            <>
+              <span className="tool-card__badge tool-card__badge--bg">
+                <span className="codicon codicon-debug-alt" />
+                {t('tool.backgroundRunning')}
+              </span>
+              <span className="tool-card__dur tool-card__dur--bg">{formatToolDuration(bgElapsed - backgroundTask!.startedAt)}</span>
+            </>
+          ) : (
+            // 历史静态（无账本条目）：后台化确认已回 → 「后台完成」徽标，不计时
+            <span className="tool-card__badge tool-card__badge--bg tool-card__badge--bg-done">
+              <span className="codicon codicon-check" />
+              {t('tool.backgroundCompleted')}
+            </span>
+          )
+        ) : (
+          <>
+            <span className={`tool-card__badge tool-card__badge--${badge.cls}`}>{badge.text}</span>
+            {durMs != null && <span className="tool-card__dur">{formatToolDuration(durMs)}</span>}
+          </>
+        )}
         {expandable && <span className="tool-card__toggle">{expanded ? '▼' : '▶'}</span>}
       </div>
       {/* 子代理摘要行（Agent/Task）：实时工具数 + 状态，点击查看原始过程 */}
