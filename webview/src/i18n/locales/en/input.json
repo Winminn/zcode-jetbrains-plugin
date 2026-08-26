@@ -9,7 +9,8 @@
     "selectModel": "Select a model",
     "provider": "Provider: ",
     "model": "Model: ",
-    "contextWindow": "Context window: "
+    "contextWindow": "Context window: ",
+    "refresh": "Refresh model list"
   },
   "mode": {
     "title": "Permission mode",
@@ -57,6 +58,10 @@
     "previewAriaLabel": "Pasted content preview",
     "previewTitle": "Pasted content · {{count}} chars",
     "close": "Close"
+  },
+  "image": {
+    "remove": "Remove image",
+    "unsupported": "Current model may not support direct image input: images are saved in the conversation, and the AI is automatically guided to read them via tools"
   },
   "fileRef": {
     "lines": " (line {{lines}})",

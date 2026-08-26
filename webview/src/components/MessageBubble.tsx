@@ -19,7 +19,7 @@
 import { memo, useEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { useTranslation } from 'react-i18next'
-import type { ZCodeMessage, MessagePart, TextPart } from '@/types/messages'
+import type { ZCodeMessage, MessagePart, TextPart, ImagePart, FilePart } from '@/types/messages'
 import { MarkdownBlock } from './MarkdownBlock'
 import { ToolCallCard } from './ToolCallCard'
 import { ThinkingBlock } from './ThinkingBlock'
@@ -32,6 +32,7 @@ import { clockTime, formatDuration } from '@/utils/time'
 import { useTick } from '@/hooks/useTick'
 import { CompactionSummaryCard } from './CompactionSummaryCard'
 import { TimelineSeparator } from './TimelineSeparator'
+import { ImagePreview } from './ImagePreview'
 import '../styles/message-bubble.less'
 
 interface Props {
@@ -65,10 +66,58 @@ export const MessageBubble = memo(function MessageBubble({ message, streaming, a
     return <TimelineSeparator part={timelinePart} />
   }
   if (isUser) {
-    return <UserBubble text={collectUserText(parts)} time={time} anchorAttr={anchorAttr} searchActive={searchActive} />
+    return (
+      <UserBubble
+        text={collectUserText(parts)}
+        imageParts={collectImageParts(parts)}
+        time={time}
+        anchorAttr={anchorAttr}
+        searchActive={searchActive}
+      />
+    )
   }
   return <AssistantBubble message={message} time={time} streaming={streaming} />
 })
+
+/**
+ * user 消息的图片 part 收集：乐观消息（type:'image'）与服务端读回
+ * （type:'file' + mime image/*，2026-08-26 RPC 实测形态）两种形态统一收集。
+ */
+function collectImageParts(parts: MessagePart[]): Array<ImagePart | FilePart> {
+  return parts.filter((p): p is ImagePart | FilePart =>
+    p.type === 'image' || (p.type === 'file' && (p.mime ?? '').startsWith('image/')),
+  )
+}
+
+/** 图片 part → 可渲染 src：image 用 dataUrl/拼 base64；file 用 url（Java 已换成 http）*/
+function imagePartSrc(img: ImagePart | FilePart): string {
+  if (img.type === 'image') {
+    if (img.dataUrl) return img.dataUrl
+    if (img.dataBase64) return `data:${img.mediaType || 'image/png'};base64,${img.dataBase64}`
+    return ''
+  }
+  // file part：zcode-artifact://（Java 未转换/转换失败）不可渲染，返回空跳过
+  return img.url && /^https?:\/\//.test(img.url) ? img.url : ''
+}
+
+/** 图片 part 的展示标题（hover/大图预览）*/
+function imagePartTitle(img: ImagePart | FilePart): string | undefined {
+  if (img.type === 'image') return img.source?.filename ?? img.source?.placeholder
+  return img.filename ?? (img.metadata?.image as Record<string, unknown> | undefined)?.filename as string | undefined
+}
+
+/**
+ * 消息内图片（限宽圆角，点击大图预览）。user 气泡与 PartRenderer 共用。
+ */
+function MessageImage({ src, title }: { src: string; title?: string }) {
+  const [preview, setPreview] = useState(false)
+  return (
+    <>
+      <img className="msg__image" src={src} alt={title ?? ''} title={title} onClick={() => setPreview(true)} />
+      {preview && <ImagePreview src={src} title={title} onClose={() => setPreview(false)} />}
+    </>
+  )
+}
 
 /** 用户消息长文折叠阈值（对齐 InputBox 粘贴折叠 PASTE_* 常量：≥10 行或 ≥500 字符）*/
 const USER_COLLAPSE_LINES = 10
@@ -82,11 +131,13 @@ const USER_COLLAPSE_CHARS = 500
  */
 function UserBubble({
   text,
+  imageParts,
   time,
   anchorAttr,
   searchActive,
 }: {
   text: string
+  imageParts: Array<ImagePart | FilePart>
   time: string
   anchorAttr?: string
   searchActive?: boolean
@@ -97,12 +148,31 @@ function UserBubble({
   const collapsible = lines >= USER_COLLAPSE_LINES || text.length >= USER_COLLAPSE_CHARS
   // 搜索面板激活时强制展开：高亮 mark 与 scrollIntoView 定位需要全文可见
   const collapsed = collapsible && !searchActive
+  const hasImages = imageParts.length > 0
+  const images = useMemo(
+    () =>
+      imageParts
+        .map((img, i) => ({
+          src: imagePartSrc(img),
+          key: img.id ?? `${img.type}-${i}`,
+          title: imagePartTitle(img),
+        }))
+        .filter((x): x is { src: string; key: string; title: string | undefined } => !!x.src),
+    [imageParts],
+  )
 
   return (
     <div className="msg msg--user" data-anchor-msg={anchorAttr}>
       <div className="msg__time">{time}</div>
       <div className={`msg__bubble${collapsed ? ' msg__bubble--collapsed' : ''}`}>
-        {text || t('chat.message.emptyText')}
+        {hasImages && (
+          <div className="msg__images">
+            {images.map((img) => (
+              <MessageImage key={img.key} src={img.src} title={img.title} />
+            ))}
+          </div>
+        )}
+        {text ? text : hasImages ? null : t('chat.message.emptyText')}
         {collapsed && (
           <button type="button" className="msg__expand" onClick={() => setShowFull(true)}>
             <span className="codicon codicon-unfold" />
@@ -223,6 +293,15 @@ function PartRenderer({
   switch (part.type) {
     case 'text':
       return <MarkdownBlock markdown={part.text} streaming={streaming} />
+
+    case 'image':
+    case 'file': {
+      // file part：仅 image/* 是图片（Java 已把 url 换成 http；非图片/未转换返回 null）
+      if (part.type === 'file' && !(part.mime ?? '').startsWith('image/')) return null
+      const src = imagePartSrc(part)
+      if (!src) return null
+      return <MessageImage src={src} title={imagePartTitle(part)} />
+    }
 
     case 'reasoning':
       // 自动展开：思考还在进行中或刚结束还没正文。正文出现后自动折叠。

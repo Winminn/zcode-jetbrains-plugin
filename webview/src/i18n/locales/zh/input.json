@@ -9,7 +9,8 @@
     "selectModel": "请选择模型",
     "provider": "供应商：",
     "model": "模型：",
-    "contextWindow": "上下文窗口："
+    "contextWindow": "上下文窗口：",
+    "refresh": "刷新模型列表"
   },
   "mode": {
     "title": "权限模式",
@@ -57,6 +58,10 @@
     "previewAriaLabel": "粘贴内容预览",
     "previewTitle": "粘贴内容 · {{count}} 字",
     "close": "关闭"
+  },
+  "image": {
+    "remove": "移除图片",
+    "unsupported": "当前模型可能不支持图像直输：图片会保存在会话中，已自动引导 AI 通过工具读取查看"
   },
   "fileRef": {
     "lines": "（第 {{lines}} 行）",

@@ -14,6 +14,7 @@
     "personal": "Personal Plan",
     "trial": "Trial Plan"
   },
+  "vision": "Vision",
   "section": {
     "builtin": "Built-in Plans",
     "builtinHint": "Only one can be enabled at a time; enabling a plan disables the others",

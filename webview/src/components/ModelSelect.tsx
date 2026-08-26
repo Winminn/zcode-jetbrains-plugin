@@ -15,7 +15,7 @@ import { useStore } from '@/store/useStore'
 import { fmtTokens } from '@/utils/format'
 import type { ModelOption } from '@/types/messages'
 import { ModelIcon } from './ModelIcon'
-import { PlanBadge } from './PlanBadge'
+import { PlanBadge, VisionBadge } from './PlanBadge'
 
 interface Props {
   /** 当前会话模型（null 时回退到消息 footer 的 modelID）*/
@@ -29,6 +29,8 @@ export function ModelSelect({ currentModel, onSelect, disabled = false }: Props)
   const { t } = useTranslation()
   const models = useStore((s) => s.models)
   const messages = useStore((s) => s.messages)
+  const refreshModels = useStore((s) => s.refreshModels)
+  const modelsRefreshing = useStore((s) => s.modelsRefreshing)
   const [open, setOpen] = useState(false)
   const rootRef = useRef<HTMLDivElement>(null)
 
@@ -184,12 +186,24 @@ export function ModelSelect({ currentModel, onSelect, disabled = false }: Props)
                   <ModelIcon modelId={m.modelId} providerId={m.providerId} size={16} />
                   <div className="selector-dropdown-item-main">
                     <span className="selector-dropdown-item-name">{m.modelName}</span>
+                    {m.supportsImages && <VisionBadge />}
                     {isCurrent(m) && <span className="codicon codicon-check selector-dropdown-item-check" />}
                   </div>
                 </div>
               ))}
             </div>
           ))}
+
+          {/* 手动刷新：用户在 Zcode 客户端改了模型配置后无需切设置页即可拉新 */}
+          <div
+            className={`selector-dropdown-refresh ${modelsRefreshing ? 'is-refreshing' : ''}`}
+            onClick={() => {
+              if (!modelsRefreshing) refreshModels()
+            }}
+          >
+            <span className="codicon codicon-refresh" />
+            <span>{t('input.model.refresh')}</span>
+          </div>
         </div>
       )}
     </div>

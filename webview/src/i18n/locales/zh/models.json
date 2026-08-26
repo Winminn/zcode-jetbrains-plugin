@@ -14,6 +14,7 @@
     "personal": "个人套餐",
     "trial": "体验套餐"
   },
+  "vision": "视觉",
   "section": {
     "builtin": "内置套餐",
     "builtinHint": "同时只能启用一个，启用新套餐会自动停用其他内置套餐",

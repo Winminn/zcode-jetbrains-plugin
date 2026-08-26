@@ -31,12 +31,15 @@ import com.zcode.ideaplugin.ZCodeService
 import com.zcode.ideaplugin.ZCodeWebviewServer
 import com.zcode.ideaplugin.zCodeService
 import com.zcode.ideaplugin.protocol.Credentials
+import com.zcode.ideaplugin.protocol.ImageArtifactMapper
 import com.zcode.ideaplugin.protocol.ZCodeProtocolClient
 import com.zcode.ideaplugin.protocol.ZCodeProtocolException
 import com.zcode.ideaplugin.protocol.SessionStat
+import com.zcode.ideaplugin.protocol.model.AttachmentInput
 import com.zcode.ideaplugin.protocol.model.SessionInfo
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
@@ -47,6 +50,7 @@ import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.boolean
 import kotlinx.serialization.json.booleanOrNull
 import kotlinx.serialization.json.intOrNull
+import kotlinx.serialization.json.longOrNull
 import kotlinx.serialization.json.put
 import java.awt.BorderLayout
 import javax.swing.JComponent
@@ -628,6 +632,7 @@ if (!window.__ZCODE_LOG_HOOK__) {
                     val result = when (op) {
                         "listSessions" -> handleListSessions(msg)
                         "send" -> handleSend(msg)
+                        "getClipboardImage" -> handleGetClipboardImage(msg)
                         "messages" -> handleMessages(msg)
                         "subagents" -> handleSubagents(msg)
                         "subagentMessages" -> handleSubagentMessages(msg)
@@ -1667,6 +1672,11 @@ if (!window.__ZCODE_LOG_HOOK__) {
                 // limit.context / limit.output：模型真实上下文窗口与最大输出（config.json）
                 // 例：GLM-5.2 context=1000000 / GLM-5-Turbo context=204800
                 val limit = modelObj["limit"]?.jsonObject
+                // modalities.input 能力位（zcode.cjs supportsImages 判定源）：
+                // GLM 套餐仅 ["text"] → 粘贴图片会被服务端剥离成文字占位（模型看不到图），
+                // 前端据此在用户带图发送时提示（2026-08-26 实测定性）
+                val inputKinds = (modelObj["modalities"]?.jsonObject?.get("input") as? JsonArray)
+                    ?.mapNotNull { (it as? JsonPrimitive)?.contentOrNull } ?: emptyList()
                 buildJsonObject {
                     put("providerId", providerId)
                     put("providerName", providerName)
@@ -1675,6 +1685,7 @@ if (!window.__ZCODE_LOG_HOOK__) {
                     put("modelName", modelName)
                     limit?.get("context")?.jsonPrimitive?.content?.toLongOrNull()?.let { put("contextWindow", it) }
                     limit?.get("output")?.jsonPrimitive?.content?.toLongOrNull()?.let { put("maxOutput", it) }
+                    if ("image" in inputKinds) put("supportsImages", true)
                 }
             }
         }.flatten())
@@ -1725,9 +1736,13 @@ if (!window.__ZCODE_LOG_HOOK__) {
                 val modelObj = modelEl.jsonObject
                 val modelName = modelObj["name"]?.jsonPrimitive?.contentOrNull ?: modelId
                 val limit = modelObj["limit"]?.jsonObject
+                // modalities.input 能力位（与 handleListModels 同口径）：设置页展示「视觉」徽章
+                val inputKinds = (modelObj["modalities"]?.jsonObject?.get("input") as? JsonArray)
+                    ?.mapNotNull { (it as? JsonPrimitive)?.contentOrNull } ?: emptyList()
                 buildJsonObject {
                     put("modelId", modelId)
                     put("modelName", modelName)
+                    if ("image" in inputKinds) put("supportsImages", true)
                     limit?.get("context")?.jsonPrimitive?.contentOrNull?.toLongOrNull()?.let { put("contextWindow", it) }
                     limit?.get("output")?.jsonPrimitive?.contentOrNull?.toLongOrNull()?.let { put("maxOutput", it) }
                 }
@@ -2231,11 +2246,13 @@ if (!window.__ZCODE_LOG_HOOK__) {
         // 避免恢复链路静默切回默认 provider（个人套餐）；缺省时协议端走原有默认路径
         val providerId = msg["providerId"]?.jsonPrimitive?.content
         val modelId = msg["modelId"]?.jsonPrimitive?.content
+        // 粘贴图片附件（InputBox 压缩后的 base64 内联形态），协议通道原生透传
+        val attachments = parseAttachments(msg["attachments"])
 
         val client = project.zCodeService().getClient()
 
         val accepted = try {
-            client.send(sessionId, text, workspacePath, providerId = providerId, modelId = modelId)
+            client.send(sessionId, text, workspacePath, providerId = providerId, modelId = modelId, attachments = attachments)
         } catch (e: ZCodeProtocolException) {
             // 冷会话 send：CLI 升级/重启后的新进程里会话未激活（-32004 Session is not
             // active）。与 resumeAndReadMessages 同一模式——先 resume 激活再重试一次，
@@ -2273,7 +2290,7 @@ if (!window.__ZCODE_LOG_HOOK__) {
                     runCatching { client.subscribe(sessionId, onEvent = null) }
                         .onSuccess { subscribedSessions.add(sessionId) }
                 }
-                client.send(sessionId, text, workspacePath, providerId = providerId, modelId = modelId)
+                client.send(sessionId, text, workspacePath, providerId = providerId, modelId = modelId, attachments = attachments)
             } catch (e2: Exception) {
                 log.error("send failed (still failing after recovery retry)", e2)
                 return errorResponse("发送失败: ${e2.message}")
@@ -2285,6 +2302,70 @@ if (!window.__ZCODE_LOG_HOOK__) {
             put("sessionId", sessionId)
             put("accepted", "true")
             accepted["cliResponse"]?.let { put("cliResponse", it) }
+        }
+    }
+
+    /**
+     * op:send 的 attachments 数组（webview InputBox 压缩后的图片附件）→ AttachmentInput 列表。
+     * 非数组 / 空 / 字段缺失均 fail-soft 返回 null（按无附件发送，不阻断消息）。
+     */
+    private fun parseAttachments(el: JsonElement?): List<AttachmentInput>? {
+        val arr = el as? JsonArray ?: return null
+        val list = arr.mapNotNull { item ->
+            val o = item as? JsonObject ?: return@mapNotNull null
+            val dataBase64 = o["dataBase64"]?.jsonPrimitive?.content ?: return@mapNotNull null
+            AttachmentInput(
+                kind = "image",
+                filename = o["filename"]?.jsonPrimitive?.content ?: "image.png",
+                mimeType = o["mimeType"]?.jsonPrimitive?.content ?: "image/png",
+                sizeBytes = o["sizeBytes"]?.jsonPrimitive?.longOrNull,
+                dataBase64 = dataBase64,
+            )
+        }
+        return list.ifEmpty { null }
+    }
+
+    /**
+     * JCEF 剪贴板图片兜底（InputBox.onPaste 无 image 项且无文本时请求）：
+     * 读 AWT 系统剪贴板 DataFlavor.imageFlavor → PNG base64 返回。无图/异常返回
+     * 空对象（前端拿到空 base64 静默忽略，无副作用）。
+     * 剪贴板访问必须在 EDT（本 handler 跑 pooled 线程），PNG 编码留在 pooled 线程。
+     */
+    private fun handleGetClipboardImage(msg: JsonObject): JsonObject {
+        fun empty(): JsonObject = buildJsonObject {
+            put("op", "clipboardImage")
+            put("requestId", msg["requestId"]?.jsonPrimitive?.content ?: "")
+        }
+        var image: java.awt.image.BufferedImage? = null
+        var clipErr: String? = null
+        ApplicationManager.getApplication().invokeAndWait {
+            try {
+                image = java.awt.Toolkit.getDefaultToolkit()
+                    .systemClipboard.getData(java.awt.datatransfer.DataFlavor.imageFlavor)
+                    as? java.awt.image.BufferedImage
+            } catch (e: Exception) {
+                clipErr = e.message
+            }
+        }
+        if (image == null) {
+            // 剪贴板无图片内容是常态（FlavorUnsupported/IllegalState），不打错误级
+            log.info("clipboard image unavailable${clipErr?.let { ": $it" } ?: ""}")
+            return empty()
+        }
+        return try {
+            val baos = java.io.ByteArrayOutputStream()
+            javax.imageio.ImageIO.write(image, "png", baos)
+            val b64 = java.util.Base64.getEncoder().encodeToString(baos.toByteArray())
+            log.info("clipboard image captured: ${b64.length} base64 chars")
+            buildJsonObject {
+                put("op", "clipboardImage")
+                put("requestId", msg["requestId"]?.jsonPrimitive?.content ?: "")
+                put("base64", b64)
+                put("mediaType", "image/png")
+            }
+        } catch (e: Exception) {
+            log.warn("clipboard image encode failed: ${e.message}")
+            empty()
         }
     }
 
@@ -2323,7 +2404,15 @@ if (!window.__ZCODE_LOG_HOOK__) {
         } catch (e: Exception) {
             log.info("resume failed (may already be active): ${e.message}")
         }
-        return client.messages(sessionId)
+        val messages = client.messages(sessionId)
+        // 用户图片 part 读回适配：type:"file" + zcode-artifact:// uri → 内置 server
+        // 的 /zcode-image/ URL（<img> 可加载）。fail-soft，见 ImageArtifactMapper
+        return ImageArtifactMapper.mapMessages(messages) { sid, fileName ->
+            if (!ImageArtifactMapper.cacheFileExists(ZCodeWebviewServer.imageCacheRoot, sid, fileName)) {
+                return@mapMessages null
+            }
+            ZCodeWebviewServer.imageUrl(sid, fileName)
+        }
     }
 
     /**

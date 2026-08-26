@@ -604,10 +604,14 @@ class ZCodeProtocolClient private constructor(
         timeoutMs: Long = 10000,
         providerId: String? = null,
         modelId: String? = null,
+        attachments: List<AttachmentInput>? = null,
     ): JsonObject {
         val params = buildJsonObject {
             put("sessionId", sessionId)
             put("content", content)
+            if (!attachments.isNullOrEmpty()) {
+                put("attachments", buildAttachmentsJson(attachments))
+            }
         }
         var r = request("session/send", params, timeoutMs)
         if (r["error"] != null) {
@@ -630,6 +634,9 @@ class ZCodeProtocolClient private constructor(
                         put("sessionId", sessionId)
                         put("content", content)
                         put("runtimeModel", runtimeModel)
+                        if (!attachments.isNullOrEmpty()) {
+                            put("attachments", buildAttachmentsJson(attachments))
+                        }
                     }
                     // -32031 是拒绝响应（prompt 未启动），重发不会重复用户消息；
                     // 此处超时/异常直接上抛——回合可能已在跑，再落 CLI 兜底会重复发送
@@ -642,13 +649,32 @@ class ZCodeProtocolClient private constructor(
                 } else {
                     println("[ZCodeProtocolClient] cannot build runtimeModel (no enabled anthropic provider in config.json)")
                 }
-                // 最后兜底：CLI --resume 走另一条干净代码路径（有回复但无流式）
-                println("[ZCodeProtocolClient] falling back to CLI --resume")
-                return sendViaCliResume(sessionId, content, workspacePath)
+                // 最后兜底：CLI --resume 走另一条干净代码路径（有回复但无流式）。
+                // 带附件时跳过该兜底——CLI -p 不支持附件，硬走会静默丢图（边缘路径：-32031
+                // 且带图概率极低，宁可显式报错让用户重试）
+                if (attachments.isNullOrEmpty()) {
+                    println("[ZCodeProtocolClient] falling back to CLI --resume")
+                    return sendViaCliResume(sessionId, content, workspacePath)
+                }
+                throw ZCodeProtocolException("带图片的消息无法走 CLI 恢复兜底（-32031 且 attachments 非空），请重试")
             }
             throw ZCodeProtocolException.fromError(r["error"]!!)
         }
         return r["result"]?.jsonObject ?: JsonObject(emptyMap())
+    }
+
+    /** attachments → session/send 请求体（协议通道原生形态 {kind,filename,mimeType,sizeBytes,dataBase64}）*/
+    private fun buildAttachmentsJson(attachments: List<AttachmentInput>): JsonArray = buildJsonArray {
+        attachments.forEach { a ->
+            add(buildJsonObject {
+                put("kind", a.kind)
+                put("filename", a.filename)
+                put("mimeType", a.mimeType)
+                a.sizeBytes?.let { put("sizeBytes", it) }
+                a.dataBase64?.let { put("dataBase64", it) }
+                a.localPath?.let { put("localPath", it) }
+            })
+        }
     }
 
     /**

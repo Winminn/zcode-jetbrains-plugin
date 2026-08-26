@@ -206,7 +206,7 @@ export default function App() {
           />
           <StatusPanel />
           <InputBox
-            onSend={(text) => sendMessage(text)}
+            onSend={(text, _filePaths, attachments) => sendMessage(text, attachments)}
             isStreaming={streaming}
             onStop={stopStreaming}
             currentModel={currentModel}

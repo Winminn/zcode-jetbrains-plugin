@@ -3,6 +3,7 @@ package com.zcode.ideaplugin
 import com.intellij.openapi.diagnostic.Logger
 import com.sun.net.httpserver.HttpExchange
 import com.sun.net.httpserver.HttpServer
+import java.io.File
 import java.net.InetSocketAddress
 import java.net.URLDecoder
 import java.util.concurrent.Executors
@@ -71,6 +72,12 @@ object ZCodeWebviewServer {
                 respond(exchange, 403, "forbidden".toByteArray(), "text/plain; charset=utf-8")
                 return
             }
+            // 用户消息图片（image-cache 落盘文件，zcode-artifact:// 的可渲染出口，
+            // 见 ImageArtifactMapper）：/zcode-image/<sessionId>/image-<hash>.<ext>
+            if (decoded.startsWith("/zcode-image/")) {
+                serveImageCache(exchange, decoded.removePrefix("/zcode-image/"))
+                return
+            }
             val rel = decoded.removePrefix("/").ifEmpty { "index.html" }
             val bytes = javaClass.getResourceAsStream("/webview/$rel")?.use { it.readBytes() }
             if (bytes == null) {
@@ -83,6 +90,41 @@ object ZCodeWebviewServer {
         } finally {
             exchange.close()
         }
+    }
+
+    /** image-cache 根目录（zcode.cjs 的 cliStorageRoot 下，见 vOt/imageCacheRootDir）*/
+    internal val imageCacheRoot: File
+        get() = File(File(System.getProperty("user.home"), ".zcode"), "cli/image-cache")
+
+    /** sessionId 目录名白名单（zcode.cjs sj 净化规则：非 [a-zA-Z0-9._-] 替换 _、截 120）*/
+    private val sidPattern = Regex("""^[A-Za-z0-9._-]{1,120}$""")
+
+    /** 落盘文件名白名单（image-<sha256(uri) 前 32 hex>.<ext>）*/
+    private val imageFilePattern = Regex("""^image-[0-9a-f]{32}\.(png|jpg|jpeg|gif|webp)$""")
+
+    /**
+     * 用户消息图片的可渲染 URL（ImageArtifactMapper 调用）：把 image-cache 落盘文件
+     * 映射为内置 server 的 /zcode-image/ 端点。server 起不来返回 null（调用方保持
+     * 原样 fail-soft）。<img> 标签不受 CORS 限制，singlefile/data: origin 也能加载。
+     */
+    fun imageUrl(sessionId: String, fileName: String): String? {
+        if (!sidPattern.matches(sessionId) || !imageFilePattern.matches(fileName)) return null
+        val base = baseUrl() ?: return null
+        return "$base/zcode-image/$sessionId/$fileName"
+    }
+
+    private fun serveImageCache(exchange: HttpExchange, rel: String) {
+        val segs = rel.trim('/').split('/')
+        if (segs.size != 2 || !sidPattern.matches(segs[0]) || !imageFilePattern.matches(segs[1])) {
+            respond(exchange, 404, "not found".toByteArray(), "text/plain; charset=utf-8")
+            return
+        }
+        val f = File(File(imageCacheRoot, segs[0]), segs[1])
+        if (!f.isFile) {
+            respond(exchange, 404, "not found".toByteArray(), "text/plain; charset=utf-8")
+            return
+        }
+        respond(exchange, 200, f.readBytes(), mimeOf(f.name))
     }
 
     private fun respond(exchange: HttpExchange, code: Int, bytes: ByteArray, mime: String) {
@@ -101,6 +143,7 @@ object ZCodeWebviewServer {
         "png" -> "image/png"
         "jpg", "jpeg" -> "image/jpeg"
         "gif" -> "image/gif"
+        "webp" -> "image/webp"
         "ico" -> "image/x-icon"
         "woff" -> "font/woff"
         "woff2" -> "font/woff2"

@@ -14,7 +14,7 @@
 
 import { create } from 'zustand'
 import { onMessage, onStreamEvent, onStreamBatch, sendToJava, initBridge, isInJcef, getWorkspacePath, getInitialSessionId } from '@/ipc/bridge'
-import type { JavaResponse, SessionInfo, ZCodeMessage, StreamEvent, ModelOption, ModelManageProvider, TodoItem, AgentItem, FileChangeItem, QuotaData, ModelUsageData, ToolUsageData, UsageRange, ContextBreakdownItem, ThoughtLevelInfo, SubagentActivity, SubagentInfo, ToolUpdatedPayload, MemoryFileInfo, SkillInfo, McpServerInfo, McpToolsState, McpLogEntry, EnvStatus, BrowserClearedSite, BrowserDataOverview, AgentDef, AgentDefInput } from '@/types/messages'
+import type { JavaResponse, SessionInfo, ZCodeMessage, StreamEvent, ModelOption, ModelManageProvider, TodoItem, AgentItem, FileChangeItem, QuotaData, ModelUsageData, ToolUsageData, UsageRange, ContextBreakdownItem, ThoughtLevelInfo, SubagentActivity, SubagentInfo, ToolUpdatedPayload, MemoryFileInfo, SkillInfo, McpServerInfo, McpToolsState, McpLogEntry, EnvStatus, BrowserClearedSite, BrowserDataOverview, AgentDef, AgentDefInput, ImageAttachmentInput } from '@/types/messages'
 import { applyStreamEvent, isSubagentToolEvent, applySubagentToolEvent, markActivityOutcome, finalizeActivitiesFromNotifications, asSubagentLifecycle, looksLikeQuotaError } from '@/utils/streamReducer'
 import type { TurnErrorInfo, SubagentLifecyclePayload } from '@/utils/streamReducer'
 import i18n from '@/i18n/config'
@@ -104,6 +104,8 @@ function tryRunDeferredCompactFlush(sessionId: string): void {
 export interface QueuedMessage {
   id: string
   text: string
+  /** 图片附件（随消息透传 session/send attachments）*/
+  attachments?: ImageAttachmentInput[]
   queuedAt: number
 }
 
@@ -136,6 +138,8 @@ interface StoreState {
   creatingSession: boolean
   /** 懒创建暂存的首条消息：无会话时发送 → 先建会话，createSession 响应后自动发出 */
   pendingFirstMessage: string | null
+  /** 懒创建暂存的首条消息的图片附件（与 pendingFirstMessage 同生命周期）*/
+  pendingFirstAttachments: ImageAttachmentInput[] | null
   /** 已归档会话（回收站视图，独立于 sessions；用户进入「已归档」tab 时拉取）*/
   archivedSessions: SessionInfo[]
   /** 已归档列表加载中（tab 切换/归档后刷新的 loading 态）*/
@@ -219,6 +223,10 @@ interface StoreState {
   prePlanMode: string | null
   /** 已为该会话下发过 setThoughtLevel（applyThoughtLevelIfReady 防重入）*/
   thoughtLevelAppliedForSession: string | null
+  /** setModel 已发出、modelSet 未回的时间戳（期间到达的 settings 级别部分计算于旧模型，不可信；超时视为不在途）*/
+  modelSwitchInFlightAt: number | null
+  /** createSession 级别补发被推迟暂存的级别（等 modelSet 落定后按新模型下发，防 -32603 竞态）*/
+  pendingThoughtLevel: string | null
 
   // 上下文用量（session/read → runtime.contextUsage）
   /** hitRate = null 表示本 turn 暂无缓存统计（新 turn 开始、首次模型调用完成前），显示"—"*/
@@ -320,7 +328,7 @@ interface StoreState {
   init: () => void
   loadSessions: () => void
   selectSession: (session: SessionInfo) => void
-  sendMessage: (text: string) => void
+  sendMessage: (text: string, attachments?: ImageAttachmentInput[]) => void
   createSession: () => void
   /** 「新建会话」按钮：重置为无会话待命态（延迟创建），首条消息触发建会话 */
   resetToNewSession: () => void
@@ -336,6 +344,10 @@ interface StoreState {
   renameSession: (sessionId: string, title: string) => void
   /** 拉取可切换的模型列表（config.json）*/
   loadModels: () => void
+  /** 手动刷新模型清单（下拉刷新按钮）：置 modelsRefreshing，响应后复位 */
+  refreshModels: () => void
+  /** 模型清单手动刷新进行中（下拉刷新按钮转圈标记）*/
+  modelsRefreshing: boolean
   /** 切换当前会话模型（session/setModel）*/
   setModel: (modelId: string, providerId: string) => void
   /** 把 persist 记忆的模型下发给指定会话（models 列表已就绪时才生效）*/
@@ -470,6 +482,7 @@ export const useStore = create<StoreState>((set, get) => ({
   currentWorkspacePath: '',
   creatingSession: false,
   pendingFirstMessage: null,
+  pendingFirstAttachments: null,
   archivedSessions: [],
   archivedLoading: false,
 
@@ -504,6 +517,7 @@ export const useStore = create<StoreState>((set, get) => ({
   askUserPendingActive: false,
 
   models: [],
+  modelsRefreshing: false,
   currentModel: null,
   modelInvalidated: false,
   modelAppliedForSession: null,
@@ -511,6 +525,8 @@ export const useStore = create<StoreState>((set, get) => ({
   currentMode: null,
   prePlanMode: null,
   thoughtLevelAppliedForSession: null,
+  modelSwitchInFlightAt: null,
+  pendingThoughtLevel: null,
   contextUsage: null,
   contextBreakdown: null,
   quota: null,
@@ -689,6 +705,9 @@ export const useStore = create<StoreState>((set, get) => ({
       childSessionKeys: {}, // 子会话注册与实时归约数据同样绑定会话
       childLiveMessages: {},
       childStreamingIds: {},
+      // 模型切换在途标记与推迟的级别补发绑定旧会话流程，切会话作废
+      modelSwitchInFlightAt: null,
+      pendingThoughtLevel: null,
     })
     // 切换会话时订阅事件流（带 workspacePath，Java 端 subscribe 前要先 resume 激活会话）
     sendToJava({ op: 'subscribe', sessionId: session.sessionId, workspacePath })
@@ -703,8 +722,8 @@ export const useStore = create<StoreState>((set, get) => ({
     get().applyModelIfReady(session.sessionId)
   },
 
-  sendMessage: (text) => {
-    if (!text.trim()) return
+  sendMessage: (text, attachments?) => {
+    if (!text.trim() && !attachments?.length) return
     const sid = get().currentSessionId
     // 懒创建：无会话（新标签 / 会话被删）时首条消息先触发建会话，createSession 响应后
     // 自动发出暂存消息。先置 streaming 让等待动画立即出现；等待期的后续消息因
@@ -717,6 +736,7 @@ export const useStore = create<StoreState>((set, get) => ({
         waitingSince: Date.now(),
         lastError: null,
         pendingFirstMessage: text,
+        pendingFirstAttachments: attachments ?? null,
       })
       // creatingSession 由 createSession 内部置位（其防重入守卫据此拦截重复请求）
       get().createSession()
@@ -730,6 +750,7 @@ export const useStore = create<StoreState>((set, get) => ({
           {
             id: `queue_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
             text,
+            ...(attachments?.length ? { attachments } : {}),
             queuedAt: Date.now(),
           },
         ],
@@ -765,9 +786,11 @@ export const useStore = create<StoreState>((set, get) => ({
       text,
       workspacePath: get().currentWorkspacePath,
       ...(cm ? { providerId: cm.providerId, modelId: cm.modelId } : {}),
+      ...(attachments?.length ? { attachments } : {}),
     })
 
-    // 本地把用户消息立即加入列表（不等 reload，体验更快）
+    // 本地把用户消息立即加入列表（不等 reload，体验更快）；
+    // 图片附件同时以 image part 乐观展示（dataUrl 直连渲染）
     const userMsg: ZCodeMessage = {
       info: {
         role: 'user',
@@ -775,7 +798,16 @@ export const useStore = create<StoreState>((set, get) => ({
         id: `local_u_${Date.now()}`,
         sessionID: sid,
       },
-      parts: [{ type: 'text', text }],
+      parts: [
+        ...(attachments ?? []).map((a) => ({
+          type: 'image' as const,
+          mediaType: a.mimeType,
+          dataUrl: `data:${a.mimeType};base64,${a.dataBase64}`,
+          dataBase64: a.dataBase64,
+          source: { kind: 'inline' as const, filename: a.filename },
+        })),
+        { type: 'text', text },
+      ],
     }
     set((s) => ({ messages: [...s.messages, userMsg] }))
 
@@ -856,6 +888,7 @@ export const useStore = create<StoreState>((set, get) => ({
       currentSessionId: null,
       creatingSession: false,
       pendingFirstMessage: null,
+      pendingFirstAttachments: null,
       messages: [],
       loadingMessages: false,
       streaming: false,
@@ -928,7 +961,7 @@ export const useStore = create<StoreState>((set, get) => ({
       get().stopStreaming()
     } else {
       set({ queuedMessages: q.filter((m) => m.id !== id) })
-      get().sendMessage(target.text)
+      get().sendMessage(target.text, target.attachments)
     }
   },
 
@@ -936,7 +969,7 @@ export const useStore = create<StoreState>((set, get) => ({
     if (get().streaming || get().queuedMessages.length === 0) return
     const [next, ...rest] = get().queuedMessages
     set({ queuedMessages: rest })
-    get().sendMessage(next.text)
+    get().sendMessage(next.text, next.attachments)
   },
 
   renameSession: (sessionId, title) => {
@@ -951,6 +984,17 @@ export const useStore = create<StoreState>((set, get) => ({
     sendToJava({ op: 'listModels' })
   },
 
+  /**
+   * 手动刷新模型清单（模型下拉的刷新按钮）：用户在 Zcode 客户端改了 config.json
+   * 后无需切到设置页即可拉新。置 modelsRefreshing 转圈，case 'models' 响应复位
+   * （Kotlin 各失败路径也回 models 响应，不会悬挂）。
+   */
+  refreshModels: () => {
+    if (get().modelsRefreshing) return
+    set({ modelsRefreshing: true })
+    get().loadModels()
+  },
+
   setModel: (modelId, providerId) => {
     // 记忆当前选择（persist 通道），切换会话后仍显示；无会话（懒创建待命态）也先记忆，
     // 会话建立后由 applyModelIfReady 真正下发（见 createSession 响应处理）
@@ -960,6 +1004,8 @@ export const useStore = create<StoreState>((set, get) => ({
     get().hydrateThoughtLevelStandby()
     const sid = get().currentSessionId
     if (!sid) return
+    // 标记切换在途：期间到达的 settings 级别部分计算于旧模型（modelSet 响应时清除）
+    set({ modelSwitchInFlightAt: Date.now() })
     sendToJava({ op: 'setModel', sessionId: sid, modelId, providerId })
   },
 
@@ -978,6 +1024,8 @@ export const useStore = create<StoreState>((set, get) => ({
     const exists = models.some((m) => m.modelId === saved!.modelId && m.providerId === saved!.providerId)
     if (!exists) return
     set({ currentModel: saved, modelAppliedForSession: sessionId })
+    // 标记切换在途：期间到达的 settings 级别部分计算于旧模型（modelSet 响应时清除）
+    set({ modelSwitchInFlightAt: Date.now() })
     sendToJava({ op: 'setModel', sessionId, modelId: saved.modelId, providerId: saved.providerId })
   },
 
@@ -1512,6 +1560,11 @@ function writeThoughtLevelCache(modelId: string | null | undefined, info: Though
   }))
 }
 
+/** 模型切换是否在途（setModel 已发出、modelSet 未回；5s 未回视为切换失败已过期）*/
+function isModelSwitchInFlight(state: { modelSwitchInFlightAt: number | null }): boolean {
+  return state.modelSwitchInFlightAt != null && Date.now() - state.modelSwitchInFlightAt < 5000
+}
+
 /**
  * 从 messages 重新解析状态面板数据（todos/agents/fileChanges），返回 store patch。
  * agents 三源合并：parseAgents（兜底）+ 实时聚合活动 + session/subagents RPC（权威）。
@@ -1616,6 +1669,7 @@ function handleResponse(
       // 懒创建暂存的首条消息须在下方 set 清空前取出
       const sid = msg.sessionId
       const pendingFirst = get().pendingFirstMessage
+      const pendingFirstAttachments = get().pendingFirstAttachments
       // 待命态预选值（currentMode/thoughtLevel 无会话时的本地记录），下方 set 复位前捕获
       const preselectedMode = get().currentMode
       const standbyThought = get().thoughtLevel
@@ -1626,6 +1680,7 @@ function handleResponse(
           currentWorkspacePath: ws,
           creatingSession: false,
           pendingFirstMessage: null,
+          pendingFirstAttachments: null,
           messages: [],
           loadingMessages: false,
           streaming: false,
@@ -1640,6 +1695,10 @@ function handleResponse(
           // 服务端权威值由下方 loadSettings → settings 响应校准
           thoughtLevel: standbyThought,
           currentMode: preselectedMode,
+          // 上一次会话流程的切换在途标记/推迟级别不跨会话（本块先于 applyModelIfReady，
+          // 其发送 setModel 时会重新置位）
+          modelSwitchInFlightAt: null,
+          pendingThoughtLevel: null,
           todos: [], // 派生状态同步清零：新会话不发 messages 请求，不重算会一直残留旧会话底部栏数据
           agents: [],
           fileChanges: [],
@@ -1682,8 +1741,18 @@ function handleResponse(
         const savedLevel = getPersisted('zcode.thoughtLevel')
         const info = standbyThought ?? readThoughtLevelCache(get().currentModel?.modelId)
         if (savedLevel && info?.enabled && info.available.some((a) => a.value === savedLevel)) {
-          set({ thoughtLevelAppliedForSession: sid, thoughtLevel: { ...info, current: savedLevel } })
-          sendToJava({ op: 'setThoughtLevel', sessionId: sid, thoughtLevel: savedLevel })
+          set({ thoughtLevel: { ...info, current: savedLevel } })
+          if (isModelSwitchInFlight(get())) {
+            // 上方 applyModelIfReady 刚发出 setModel：级别须推迟到切换落定后、由权威
+            // settings 响应校验再下发（modelSet 后 500ms 的 loadSettings 走 settings 处理器）。
+            // 不能按本地缓存校验直发——切换前缓存可能已被污染（旧会话切换时写入），会放行
+            // 对新模型非法的值（-32603，缺陷AA第二形态）；也不置 appliedForSession（留着给
+            // 权威路径使用）。暂存标记让 settings 处理器届时重置门控重新校验
+            set({ pendingThoughtLevel: savedLevel })
+          } else {
+            set({ thoughtLevelAppliedForSession: sid })
+            sendToJava({ op: 'setThoughtLevel', sessionId: sid, thoughtLevel: savedLevel })
+          }
         }
         // 拉取上下文用量（圆环显示）
         get().loadUsage()
@@ -1691,10 +1760,10 @@ function handleResponse(
         get().loadSettings()
         // 懒创建收尾：发出暂存的首条消息。须在 set 之后——set 复位了 streaming，
         // sendMessage 会重新置位并走完整的 subscribe+send+乐观消息流程
-        if (pendingFirst) get().sendMessage(pendingFirst)
+        if (pendingFirst) get().sendMessage(pendingFirst, pendingFirstAttachments ?? undefined)
       } else {
         // 异常响应（无 sessionId）：复位标志与暂存，防卡死
-        set({ creatingSession: false, pendingFirstMessage: null })
+        set({ creatingSession: false, pendingFirstMessage: null, pendingFirstAttachments: null })
       }
       get().loadSessions()
       break
@@ -1707,10 +1776,11 @@ function handleResponse(
       set({
         sessions: cur.sessions.filter((x) => x.sessionId !== msg.sessionId),
         ...(deletedCurrent
-          ? {
-            currentSessionId: null, messages: [], streaming: false, streamingMessageId: null, waitingSince: null, compacting: false, backgroundTasks: {},
-            queuedMessages: [],
-            contextUsage: null, contextBreakdown: null, thoughtLevel: null, currentMode: null,
+              ? {
+                currentSessionId: null, messages: [], streaming: false, streamingMessageId: null, waitingSince: null, compacting: false, backgroundTasks: {},
+                queuedMessages: [],
+                contextUsage: null, contextBreakdown: null, thoughtLevel: null, currentMode: null,
+                modelSwitchInFlightAt: null, pendingThoughtLevel: null,
             todos: [], agents: [], fileChanges: [], // 底部栏派生状态随会话删除清零
             subagentActivities: [], subagents: [], subagentDetail: null, childMessages: {},
             childMessagesError: null,
@@ -1939,7 +2009,7 @@ function handleResponse(
         modelTogglingId: null,
         // 浏览器设置请求失败（如插件未安装）：页面内联提示（browserBusy 在途时才归属该页）
         ...(get().browserBusy ? { browserBusy: null, browserError: msg.message } : {}),
-        ...(get().creatingSession ? { creatingSession: false, pendingFirstMessage: null } : {}),
+        ...(get().creatingSession ? { creatingSession: false, pendingFirstMessage: null, pendingFirstAttachments: null } : {}),
       })
       console.error('[store] Java 错误:', msg.message)
       // 错误清 streaming 后继续发队列下一条（排队意图明确；持续失败时用户可删队列项）；
@@ -1984,7 +2054,8 @@ function handleResponse(
       break
 
     case 'models':
-      set({ models: msg.models })
+      // modelsRefreshing 与 models 同帧复位（手动刷新的转圈标记，见 refreshModels）
+      set({ models: msg.models, modelsRefreshing: false })
       // 模型清单变更后（设置页禁用 provider / Zcode 侧增删模型），已选模型若已不在
       // 列表 → 取消选择，下拉回占位提示让用户重新选；persist 记忆一并清除（防下次水合复活）。
       // modelInvalidated 同时置位：挡住下方 inferCurrentModel——它按消息 footer 的模型名
@@ -1993,7 +2064,36 @@ function handleResponse(
         const cur = get().currentModel
         if (cur && !msg.models.some((m) => m.modelId === cur.modelId && m.providerId === cur.providerId)) {
           removePersisted('zcode.currentModel')
-          set({ currentModel: null, modelInvalidated: true })
+          // 兜底选中而非清空等重选：assistant 消息 info 的 providerID/modelID 是服务端
+          // 权威（Zcode 侧禁用 qwen 后服务端回退 GLM，新一轮回复的 info 即真实在用
+          // 模型）——推断得出且仍在列表则直接选上（下拉有勾选），推不出才保持空占位。
+          // persist 不写回：兜底是运行态显示，用户主动选择才记忆。
+          const inferred = inferCurrentModel(get().messages, msg.models)
+          const valid = inferred &&
+              msg.models.some((m) => m.modelId === inferred.modelId && m.providerId === inferred.providerId)
+            ? inferred
+            : null
+          // 思考深度联动失效：级别集按模型而异（off/high/max ↔ enabled/off），旧模型的
+          // info 残留会让选择器在兜底模型上展示/下发非法级别（-32603）。清掉后待命态走
+          // 下方 hydrateThoughtLevelStandby、有会话由 setModel 切换落定后的 settings
+          // 权威重建。zcode.thoughtLevel 记忆值保留（applyThoughtLevelIfReady 有"不在
+          // available 不下发"守卫，切回支持的模型可恢复）
+          set({ currentModel: valid, modelInvalidated: true, thoughtLevel: null, thoughtLevelAppliedForSession: null })
+          // 有会话时补齐显式切换（同用户手动重选的完整链路）：服务端会话的 settings
+          // （含思考级别集）仍计算于旧模型——Zcode 侧禁用只回退运行时模型、配置未切，
+          // 此时补拉 settings 会把旧模型档位（如 qwen 的思考/不思考）写进显示并污染
+          // 按模型缓存（实测踩坑）。必须下发 setModel：modelSet 落定后 500ms 的
+          // loadSettings 才返回新模型的权威级别集
+          const sid = get().currentSessionId
+          if (valid && sid) {
+            set({ modelSwitchInFlightAt: Date.now() })
+            sendToJava({
+              op: 'setModel',
+              sessionId: sid,
+              modelId: valid.modelId,
+              providerId: valid.providerId,
+            })
+          }
         }
       }
       // 恢复记忆的模型选择（如仍在列表里）
@@ -2022,22 +2122,40 @@ function handleResponse(
       break
 
     case 'modelSet':
-      set({ currentModel: { modelId: msg.modelId, providerId: msg.providerId }, modelInvalidated: false })
+      set({
+        currentModel: { modelId: msg.modelId, providerId: msg.providerId },
+        modelInvalidated: false,
+        modelSwitchInFlightAt: null, // 切换已落定，新到达的 settings 可信
+      })
       // 切换模型后立即刷新用量，圆环 size 随新模型窗口更新（不用等下次对话结束）
       setTimeout(() => get().loadUsage(), 500)
-      // 级别集随模型变化（off/high/max ↔ enabled/off），重拉 settings（current 由服务端校准）
+      // 级别集随模型变化（off/high/max ↔ enabled/off），重拉 settings（current 由服务端校准）；
+      // 该响应还会消费下方暂存的级别（权威校验，见 case 'settings'）
       setTimeout(() => get().loadSettings(), 500)
       break
 
     case 'settings': {
       // 过期的 settings 响应（切会话竞态）直接丢弃
       if (msg.sessionId !== get().currentSessionId) break
+      // 模型切换在途：本响应计算于旧模型，级别部分不可信——写入会把旧级别集污染进
+      // 新模型的缓存、applyThoughtLevelIfReady 会发出对新模型非法的级别（-32603）。
+      // mode 与模型无关照常同步；级别真相由 modelSet 后延迟 500ms 的 loadSettings 提供
+      if (isModelSwitchInFlight(get())) {
+        set({ currentMode: msg.mode?.current ?? null })
+        break
+      }
       set({
         currentMode: msg.mode?.current ?? null,
         thoughtLevel: msg.thoughtLevel,
       })
       // 按当前模型缓存级别集（待命态/懒创建首问前的显示与校验用）
       writeThoughtLevelCache(get().currentModel?.modelId, msg.thoughtLevel)
+      // 竞态推迟过的级别：本响应是切换落定后的权威级别集（也顺带治愈切换前被旧响应
+      // 污染的按模型缓存），重置 applied 门控重新走权威校验——合法才下发，非法静默
+      // 跳过（如 qwen 上选的 enabled 切回 GLM；竞态修复前的污染缓存曾放行非法值致 -32603）
+      if (get().pendingThoughtLevel) {
+        set({ pendingThoughtLevel: null, thoughtLevelAppliedForSession: null })
+      }
       // 设置就绪：把记忆的思考级别下发给该会话（available 已知，仿 applyModelIfReady 门控）
       get().applyThoughtLevelIfReady(msg.sessionId)
       break
