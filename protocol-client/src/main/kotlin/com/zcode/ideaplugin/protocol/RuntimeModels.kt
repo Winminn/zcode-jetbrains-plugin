@@ -94,9 +94,29 @@ object RuntimeModels {
                         put("value", it)
                     })
                 }
-            // 该 provider 的全部模型都注册（后续切换同一 provider 的模型不再需要 runtimeModel）
-            put("models", JsonArray(pv["models"]?.jsonObject?.keys?.map { mid ->
-                buildJsonObject { put("modelId", mid) }
+            // 该 provider 的全部模型都注册（后续切换同一 provider 的模型不再需要 runtimeModel）。
+            // 模型定义必须携带 limit/modalities（缺陷 2026-08-26：只传 modelId 时服务端用残缺模型
+            // 覆盖 workspace 里完整定义，custom provider 的 contextWindow 归零 → autocompact
+            // preflight-v1 阈值=0 每请求必压缩 + rapid_refill_breaker 报错；客户端切模型即带完整定义）。
+            put("models", JsonArray(pv["models"]?.jsonObject?.map { (mid, mv) ->
+                buildJsonObject {
+                    put("modelId", mid)
+                    val modelDef = mv as? JsonObject ?: return@map buildJsonObject { put("modelId", mid) }
+                    (modelDef["limit"] as? JsonObject)?.let { limit ->
+                        limit["context"]?.jsonPrimitive?.contentOrNull?.toIntOrNull()
+                            ?.takeIf { it > 0 }?.let { put("contextWindow", it) }
+                        limit["output"]?.jsonPrimitive?.contentOrNull?.toIntOrNull()
+                            ?.takeIf { it > 0 }?.let { put("maxOutputTokens", it) }
+                    }
+                    // modalities.input 的能力位（USt schema 无 modalities 字段，图像/PDF/视频为布尔位）
+                    val inputKinds = (modelDef["modalities"] as? JsonObject)?.get("input")
+                        ?.let { it as? JsonArray }?.mapNotNull { (it as? JsonPrimitive)?.content } ?: emptyList()
+                    if ("image" in inputKinds) put("supportsImages", true)
+                    if ("pdf" in inputKinds) put("supportsPdf", true)
+                    if ("video" in inputKinds) put("supportsVideo", true)
+                    modelDef["name"]?.jsonPrimitive?.contentOrNull
+                        ?.takeIf { it.isNotBlank() }?.let { put("label", it) }
+                }
             } ?: emptyList()))
         })
     }
