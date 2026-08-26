@@ -259,6 +259,19 @@ export type AskUserResponseMsg =
       answers?: Record<string, string | string[]>
     }
 
+/**
+ * interaction/requestPermission 的选项（zcode.cjs t5() 生成，服务端实发形态）。
+ * response 为应答体（decision/permissionUpdates 等），Java 侧按 optionId 回填，
+ * 前端渲染只需 kind/name/description
+ */
+export interface PermissionOption {
+  kind: 'allow_once' | 'allow_always' | 'deny' | string
+  name: string
+  optionId: string
+  description?: string
+  response?: unknown
+}
+
 /** 输入框图片附件（发给 zcode.cjs session/send 的协议形态，2026-08-26 源码确认）*/
 export interface ImageAttachmentInput {
   kind: 'image'
@@ -701,6 +714,18 @@ export type JavaResponse =
   | { op: 'newSession'; oldSessionId: string; sessionId: string }
   | { op: 'askUser'; requestId: string; toolName: string; questions: AskUserQuestion[]; deadlineMs?: number }
   | { op: 'exitPlanApproval'; requestId: string; plan: string; deadlineMs?: number }
+  /** 工具权限审批弹窗（服务端 interaction/requestPermission；应答走 askUserResponse，answer=optionId）*/
+  | {
+      op: 'permissionRequest'
+      requestId: string
+      toolName: string
+      reason: string
+      options: PermissionOption[]
+      /** 工具输入（Write 的 file_path/content、Bash 的 command 等；缺省容忍）*/
+      input?: unknown
+      riskLevel?: string
+      deadlineMs?: number
+    }
   | { op: 'askUserPending'; active: boolean }
   | { op: 'askUserStateAck' }
   | { op: 'askUserAck' }

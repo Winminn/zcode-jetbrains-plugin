@@ -84,7 +84,12 @@ interface ZCodeService {
      * 前端 askUserResponse 应答：complete 对应 future 并清理重试 id，
      * 返回 {op:"askUserAck"} 响应。
      *
-     * @param answer 单问题答案（原始值：字符串或数组；ExitPlanMode 为 "approve"/意见文本）
+     * 同一通道也承载 interaction/requestPermission（工具权限审批）弹窗的应答：
+     * action="accept" + answer=<optionId>（如 allow_once / allow_project / deny），
+     * action="decline" 一律拒绝；宿主按 optionId 回填服务端给定的选项 response。
+     *
+     * @param answer 单问题答案（原始值：字符串或数组；ExitPlanMode 为 "approve"/意见文本；
+     *   权限审批为 optionId）
      * @param answers 多问题答案（问题文本 → 值），与 answer 二选一
      */
     fun completeUserInput(

@@ -21,6 +21,7 @@ import { SettingsView } from '@/components/SettingsView'
 import { InputBox } from '@/components/InputBox'
 import { AskUserDialog } from '@/components/AskUserDialog'
 import { PlanApprovalDialog } from '@/components/PlanApprovalDialog'
+import { PermissionApprovalDialog } from '@/components/PermissionApprovalDialog'
 import { SubagentDetailDialog } from '@/components/SubagentDetailDialog'
 import { SubagentReportDialog } from '@/components/SubagentReportDialog'
 import { MarkdownPreviewDialog } from '@/components/MarkdownPreviewDialog'
@@ -40,7 +41,7 @@ export default function App() {
   const {
     sessions, currentSessionId,
     messages, loadingMessages, streaming, streamingMessageId, waitingSince, lastError, compacting,
-    askUser, exitPlanApproval, currentModel,
+    askUser, exitPlanApproval, permissionRequest, currentModel,
     init, loadSessions, selectSession, resetToNewSession, stopStreaming, sendMessage,
     clearError,
     renameSession, setModel,
@@ -282,6 +283,20 @@ export default function App() {
           plan={exitPlanApproval.plan}
           deadlineMs={exitPlanApproval.deadlineMs}
           onClose={() => useStore.setState({ exitPlanApproval: null })}
+        />
+      )}
+
+      {/* 工具权限审批弹窗（「变更前询问」模式，interaction/requestPermission）*/}
+      {permissionRequest && (
+        <PermissionApprovalDialog
+          requestId={permissionRequest.requestId}
+          toolName={permissionRequest.toolName}
+          reason={permissionRequest.reason}
+          options={permissionRequest.options}
+          input={permissionRequest.input}
+          riskLevel={permissionRequest.riskLevel}
+          deadlineMs={permissionRequest.deadlineMs}
+          onClose={() => useStore.setState({ permissionRequest: null })}
         />
       )}
 

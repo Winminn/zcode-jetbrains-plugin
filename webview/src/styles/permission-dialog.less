@@ -1,0 +1,129 @@
+/**
+ * 工具权限审批弹窗样式（「变更前询问」模式，interaction/requestPermission）。
+ * 遮罩复用 ask-user-dialog.less 的 .ask-user-overlay
+ */
+
+.perm-dialog {
+  width: 520px;
+  max-width: 90vw;
+  max-height: 80vh;
+  overflow-y: auto;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-primary);
+  border-radius: 8px;
+  box-shadow: var(--shadow-card);
+  display: flex;
+  flex-direction: column;
+
+  &__header {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 12px 16px;
+    border-bottom: 1px solid var(--border-primary);
+  }
+
+  &__icon { font-size: 16px; }
+  &__title { font-weight: 600; font-size: 14px; color: var(--text-primary); }
+
+  &__tool {
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--accent-primary);
+    background: rgba(0, 127, 212, 0.1);
+    padding: 2px 8px;
+    border-radius: 10px;
+  }
+
+  &__risk {
+    font-size: 11px;
+    font-weight: 600;
+    color: #fff;
+    background: var(--error, #e5484d);
+    padding: 2px 8px;
+    border-radius: 10px;
+  }
+
+  &__body {
+    padding: 16px;
+    flex: 1;
+    overflow-y: auto;
+  }
+
+  &__reason {
+    font-size: 13px;
+    color: var(--text-secondary);
+    margin-bottom: 12px;
+    line-height: 1.5;
+  }
+
+  &__input {
+    background: var(--bg-primary);
+    border: 1px solid var(--border-primary);
+    border-radius: 6px;
+    padding: 10px 12px;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+
+  &__input-row {
+    display: flex;
+    gap: 8px;
+    font-size: 12px;
+    line-height: 1.5;
+    word-break: break-all;
+  }
+
+  &__input-label {
+    flex-shrink: 0;
+    color: var(--text-tertiary);
+    font-family: var(--font-mono, monospace);
+    min-width: 60px;
+  }
+
+  &__input-value {
+    color: var(--text-primary);
+    white-space: pre-wrap;
+  }
+
+  &__input-more {
+    font-size: 11px;
+    color: var(--text-tertiary);
+  }
+
+  &__footer {
+    display: flex;
+    justify-content: flex-end;
+    gap: 8px;
+    padding: 12px 16px;
+    border-top: 1px solid var(--border-primary);
+  }
+
+  &__btn {
+    padding: 6px 14px;
+    border: 1px solid var(--border-color);
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 13px;
+    background: transparent;
+    color: var(--text-primary);
+    transition: all 0.15s;
+
+    &:hover { border-color: var(--accent-primary); background: var(--bg-hover); }
+
+    &--primary {
+      background: var(--accent-primary);
+      border-color: var(--accent-primary);
+      color: #fff;
+      font-weight: 600;
+      &:hover { background: var(--accent-hover); }
+    }
+
+    &--deny {
+      color: var(--error, #e5484d);
+      border-color: var(--error, #e5484d);
+      &:hover { background: rgba(229, 72, 77, 0.1); }
+    }
+  }
+}

@@ -88,5 +88,40 @@
     "cliNotFound": "未在标准安装位置找到 zcode.cjs，请确认已安装 ZCode 客户端",
     "credsMissing": "配置文件不存在：{{arg}}，请先用 ZCode 客户端登录一次",
     "credsInvalid": "配置文件无效：{{arg}}，请用 ZCode 客户端重新登录"
+  },
+  "permissionApproval": {
+    "title": "工具执行审批",
+    "highRisk": "高风险",
+    "moreFields": "还有 {{count}} 个参数未展示",
+    "options": {
+      "allow_once": "允许一次",
+      "allow_project": "本项目总是允许",
+      "deny": "拒绝"
+    },
+    "optionDesc": {
+      "allow_project": "本项目内同类请求不再询问",
+      "allow_once": "仅本次放行，下次仍会询问"
+    },
+    "reasons": {
+      "criticalRisk": "关键风险操作需要明确批准",
+      "highRisk": "高风险操作需要明确批准",
+      "sideEffect": "操作会产生副作用，需要批准",
+      "toolRequires": "工具 {{tool}} 需要批准后执行",
+      "mcpExternal": "MCP 工具 {{tool}} 经外部服务器执行，需要批准"
+    },
+    "fields": {
+      "command": "命令",
+      "cmd": "命令",
+      "description": "说明",
+      "file_path": "文件路径",
+      "filePath": "文件路径",
+      "path": "路径",
+      "url": "URL",
+      "query": "查询",
+      "pattern": "匹配模式",
+      "content": "内容"
+    },
+    "riskCritical": "关键风险",
+    "riskHigh": "高风险"
   }
 }

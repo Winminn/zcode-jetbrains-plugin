@@ -320,6 +320,18 @@ interface StoreState {
   // ExitPlanMode 计划审批弹窗（服务端 interaction/requestUserInput，params = {input:{plan}}）
   exitPlanApproval: { requestId: string; plan: string; deadlineMs?: number } | null
 
+  // 工具权限审批弹窗（服务端 interaction/requestPermission，「变更前询问」模式触发；
+  // 应答走 askUserResponse 通道，answer = 选中项 optionId）
+  permissionRequest: {
+    requestId: string
+    toolName: string
+    reason: string
+    options: import('@/types/messages').PermissionOption[]
+    input?: unknown
+    riskLevel?: string
+    deadlineMs?: number
+  } | null
+
   // 本会话存在挂起中的反向请求（Java 广播，多标签同会话时无弹窗的面板也置位）——
   // 流式看门狗豁免用：等待用户应答是合法静默，不应判 streamLost 提前收尾
   askUserPendingActive: boolean
@@ -514,6 +526,7 @@ export const useStore = create<StoreState>((set, get) => ({
   queuedMessages: [],
   askUser: null,
   exitPlanApproval: null,
+  permissionRequest: null,
   askUserPendingActive: false,
 
   models: [],
@@ -928,6 +941,7 @@ export const useStore = create<StoreState>((set, get) => ({
       childStreamingIds: {},
       askUser: null, // 旧会话遗留的提问/审批弹窗随会话切换关闭
       exitPlanApproval: null,
+      permissionRequest: null,
       askUserPendingActive: false,
     })
     // 待命态：恢复当前模型的缓存级别集（currentMode 不水合——模式是即时意图，预选重新开始）
@@ -2050,6 +2064,23 @@ function handleResponse(
       set({ exitPlanApproval: { requestId: msg.requestId, plan: msg.plan || '', deadlineMs: msg.deadlineMs }, askUserPendingActive: true })
       break
 
+    case 'permissionRequest':
+      // 工具权限审批弹窗（「变更前询问」模式）：用户选项 optionId 经 askUserResponse 回传
+      console.log('[store] 收到 permissionRequest:', msg.toolName, 'options:', msg.options?.length)
+      set({
+        permissionRequest: {
+          requestId: msg.requestId,
+          toolName: msg.toolName,
+          reason: msg.reason || '',
+          options: msg.options || [],
+          input: msg.input,
+          riskLevel: msg.riskLevel,
+          deadlineMs: msg.deadlineMs,
+        },
+        askUserPendingActive: true,
+      })
+      break
+
     case 'askUserPending':
       // Java 广播的反向请求挂起标志（多标签同会话：无弹窗的面板靠它豁免看门狗）。
       // 只维护标志，不动弹窗状态（弹窗由 askUserAck / 组件 onClose 关闭）
@@ -2058,7 +2089,7 @@ function handleResponse(
 
     case 'askUserAck':
       // Java 确认已收到用户选择（或回合终止/超时联动废弃），关闭弹窗
-      set({ askUser: null, exitPlanApproval: null, askUserPendingActive: false })
+      set({ askUser: null, exitPlanApproval: null, permissionRequest: null, askUserPendingActive: false })
       break
 
     case 'ideTheme':
@@ -3114,7 +3145,7 @@ function probeTurnState(): void {
   // （Java 侧最长 5 分钟），不应判流丢失提前收尾——否则审批超时路径被 60s 看门狗
   // 截胡（2026-08-20 实测缺陷P1）。askUserPendingActive 覆盖多标签同会话：
   // 弹窗只路由到一个标签，其余标签靠 Java 广播的标志豁免（缺陷P1+）
-  if (st.askUser || st.exitPlanApproval || st.askUserPendingActive) return
+  if (st.askUser || st.exitPlanApproval || st.permissionRequest || st.askUserPendingActive) return
   // 压缩回合豁免：摘要生成期间事件流静默是常态（实测 63s+，大上下文更久），
   // 对账快照末尾无进展会被误判流丢失提前收尾
   if (st.compacting) return
