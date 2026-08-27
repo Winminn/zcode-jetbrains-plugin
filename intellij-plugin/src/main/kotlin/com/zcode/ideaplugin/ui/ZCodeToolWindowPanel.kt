@@ -458,6 +458,9 @@ class ZCodeToolWindowPanel(
                     pushToWebview(buildJsonObject {
                         put("op", "filesToInput")
                         put("refs", JsonArray(refs.map { JsonPrimitive(it) }))
+                        // 标记来源让前端按心智分流：拖拽走内联 chip（与"粘贴完整路径"一致），
+                        // IDE 右键/附件按钮不带 source 字段走原逻辑（空输入框入顶部 chip 栏）
+                        put("source", "drag")
                     })
                     dtde.dropComplete(true)
                 } catch (e: Exception) {
