@@ -72,7 +72,24 @@ data class SubscribeParams(
 @Serializable
 data class SendParams(
     val sessionId: String,
-    val content: String
+    val content: String,
+    val attachments: List<AttachmentInput>? = null
+)
+
+/**
+ * session/send 的图片附件（ZCode Protocol 通道原生形态，2026-08-26 zcode.cjs 源码确认）：
+ * base64 内联直传，服务端负责缩放（最长边 2000px）/压缩/落盘 image-cache，
+ * 模型不支持图片时降级为 [Attached media] 文字占位（不报错）。
+ * dataBase64 与 localPath 二选一（都填时 localPath 优先）；插件只走 dataBase64。
+ */
+@Serializable
+data class AttachmentInput(
+    val kind: String = "image",
+    val filename: String,
+    val mimeType: String,
+    val sizeBytes: Long? = null,
+    val dataBase64: String? = null,
+    val localPath: String? = null
 )
 
 /**

@@ -15,12 +15,58 @@
 
 export type MessagePart =
   | TextPart
+  | ImagePart
+  | FilePart
   | ReasoningPart
   | ToolPart
   | StepStartPart
   | StepFinishPart
   | TimelinePart
   | CompactionPart
+
+/**
+ * 图片 part：服务端把用户消息附件转成的读回形态（zcode.cjs 实测），
+ * dataUrl 为完整 "data:<mimeType>;base64,..."；本地乐观消息用
+ * dataBase64 + mediaType 构造同构对象（见 useStore.sendMessage）。
+ */
+export interface ImagePart {
+  type: 'image'
+  mediaType?: string
+  /** 完整 data URL（服务端回流）；乐观消息亦用此形态渲染 */
+  dataUrl?: string
+  /** 乐观消息携带的裸 base64（无 dataUrl 时前端拼 data URL 渲染）*/
+  dataBase64?: string
+  source?: {
+    id?: string
+    kind?: 'inline' | 'local_file'
+    mimeType?: string
+    placeholder?: string
+    path?: string
+    filename?: string
+    metadata?: Record<string, unknown>
+  }
+  id?: string
+  sessionID?: string
+  messageID?: string
+}
+
+/**
+ * 文件 part（2026-08-26 RPC 实测）：用户图片附件在 session/messages 读回时的
+ * 真实形态（type 是 "file" 不是 "image"）。url 原始为 zcode-artifact:// 私有协议，
+ * Java 端 ImageArtifactMapper 已换成内置 server 的 http URL（换不动时保持原样，
+ * 前端 src 解析失败不渲染——fail-soft）。mime 为 image/* 时按图片渲染。
+ */
+export interface FilePart {
+  type: 'file'
+  mime?: string
+  /** zcode-artifact://（Java 未转换）或 http://127.0.0.1:<port>/zcode-image/...（已转换）*/
+  url?: string
+  filename?: string
+  metadata?: Record<string, unknown>
+  id?: string
+  sessionID?: string
+  messageID?: string
+}
 
 export interface TextPart {
   type: 'text'
@@ -213,6 +259,32 @@ export type AskUserResponseMsg =
       answers?: Record<string, string | string[]>
     }
 
+/**
+ * interaction/requestPermission 的选项（zcode.cjs t5() 生成，服务端实发形态）。
+ * response 为应答体（decision/permissionUpdates 等），Java 侧按 optionId 回填，
+ * 前端渲染只需 kind/name/description
+ */
+export interface PermissionOption {
+  kind: 'allow_once' | 'allow_always' | 'deny' | string
+  name: string
+  optionId: string
+  description?: string
+  response?: unknown
+}
+
+/** 输入框图片附件（发给 zcode.cjs session/send 的协议形态，2026-08-26 源码确认）*/
+export interface ImageAttachmentInput {
+  kind: 'image'
+  /** 文件名（服务端缺省 "attachment"）*/
+  filename: string
+  /** MIME，如 image/png */
+  mimeType: string
+  /** base64 解码后的真实字节数 */
+  sizeBytes: number
+  /** 纯 base64（不含 data URL 前缀），与 localPath 二选一 */
+  dataBase64: string
+}
+
 export type JavaRequest =  | { op: 'askUserPendingState' }
   | { op: 'listSessions'; workspacePath?: string }
   | { op: 'createSession'; workspacePath?: string }
@@ -229,7 +301,10 @@ export type JavaRequest =  | { op: 'askUserPendingState' }
   | { op: 'messages'; sessionId: string; workspacePath?: string; reconcile?: boolean }
   | { op: 'subagents'; sessionId: string }
   | { op: 'subagentMessages'; sessionId: string; workspacePath?: string }
-  | { op: 'send'; sessionId: string; text: string; workspacePath?: string; providerId?: string; modelId?: string }
+  | { op: 'send'; sessionId: string; text: string; workspacePath?: string; providerId?: string; modelId?: string; attachments?: ImageAttachmentInput[] }
+  /** 剪贴板兜底：JCEF 偶发不把图片暴露给 clipboardData（CC-GUI 用 IDE action 兜底，
+   *  我们用按需桥更轻）——Java 读 AWT 剪贴板 DataFlavor.imageFlavor → PNG base64 返回 */
+  | { op: 'getClipboardImage' }
   | { op: 'subscribe'; sessionId: string; workspacePath?: string }
   /** 订阅子代理会话事件流（实时归约前提；不改当前会话/标签状态，见 Java handleSubscribeChild）*/
   | { op: 'subscribeChild'; sessionId: string; workspacePath?: string }
@@ -312,6 +387,9 @@ export interface ModelOption {
   contextWindow?: number
   /** 最大输出 token（config.json limit.output）*/
   maxOutput?: number
+  /** 模型支持图片输入（config.json modalities.input 含 image；GLM 套餐为 false——
+   *  带图消息的服务端会剥离图片成文字占位，模型看不到图，2026-08-26 实测定性）*/
+  supportsImages?: boolean
 }
 
 /** 模型管理条目（config.json provider.models 节点，设置页只读展示）*/
@@ -320,6 +398,8 @@ export interface ModelManageModel {
   modelName: string
   contextWindow?: number
   maxOutput?: number
+  /** 视觉能力位（modalities.input 含 image），展示「视觉」徽章 */
+  supportsImages?: boolean
 }
 
 /** 模型管理 provider 分组（与聊天 listModels 的差异：不去重、含 disabled、保留无 baseURL 项）*/
@@ -624,6 +704,8 @@ export type JavaResponse =
   | { op: 'subagents'; sessionId: string; data: SubagentsResult; error?: string }
   | { op: 'subagentMessages'; sessionId: string; messages: ZCodeMessage[]; error?: string }
   | { op: 'sendAccepted'; sessionId: string; accepted: string; cliResponse?: unknown }
+  /** getClipboardImage 响应：base64 缺省 = 剪贴板无图片（Java 侧读取失败同样返回空）*/
+  | { op: 'clipboardImage'; base64?: string; mediaType?: string }
   | { op: 'subscribed'; sessionId: string; alreadySubscribed?: boolean }
   | { op: 'subscribedChild'; sessionId: string }
   | { op: 'stopped'; sessionId: string }
@@ -632,9 +714,24 @@ export type JavaResponse =
   | { op: 'newSession'; oldSessionId: string; sessionId: string }
   | { op: 'askUser'; requestId: string; toolName: string; questions: AskUserQuestion[]; deadlineMs?: number }
   | { op: 'exitPlanApproval'; requestId: string; plan: string; deadlineMs?: number }
+  /** 工具权限审批弹窗（服务端 interaction/requestPermission；应答走 askUserResponse，answer=optionId）*/
+  | {
+      op: 'permissionRequest'
+      requestId: string
+      toolName: string
+      reason: string
+      options: PermissionOption[]
+      /** 工具输入（Write 的 file_path/content、Bash 的 command 等；缺省容忍）*/
+      input?: unknown
+      riskLevel?: string
+      deadlineMs?: number
+    }
   | { op: 'askUserPending'; active: boolean }
   | { op: 'askUserStateAck' }
-  | { op: 'askUserAck' }
+  /** 服务端同族重发换新 id：保活权限弹窗的 requestId（点击命中服务端当前在等的 id）*/
+  | { op: 'permissionRequestRefresh'; requestId: string }
+  /** 反向请求终结确认；requestId 缺省 = 旧格式兜底全清（正常路径都带 id 精确关窗）*/
+  | { op: 'askUserAck'; requestId?: string }
   | { op: 'tabCreating' }
   | { op: 'browserPaneToggled'; visible: boolean }
   | { op: 'tabTitleSet' }
@@ -679,7 +776,7 @@ export type JavaResponse =
   | { op: 'skills'; skills: SkillInfo[] }
   | { op: 'skillToggled'; path: string; enabled: boolean }
   /** op=enhancePrompt 的响应（error 非 nil = 失败，弹窗错误态）*/
-  | { op: 'enhancePromptResult'; original?: string; text?: string; error?: string }
+  | { op: 'enhancePromptResult'; original?: string; text?: string; error?: string; model?: string }
   | { op: 'agents'; agents: AgentDef[] }
   | { op: 'agentSaved'; name: string; scope: string }
   | { op: 'agentDeleted'; name: string; scope: string }

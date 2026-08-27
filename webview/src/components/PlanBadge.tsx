@@ -13,3 +13,12 @@ export function PlanBadge({ plan }: { plan?: 'personal' | 'trial' }) {
   if (!plan) return null
   return <span className={cx('plan-badge', plan)}>{t(`models.plan.${plan}`)}</span>
 }
+
+/**
+ * 视觉能力徽章：模型配置 modalities.input 含 image 时展示「视觉」，
+ * 用于输入框模型下拉项与设置页模型管理行（能力位来自用户配置，仅供参考）。
+ */
+export function VisionBadge() {
+  const { t } = useTranslation()
+  return <span className="vision-badge">{t('models.vision')}</span>
+}

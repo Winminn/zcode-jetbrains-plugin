@@ -14,6 +14,8 @@ export interface EnhanceResult {
   original: string
   text?: string
   error?: string
+  /** 实际润色用的模型（loading 态=发起模型占位，结果态=回包实际模型）*/
+  model?: string
 }
 
 interface Props {
@@ -51,7 +53,10 @@ export function PromptEnhancerDialog({ enhancing, result, onUse, onClose }: Prop
         aria-label={t('enhance.dialogAriaLabel')}
         onClick={(e) => e.stopPropagation()}
       >
-        <h3>{t('enhance.title')}</h3>
+        <h3>
+          {t('enhance.title')}
+          {result.model && <span className="prompt-enhancer__model">{result.model}</span>}
+        </h3>
 
         <div className="prompt-enhancer__section">
           <div className="prompt-enhancer__section-title">{t('enhance.original')}</div>

@@ -6,6 +6,36 @@
 
 最新版本块的中文段会被 `patchPluginXml` 提取为插件 change-notes（展示在 Marketplace 与 IDE 插件详情页，行内 Markdown 转换为 HTML），保持格式：`## [版本] - 日期` + `### 节` + `- ` 列表。
 
+## [0.2.5] - 2026-08-27
+
+中文:
+
+### 新增
+
+- **提示词润色**：设置 → 基础设置 → 行为开启（默认关闭）后，输入框出现 ✨ 润色按钮——点击让 AI 优化当前输入，对比确认后替换。走常驻通道（响应更快、不产生额外会话记录）；可配置润色专用模型（默认跟随会话模型，所选模型失效时自动回退默认）；润色弹窗显示实际使用的模型；按钮悬浮有功能说明。
+- **输入框粘贴图片**：剪贴板截图/图片直接 Ctrl+V 粘贴发送（自动压缩：最长边 1280、单图 ≤900KB）；当前套餐模型不支持图像输入时自动追加附图说明，引导 AI 用读图工具查看。
+- **模型列表增强**：模型下拉底部新增「刷新模型列表」（ZCode 客户端侧改配置后无需再切设置页）；支持视觉输入的模型显示视觉徽章；刷新后当前模型已被删除时自动切换到可用模型。
+- **模型 provider 启停多标签同步**：设置页启用/停用模型 provider 后，所有打开的插件标签页即时同步生效。
+- **工具权限审批弹窗**：「变更前询问」权限模式下，工具调用会弹出审批窗口（工具名/理由/输入预览/风险级/倒计时），选择后继续执行；此前该模式会弹协议错误且工具被自动拒绝。
+
+### 修复
+
+- **快速切换模型时思考档位报错**：模型切换在途的一瞬间旧模型的思考档位会残留下发，触发 `[-32603] Unsupported reasoning effort` 报错。现在切换期间挡住旧档位，新模型档位就绪后再恢复。
+
+English:
+
+### Added
+
+- **Prompt enhancer**: Enable in Settings → Basic → Behavior (off by default) to show the ✨ enhance button in the input box — click to let AI polish your input, then apply after review. Uses the resident channel (faster, no extra session records); a dedicated model can be configured (defaults to the session model, auto-falls back to the default model if unavailable); the dialog shows the model actually used; the button has a hover tooltip.
+- **Paste images into the input box**: Paste screenshots/images directly with Ctrl+V (auto-compressed: max edge 1280, ≤900KB per image); when the current plan's model doesn't accept image input, an attachment note is appended automatically, guiding AI to view images with its vision tools.
+- **Model list enhancements**: A "Refresh model list" action at the bottom of the model dropdown (no need to open settings after changing providers in the ZCode client); vision-capable models show a vision badge; if the current model was removed after refresh, it auto-switches to an available one.
+- **Multi-tab sync of model provider enablement**: Enabling/disabling a model provider in settings now syncs to all open plugin tabs instantly.
+- **Tool permission approval dialog**: Under the "ask before changes" permission mode, tool calls now show an approval dialog (tool name/reason/input preview/risk level/countdown) and continue after your choice; previously this mode raised a protocol error and tools were auto-denied.
+
+### Fixed
+
+- **Thinking-level error when switching models quickly**: During an in-flight model switch, the old model's thinking level could leak and trigger `[-32603] Unsupported reasoning effort`. Old levels are now blocked during the switch and restored once the new model's levels are ready.
+
 ## [0.2.4] - 2026-08-26
 
 中文:

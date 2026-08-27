@@ -1,5 +1,6 @@
 {
-  "tooltip": "润色提示词（调用当前模型）",
+  "tooltip": "AI 润色：优化输入框内容，确认后替换",
+  "tooltipDisabled": "AI 润色：输入内容后可用",
   "title": "提示词润色",
   "dialogAriaLabel": "提示词润色对比弹窗",
   "original": "原始提示词",

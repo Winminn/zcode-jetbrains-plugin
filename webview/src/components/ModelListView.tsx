@@ -46,6 +46,11 @@ function ModelRow({ model, onDelete }: { model: ModelManageModel; onDelete: () =
       <span className="model-list-view__model-id" title={model.modelId}>
         {model.modelId}
       </span>
+      {model.supportsImages && (
+        <span className="model-list-view__model-badge model-list-view__model-badge--vision" title={t('models.vision')}>
+          {t('models.vision')}
+        </span>
+      )}
       {model.contextWindow != null && (
         <span className="model-list-view__model-badge" title={t('models.contextTitle')}>
           {t('models.contextBadge', { size: formatTokens(model.contextWindow) })}

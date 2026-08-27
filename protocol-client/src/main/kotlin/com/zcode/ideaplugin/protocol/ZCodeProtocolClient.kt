@@ -81,6 +81,16 @@ class ZCodeProtocolClient private constructor(
     var userInputRequestHandler: ((serverRequestId: String, params: JsonObject) -> JsonObject)? = null
 
     /**
+     * 工具权限审批请求处理器（interaction/requestPermission）：default（"变更前询问"）
+     * 等模式下文件写入/命令执行前 app-server 反向请求宿主批准。返回应答 result，
+     * 形状 = {decision:"allow"|"deny"|"escalate"|"modify", reason?, modifiedInput?,
+     * permissionUpdates?}（zcode.cjs S2 schema，strict——多余字段校验失败）。
+     * 在独立线程调用，可安全阻塞（等待用户点击弹窗）。
+     */
+    @Volatile
+    var permissionRequestHandler: ((serverRequestId: String, params: JsonObject) -> JsonObject)? = null
+
+    /**
      * 宿主浏览器清单（interaction/browserList）：返回 {browsers:[...]}；
      * null / 未注册时自动应答空列表（app-server 侧 browser-use 优雅降级为不可用）。
      * 详见 docs/设计与调研/browser-use宿主协议接入设计.md
@@ -274,8 +284,7 @@ class ZCodeProtocolClient private constructor(
             if (handler != null) {
                 Thread({
                     try {
-                        val result = handler(id, params)
-                        respondToServer(id, result)
+                        respondInteractiveAnswer(id, handler(id, params))
                         println("[ZCodeProtocolClient] interaction/requestUserInput answered")
                     } catch (e: Exception) {
                         // 带异常类名：TimeoutException/InterruptedException 的 message 为 null，
@@ -288,6 +297,32 @@ class ZCodeProtocolClient private constructor(
             } else {
                 println("[ZCodeProtocolClient] no userInputRequestHandler registered, auto-declining")
                 respondToServer(id, buildJsonObject { put("action", "decline") })
+            }
+        }
+        // 工具权限审批（interaction/requestPermission）：default（"变更前询问"）模式下
+        // 写文件/执行命令前的批准请求。未实现时旧版落入"未知反向请求"回 -32601，
+        // app-server 侧 requestClient 抛错 → 工具按拒绝处理 → AI 反复重试直至放弃
+        // （issue #2）。异步执行，与 requestUserInput 同理禁止阻塞 reader 线程
+        else if (method == "interaction/requestPermission") {
+            val handler = permissionRequestHandler
+            if (handler != null) {
+                Thread({
+                    try {
+                        respondInteractiveAnswer(id, handler(id, params))
+                    } catch (e: Exception) {
+                        println("[ZCodeProtocolClient] interaction/requestPermission handler error (${e.javaClass.simpleName}): ${e.message}")
+                        respondToServer(id, buildJsonObject {
+                            put("decision", "deny")
+                            put("reason", "Handler error: ${e.message ?: e.javaClass.simpleName}")
+                        })
+                    }
+                }, "zcode-permission").apply { isDaemon = true }.start()
+            } else {
+                println("[ZCodeProtocolClient] no permissionRequestHandler registered, denying")
+                respondToServer(id, buildJsonObject {
+                    put("decision", "deny")
+                    put("reason", "No permission handler")
+                })
             }
         }
         // 宿主浏览器反向请求（browser-use）：异步执行——navigate/screenshot 可能秒级耗时，
@@ -326,6 +361,20 @@ class ZCodeProtocolClient private constructor(
         // 其他未知反向请求：回 -32601 避免空等
         else {
             respondToServer(id, error = ProtocolError(ErrorCodes.METHOD_NOT_FOUND, "未实现的反向请求: $method"))
+        }
+    }
+
+    /**
+     * 交互类反向请求（requestUserInput/requestPermission）的应答分发：
+     * 宿主返回废弃哨兵（回合终止废弃，宿主层 DISCARD_MARKER 同名字段）时改发
+     * JSON-RPC error——服务端按请求失败处理，不会被误读为"用户拒绝"；
+     * 正常应答原样透传。
+     */
+    private fun respondInteractiveAnswer(id: String, result: JsonObject) {
+        if (result.containsKey("__zcodeDiscard")) {
+            respondToServer(id, error = ProtocolError(ErrorCodes.INTERNAL_ERROR, "request discarded: turn ended"))
+        } else {
+            respondToServer(id, result)
         }
     }
 
@@ -604,10 +653,14 @@ class ZCodeProtocolClient private constructor(
         timeoutMs: Long = 10000,
         providerId: String? = null,
         modelId: String? = null,
+        attachments: List<AttachmentInput>? = null,
     ): JsonObject {
         val params = buildJsonObject {
             put("sessionId", sessionId)
             put("content", content)
+            if (!attachments.isNullOrEmpty()) {
+                put("attachments", buildAttachmentsJson(attachments))
+            }
         }
         var r = request("session/send", params, timeoutMs)
         if (r["error"] != null) {
@@ -630,6 +683,9 @@ class ZCodeProtocolClient private constructor(
                         put("sessionId", sessionId)
                         put("content", content)
                         put("runtimeModel", runtimeModel)
+                        if (!attachments.isNullOrEmpty()) {
+                            put("attachments", buildAttachmentsJson(attachments))
+                        }
                     }
                     // -32031 是拒绝响应（prompt 未启动），重发不会重复用户消息；
                     // 此处超时/异常直接上抛——回合可能已在跑，再落 CLI 兜底会重复发送
@@ -642,13 +698,32 @@ class ZCodeProtocolClient private constructor(
                 } else {
                     println("[ZCodeProtocolClient] cannot build runtimeModel (no enabled anthropic provider in config.json)")
                 }
-                // 最后兜底：CLI --resume 走另一条干净代码路径（有回复但无流式）
-                println("[ZCodeProtocolClient] falling back to CLI --resume")
-                return sendViaCliResume(sessionId, content, workspacePath)
+                // 最后兜底：CLI --resume 走另一条干净代码路径（有回复但无流式）。
+                // 带附件时跳过该兜底——CLI -p 不支持附件，硬走会静默丢图（边缘路径：-32031
+                // 且带图概率极低，宁可显式报错让用户重试）
+                if (attachments.isNullOrEmpty()) {
+                    println("[ZCodeProtocolClient] falling back to CLI --resume")
+                    return sendViaCliResume(sessionId, content, workspacePath)
+                }
+                throw ZCodeProtocolException("带图片的消息无法走 CLI 恢复兜底（-32031 且 attachments 非空），请重试")
             }
             throw ZCodeProtocolException.fromError(r["error"]!!)
         }
         return r["result"]?.jsonObject ?: JsonObject(emptyMap())
+    }
+
+    /** attachments → session/send 请求体（协议通道原生形态 {kind,filename,mimeType,sizeBytes,dataBase64}）*/
+    private fun buildAttachmentsJson(attachments: List<AttachmentInput>): JsonArray = buildJsonArray {
+        attachments.forEach { a ->
+            add(buildJsonObject {
+                put("kind", a.kind)
+                put("filename", a.filename)
+                put("mimeType", a.mimeType)
+                a.sizeBytes?.let { put("sizeBytes", it) }
+                a.dataBase64?.let { put("dataBase64", it) }
+                a.localPath?.let { put("localPath", it) }
+            })
+        }
     }
 
     /**
@@ -753,6 +828,83 @@ class ZCodeProtocolClient private constructor(
         } finally {
             if (proc.isAlive) proc.destroyForcibly()
         }
+    }
+
+    /**
+     * workspace/generateText — 常驻 app-server 上的一次性文本生成（无会话、无 agent 系统上下文）。
+     *
+     * 与 CLI -p 通道的本质差异（2026-08-26 协议直连实测）：裸 AI SDK generateText，
+     * input 仅本方法的消息（实测 30 token vs CLI 通道 14858），无进程冷启动；
+     * 不产生会话记录（session/list 前后不变），workspace 同会话时复用 warm app。
+     *
+     * 前置条件：modelRef 指向的 provider 须已在 workspace 目录注册（会话 setModel
+     * runtimeModel 时顺带注册）；未注册时报 -32603 "Model provider is not configured"，
+     * 可调 [upsertModelProvider] 补注册后重试。
+     *
+     * @return result：{text, modelRef{providerId,modelId}, finishReason?, usage?}
+     */
+    fun generateText(
+        workspacePath: String,
+        providerId: String,
+        modelId: String,
+        prompt: String,
+        systemPrompt: String? = null,
+        querySource: String = "workspace_prompt_enhance",
+        timeoutMs: Long = 60000,
+    ): JsonObject {
+        val nativePath = workspacePath.replace('/', File.separatorChar)
+        val params = buildJsonObject {
+            put("workspace", buildJsonObject {
+                put("workspacePath", nativePath)
+                put("workspaceKey", nativePath)
+            })
+            put("modelRef", buildJsonObject {
+                put("providerId", providerId)
+                put("modelId", modelId)
+            })
+            if (systemPrompt != null) {
+                put("messages", buildJsonArray {
+                    add(buildJsonObject {
+                        put("role", "system")
+                        put("content", systemPrompt)
+                    })
+                    add(buildJsonObject {
+                        put("role", "user")
+                        put("content", prompt)
+                    })
+                })
+            } else {
+                put("prompt", prompt)
+            }
+            put("querySource", querySource)
+        }
+        val r = request("workspace/generateText", params, timeoutMs)
+        r["error"]?.let { throw ZCodeProtocolException.fromError(it) }
+        return r["result"]?.jsonObject ?: JsonObject(emptyMap())
+    }
+
+    /**
+     * workspace/upsertModelProvider — 向 workspace 目录注册/更新模型 provider（幂等）。
+     *
+     * provider 定义与 runtimeModel.provider 同构（[RuntimeModels.buildRuntimeModel] 的
+     * "provider" 字段可直接传入）；目录中已有同 id 条目时整体替换。
+     */
+    fun upsertModelProvider(
+        workspacePath: String,
+        provider: JsonObject,
+        timeoutMs: Long = 10000,
+    ): JsonObject {
+        val nativePath = workspacePath.replace('/', File.separatorChar)
+        val params = buildJsonObject {
+            put("workspace", buildJsonObject {
+                put("workspacePath", nativePath)
+                put("workspaceKey", nativePath)
+            })
+            put("provider", provider)
+        }
+        val r = request("workspace/upsertModelProvider", params, timeoutMs)
+        r["error"]?.let { throw ZCodeProtocolException.fromError(it) }
+        return r["result"]?.jsonObject ?: JsonObject(emptyMap())
     }
 
     /** session/messages — 读历史 */

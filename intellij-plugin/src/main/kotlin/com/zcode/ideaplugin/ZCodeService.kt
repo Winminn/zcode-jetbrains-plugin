@@ -84,7 +84,12 @@ interface ZCodeService {
      * 前端 askUserResponse 应答：complete 对应 future 并清理重试 id，
      * 返回 {op:"askUserAck"} 响应。
      *
-     * @param answer 单问题答案（原始值：字符串或数组；ExitPlanMode 为 "approve"/意见文本）
+     * 同一通道也承载 interaction/requestPermission（工具权限审批）弹窗的应答：
+     * action="accept" + answer=<optionId>（如 allow_once / allow_project / deny），
+     * action="decline" 一律拒绝；宿主按 optionId 回填服务端给定的选项 response。
+     *
+     * @param answer 单问题答案（原始值：字符串或数组；ExitPlanMode 为 "approve"/意见文本；
+     *   权限审批为 optionId）
      * @param answers 多问题答案（问题文本 → 值），与 answer 二选一
      */
     fun completeUserInput(
@@ -96,13 +101,15 @@ interface ZCodeService {
 
     /**
      * 回合被外力打断（-32010 自愈的 session/stop、回合终止事件）时废弃待应答弹窗：
-     * 直接移除 pendingUserInputs（不 complete future，杜绝向已死请求发迟到
-     * decline——服务端权限请求状态机会被迟到应答污染，2026-08-20 实测缺陷P2/P3），
-     * 并推 askUserAck 让前端立即关窗。挂起的 handler 线程由自身超时兜底退出。
+     * 移除 pendingUserInputs 并 complete 废弃哨兵（协议层改发 JSON-RPC error，
+     * 请求失败语义——杜绝向已死请求发迟到 decline 污染服务端权限状态机，
+     * 2026-08-20 实测缺陷P2/P3），并推 askUserAck 让前端立即关窗。
      *
      * @param sessionId 只废弃该会话的挂起请求（双会话并发互不误伤）；null = 全部
+     * @param turnId 只废弃该回合的挂起请求（同会话旧回合终止事件晚到时不误杀
+     * 新回合刚弹出的弹窗）；null = 该会话全部（手动 stop 语义）
      */
-    fun abortPendingUserInputs(sessionId: String? = null)
+    fun abortPendingUserInputs(sessionId: String? = null, turnId: String? = null)
 
     /**
      * 向指定面板同步反向请求挂起状态（webview init 时拉取）：存在挂起请求则推

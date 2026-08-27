@@ -10,6 +10,24 @@
   border-bottom: 1px solid var(--color-message-divider, rgba(255, 255, 255, 0.04));
   animation: msg-fade-in 0.2s ease;
 
+  /* 消息内图片（user 气泡 / assistant 内容共用：限宽圆角，点击大图）*/
+  &__images {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    margin-bottom: 6px;
+  }
+
+  &__image {
+    max-width: min(100%, 320px);
+    max-height: 240px;
+    border-radius: 8px;
+    object-fit: cover;
+    cursor: zoom-in;
+    display: block;
+    background: #000; /* 加载中/透明图底色 */
+  }
+
   &__time {
     font-size: 11px;
     color: var(--text-tertiary);

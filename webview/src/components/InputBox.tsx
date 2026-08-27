@@ -21,7 +21,8 @@
  * 发送时拼回 /技能名 前缀（由 ZCode CLI 解析）。
  */
 
-import { Fragment, useEffect, useRef, useState, useCallback, useMemo } from 'react'
+import { Fragment, useEffect, useLayoutEffect, useRef, useState, useCallback, useMemo } from 'react'
+import { createPortal } from 'react-dom'
 import { useTranslation } from 'react-i18next'
 import { useKeyboard } from '@/hooks/useKeyboard'
 import { useInputHistory, findHistorySuggestion } from '@/hooks/useInputHistory'
@@ -36,14 +37,23 @@ import { MessageQueue } from './MessageQueue'
 import { AgentSelect, AgentColorDot } from './AgentSelect'
 import { PromptEnhancerDialog } from './PromptEnhancerDialog'
 import { sendToJava, onMessage } from '@/ipc/bridge'
-import type { JavaResponse, SlashCommand, AgentDef } from '@/types/messages'
+import type { JavaResponse, SlashCommand, AgentDef, ImageAttachmentInput } from '@/types/messages'
 import { insertChipAtCursor, convertCompletedPaths, serializeEditor } from '@/utils/inlineFileTags'
+import { KV_HYDRATED_EVENT, KV_DISABLED_EVENT } from '@/utils/persist'
+import { readEnhanceConfig, ENHANCE_CONFIG_CHANGED_EVENT } from '@/utils/enhanceConfig'
 import { PastedTextRef, PastedTextPreview, type PastedTextItem } from './PastedTextRef'
+import { readImageFile, decodeBase64Size, type ImageAttachmentResult } from '@/utils/imageAttachment'
+import { ImagePreview } from './ImagePreview'
 import '../styles/input-box.less'
 import '../styles/agent-select.less'
 
 /** 内联 chip hover tooltip 的 DOM 节点 id（挂 document.body）*/
 const INLINE_CHIP_TIP_ID = 'zcode-inline-chip-tip'
+
+/** 输入框内的图片附件（压缩载荷 + 本地 id）*/
+interface ImageAttachment extends ImageAttachmentResult {
+  id: string
+}
 
 /** / 下拉条目：命令/技能（SlashCommand）+ 子智能体（kind='agent'，选择=设发送目标）*/
 type SlashItem =
@@ -59,8 +69,8 @@ const PASTE_COLLAPSE_LINES = 10
 const PASTE_COLLAPSE_CHARS = 500
 
 interface Props {
-  /** 发送回调（文本 + 引用文件路径列表）*/
-  onSend: (text: string, filePaths: string[]) => void
+  /** 发送回调（文本 + 引用文件路径列表 + 图片附件）*/
+  onSend: (text: string, filePaths: string[], attachments: ImageAttachmentInput[]) => void
   /** 是否正在生成（显示停止按钮）*/
   isStreaming?: boolean
   /** 停止生成回调 */
@@ -87,6 +97,10 @@ export function InputBox({ onSend, isStreaming = false, onStop, disabled = false
   const [skillRefs, setSkillRefs] = useState<SlashCommand[]>([])
   /** 折叠的粘贴长文本（≥10 行或 ≥500 字符），发送时拼到正文末尾 */
   const [pastedTexts, setPastedTexts] = useState<PastedTextItem[]>([])
+  /** 粘贴的图片附件（压缩后的 base64 载荷），发送时随消息走 attachments 协议 */
+  const [images, setImages] = useState<ImageAttachment[]>([])
+  /** 正在大图预览的图片（输入框附件缩略图点击）*/
+  const [previewImage, setPreviewImage] = useState<{ src: string; title?: string } | null>(null)
   /** 正在预览的粘贴文本 id（null = 弹窗关闭）*/
   const [previewPasteId, setPreviewPasteId] = useState<string | null>(null)
   const [hasText, setHasText] = useState(false)
@@ -150,11 +164,85 @@ export function InputBox({ onSend, isStreaming = false, onStop, disabled = false
   const selectedAgent = useStore((s) => s.selectedAgent)
   const selectAgentAction = useStore((s) => s.selectAgent)
 
+  // ============ 模型图片能力（带图发送提示）============
+  const models = useStore((s) => s.models)
+  /** 当前模型是否支持图片输入（GLM 套餐 modalities.input 仅 text → false；
+   *  服务端会把图片剥离成文字占位，模型看不到图——提示用户避免误以为已发出）*/
+  const currentModelSupportsImages = useMemo(() => {
+    if (!currentModel) return true // 未选模型不打扰（发送本身也会被拦）
+    return models.some(
+      (m) =>
+        m.providerId === currentModel.providerId &&
+        m.modelId === currentModel.modelId &&
+        m.supportsImages === true,
+    )
+  }, [models, currentModel])
+
   // ============ 提示词润色 ============
   const enhancing = useStore((s) => s.enhancing)
   const enhanceResult = useStore((s) => s.enhanceResult)
   const enhancePromptAction = useStore((s) => s.enhancePrompt)
   const clearEnhanceResult = useStore((s) => s.clearEnhanceResult)
+
+  // 功能开关（设置→行为，默认关闭）：按钮仅在开启时渲染。初始读 localStorage，
+  // 三路重读保状态正确——KV_HYDRATED/KV_DISABLED（启动权威值写回后）、
+  // 同标签设置页改动事件、跨标签 storage 同步
+  const [enhanceEnabled, setEnhanceEnabled] = useState(() => readEnhanceConfig().enhanceEnabled)
+  useEffect(() => {
+    const reread = () => setEnhanceEnabled(readEnhanceConfig().enhanceEnabled)
+    window.addEventListener(KV_HYDRATED_EVENT, reread)
+    window.addEventListener(KV_DISABLED_EVENT, reread)
+    window.addEventListener(ENHANCE_CONFIG_CHANGED_EVENT, reread)
+    const onStorage = (e: StorageEvent) => {
+      if (e.key === 'zcode.enhance.config') reread()
+    }
+    window.addEventListener('storage', onStorage)
+    return () => {
+      window.removeEventListener(KV_HYDRATED_EVENT, reread)
+      window.removeEventListener(KV_DISABLED_EVENT, reread)
+      window.removeEventListener(ENHANCE_CONFIG_CHANGED_EVENT, reread)
+      window.removeEventListener('storage', onStorage)
+    }
+  }, [])
+
+  // 悬浮提示：JCEF 不渲染原生 title（ModelSelect 悬停信息卡同款坑），走
+  // createPortal + fixed 挂 body；有文本=功能说明、空输入=引导文案
+  const [enhanceHovered, setEnhanceHovered] = useState(false)
+  const [enhanceTipPos, setEnhanceTipPos] = useState<{ left: number; bottom: number } | null>(null)
+  const enhanceBtnRef = useRef<HTMLButtonElement>(null)
+  const enhanceTipRef = useRef<HTMLDivElement>(null)
+  const enhanceTipText = hasText ? t('enhance.tooltip') : t('enhance.tooltipDisabled')
+
+  // 渲染后量宽定位：左对齐按钮、越界右移，弹上方（按钮在底部栏）——ModelSelect 同款
+  useLayoutEffect(() => {
+    if (!enhanceHovered) {
+      setEnhanceTipPos(null)
+      return
+    }
+    const b = enhanceBtnRef.current?.getBoundingClientRect()
+    const tip = enhanceTipRef.current
+    if (!b || !tip) return
+    const left = Math.max(8, Math.min(b.left, window.innerWidth - tip.offsetWidth - 8))
+    const bottom = window.innerHeight - b.top + 6
+    setEnhanceTipPos((prev) => (prev && prev.left === left && prev.bottom === bottom ? prev : { left, bottom }))
+  }, [enhanceHovered])
+
+  // 空/禁用态的引导提示依赖 hover 事件可达：React 对 disabled 表单元素屏蔽合成
+  // onMouseEnter（shouldPreventMouseEvent），须挂原生监听；配合 less :disabled
+  // { pointer-events: auto } 恢复命中后，JCEF/Chromium 才会对灰按钮派发 mouseenter。
+  // 依赖 enhanceEnabled：默认关闭时按钮不在 DOM（ref 为 null），开启后重挂监听
+  useEffect(() => {
+    const btn = enhanceBtnRef.current
+    if (!btn) return
+    const enter = () => setEnhanceHovered(true)
+    const leave = () => setEnhanceHovered(false)
+    btn.addEventListener('mouseenter', enter)
+    btn.addEventListener('mouseleave', leave)
+    return () => {
+      btn.removeEventListener('mouseenter', enter)
+      btn.removeEventListener('mouseleave', leave)
+    }
+  }, [enhanceEnabled])
 
   /** 润色按钮：取编辑器正文（与 doSend 同源的序列化），触发一次性 CLI 调用 */
   function handleEnhanceClick() {
@@ -186,7 +274,14 @@ export function InputBox({ onSend, isStreaming = false, onStop, disabled = false
     if (!currentModel) return
     // 序列化：内联 chip → @路径（chip 与正文的位置关系保留在文本流中）
     const text = serializeEditor(editorRef.current ?? document.createElement('div')).replace(/\s+$/, '')
-    if (!text.trim() && fileRefs.length === 0 && skillRefs.length === 0 && pastedTexts.length === 0) return
+    if (
+      !text.trim() &&
+      fileRefs.length === 0 &&
+      skillRefs.length === 0 &&
+      pastedTexts.length === 0 &&
+      images.length === 0
+    )
+      return
 
     // 子智能体引用拼最前（@名称，主 Agent 据此调度该子智能体——2026-08-23 协议实测），
     // 技能引用次之（/技能名），顶部文件引用（@路径）再次，正文（含内联引用）最后，
@@ -206,14 +301,40 @@ export function InputBox({ onSend, isStreaming = false, onStop, disabled = false
       parts.push(pastedTexts.map((p) => p.text).join('\n\n'))
     }
     const fullText = parts.join('\n')
-    onSend(fullText, fileRefs)
-    record(fullText)
+    // 纯图片消息：无正文时补占位文本（对齐 cc-gui 的 [Uploaded N image(s)]——
+    // 服务端 content 恒有值、模型端占位语义无歧义）
+    let finalText =
+      !fullText.trim() && images.length > 0
+        ? `[图片${images.length > 1 ? ` x${images.length}` : ''}]`
+        : fullText
+    // 模型不支持图像直输时的工具引导（2026-08-26 定性：GLM 套餐 supportsImages=false，
+    // 图片被服务端剥离成占位但 image-cache 已落盘且占位带路径——AI 可用 Read 等工具
+    // 读取看懂，用户实测验证此路径可行；不加引导时 AI 行为随机，可能直接答"没图"）。
+    // 文案用条件+可能语气：能力位来自用户可编辑的模型配置，可能滞后于模型真实能力
+    // （模型支持但用户未配置时 AI 直接看图即可，引导语不构成误导）。
+    // 文案是发给 AI 的消息内容，不走 UI i18n（中英混合保证两类模型都能理解）
+    if (images.length > 0 && !currentModelSupportsImages) {
+      finalText += `\n\n[附图说明：本消息附带 ${images.length} 张图片。若你无法直接看到图片内容（当前模型配置可能未启用图像直输），图片已由服务端缓存（路径见消息附件标注），请用 Read 工具读取图片文件或调用识图工具查看图片内容后再回答。]`
+    }
+    onSend(
+      finalText,
+      fileRefs,
+      images.map((i) => ({
+        kind: 'image',
+        filename: i.filename,
+        mimeType: i.mediaType,
+        sizeBytes: i.sizeBytes,
+        dataBase64: i.base64,
+      })),
+    )
+    record(finalText)
 
     // 清空
     clearEditor()
     setFileRefs([])
     setSkillRefs([])
     setPastedTexts([])
+    setImages([])
     setSlashQuery(null)
   }
 
@@ -272,8 +393,46 @@ export function InputBox({ onSend, isStreaming = false, onStop, disabled = false
     updateGhostSuggestion(el, slashOpen, mentionOpen)
   }, [])
 
+  /** 读入图片文件（剪贴板 image 项），压缩后加入附件列表 */
+  const addImageFile = useCallback(async (file: File) => {
+    try {
+      const att = await readImageFile(file)
+      setImages((prev) => [
+        ...prev,
+        { id: `img_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`, ...att },
+      ])
+    } catch (err) {
+      console.warn('粘贴图片处理失败', err)
+    }
+  }, [])
+
+  /** Java AWT 剪贴板兜底响应（JCEF clipboardData 拿不到剪贴板图片时；无图返回空）*/
+  useEffect(() => {
+    const unsub = onMessage((msg: JavaResponse) => {
+      const b64 = msg.op === 'clipboardImage' ? msg.base64 : undefined
+      if (b64) {
+        const mediaType = msg.op === 'clipboardImage' ? msg.mediaType || 'image/png' : 'image/png'
+        setImages((prev) => [
+          ...prev,
+          {
+            id: `img_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+            filename: `pasted-image-${Date.now()}.png`,
+            mediaType,
+            base64: b64,
+            sizeBytes: decodeBase64Size(b64),
+            width: 0,
+            height: 0,
+          },
+        ])
+      }
+    })
+    return unsub
+  }, [])
+
   /**
    * 粘贴处理（一律以纯文本落地，杜绝富文本样式污染）：
+   *   剪贴板图片（image/* 项）优先 → 阻止默认粘贴（contenteditable 会把图片当
+   *   内联内容插入，破坏纯文本编辑语义），读入压缩后加入附件列表；
    *   超阈值（≥PASTE_COLLAPSE_LINES 行或 ≥PASTE_COLLAPSE_CHARS 字符）→ 阻止默认粘贴，
    *   折叠为顶部 chip（点击预览），避免长文本撑爆输入框；
    *   未超阈值 → 同样阻止默认粘贴（contenteditable 默认会解析剪贴板 text/html，
@@ -282,8 +441,25 @@ export function InputBox({ onSend, isStreaming = false, onStop, disabled = false
    *   且保留 undo 撤销栈），落地后扫描完整路径转内联 chip（末尾路径也算完成）
    */
   const handlePaste = useCallback((e: React.ClipboardEvent) => {
+    // 图片优先（对齐 cc-gui：一旦有图即不处理文本，截图/网页复制图片的主路径）
+    const imageItems = Array.from(e.clipboardData.items).filter((it) =>
+      it.type.startsWith('image/'),
+    )
+    if (imageItems.length > 0) {
+      e.preventDefault()
+      for (const item of imageItems) {
+        const file = item.getAsFile()
+        if (file) addImageFile(file)
+      }
+      return
+    }
     const pasted = e.clipboardData.getData('text/plain')
-    if (!pasted) return // 无纯文本（如纯图片复制）时不干预默认行为
+    if (!pasted) {
+      // 无纯文本且无图片：JCEF 偶发不把剪贴板图片暴露给 clipboardData（IDE 场景），
+      // 走 Java 侧 AWT 剪贴板兜底（无图时返回空、无副作用）
+      sendToJava({ op: 'getClipboardImage' })
+      return
+    }
     e.preventDefault()
     const lines = pasted.split('\n').length
     if (lines >= PASTE_COLLAPSE_LINES || pasted.length >= PASTE_COLLAPSE_CHARS) {
@@ -827,7 +1003,13 @@ export function InputBox({ onSend, isStreaming = false, onStop, disabled = false
 
   // streaming 中 Enter = 入队（sendMessage 内部分流），按钮仍显示停止
   const canSend =
-    !disabled && !!currentModel && (hasText || fileRefs.length > 0 || skillRefs.length > 0 || pastedTexts.length > 0)
+    !disabled &&
+    !!currentModel &&
+    (hasText ||
+      fileRefs.length > 0 ||
+      skillRefs.length > 0 ||
+      pastedTexts.length > 0 ||
+      images.length > 0)
 
   return (
     <div className="input-area">
@@ -837,11 +1019,18 @@ export function InputBox({ onSend, isStreaming = false, onStop, disabled = false
         {/* 排队消息（streaming 中 Enter 入队的，回合结束自动发送）*/}
         <MessageQueue onEdit={editQueuedToInput} />
 
-        {/* 选中子智能体 chip + 技能引用 chips（紫色调，笔图标）+ 文件引用 chips（蓝色）+ 粘贴文本（灰色）。
-            对齐 cc-gui ChatInputBoxHeader：AttachmentList 在 ContextBar 之上，
-            不贴输入框 */}
-        {(selectedAgent || skillRefs.length > 0 || fileRefs.length > 0 || pastedTexts.length > 0) && (
+        {/* 选中子智能体 chip + 技能引用 chips（紫色调，笔图标）+ 文件引用 chips（蓝色）
+            + 粘贴文本（灰色）+ 粘贴图片缩略图。对齐 cc-gui ChatInputBoxHeader：
+            AttachmentList 在 ContextBar 之上，不贴输入框 */}
+        {(selectedAgent || skillRefs.length > 0 || fileRefs.length > 0 || pastedTexts.length > 0 || images.length > 0) && (
           <div className="input-box__refs">
+            {/* 模型不支持图片提示（附件带图时）：图片会随消息保存，但发给模型前被服务端剥离 */}
+            {images.length > 0 && !currentModelSupportsImages && (
+              <div className="img-unsupported-tip" role="alert">
+                <span className="codicon codicon-warning" />
+                <span>{t('input.image.unsupported')}</span>
+              </div>
+            )}
             {selectedAgent && (
               <span
                 className="agent-ref-chip"
@@ -887,6 +1076,31 @@ export function InputBox({ onSend, isStreaming = false, onStop, disabled = false
                 onRemove={() => setPastedTexts((prev) => prev.filter((x) => x.id !== p.id))}
               />
             ))}
+            {images.map((img) => {
+              const src = `data:${img.mediaType};base64,${img.base64}`
+              return (
+                <span key={img.id} className="img-attachment">
+                  <img
+                    className="img-attachment__thumb"
+                    src={src}
+                    alt={img.filename}
+                    title={img.filename}
+                    onClick={() => setPreviewImage({ src, title: img.filename })}
+                  />
+                  <button
+                    type="button"
+                    className="img-attachment__remove"
+                    onClick={(e) => {
+                      e.stopPropagation()
+                      setImages((prev) => prev.filter((x) => x.id !== img.id))
+                    }}
+                    title={t('input.image.remove')}
+                  >
+                    ×
+                  </button>
+                </span>
+              )
+            })}
           </div>
         )}
 
@@ -944,21 +1158,41 @@ export function InputBox({ onSend, isStreaming = false, onStop, disabled = false
           </div>
           <div className="button-area-right">
             <div className="button-divider" />
-            {/* 提示词润色（cc-gui enhance-prompt-button：发送按钮左侧，
-                一次性 CLI 调当前模型；结果弹对比窗确认后回填）*/}
-            <button
-              className="enhance-prompt-button"
-              onClick={handleEnhanceClick}
-              disabled={disabled || isStreaming || enhancing || !hasText}
-              title={t('enhance.tooltip')}
-              type="button"
-            >
-              <span
-                className={`codicon ${
-                  enhancing ? 'codicon-loading codicon-modifier-spin' : 'codicon-sparkle'
-                }`}
-              />
-            </button>
+            {/* 提示词润色（cc-gui enhance-prompt-button：发送按钮左侧，设置→行为默认
+                关闭；开启后走常驻 app-server 的 workspace/generateText，结果弹对比窗确认后回填）*/}
+            {enhanceEnabled && (
+              <>
+                <button
+                  className="enhance-prompt-button"
+                  ref={enhanceBtnRef}
+                  onClick={handleEnhanceClick}
+                  disabled={disabled || isStreaming || enhancing || !hasText}
+                  type="button"
+                >
+                  <span
+                    className={`codicon ${
+                      enhancing ? 'codicon-loading codicon-modifier-spin' : 'codicon-sparkle'
+                    }`}
+                  />
+                </button>
+                {/* 润色按钮悬浮提示（先隐形渲染量宽，useLayoutEffect 定位后才可见）*/}
+                {enhanceHovered &&
+                  createPortal(
+                    <div
+                      ref={enhanceTipRef}
+                      className="model-info-tip"
+                      style={
+                        enhanceTipPos
+                          ? { position: 'fixed', left: enhanceTipPos.left, bottom: enhanceTipPos.bottom }
+                          : { position: 'fixed', visibility: 'hidden', top: 0, left: 0 }
+                      }
+                    >
+                      {enhanceTipText}
+                    </div>,
+                    document.body,
+                  )}
+              </>
+            )}
             {isStreaming ? (
               <button
                 className="submit-button stop-button"
@@ -1056,6 +1290,15 @@ export function InputBox({ onSend, isStreaming = false, onStop, disabled = false
             <PastedTextPreview item={item} onClose={() => setPreviewPasteId(null)} />
           ) : null
         })()}
+
+      {/* 图片大图预览（输入框附件缩略图点击，portal 挂 body）*/}
+      {previewImage && (
+        <ImagePreview
+          src={previewImage.src}
+          title={previewImage.title}
+          onClose={() => setPreviewImage(null)}
+        />
+      )}
 
       {/* 提示词润色对比弹窗（loading 转圈 / 错误态 / 结果确认回填）*/}
       {enhanceResult && (

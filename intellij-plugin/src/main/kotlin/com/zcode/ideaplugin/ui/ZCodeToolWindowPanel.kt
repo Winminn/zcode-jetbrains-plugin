@@ -31,12 +31,15 @@ import com.zcode.ideaplugin.ZCodeService
 import com.zcode.ideaplugin.ZCodeWebviewServer
 import com.zcode.ideaplugin.zCodeService
 import com.zcode.ideaplugin.protocol.Credentials
+import com.zcode.ideaplugin.protocol.ImageArtifactMapper
 import com.zcode.ideaplugin.protocol.ZCodeProtocolClient
 import com.zcode.ideaplugin.protocol.ZCodeProtocolException
 import com.zcode.ideaplugin.protocol.SessionStat
+import com.zcode.ideaplugin.protocol.model.AttachmentInput
 import com.zcode.ideaplugin.protocol.model.SessionInfo
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
@@ -47,6 +50,7 @@ import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.boolean
 import kotlinx.serialization.json.booleanOrNull
 import kotlinx.serialization.json.intOrNull
+import kotlinx.serialization.json.longOrNull
 import kotlinx.serialization.json.put
 import java.awt.BorderLayout
 import javax.swing.JComponent
@@ -628,6 +632,7 @@ if (!window.__ZCODE_LOG_HOOK__) {
                     val result = when (op) {
                         "listSessions" -> handleListSessions(msg)
                         "send" -> handleSend(msg)
+                        "getClipboardImage" -> handleGetClipboardImage(msg)
                         "messages" -> handleMessages(msg)
                         "subagents" -> handleSubagents(msg)
                         "subagentMessages" -> handleSubagentMessages(msg)
@@ -1667,6 +1672,11 @@ if (!window.__ZCODE_LOG_HOOK__) {
                 // limit.context / limit.output：模型真实上下文窗口与最大输出（config.json）
                 // 例：GLM-5.2 context=1000000 / GLM-5-Turbo context=204800
                 val limit = modelObj["limit"]?.jsonObject
+                // modalities.input 能力位（zcode.cjs supportsImages 判定源）：
+                // GLM 套餐仅 ["text"] → 粘贴图片会被服务端剥离成文字占位（模型看不到图），
+                // 前端据此在用户带图发送时提示（2026-08-26 实测定性）
+                val inputKinds = (modelObj["modalities"]?.jsonObject?.get("input") as? JsonArray)
+                    ?.mapNotNull { (it as? JsonPrimitive)?.contentOrNull } ?: emptyList()
                 buildJsonObject {
                     put("providerId", providerId)
                     put("providerName", providerName)
@@ -1675,6 +1685,7 @@ if (!window.__ZCODE_LOG_HOOK__) {
                     put("modelName", modelName)
                     limit?.get("context")?.jsonPrimitive?.content?.toLongOrNull()?.let { put("contextWindow", it) }
                     limit?.get("output")?.jsonPrimitive?.content?.toLongOrNull()?.let { put("maxOutput", it) }
+                    if ("image" in inputKinds) put("supportsImages", true)
                 }
             }
         }.flatten())
@@ -1725,9 +1736,13 @@ if (!window.__ZCODE_LOG_HOOK__) {
                 val modelObj = modelEl.jsonObject
                 val modelName = modelObj["name"]?.jsonPrimitive?.contentOrNull ?: modelId
                 val limit = modelObj["limit"]?.jsonObject
+                // modalities.input 能力位（与 handleListModels 同口径）：设置页展示「视觉」徽章
+                val inputKinds = (modelObj["modalities"]?.jsonObject?.get("input") as? JsonArray)
+                    ?.mapNotNull { (it as? JsonPrimitive)?.contentOrNull } ?: emptyList()
                 buildJsonObject {
                     put("modelId", modelId)
                     put("modelName", modelName)
+                    if ("image" in inputKinds) put("supportsImages", true)
                     limit?.get("context")?.jsonPrimitive?.contentOrNull?.toLongOrNull()?.let { put("contextWindow", it) }
                     limit?.get("output")?.jsonPrimitive?.contentOrNull?.toLongOrNull()?.let { put("maxOutput", it) }
                 }
@@ -1829,14 +1844,35 @@ if (!window.__ZCODE_LOG_HOOK__) {
             log.warn("Failed to write back config.json: ${e.message}")
             return errorResponse("写回失败: ${e.message}")
         }
+        val changesJson = JsonArray(changes.map { c ->
+            buildJsonObject {
+                put("providerId", c.id)
+                put("enabled", c.newEnabled)
+            }
+        })
+        // 多标签同步：发起标签由下方 modelToggled 应答合并，其余已开标签靠
+        // window.onModelsChanged 广播就地合并 + 重拉下拉（同 broadcastAppearance 模式）
+        broadcastModelChanges(changesJson.toString())
         return buildJsonObject {
             put("op", "modelToggled")
-            put("changes", JsonArray(changes.map { c ->
-                buildJsonObject {
-                    put("providerId", c.id)
-                    put("enabled", c.newEnabled)
+            put("changes", changesJson)
+        }
+    }
+
+    /** 模型 provider 启用/禁用变更广播到所有已开标签（modelToggleProvider 写回后调用）*/
+    private fun broadcastModelChanges(changesJson: String) {
+        SwingUtilities.invokeLater {
+            activePanels.forEach { panel ->
+                try {
+                    if (panel.disposed || !panel::jbCefBrowser.isInitialized) return@forEach
+                    panel.jbCefBrowser.cefBrowser.executeJavaScript(
+                        "window.onModelsChanged && window.onModelsChanged($changesJson);",
+                        "zcode-model-sync", 0
+                    )
+                } catch (e: Exception) {
+                    log.warn("Model sync push failed (tab sessionId=${panel.currentSessionId}): ${e.message}")
                 }
-            }))
+            }
         }
     }
 
@@ -2231,11 +2267,13 @@ if (!window.__ZCODE_LOG_HOOK__) {
         // 避免恢复链路静默切回默认 provider（个人套餐）；缺省时协议端走原有默认路径
         val providerId = msg["providerId"]?.jsonPrimitive?.content
         val modelId = msg["modelId"]?.jsonPrimitive?.content
+        // 粘贴图片附件（InputBox 压缩后的 base64 内联形态），协议通道原生透传
+        val attachments = parseAttachments(msg["attachments"])
 
         val client = project.zCodeService().getClient()
 
         val accepted = try {
-            client.send(sessionId, text, workspacePath, providerId = providerId, modelId = modelId)
+            client.send(sessionId, text, workspacePath, providerId = providerId, modelId = modelId, attachments = attachments)
         } catch (e: ZCodeProtocolException) {
             // 冷会话 send：CLI 升级/重启后的新进程里会话未激活（-32004 Session is not
             // active）。与 resumeAndReadMessages 同一模式——先 resume 激活再重试一次，
@@ -2273,7 +2311,7 @@ if (!window.__ZCODE_LOG_HOOK__) {
                     runCatching { client.subscribe(sessionId, onEvent = null) }
                         .onSuccess { subscribedSessions.add(sessionId) }
                 }
-                client.send(sessionId, text, workspacePath, providerId = providerId, modelId = modelId)
+                client.send(sessionId, text, workspacePath, providerId = providerId, modelId = modelId, attachments = attachments)
             } catch (e2: Exception) {
                 log.error("send failed (still failing after recovery retry)", e2)
                 return errorResponse("发送失败: ${e2.message}")
@@ -2285,6 +2323,70 @@ if (!window.__ZCODE_LOG_HOOK__) {
             put("sessionId", sessionId)
             put("accepted", "true")
             accepted["cliResponse"]?.let { put("cliResponse", it) }
+        }
+    }
+
+    /**
+     * op:send 的 attachments 数组（webview InputBox 压缩后的图片附件）→ AttachmentInput 列表。
+     * 非数组 / 空 / 字段缺失均 fail-soft 返回 null（按无附件发送，不阻断消息）。
+     */
+    private fun parseAttachments(el: JsonElement?): List<AttachmentInput>? {
+        val arr = el as? JsonArray ?: return null
+        val list = arr.mapNotNull { item ->
+            val o = item as? JsonObject ?: return@mapNotNull null
+            val dataBase64 = o["dataBase64"]?.jsonPrimitive?.content ?: return@mapNotNull null
+            AttachmentInput(
+                kind = "image",
+                filename = o["filename"]?.jsonPrimitive?.content ?: "image.png",
+                mimeType = o["mimeType"]?.jsonPrimitive?.content ?: "image/png",
+                sizeBytes = o["sizeBytes"]?.jsonPrimitive?.longOrNull,
+                dataBase64 = dataBase64,
+            )
+        }
+        return list.ifEmpty { null }
+    }
+
+    /**
+     * JCEF 剪贴板图片兜底（InputBox.onPaste 无 image 项且无文本时请求）：
+     * 读 AWT 系统剪贴板 DataFlavor.imageFlavor → PNG base64 返回。无图/异常返回
+     * 空对象（前端拿到空 base64 静默忽略，无副作用）。
+     * 剪贴板访问必须在 EDT（本 handler 跑 pooled 线程），PNG 编码留在 pooled 线程。
+     */
+    private fun handleGetClipboardImage(msg: JsonObject): JsonObject {
+        fun empty(): JsonObject = buildJsonObject {
+            put("op", "clipboardImage")
+            put("requestId", msg["requestId"]?.jsonPrimitive?.content ?: "")
+        }
+        var image: java.awt.image.BufferedImage? = null
+        var clipErr: String? = null
+        ApplicationManager.getApplication().invokeAndWait {
+            try {
+                image = java.awt.Toolkit.getDefaultToolkit()
+                    .systemClipboard.getData(java.awt.datatransfer.DataFlavor.imageFlavor)
+                    as? java.awt.image.BufferedImage
+            } catch (e: Exception) {
+                clipErr = e.message
+            }
+        }
+        if (image == null) {
+            // 剪贴板无图片内容是常态（FlavorUnsupported/IllegalState），不打错误级
+            log.info("clipboard image unavailable${clipErr?.let { ": $it" } ?: ""}")
+            return empty()
+        }
+        return try {
+            val baos = java.io.ByteArrayOutputStream()
+            javax.imageio.ImageIO.write(image, "png", baos)
+            val b64 = java.util.Base64.getEncoder().encodeToString(baos.toByteArray())
+            log.info("clipboard image captured: ${b64.length} base64 chars")
+            buildJsonObject {
+                put("op", "clipboardImage")
+                put("requestId", msg["requestId"]?.jsonPrimitive?.content ?: "")
+                put("base64", b64)
+                put("mediaType", "image/png")
+            }
+        } catch (e: Exception) {
+            log.warn("clipboard image encode failed: ${e.message}")
+            empty()
         }
     }
 
@@ -2323,7 +2425,15 @@ if (!window.__ZCODE_LOG_HOOK__) {
         } catch (e: Exception) {
             log.info("resume failed (may already be active): ${e.message}")
         }
-        return client.messages(sessionId)
+        val messages = client.messages(sessionId)
+        // 用户图片 part 读回适配：type:"file" + zcode-artifact:// uri → 内置 server
+        // 的 /zcode-image/ URL（<img> 可加载）。fail-soft，见 ImageArtifactMapper
+        return ImageArtifactMapper.mapMessages(messages) { sid, fileName ->
+            if (!ImageArtifactMapper.cacheFileExists(ZCodeWebviewServer.imageCacheRoot, sid, fileName)) {
+                return@mapMessages null
+            }
+            ZCodeWebviewServer.imageUrl(sid, fileName)
+        }
     }
 
     /**
@@ -3058,17 +3168,23 @@ if (!window.__ZCODE_LOG_HOOK__) {
         .getOrNull()
 
     /**
-     * op=enhancePrompt — 提示词润色（一次性 CLI headless 调用，零会话污染）
+     * op=enhancePrompt — 提示词润色
      *
-     * 走 [ZCodeProtocolClient.cliOneShot]（`zcode -p --json --mode yolo`，无 --resume），
-     * 模型按前端 currentModel 透传的 providerId/modelId 从 config.json 取凭证注入
-     * ZCODE_MODEL 环境；取不到（未选模型/oauth provider）回退客户端启动凭证。
-     * 超时按输入长度动态放大：45s 基础 + 每 400 字符 1s，上限 120s。
+     * 通道优先级（2026-08-26 实测定案）：
+     * 1. **快速通道**：常驻 app-server 的 `workspace/generateText`（裸 AI SDK 调用，
+     *    实测 input 30 token vs CLI 通道 14858，无进程冷启动，不产生会话记录）。
+     *    provider 未注册时经 `workspace/upsertModelProvider` 幂等补注册后重试一次。
+     * 2. **降级通道**：CLI 一次性 headless 调用（`zcode -p --json --mode yolo`，无 --resume），
+     *    快速通道不可用（app-server 未起/协议错/超时）时兜底，零会话污染。
+     *
+     * 模型按前端 currentModel 透传的 providerId/modelId；缺失时回退 config.json 默认
+     * provider。CLI 通道超时按输入长度动态放大：45s 基础 + 每 400 字符 1s，上限 120s。
      *
      * workspace 固定为临时目录 %TEMP%/zcode-gui-enhance（2026-08-23 sqlite 实测）：
      * CLI 会话按 --cwd 归属 project，挂当前项目会令每次润色在会话列表多出一条记录；
      * 挂固定临时目录则会话归到独立 temp project，不出现在任何真实项目列表，
      * 所有润色共用一个 temp project 也避免了 project 记录累积。
+     * （generateText 通道不产生会话，workspace 用当前项目以复用会话的 warm app。）
      */
     private fun handleEnhancePrompt(msg: JsonObject): JsonObject {
         val text = msg["text"]?.jsonPrimitive?.content
@@ -3080,33 +3196,16 @@ if (!window.__ZCODE_LOG_HOOK__) {
         try {
             val providerId = msg["providerId"]?.jsonPrimitive?.contentOrNull
             val modelId = msg["modelId"]?.jsonPrimitive?.contentOrNull
-            val credentialsOverride = if (!providerId.isNullOrBlank() && !modelId.isNullOrBlank()) {
-                com.zcode.ideaplugin.protocol.Credentials.credentialsFor(providerId, modelId)
-            } else null
-            if (providerId != null && credentialsOverride == null) {
-                log.info("enhancePrompt: credentials for $providerId/$modelId unavailable, falling back to default")
-            }
-            val timeoutMs = (45_000L + text.length / 400L * 1_000L).coerceAtMost(120_000L)
-            val prompt = buildString {
-                append(enhanceSystemPrompt)
-                append("\n\n待润色的原始提示词：\n")
-                append(text)
-            }
-            val client = project.zCodeService().getClient()
-            val result = client.cliOneShot(
-                prompt = prompt,
-                workspacePath = enhanceWorkspacePath(),
-                credentialsOverride = credentialsOverride,
-                timeoutMs = timeoutMs,
-            )
-            val enhanced = result["response"]?.jsonPrimitive?.contentOrNull
-                ?.takeIf { it.isNotBlank() }
-                ?: return enhanceError("润色结果为空")
-            log.info("enhancePrompt done (${enhanced.length} chars, model=${credentialsOverride?.model ?: "default"})")
+            val result = enhanceViaGenerateText(providerId, modelId, text)
+                ?: enhanceViaCliOneShot(providerId, modelId, text)
+                    ?: return enhanceError("润色结果为空")
+            val (enhanced, model) = result
+            log.info("enhancePrompt done (${enhanced.length} chars, model=$model)")
             return buildJsonObject {
                 put("op", "enhancePromptResult")
                 put("original", text)
                 put("text", enhanced)
+                put("model", model)
             }
         } catch (e: Exception) {
             log.warn("enhancePrompt failed: ${LogRedactor.redact(e.toString())}")
@@ -3114,6 +3213,105 @@ if (!window.__ZCODE_LOG_HOOK__) {
         } finally {
             enhanceInProgress.set(false)
         }
+    }
+
+    /**
+     * 快速通道：常驻 app-server 的 workspace/generateText。
+     *
+     * 模型解析优先级：前端透传（润色专用模型 > 会话当前模型）→ config.json 默认
+     * provider；透传模型失效（provider 已删/订阅过期，config.json 构造不出
+     * runtimeModel）时直接回退默认 provider，不降级 CLI。
+     *
+     * @return 润色文本 to 实际模型；通道不可用返回 null 交上层降级 CLI，异常不上抛。
+     */
+    private fun enhanceViaGenerateText(providerId: String?, modelId: String?, text: String): Pair<String, String>? {
+        val workspacePath = project.basePath ?: return null
+        return try {
+            val client = project.zCodeService().getClient()
+            val fallbackModel = com.zcode.ideaplugin.protocol.RuntimeModels.defaultRuntimeModel()
+                ?.get("model")?.jsonObject
+            var pid = providerId?.takeIf { it.isNotBlank() }
+            var mid = modelId?.takeIf { it.isNotBlank() }
+            if (pid == null || mid == null) {
+                pid = fallbackModel?.get("providerId")?.jsonPrimitive?.contentOrNull ?: return null
+                mid = fallbackModel?.get("modelId")?.jsonPrimitive?.contentOrNull ?: return null
+            } else if (com.zcode.ideaplugin.protocol.RuntimeModels.buildRuntimeModel(pid, mid) == null) {
+                // 专用/会话模型已失效：回退默认 provider（fallback 不可用才放弃本通道）
+                log.info("enhancePrompt: model $pid/$mid unavailable in config.json, falling back to default")
+                pid = fallbackModel?.get("providerId")?.jsonPrimitive?.contentOrNull ?: return null
+                mid = fallbackModel?.get("modelId")?.jsonPrimitive?.contentOrNull ?: return null
+            }
+            val timeoutMs = (45_000L + text.length / 400L * 1_000L).coerceAtMost(120_000L)
+            try {
+                callGenerateText(client, workspacePath, pid, mid, text, timeoutMs)
+            } catch (e: com.zcode.ideaplugin.protocol.ZCodeProtocolException) {
+                // -32603 = modelRef 指向的 provider 不在 workspace 目录（如 app-server 刚起
+                // 还没有任何会话 setModel 过）：幂等补注册后重试一次，仍失败才放弃本通道
+                if (e.code != -32603 || !e.message.orEmpty().contains("not configured", ignoreCase = true)) throw e
+                log.info("enhancePrompt: provider not in workspace catalog, upserting and retrying")
+                val providerDef = com.zcode.ideaplugin.protocol.RuntimeModels
+                    .buildRuntimeModel(pid, mid)
+                    ?.get("provider")?.jsonObject ?: return null
+                client.upsertModelProvider(workspacePath, providerDef)
+                callGenerateText(client, workspacePath, pid, mid, text, timeoutMs)
+            }
+        } catch (e: Exception) {
+            log.info("enhancePrompt: generateText channel unavailable (${e.message?.take(150)}), falling back to CLI")
+            null
+        }
+    }
+
+    /** generateText 调用 + 空结果判定（空文本按通道失败处理）；返回 文本 to modelId */
+    private fun callGenerateText(
+        client: com.zcode.ideaplugin.protocol.ZCodeProtocolClient,
+        workspacePath: String,
+        providerId: String,
+        modelId: String,
+        text: String,
+        timeoutMs: Long,
+    ): Pair<String, String> {
+        val result = client.generateText(
+            workspacePath = workspacePath,
+            providerId = providerId,
+            modelId = modelId,
+            prompt = text,
+            systemPrompt = enhanceSystemPrompt,
+            querySource = "workspace_prompt_enhance",
+            timeoutMs = timeoutMs,
+        )
+        val enhanced = result["text"]?.jsonPrimitive?.contentOrNull?.takeIf { it.isNotBlank() }
+            ?: throw com.zcode.ideaplugin.protocol.ZCodeProtocolException("generateText 返回空文本")
+        val actualModel = result["modelRef"]?.jsonObject?.get("modelId")?.jsonPrimitive?.contentOrNull ?: modelId
+        return enhanced to actualModel
+    }
+
+    /**
+     * 降级通道：CLI 一次性 headless 调用（原润色实现，保留为兜底）。
+     *
+     * @return 润色文本 to 模型；结果为空返回 null（上层转「润色结果为空」错误）。
+     */
+    private fun enhanceViaCliOneShot(providerId: String?, modelId: String?, text: String): Pair<String, String>? {
+        val credentialsOverride = if (!providerId.isNullOrBlank() && !modelId.isNullOrBlank()) {
+            com.zcode.ideaplugin.protocol.Credentials.credentialsFor(providerId, modelId)
+        } else null
+        if (providerId != null && credentialsOverride == null) {
+            log.info("enhancePrompt: credentials for $providerId/$modelId unavailable, falling back to default")
+        }
+        val timeoutMs = (45_000L + text.length / 400L * 1_000L).coerceAtMost(120_000L)
+        val prompt = buildString {
+            append(enhanceSystemPrompt)
+            append("\n\n待润色的原始提示词：\n")
+            append(text)
+        }
+        val client = project.zCodeService().getClient()
+        val result = client.cliOneShot(
+            prompt = prompt,
+            workspacePath = enhanceWorkspacePath(),
+            credentialsOverride = credentialsOverride,
+            timeoutMs = timeoutMs,
+        )
+        val enhanced = result["response"]?.jsonPrimitive?.contentOrNull?.takeIf { it.isNotBlank() } ?: return null
+        return enhanced to (credentialsOverride?.model ?: "default")
     }
 
     /** 润色失败统一回包（专用 op：前端弹窗错误态与全局 error 栏分流）*/

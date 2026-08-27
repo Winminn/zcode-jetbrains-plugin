@@ -30,7 +30,21 @@ import { useStore } from '@/store/useStore'
 import { PromptEnhancerDialog } from '@/components/PromptEnhancerDialog'
 import { AgentSelect } from '@/components/AgentSelect'
 import { InputBox } from '@/components/InputBox'
+import { writeEnhanceConfig } from '@/utils/enhanceConfig'
 import type { AgentDef } from '@/types/messages'
+
+// jsdom 29 的 window.localStorage 是空壳（setItem 等方法缺失）：Map 实现替换，
+// 供润色开关（persist kv）读写（breakdown-cache.spec 同款手法）
+const storage = new Map<string, string>()
+const lsMock = {
+  getItem: (k: string) => storage.get(k) ?? null,
+  setItem: (k: string, v: string) => { storage.set(k, v) },
+  removeItem: (k: string) => { storage.delete(k) },
+  key: (i: number) => Array.from(storage.keys())[i] ?? null,
+  get length() { return storage.size },
+  clear: () => storage.clear(),
+}
+Object.defineProperty(window, 'localStorage', { configurable: true, value: lsMock })
 
 const agentDef = (over: Partial<AgentDef> = {}): AgentDef => ({
   name: 'test-agent',
@@ -48,6 +62,9 @@ const agentDef = (over: Partial<AgentDef> = {}): AgentDef => ({
 
 beforeEach(() => {
   sentRequests.length = 0
+  storage.clear()
+  // 润色按钮默认关闭（设置→行为开关）：既有 InputBox 用例统一预置开启
+  storage.set('zcode.enhance.config', JSON.stringify({ enhanceEnabled: true }))
   // jsdom 不实现 innerText（InputBox 幽灵补全读取），polyfill 成 textContent
   if (!('innerText' in HTMLDivElement.prototype)) {
     Object.defineProperty(HTMLDivElement.prototype, 'innerText', {
@@ -77,7 +94,7 @@ beforeEach(() => {
 afterEach(cleanup)
 
 describe('润色状态机（store）', () => {
-  it('enhancePrompt 发请求带当前模型，置 enhancing + 弹窗占位', () => {
+  it('enhancePrompt 发请求带当前模型，置 enhancing + 弹窗占位（含模型徽标占位）', () => {
     useStore.getState().enhancePrompt('帮我写个函数')
     const req = sentRequests.find((r) => r.op === 'enhancePrompt')
     expect(req).toBeTruthy()
@@ -87,7 +104,24 @@ describe('润色状态机（store）', () => {
       modelId: 'GLM-5.2',
     })
     expect(useStore.getState().enhancing).toBe(true)
-    expect(useStore.getState().enhanceResult).toEqual({ original: '帮我写个函数' })
+    expect(useStore.getState().enhanceResult).toEqual({ original: '帮我写个函数', model: 'GLM-5.2' })
+  })
+
+  it('配置润色专用模型：请求优先带专用模型而非会话模型', () => {
+    storage.set(
+      'zcode.enhance.config',
+      JSON.stringify({ enhanceEnabled: true, enhanceModel: { providerId: 'p-other', modelId: 'GLM-4.7' } }),
+    )
+    useStore.getState().enhancePrompt('用专用模型润色')
+    const req = sentRequests.find((r) => r.op === 'enhancePrompt')
+    expect(req).toMatchObject({ providerId: 'p-other', modelId: 'GLM-4.7' })
+    expect(useStore.getState().enhanceResult?.model).toBe('GLM-4.7')
+    // 专用模型格式坏（缺 providerId）：按未配置处理回退会话模型
+    messageHandler!({ op: 'enhancePromptResult', original: '用专用模型润色', text: 'ok' })
+    storage.set('zcode.enhance.config', JSON.stringify({ enhanceEnabled: true, enhanceModel: { modelId: 'GLM-4.7' } }))
+    useStore.getState().enhancePrompt('坏配置回退')
+    const req2 = sentRequests.find((r) => r.op === 'enhancePrompt' && (r as any).text === '坏配置回退')
+    expect(req2).toMatchObject({ providerId: 'builtin:bigmodel-coding-plan', modelId: 'GLM-5.2' })
   })
 
   it('空文本不触发请求；enhancing 中防重入', () => {
@@ -98,20 +132,21 @@ describe('润色状态机（store）', () => {
     expect(sentRequests.filter((r) => r.op === 'enhancePrompt')).toHaveLength(1)
   })
 
-  it('enhancePromptResult 成功落地（关闭 loading 带文本）', () => {
+  it('enhancePromptResult 成功落地：model 覆盖占位（后端兜底回退时徽标更新）', () => {
     useStore.getState().enhancePrompt('原文')
-    messageHandler!({ op: 'enhancePromptResult', original: '原文', text: '润色后' })
+    messageHandler!({ op: 'enhancePromptResult', original: '原文', text: '润色后', model: 'GLM-5.3' })
     const s = useStore.getState()
     expect(s.enhancing).toBe(false)
-    expect(s.enhanceResult).toEqual({ original: '原文', text: '润色后' })
+    expect(s.enhanceResult).toEqual({ original: '原文', text: '润色后', model: 'GLM-5.3' })
   })
 
-  it('enhancePromptResult 失败落地（错误态）', () => {
+  it('enhancePromptResult 失败落地（错误态，model 保留占位）', () => {
     useStore.getState().enhancePrompt('原文')
     messageHandler!({ op: 'enhancePromptResult', error: 'CLI 超时' })
     const s = useStore.getState()
     expect(s.enhancing).toBe(false)
     expect(s.enhanceResult?.error).toBe('CLI 超时')
+    expect(s.enhanceResult?.model).toBe('GLM-5.2')
   })
 
   it('clearEnhanceResult 关弹窗', () => {
@@ -149,6 +184,17 @@ describe('PromptEnhancerDialog 交互', () => {
     )
     expect(document.querySelector('.prompt-enhancer__error')?.textContent).toContain('boom')
     expect((screen.getByRole('button', { name: /使用润色|Use enhanced/ }) as HTMLButtonElement).disabled).toBe(true)
+  })
+
+  it('模型徽标：有 model 时标题行右侧渲染，无 model 不渲染', () => {
+    const { rerender } = render(
+      <PromptEnhancerDialog enhancing={false} result={{ original: '原文', text: '结果', model: 'GLM-5.3' }} onUse={() => {}} onClose={() => {}} />,
+    )
+    expect(document.querySelector('.prompt-enhancer__model')?.textContent).toBe('GLM-5.3')
+    rerender(
+      <PromptEnhancerDialog enhancing={false} result={{ original: '原文', text: '结果' }} onUse={() => {}} onClose={() => {}} />,
+    )
+    expect(document.querySelector('.prompt-enhancer__model')).toBeNull()
   })
 
   it('结果态：Enter=使用、Esc=关闭、点击「使用」回调带文本', () => {
@@ -251,5 +297,52 @@ describe('InputBox 发送拼装（@<name> 前缀）', () => {
     fireEvent.click(document.querySelector('.enhance-prompt-button')!)
     const req = sentRequests.find((r) => r.op === 'enhancePrompt')
     expect(req).toMatchObject({ text: '写一个排序函数' })
+  })
+
+  it('润色按钮悬浮提示：有文本=功能说明（portal 信息卡，JCEF 无原生 title）', () => {
+    const { } = setup(null)
+    const btn = document.querySelector('.enhance-prompt-button') as HTMLButtonElement
+    expect(btn.disabled).toBe(false)
+    fireEvent.mouseEnter(btn)
+    const tip = document.body.querySelector('.model-info-tip') as HTMLDivElement
+    expect(tip).toBeTruthy()
+    expect(tip.textContent).toBe('AI 润色：优化输入框内容，确认后替换')
+    fireEvent.mouseLeave(btn)
+    expect(document.body.querySelector('.model-info-tip')).toBeNull()
+  })
+
+  it('润色按钮悬浮提示：空输入禁用态=引导文案（pointer-events 保 hover 可达）', () => {
+    // 直接渲染、从不填入文本：按钮初始即 disabled
+    render(
+      <InputBox
+        onSend={() => {}}
+        currentModel={{ modelId: 'GLM-5.2', providerId: 'p1' }}
+        onModelSelect={() => {}}
+      />,
+    )
+    const btn = document.querySelector('.enhance-prompt-button') as HTMLButtonElement
+    expect(btn.disabled).toBe(true)
+    fireEvent.mouseEnter(btn)
+    const tip = document.body.querySelector('.model-info-tip') as HTMLDivElement
+    expect(tip).toBeTruthy()
+    expect(tip.textContent).toBe('AI 润色：输入内容后可用')
+  })
+
+  it('功能开关：默认关闭不渲染按钮；开启事件即时显示', async () => {
+    storage.delete('zcode.enhance.config')
+    render(
+      <InputBox
+        onSend={() => {}}
+        currentModel={{ modelId: 'GLM-5.2', providerId: 'p1' }}
+        onModelSelect={() => {}}
+      />,
+    )
+    // 默认关闭：按钮与悬浮提示逻辑都不在 DOM
+    expect(document.querySelector('.enhance-prompt-button')).toBeNull()
+    // 设置页写入（dispatch 同标签变更事件）→ InputBox 重读即时显示
+    writeEnhanceConfig({ enhanceEnabled: true })
+    await waitFor(() => {
+      expect(document.querySelector('.enhance-prompt-button')).toBeTruthy()
+    })
   })
 })

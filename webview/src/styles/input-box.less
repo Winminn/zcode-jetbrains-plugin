@@ -120,6 +120,108 @@
   padding: 8px 12px 6px;
 }
 
+/* ===== 粘贴图片附件（cc-gui AttachmentList 同款：缩略图 + hover 显示右上角 ×）===== */
+/* 模型不支持图片提示条（占满一行）*/
+.img-unsupported-tip {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 8px;
+  border-radius: 6px;
+  background: rgba(204, 153, 51, 0.12);
+  color: #d9a355;
+  font-size: 11px;
+  line-height: 1.4;
+
+  .codicon {
+    font-size: 12px;
+    flex-shrink: 0;
+  }
+}
+
+.img-attachment {
+  position: relative;
+  display: inline-flex;
+  width: 48px;
+  height: 48px;
+  border-radius: 8px;
+  overflow: hidden;
+  border: 1px solid var(--border-secondary);
+  background: var(--bg-tertiary);
+
+  .img-attachment__thumb {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    cursor: zoom-in;
+  }
+
+  .img-attachment__remove {
+    position: absolute;
+    top: 2px;
+    right: 2px;
+    width: 16px;
+    height: 16px;
+    padding: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border: none;
+    border-radius: 50%;
+    background: rgba(0, 0, 0, 0.55);
+    color: #fff;
+    font-size: 11px;
+    line-height: 1;
+    cursor: pointer;
+    opacity: 0;
+    transition: opacity 0.15s;
+
+    &:hover {
+      background: rgba(0, 0, 0, 0.75);
+    }
+  }
+
+  &:hover .img-attachment__remove {
+    opacity: 1;
+  }
+}
+
+/* ===== 图片大图预览（ImagePreview，portal 挂 body，脱离容器裁剪）===== */
+.image-preview-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.6);
+  cursor: zoom-out;
+
+  .image-preview-content {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    max-width: 90vw;
+    max-height: 85vh;
+
+    img {
+      max-width: 90vw;
+      max-height: 80vh;
+      object-fit: contain;
+      border-radius: 4px;
+    }
+
+    .image-preview-title {
+      color: #fff;
+      font-size: 12px;
+      text-align: center;
+      opacity: 0.85;
+      word-break: break-all;
+    }
+  }
+}
+
 /* ===== contenteditable 编辑区（cc-gui input-area.css .input-editable）===== */
 .input-editable-wrapper {
   padding: 6px 8px;
@@ -434,6 +536,50 @@
   color: var(--text-muted);
   text-transform: uppercase;
   letter-spacing: 0.3px;
+}
+
+/* 下拉底部刷新行：Zcode 客户端改了模型配置后无需切设置页即可拉新。
+   sticky 吸底：下拉是 300px 滚动容器，不吸底时模型多会把入口滚出视口 */
+.selector-dropdown-refresh {
+  position: sticky;
+  bottom: 0;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 8px;
+  margin-top: 2px;
+  border-top: 1px solid var(--dropdown-border, #454545);
+  font-size: 11px;
+  color: var(--text-muted);
+  cursor: pointer;
+  border-radius: 0 0 3px 3px;
+  user-select: none;
+  background: var(--dropdown-bg, #252526);
+
+  .codicon {
+    font-size: 13px;
+    line-height: 1;
+  }
+
+  &:hover {
+    background: var(--dropdown-hover, #2a2d2e);
+    color: var(--text-primary);
+  }
+
+  &.is-refreshing {
+    cursor: default;
+    pointer-events: none; /* 刷新中禁点（含 hover 冒泡），转圈即视觉反馈 */
+
+    .codicon {
+      animation: selector-refresh-spin 0.9s linear infinite;
+    }
+  }
+}
+
+@keyframes selector-refresh-spin {
+  to {
+    transform: rotate(360deg);
+  }
 }
 
 .selector-dropdown-item {

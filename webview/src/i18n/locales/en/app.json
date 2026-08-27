@@ -88,5 +88,40 @@
     "cliNotFound": "zcode.cjs not found in standard install locations. Please install the ZCode client first",
     "credsMissing": "config file does not exist: {{arg}}. Please log in once with the ZCode client",
     "credsInvalid": "config file is invalid: {{arg}}. Please log in again with the ZCode client"
+  },
+  "permissionApproval": {
+    "title": "Permission Approval",
+    "highRisk": "High Risk",
+    "moreFields": "{{count}} more field(s) not shown",
+    "options": {
+      "allow_once": "Allow once",
+      "allow_project": "Always allow in this project",
+      "deny": "Deny"
+    },
+    "optionDesc": {
+      "allow_project": "Do not ask again for matching requests in this project",
+      "allow_once": "Allow this request only; you will be asked again next time"
+    },
+    "reasons": {
+      "criticalRisk": "Critical risk tools require explicit approval",
+      "highRisk": "High risk tools require explicit approval",
+      "sideEffect": "Tool has side effects and requires approval",
+      "toolRequires": "Tool {{tool}} requires approval",
+      "mcpExternal": "MCP tool {{tool}} executes through an external server"
+    },
+    "fields": {
+      "command": "Command",
+      "cmd": "Command",
+      "description": "Description",
+      "file_path": "File",
+      "filePath": "File",
+      "path": "Path",
+      "url": "URL",
+      "query": "Query",
+      "pattern": "Pattern",
+      "content": "Content"
+    },
+    "riskCritical": "Critical Risk",
+    "riskHigh": "High Risk"
   }
 }
