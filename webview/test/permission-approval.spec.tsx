@@ -23,7 +23,7 @@ vi.mock('@/ipc/bridge', () => ({
 
 import '@/i18n/config'
 import { PermissionApprovalDialog } from '@/components/PermissionApprovalDialog'
-import { useStore } from '@/store/useStore'
+import { useStore, handleResponse } from '@/store/useStore'
 import type { PermissionOption } from '@/types/messages'
 
 /** zcode.cjs t5() 标准三选项样本 */
@@ -83,6 +83,46 @@ describe('权限审批 store 链路', () => {
     })
     expect(useStore.getState().permissionRequest).toBeNull()
     expect(useStore.getState().askUserPendingActive).toBe(false)
+  })
+
+  // ==== ack 精确匹配关窗（2026-08-27 缺陷Z真凶修复回归）====
+  // 旧线程 staggered 超时的 ack 曾无差别关窗，把面板上其他请求的新弹窗顶掉
+
+  const dispatch = (msg: Parameters<typeof handleResponse>[0]) =>
+    act(() => { handleResponse(msg, useStore.setState, useStore.getState) })
+
+  it('别人的 askUserAck（requestId 不匹配）不关当前弹窗，豁免标志保持', () => {
+    dispatch({ op: 'permissionRequest', requestId: 'r2', toolName: 'Edit', reason: 'x', options: OPTIONS, deadlineMs: Date.now() + 300_000 })
+    dispatch({ op: 'askUserAck', requestId: 'r1-old-timeout' })
+    const st = useStore.getState()
+    expect(st.permissionRequest?.requestId).toBe('r2')
+    expect(st.askUserPendingActive).toBe(true)
+  })
+
+  it('requestId 匹配的 askUserAck 关对应弹窗并清豁免标志', () => {
+    dispatch({ op: 'permissionRequest', requestId: 'r2', toolName: 'Edit', reason: 'x', options: OPTIONS, deadlineMs: Date.now() + 300_000 })
+    dispatch({ op: 'askUserAck', requestId: 'r2' })
+    expect(useStore.getState().permissionRequest).toBeNull()
+    expect(useStore.getState().askUserPendingActive).toBe(false)
+  })
+
+  it('无 requestId 的 askUserAck（旧格式兼容）全清弹窗', () => {
+    dispatch({ op: 'permissionRequest', requestId: 'r2', toolName: 'Edit', reason: 'x', options: OPTIONS, deadlineMs: Date.now() + 300_000 })
+    dispatch({ op: 'askUserAck' })
+    expect(useStore.getState().permissionRequest).toBeNull()
+    expect(useStore.getState().askUserPendingActive).toBe(false)
+  })
+
+  it('permissionRequestRefresh 只更新权限弹窗的 requestId（id 保活，其余状态不动）', () => {
+    dispatch({ op: 'permissionRequest', requestId: 'id-old', toolName: 'Edit', reason: 'x', options: OPTIONS, deadlineMs: 12345 })
+    dispatch({ op: 'permissionRequestRefresh', requestId: 'id-new' })
+    const st = useStore.getState()
+    expect(st.permissionRequest?.requestId).toBe('id-new')
+    expect(st.permissionRequest?.deadlineMs).toBe(12345)
+    expect(st.permissionRequest?.toolName).toBe('Edit')
+    // 刷新后的 id 能被 ack 精确命中（点击走新 id）
+    dispatch({ op: 'askUserAck', requestId: 'id-new' })
+    expect(useStore.getState().permissionRequest).toBeNull()
   })
 })
 

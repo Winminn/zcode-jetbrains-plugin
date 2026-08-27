@@ -133,4 +133,26 @@ class ZCodeServiceImplTest {
         // 应答体不含 permissionUpdates 字段（S2 strict schema，多余字段即校验失败——此处仅验证兜底路径的干净形状）
         assertNull(ZCodeServiceImpl.buildPermissionResult(bare, "accept", JsonPrimitive("allow_once"))["permissionUpdates"])
     }
+
+    // ============ 回合匹配判据（2026-08-27 弹窗误杀修复回归）============
+    // 缺陷场景：同会话内工具超时重试 → 旧回合 turn.failed 晚于新回合弹窗创建到达 →
+    // 按 sessionId 一刀切的废弃清理误杀新弹窗。修复 = pending 记创建时活动回合，
+    // 废弃/合并均按 sameTurn 判据匹配。
+
+    @Test
+    fun `回合匹配 双方已知且相同视为同回合（同族重发共享、终止正常废弃）`() {
+        assertTrue(ZCodeServiceImpl.sameTurn("turn-1", "turn-1"))
+    }
+
+    @Test
+    fun `回合匹配 双方已知且不同视为不同回合（迟到终止不误杀新回合弹窗）`() {
+        assertFalse(ZCodeServiceImpl.sameTurn("turn-1", "turn-2"))
+    }
+
+    @Test
+    fun `回合匹配 任一方未知保守视为同回合（回合事件未到时保持旧清理能力）`() {
+        assertTrue(ZCodeServiceImpl.sameTurn(null, "turn-2"))
+        assertTrue(ZCodeServiceImpl.sameTurn("turn-1", null))
+        assertTrue(ZCodeServiceImpl.sameTurn(null, null))
+    }
 }

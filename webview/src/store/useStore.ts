@@ -1626,7 +1626,8 @@ function formatTurnError(err: TurnErrorInfo): string {
     : i18n.t('app.turnFailedNoDetail')
 }
 
-function handleResponse(
+/** 后端消息归约（导出供测试直接驱动分发链路；运行时由 bridge onMessage 挂接）*/
+export function handleResponse(
   msg: JavaResponse,
   set: (partial: Partial<StoreState>) => void,
   get: () => StoreState,
@@ -2085,16 +2086,41 @@ function handleResponse(
       })
       break
 
+    case 'permissionRequestRefresh': {
+      // 服务端同族重发换新 id 时保活弹窗：只更新当前权限弹窗的 requestId（点击应答
+      // 永远命中服务端在等的 id），不重建弹窗不重置倒计时。非权限弹窗/无弹窗时忽略
+      const cur = get().permissionRequest
+      if (cur && cur.requestId !== msg.requestId) {
+        set({ permissionRequest: { ...cur, requestId: msg.requestId } })
+      }
+      break
+    }
+
     case 'askUserPending':
       // Java 广播的反向请求挂起标志（多标签同会话：无弹窗的面板靠它豁免看门狗）。
       // 只维护标志，不动弹窗状态（弹窗由 askUserAck / 组件 onClose 关闭）
       set({ askUserPendingActive: msg.active })
       break
 
-    case 'askUserAck':
-      // Java 确认已收到用户选择（或回合终止/超时联动废弃），关闭弹窗
-      set({ askUser: null, exitPlanApproval: null, permissionRequest: null, askUserPendingActive: false })
+    case 'askUserAck': {
+      // Java 确认某请求已终结（用户已应答/超时 deny/回合终止废弃），关闭对应弹窗。
+      // 必须按 requestId 精确匹配：服务端重发会在插件侧留下 staggered 的 5 分钟超时
+      // 线程，旧线程超时的 ack 若无差别关窗，会把面板上其他请求仍挂着的弹窗顶掉
+      // （2026-08-27 实测真凶）。无 requestId 的 ack（兼容旧格式）才全清
+      const rid = msg.requestId
+      const st = get()
+      const nextAskUser = !rid || st.askUser?.requestId === rid ? null : st.askUser
+      const nextPlan = !rid || st.exitPlanApproval?.requestId === rid ? null : st.exitPlanApproval
+      const nextPerm = !rid || st.permissionRequest?.requestId === rid ? null : st.permissionRequest
+      // 挂起标志仅在没有任何弹窗残留时才复位（看门狗豁免语义，多弹窗并存防提前清零）
+      set({
+        askUser: nextAskUser,
+        exitPlanApproval: nextPlan,
+        permissionRequest: nextPerm,
+        askUserPendingActive: nextAskUser || nextPlan || nextPerm ? st.askUserPendingActive : false,
+      })
       break
+    }
 
     case 'ideTheme':
     case 'files':

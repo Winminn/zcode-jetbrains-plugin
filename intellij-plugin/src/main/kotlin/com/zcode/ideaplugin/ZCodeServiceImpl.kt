@@ -68,6 +68,14 @@ class ZCodeServiceImpl(private val project: Project) : ZCodeService, com.intelli
             }
         }
 
+        /**
+         * 回合匹配判据（废弃清理/请求合并共用，纯函数单测覆盖）：双方 turnId 已知
+         * 且不同 → 属于不同回合；任一方未知（null，params 缺省/终止事件未带）→
+         * 保守视为同回合，保持旧的会话级清理/共享能力
+         */
+        internal fun sameTurn(a: String?, b: String?): Boolean =
+            a == null || b == null || a == b
+
         /** 活跃 Service 实例（多项目并开各一个）；宿主探针聚合判定用，dispose 移除 */
         private val activeInstances = java.util.concurrent.CopyOnWriteArrayList<ZCodeServiceImpl>()
 
@@ -153,6 +161,10 @@ class ZCodeServiceImpl(private val project: Project) : ZCodeService, com.intelli
         val options: JsonArray? = null,
         /** 服务端权限族 id（params.requestId，perm_*）：同族重发恒同值、新请求新值 */
         val familyId: String? = null,
+        /** 请求所属回合（params.turnId，服务端权威）：回合终止废弃按回合精确匹配，
+         *  防迟到的旧回合终止事件误杀同会话新回合刚弹出的审批窗。null=服务端未带
+         *  （异常形态），匹配时保守按会话处理 */
+        val turnId: String? = null,
     )
 
     /** 族应答缓存条目：permission 请求已给服务端的最终应答（用户选择/超时 deny）*/
@@ -274,13 +286,18 @@ class ZCodeServiceImpl(private val project: Project) : ZCodeService, com.intelli
             // 回合终止联动废弃待应答弹窗：挂起的反向请求随回合而生，回合死了弹窗即死
             // （服务端对未应答权限请求重试到头会自行放弃并 failed 收尾，插件此前无感知，
             // 死弹窗留到 5 分钟超时批量 decline——迟到应答风暴即 P3/P4 污染源）。
-            // 按 sessionId 定向废弃：双会话并发时 A 会话收尾不误伤 B 会话挂起的弹窗；
+            // 按 (sessionId, turnId) 定向废弃：双会话并发时 A 会话收尾不误伤 B 会话挂起
+            // 的弹窗；同会话内旧回合终止事件晚到时（工具超时重试的竞态窗口），turnId
+            // 不匹配保住新回合刚弹出的弹窗（2026-08-27 实测：重试弹窗被迟到清理顶掉）。
             // 正常应答路径 pending 已清空，此处 no-op 无副作用
             c.addGlobalEventListener { event ->
                 if (event.type == "turn.completed" || event.type == "turn.failed") {
-                    if (pendingUserInputs.values.any { it.sessionId == event.sessionId }) {
-                        log.info("[askUser] Turn terminated (${event.type}, ${event.sessionId}), discarding pending ask dialog of that session")
-                        abortPendingUserInputs(event.sessionId)
+                    if (pendingUserInputs.values.any {
+                            it.sessionId == event.sessionId && sameTurn(it.turnId, event.turnId)
+                        }
+                    ) {
+                        log.info("[askUser] Turn terminated (${event.type}, ${event.sessionId}, turn=${event.turnId}), discarding its pending dialogs")
+                        abortPendingUserInputs(event.sessionId, event.turnId)
                     }
                     notifyTurnEndIfWanted(event)
                 }
@@ -432,18 +449,26 @@ class ZCodeServiceImpl(private val project: Project) : ZCodeService, com.intelli
             return buildJsonObject { put("action", "decline") }
         }
 
-        val existing = pendingUserInputs.values.firstOrNull { it.contentKey == contentKey }
+        // 共享匹配加回合条件：同回合的服务端重试共享旧 future（各 handler 线程向自己
+        // 的 id 应答），不重复弹窗；跨回合同内容（同会话连续两回合问同样的问题）是
+        // 新请求——旧 future 可能已随旧回合废弃，共享会拿到哨兵误失败。
+        // 回合归属取 params.turnId（服务端权威，与事件到达顺序无关）
+        val currentTurn = params["turnId"]?.jsonPrimitive?.contentOrNull
+        val existing = pendingUserInputs.values.firstOrNull {
+            it.contentKey == contentKey && sameTurn(it.turnId, currentTurn)
+        }
         val future: CompletableFuture<JsonObject>
         if (existing != null) {
             // 服务端重试同一请求：共享旧 future（各 handler 线程向自己的 id 应答），
             // 不重复弹窗——重复推送会重建弹窗、重置用户已选状态
             pendingUserInputs[serverRequestId] =
-                PendingUserInput(contentKey, existing.future, existing.targetPanel, existing.sessionId)
+                PendingUserInput(contentKey, existing.future, existing.targetPanel, existing.sessionId, turnId = existing.turnId)
             future = existing.future
             log.info("[askUser] Server retried same request, sharing pending wait: $serverRequestId")
         } else {
             future = CompletableFuture()
-            pendingUserInputs[serverRequestId] = PendingUserInput(contentKey, future, targetPanel, sessionId)
+            pendingUserInputs[serverRequestId] =
+                PendingUserInput(contentKey, future, targetPanel, sessionId, turnId = currentTurn)
 
             // ExitPlanMode 走专门的计划审批通道：params = {toolName:"ExitPlanMode", input:{plan:"..."}}
             // 它没有 questions 数组，而是 input.plan 直接是计划 markdown 文本。
@@ -483,8 +508,13 @@ class ZCodeServiceImpl(private val project: Project) : ZCodeService, com.intelli
             future.get(USER_INPUT_TIMEOUT_MS, java.util.concurrent.TimeUnit.MILLISECONDS)
         } catch (e: java.util.concurrent.TimeoutException) {
             log.warn("[askUser] Answer wait timed out (5 min), auto-declining: $serverRequestId")
+            // 关窗 ack 覆盖共享此 future 的全部 id（清理前收集），防弹窗 id 已换新时
+            // 只推本线程旧 id 关不掉弹窗（与权限超时路径同款纪律）
+            val familyIds = pendingUserInputs.entries.filter { it.value.future === future }.map { it.key }
             cleanupPendingFor(future)
-            targetPanel.pushToWebview(buildJsonObject { put("op", "askUserAck") })
+            familyIds.forEach { fid ->
+                targetPanel.pushToWebview(buildJsonObject { put("op", "askUserAck"); put("requestId", fid) })
+            }
             buildJsonObject { put("action", "decline") }
         } catch (e: InterruptedException) {
             Thread.currentThread().interrupt()
@@ -515,24 +545,41 @@ class ZCodeServiceImpl(private val project: Project) : ZCodeService, com.intelli
 
         val contentKey = "PERM|$toolName|${params["input"]?.toString() ?: ""}"
         val sessionId = params["sessionId"]?.jsonPrimitive?.contentOrNull
+        // 回合归属取 params.turnId（服务端权威，与事件到达顺序无关）
+        val currentTurn = params["turnId"]?.jsonPrimitive?.contentOrNull
         val targetPanel = (sessionId?.let { findPanelForSession(it) }) ?: activePanel
         if (targetPanel == null) {
             log.warn("[permission] No panel available, denying: $serverRequestId")
             return buildJsonObject { put("decision", "deny"); put("reason", "No panel available") }
         }
 
-        val existing = pendingUserInputs.values.firstOrNull { it.contentKey == contentKey }
+        // 权限请求合并按族 id：服务端同族重发恒同 familyId → 共享 future 不重复弹窗；
+        // 不再按 contentKey 合并——工具超时重试是同会话新回合的新族且参数相同，
+        // contentKey 会撞车共享到已随旧回合废弃的 future（2026-08-27 实测顶掉/静默
+        // 失败的根因之一）。familyId 缺失（协议异常防御）才退回 contentKey+回合
+        val existing = if (familyId != null) {
+            pendingUserInputs.values.firstOrNull { it.familyId == familyId }
+        } else {
+            pendingUserInputs.values.firstOrNull {
+                it.contentKey == contentKey && sameTurn(it.turnId, currentTurn)
+            }
+        }
         val future: CompletableFuture<JsonObject>
         if (existing != null) {
             pendingUserInputs[serverRequestId] =
-                PendingUserInput(contentKey, existing.future, existing.targetPanel, existing.sessionId, existing.options, existing.familyId)
+                PendingUserInput(contentKey, existing.future, existing.targetPanel, existing.sessionId, existing.options, existing.familyId, existing.turnId)
             future = existing.future
-            log.info("[permission] Server retried same request, sharing pending wait: $serverRequestId")
+            // 弹窗 id 保活：重发换新 id，但前端弹窗还记着旧 id——用户点击会应答到
+            // 服务端已放弃的旧 id（迟到应答无效，实测第一次点击白点）。推轻量刷新
+            // 只更新前端弹窗的 requestId（不重建弹窗不重置倒计时），点击永远命中
+            // 服务端当前在等的 id
+            targetPanel.pushToWebview(buildJsonObject { put("op", "permissionRequestRefresh"); put("requestId", serverRequestId) })
+            log.info("[permission] Server retried same family, sharing pending wait: $serverRequestId (family=$familyId)")
         } else {
             future = CompletableFuture()
             val options = params["options"] as? JsonArray ?: JsonArray(emptyList())
             pendingUserInputs[serverRequestId] =
-                PendingUserInput(contentKey, future, targetPanel, sessionId, options, familyId)
+                PendingUserInput(contentKey, future, targetPanel, sessionId, options, familyId, currentTurn)
 
             val askMsg = buildJsonObject {
                 put("op", "permissionRequest")
@@ -557,8 +604,14 @@ class ZCodeServiceImpl(private val project: Project) : ZCodeService, com.intelli
             answered
         } catch (e: java.util.concurrent.TimeoutException) {
             log.warn("[permission] Approval wait timed out (5 min), denying: $serverRequestId")
+            // 关窗 ack 覆盖该族全部 id（清理前收集）：弹窗 id 已被 refresh 保活换新，
+            // 只推本线程的旧 id 关不掉弹窗（2026-08-27 五轮实测：弹窗超时残留壳，
+            // 用户点击白点）
+            val familyIds = pendingUserInputs.entries.filter { it.value.future === future }.map { it.key }
             cleanupPendingFor(future)
-            targetPanel.pushToWebview(buildJsonObject { put("op", "askUserAck") })
+            familyIds.forEach { fid ->
+                targetPanel.pushToWebview(buildJsonObject { put("op", "askUserAck"); put("requestId", fid) })
+            }
             val deny = buildJsonObject { put("decision", "deny"); put("reason", "Timed out") }
             familyId?.let { rememberFamilyAnswer(it, deny) }
             deny
@@ -601,7 +654,7 @@ class ZCodeServiceImpl(private val project: Project) : ZCodeService, com.intelli
             future.complete(permResult)
             cleanupPendingFor(future)
             log.info("[permission] User answered, responding to server: decision=${permResult["decision"]}")
-            return buildJsonObject { put("op", "askUserAck") }
+            return buildJsonObject { put("op", "askUserAck"); put("requestId", requestId) }
         }
 
         // 构建应答 result（格式：interaction/requestUserInput 的 result）
@@ -639,7 +692,7 @@ class ZCodeServiceImpl(private val project: Project) : ZCodeService, com.intelli
         // 服务端重试的其他 id 共享此 future，一并清理
         cleanupPendingFor(future)
         log.info("[askUser] User answered, responding to server: action=$action answer=$normalizedAnswer")
-        return buildJsonObject { put("op", "askUserAck") }
+        return buildJsonObject { put("op", "askUserAck"); put("requestId", requestId) }
     }
 
     /**
@@ -671,9 +724,9 @@ class ZCodeServiceImpl(private val project: Project) : ZCodeService, com.intelli
         }
     }
 
-    override fun abortPendingUserInputs(sessionId: String?) {
+    override fun abortPendingUserInputs(sessionId: String?, turnId: String?) {
         val victims = pendingUserInputs.entries.filter {
-            sessionId == null || it.value.sessionId == sessionId
+            (sessionId == null || it.value.sessionId == sessionId) && sameTurn(it.value.turnId, turnId)
         }
         if (victims.isEmpty()) return
         // 回合已死：complete 哨兵让各 handler 线程立即退出，协议层对哨兵改发
@@ -685,12 +738,20 @@ class ZCodeServiceImpl(private val project: Project) : ZCodeService, com.intelli
         val sentinel = buildJsonObject { put(DISCARD_MARKER, true) }
         victims.forEach {
             pendingUserInputs.remove(it.key)
+            // 被废弃的权限族记哨兵缓存：该族迟到重发短路返回哨兵 → 协议层改发
+            // error（与本次废弃同语义），不复活弹窗。此前废弃路径不记缓存，是
+            // 「已废弃族重发复活弹窗」缺陷面的残留入口；askUser/ExitPlanMode 无族概念
+            it.value.familyId?.let { fid -> familyAnswers[fid] = FamilyAnswer(sentinel, System.currentTimeMillis()) }
             it.value.future.complete(sentinel)
         }
-        val ack = buildJsonObject { put("op", "askUserAck") }
-        targetPanels.forEach { it?.pushToWebview(ack) }
+        // ack 逐 victim 带 requestId（前端精确匹配关窗）：无差别单条 ack 会误关
+        // 面板上其他回合/请求仍挂着的弹窗
+        victims.forEach { v ->
+            targetPanels.forEach { it?.pushToWebview(buildJsonObject { put("op", "askUserAck"); put("requestId", v.key) }) }
+        }
         if (pendingUserInputs.isEmpty()) broadcastAskUserPending(false)
-        log.info("[askUser] Turn interrupted (sessionId=${sessionId ?: "all"}), discarding pending ask dialog on ${targetPanels.size} panel(s) with discard marker (no late answer sent)")
+        val victimTurns = victims.map { "${it.key}@turn=${it.value.turnId ?: "null"}" }.joinToString(", ")
+        log.info("[askUser] Turn interrupted (sessionId=${sessionId ?: "all"}, turn=${turnId ?: "any"}), discarding ${victims.size} dialog(s) [$victimTurns] on ${targetPanels.size} panel(s) with discard marker (no late answer sent)")
     }
 }
 

@@ -728,7 +728,10 @@ export type JavaResponse =
     }
   | { op: 'askUserPending'; active: boolean }
   | { op: 'askUserStateAck' }
-  | { op: 'askUserAck' }
+  /** 服务端同族重发换新 id：保活权限弹窗的 requestId（点击命中服务端当前在等的 id）*/
+  | { op: 'permissionRequestRefresh'; requestId: string }
+  /** 反向请求终结确认；requestId 缺省 = 旧格式兜底全清（正常路径都带 id 精确关窗）*/
+  | { op: 'askUserAck'; requestId?: string }
   | { op: 'tabCreating' }
   | { op: 'browserPaneToggled'; visible: boolean }
   | { op: 'tabTitleSet' }
