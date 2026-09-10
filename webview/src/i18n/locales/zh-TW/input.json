@@ -74,6 +74,10 @@
     "groupSkills": "技能",
     "groupAgents": "子智慧體"
   },
+  "sessRef": {
+    "empty": "沒有匹配的近期會話",
+    "messages": "條訊息"
+  },
   "agent": {
     "select": "智慧體",
     "empty": "暫無子智慧體，去設定頁新建",

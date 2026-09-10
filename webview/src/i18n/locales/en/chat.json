@@ -42,7 +42,9 @@
     "edit": "Edit",
     "editCancel": "Cancel",
     "editRegenerate": "Regenerate",
-    "fork": "Fork after this reply"
+    "fork": "Fork after this reply",
+    "showRaw": "Show raw text",
+    "showRefs": "Show reference chips"
   },
   "edit": {
     "replaying": "Regenerating with the edited message…",

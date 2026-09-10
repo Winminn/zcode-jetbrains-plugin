@@ -16,7 +16,8 @@
     "EnterPlanMode": "進入規劃",
     "ExitPlanMode": "退出規劃",
     "TaskStop": "停止任務",
-    "TaskOutput": "檢視輸出"
+    "TaskOutput": "檢視輸出",
+    "ReadSessionContext": "讀取會話上下文"
   },
   "mcpToolName": "MCP·{{name}}",
   "editFileTitle": "編輯檔案：{{name}}",

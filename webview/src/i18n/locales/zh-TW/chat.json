@@ -42,7 +42,9 @@
     "edit": "編輯",
     "editCancel": "取消",
     "editRegenerate": "重新生成",
-    "fork": "從此回覆分叉"
+    "fork": "從此回覆分叉",
+    "showRaw": "顯示原文",
+    "showRefs": "還原引用顯示"
   },
   "edit": {
     "replaying": "正在按編輯後的訊息重新生成…",

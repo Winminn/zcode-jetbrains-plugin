@@ -53,6 +53,14 @@
   --color-message-user-bg: #005fb8;
   --color-message-user-text: #ffffff;
   --color-message-role-assistant: #d97757; /* Claude 橙 */
+  /* 用户气泡上的引用 chip 高亮色（气泡是彩色底，两主题都必须取浅字形）。
+     深色主题取高饱和中间调——初版粉彩（客户端青 #9ed5d2 等）在 #005fb8 蓝底
+     上发淡不明显（真机反馈），换同族高饱和色；浅色主题底更亮只能取浅字形 */
+  --color-userchip-file: #4fc1ff; /* 文件引用亮青蓝 */
+  --color-userchip-sess: #2fd6c5; /* 会话引用亮青绿 */
+  --color-userchip-cmd: #34d399; /* 命令引用祖母绿 */
+  --color-userchip-skill: #cf9bff; /* 技能引用亮紫 */
+  --color-userchip-goal: #f0c24b; /* goal 引导琥珀 */
 
   /* 状态色 */
   --status-success: #4caf50;
@@ -191,6 +199,12 @@
   --color-message-user-bg: #0078d4;
   --color-message-user-text: #ffffff;
   --color-message-role-assistant: #c2410c;
+  /* 同上（浅色主题：气泡蓝底更亮，字形取更浅的同族色保对比度）*/
+  --color-userchip-file: #d8e9ff;
+  --color-userchip-sess: #c6efe7;
+  --color-userchip-cmd: #c3f0e4;
+  --color-userchip-skill: #ddcff5;
+  --color-userchip-goal: #f0e0bc;
 
   /* 状态色（亮色下加深一点保证对比度）*/
   --status-success: #2e7d32;

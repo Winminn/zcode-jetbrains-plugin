@@ -85,6 +85,11 @@ export function ChatView({ messages, loading, waiting, waitingSince, streamingMe
     if (scrollHideTimer.current) clearTimeout(scrollHideTimer.current)
   }, [])
 
+  // 斜杠命令/技能名清单：挂载即确保拉取一次（消息气泡 /name 引用 chip 化的数据源）
+  useEffect(() => {
+    useStore.getState().ensureSlashCommands()
+  }, [])
+
   const handleScroll = () => {
     const el = containerRef.current
     if (!el) return

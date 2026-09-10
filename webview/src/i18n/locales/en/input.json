@@ -79,6 +79,10 @@
     "groupSkills": "Skills",
     "groupAgents": "Subagents"
   },
+  "sessRef": {
+    "empty": "No matching recent sessions",
+    "messages": "msgs"
+  },
   "agent": {
     "select": "Agent",
     "empty": "No subagents yet — create one in Settings",

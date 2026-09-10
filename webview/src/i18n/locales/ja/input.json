@@ -74,6 +74,10 @@
     "groupSkills": "スキル",
     "groupAgents": "サブエージェント"
   },
+  "sessRef": {
+    "empty": "一致する最近のセッションはありません",
+    "messages": "件"
+  },
   "agent": {
     "select": "エージェント",
     "empty": "サブエージェントがありません。設定で作成してください",

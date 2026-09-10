@@ -152,6 +152,139 @@ export function insertCommandChipAtCursor(el: HTMLElement, name: string, kind: C
   }
 }
 
+// ============ 内联会话引用 chip（#会话引用，2026-09-10 协议定案）============
+//
+// 协议形态（桌面端 renderer asar + 真机探针实证）：引用以 markdown 链接随正文
+// 纯文本发送 `[#标题](#sess_<id>)`，模型看到后自主调用内置工具 ReadSessionContext
+// 拉取目标会话上下文（只读免审批）。标题为空时退化为裸 token `#sess_<id>`。
+
+const SESS_CHIP_CLASS = 'sess-ref--inline'
+
+/** 标题进 markdown 链接的转义（桌面端 ky 同款：`\` `[` `]`）*/
+export function escapeSessionTitle(title: string): string {
+  return title.replace(/\\/g, '\\\\').replace(/\[/g, '\\[').replace(/\]/g, '\\]')
+}
+
+/** 上述转义的逆操作（回显解析 markdown 链接标题用）*/
+function unescapeSessionTitle(title: string): string {
+  return title.replace(/\\(.)/g, '$1')
+}
+
+/** 会话 id 形态（服务端 ReadSessionContext input schema 同款正则）*/
+export const SESSION_ID_RE = /^sess_[A-Za-z0-9._-]+$/
+
+/** 会话引用的发送文本：markdown 链接（空标题退化裸 token）*/
+export function sessionRefText(sessionId: string, title: string): string {
+  const t = title.trim()
+  return !t ? `#${sessionId}` : `[#${escapeSessionTitle(t)}](#${sessionId})`
+}
+
+/** 构造内联会话 chip 的 HTML（图标 + 标题，结构与命令 chip 一致）*/
+export function buildSessionChipHTML(sessionId: string, title: string): string {
+  const t = title.trim()
+  // 裸 token 无标题：显示 id 前缀（sess_ 后 8 位 + …），tooltip 给完整 id
+  const label = t || `${sessionId.replace(/^sess_/, '').slice(0, 8)}…`
+  const tip = t ? `${t} · ${sessionId}` : sessionId
+  return (
+    `<span class="sess-ref ${SESS_CHIP_CLASS}" contenteditable="false" data-sess="${escapeHtml(sessionId)}" data-title="${escapeHtml(t)}" data-tip="${escapeHtml(tip)}">` +
+    `<span class="codicon codicon-comment-discussion sess-ref__icon"></span>` +
+    `<span class="sess-ref__name">${escapeHtml(label)}</span>` +
+    `<button class="sess-ref__remove" type="button" tabindex="-1">✕</button>` +
+    `</span>`
+  )
+}
+
+/** 在当前光标位置插入内联会话 chip（chip 后补空格，光标移空格后可继续输入）*/
+export function insertSessionChipAtCursor(el: HTMLElement, sessionId: string, title: string): void {
+  el.focus()
+  const sel = window.getSelection()
+  let range: Range
+  if (sel && sel.rangeCount > 0 && el.contains(sel.anchorNode)) {
+    range = sel.getRangeAt(0)
+    range.deleteContents()
+    range.collapse(true)
+  } else {
+    range = document.createRange()
+    range.selectNodeContents(el)
+    range.collapse(false)
+  }
+  const tpl = document.createElement('template')
+  tpl.innerHTML = buildSessionChipHTML(sessionId, title)
+  const chip = tpl.content.firstElementChild as HTMLElement | null
+  if (!chip) return
+  range.insertNode(chip)
+  const space = document.createTextNode(' ')
+  chip.after(space)
+  if (sel) {
+    const after = document.createRange()
+    after.setStartAfter(space)
+    after.collapse(true)
+    sel.removeAllRanges()
+    sel.addRange(after)
+  }
+}
+
+/** 编辑器内文本中的会话引用两种形态（markdown 链接优先，避免链接被拆成裸 token）。
+ *  链接标题允许 `\x` 转义序列（sessionRefText 会转义 [ ] \，`[^\]]*` 会在 `\]` 处截断）*/
+const SESS_MD_RE = /\[#((?:\\.|[^\]])*)\]\(#(sess_[A-Za-z0-9._-]+)\)/g
+const SESS_BARE_RE = /(^|[\s\u4e00-\u9fa5])#(sess_[A-Za-z0-9._-]+)(?=$|[\s\u4e00-\u9fa5])/g
+
+/**
+ * 把编辑器里"已结束"的会话引用文本转成内联 chip（粘贴/历史回填/队列回填场景；
+ * 打字中间不转换——用户几乎不会手打 36 位 id，此函数只服务内容已完整落地的回显）。
+ * markdown 链接形态可出现在任意位置；裸 token 要求词边界（空白/行首/中文边界）。
+ * @param titleResolver 裸 token 无标题时反查会话标题（store sessions 映射）
+ * @returns 是否发生了转换
+ */
+export function convertCompletedSessionRefs(
+  el: HTMLElement,
+  titleResolver?: (sessionId: string) => string | undefined,
+): boolean {
+  let converted = false
+  for (let guard = 0; guard < 30; guard++) {
+    const { full, spans } = collectEditableText(el)
+    let hit: { start: number; end: number; sessionId: string; title: string } | null = null
+
+    SESS_MD_RE.lastIndex = 0
+    let m: RegExpExecArray | null
+    while ((m = SESS_MD_RE.exec(full))) {
+      hit = {
+        start: m.index,
+        end: m.index + m[0].length,
+        sessionId: m[2],
+        title: unescapeSessionTitle(m[1] ?? ''),
+      }
+      break
+    }
+    if (!hit) {
+      SESS_BARE_RE.lastIndex = 0
+      while ((m = SESS_BARE_RE.exec(full))) {
+        const start = m.index + m[1].length
+        hit = {
+          start,
+          end: start + m[2].length + 1,
+          sessionId: m[2],
+          title: titleResolver?.(m[2]) ?? '',
+        }
+        break
+      }
+    }
+    if (!hit) break
+
+    const range = offsetToRange(spans, hit.start, hit.end)
+    if (!range) break
+    range.deleteContents()
+    const tpl = document.createElement('template')
+    tpl.innerHTML = buildSessionChipHTML(hit.sessionId, hit.title)
+    const chip = tpl.content.firstElementChild as HTMLElement | null
+    if (!chip) break
+    range.insertNode(chip)
+    chip.after(document.createTextNode(' '))
+    converted = true
+  }
+  return converted
+}
+
 // ============ 完整路径检测与转换 ============
 
 /**
@@ -264,7 +397,7 @@ export function convertCompletedPaths(el: HTMLElement, includeTrailing = false):
 /**
  * 序列化编辑器内容为纯文本（发送用）：
  * 内联文件 chip → @data-path（含 #L10-20 行号引用），内联命令 chip → /data-cmd，
- * BR/DIV → 换行。
+ * 内联会话 chip → [#标题](#sess_id)（ReadSessionContext 引用协议），BR/DIV → 换行。
  */
 export function serializeEditor(el: HTMLElement): string {
   let out = ''
@@ -281,6 +414,13 @@ export function serializeEditor(el: HTMLElement): string {
     }
     if (elm.classList?.contains(CMD_CHIP_CLASS)) {
       out += `/${elm.getAttribute('data-cmd') ?? ''}`
+      return
+    }
+    if (elm.classList?.contains(SESS_CHIP_CLASS)) {
+      out += sessionRefText(
+        elm.getAttribute('data-sess') ?? '',
+        elm.getAttribute('data-title') ?? '',
+      )
       return
     }
     if (elm.isContentEditable === false) return

@@ -16,7 +16,8 @@
     "EnterPlanMode": "プランモード開始",
     "ExitPlanMode": "プランモード終了",
     "TaskStop": "タスク停止",
-    "TaskOutput": "出力を表示"
+    "TaskOutput": "出力を表示",
+    "ReadSessionContext": "セッションコンテキスト取得"
   },
   "mcpToolName": "MCP·{{name}}",
   "editFileTitle": "ファイルを編集：{{name}}",

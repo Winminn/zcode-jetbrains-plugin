@@ -16,7 +16,7 @@ import { create } from 'zustand'
 import { onMessage, onStreamEvent, onStreamBatch, sendToJava, initBridge, isInJcef, getWorkspacePath, getInitialSessionId } from '@/ipc/bridge'
 import { parseGoalCommand } from '@/utils/goalCommand'
 import { extractTitleExcerpt } from '@/utils/titleExcerpt'
-import type { JavaResponse, SessionInfo, ZCodeMessage, StreamEvent, ModelOption, ModelManageProvider, TodoItem, AgentItem, FileChangeItem, QuotaData, ModelUsageData, ToolUsageData, UsageRange, AppUsageData, AppUsageRange, ContextBreakdownItem, ThoughtLevelInfo, SubagentActivity, SubagentInfo, ToolUpdatedPayload, MemoryFileInfo, SkillInfo, McpServerInfo, McpToolsState, McpLogEntry, EnvStatus, BrowserClearedSite, BrowserDataOverview, AgentDef, AgentDefInput, ImageAttachmentInput, GoalState, AutoArchiveRecord, ToolPart } from '@/types/messages'
+import type { JavaResponse, SessionInfo, ZCodeMessage, StreamEvent, ModelOption, ModelManageProvider, TodoItem, AgentItem, FileChangeItem, QuotaData, ModelUsageData, ToolUsageData, UsageRange, AppUsageData, AppUsageRange, ContextBreakdownItem, ThoughtLevelInfo, SubagentActivity, SubagentInfo, ToolUpdatedPayload, MemoryFileInfo, SkillInfo, McpServerInfo, McpToolsState, McpLogEntry, EnvStatus, BrowserClearedSite, BrowserDataOverview, AgentDef, AgentDefInput, ImageAttachmentInput, GoalState, AutoArchiveRecord, ToolPart, SlashCommand } from '@/types/messages'
 import { applyStreamEvent, isSubagentToolEvent, applySubagentToolEvent, markActivityOutcome, finalizeActivitiesFromNotifications, asSubagentLifecycle, asGoalTargetPayload, looksLikeQuotaError, asSteerDrainedInputs, appendSteerUserMessages } from '@/utils/streamReducer'
 import type { TurnErrorInfo, SubagentLifecyclePayload } from '@/utils/streamReducer'
 import i18n from '@/i18n/config'
@@ -550,6 +550,14 @@ interface StoreState {
   skillTogglingPath: string | null
   skillsError: string | null
 
+  // 斜杠命令/技能名清单（Kotlin 磁盘扫描，kind 区分技能与命令）。
+  // 消息气泡把 /name 引用 chip 化时按此清单精确匹配防误判
+  slashCommands: SlashCommand[] | null
+  /** listCommands 已发出标志（防重复请求；null 清单 + 未请求才发）*/
+  slashCommandsRequested: boolean
+  /** 确保斜杠命令清单已拉取（一次性，回包走 commands case）*/
+  ensureSlashCommands: () => void
+
   // 提示词润色（InputBox 润色按钮 → generateText/CLI 通道 → 对比确认弹窗）
   enhancing: boolean
   /** 润色结果弹窗数据（null = 关闭；error 非 null = 失败态；model = 实际润色模型）*/
@@ -1015,6 +1023,8 @@ export const useStore = create<StoreState>((set, get) => ({
   skillsLoading: false,
   skillTogglingPath: null,
   skillsError: null,
+  slashCommands: null,
+  slashCommandsRequested: false,
 
   mcpServers: null,
   mcpLoading: false,
@@ -2060,6 +2070,13 @@ export const useStore = create<StoreState>((set, get) => ({
   loadSkills: () => {
     set({ skillsLoading: true, skillsError: null })
     sendToJava({ op: 'listSkills' })
+  },
+
+  // 确保斜杠命令清单已拉取（消息气泡 /name chip 化的数据源；一次性，回包走 commands case）
+  ensureSlashCommands: () => {
+    if (get().slashCommands !== null || get().slashCommandsRequested) return
+    set({ slashCommandsRequested: true })
+    sendToJava({ op: 'listCommands' })
   },
 
   // ============ 提示词润色 ============
@@ -3815,6 +3832,11 @@ export function handleResponse(
 
     case 'skills':
       set({ skills: msg.skills, skillsLoading: false, skillsError: null })
+      break
+
+    case 'commands':
+      // 斜杠命令/技能清单（InputBox 下拉与消息气泡 /name chip 化共用数据源）
+      set({ slashCommands: msg.commands, slashCommandsRequested: false })
       break
 
     case 'skillToggled':

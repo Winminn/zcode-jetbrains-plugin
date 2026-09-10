@@ -74,6 +74,10 @@
     "groupSkills": "스킬",
     "groupAgents": "서브 에이전트"
   },
+  "sessRef": {
+    "empty": "일치하는 최근 세션이 없습니다",
+    "messages": "개 메시지"
+  },
   "agent": {
     "select": "에이전트",
     "empty": "서브 에이전트가 없습니다. 설정에서 생성하세요",

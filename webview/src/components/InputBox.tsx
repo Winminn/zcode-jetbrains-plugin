@@ -40,7 +40,8 @@ import { AgentSelect, AgentColorDot } from './AgentSelect'
 import { PromptEnhancerDialog } from './PromptEnhancerDialog'
 import { sendToJava, onMessage } from '@/ipc/bridge'
 import type { JavaResponse, SlashCommand, AgentDef, ImageAttachmentInput } from '@/types/messages'
-import { insertChipAtCursor, insertCommandChipAtCursor, convertCompletedPaths, serializeEditor, type CmdChipKind } from '@/utils/inlineFileTags'
+import { insertChipAtCursor, insertCommandChipAtCursor, insertSessionChipAtCursor, convertCompletedPaths, convertCompletedSessionRefs, serializeEditor, type CmdChipKind } from '@/utils/inlineFileTags'
+import { relativeTime } from '@/utils/time'
 import { parseGoalCommand } from '@/utils/goalCommand'
 import { KV_HYDRATED_EVENT, KV_DISABLED_EVENT } from '@/utils/persist'
 import { readEnhanceConfig, ENHANCE_CONFIG_CHANGED_EVENT } from '@/utils/enhanceConfig'
@@ -129,6 +130,11 @@ export function InputBox({ onSend, isStreaming = false, onStop, disabled = false
   const [mentionFiles, setMentionFiles] = useState<string[]>([])
   const [mentionIndex, setMentionIndex] = useState(0)
 
+  // # 会话引用补全状态（2026-09-10：# 触发近期会话列表，选中插内联 chip，
+  // 序列化 [#标题](#sess_id) 随正文发送，模型侧 ReadSessionContext 工具拉取上下文）
+  const [sessQuery, setSessQuery] = useState<string | null>(null)
+  const [sessIndex, setSessIndex] = useState(0)
+
   // / 斜杠命令补全状态
   const [slashQuery, setSlashQuery] = useState<string | null>(null)
   const [slashItems, setSlashItems] = useState<SlashCommand[]>([])
@@ -159,8 +165,9 @@ export function InputBox({ onSend, isStreaming = false, onStop, disabled = false
     setMentionFiles([])
     setSlashQuery(null)
     setGhostSuffix('')
-    // 历史文本里的 @绝对路径 回显为内联 chip（includeTrailing：回填内容已完整）
+    // 历史文本里的 @绝对路径 / #sess_ 会话引用 回显为内联 chip（includeTrailing：回填内容已完整）
     convertCompletedPaths(el, true)
+    convertCompletedSessionRefs(el, (id) => sessionTitleResolverRef.current(id))
     placeCursorEnd(el)
   }, [])
 
@@ -191,6 +198,12 @@ export function InputBox({ onSend, isStreaming = false, onStop, disabled = false
   const selectAgentAction = useStore((s) => s.selectAgent)
   // 目标模式（/goal 前缀拦截转控制意图）
   const goalManage = useStore((s) => s.goalManage)
+
+  // ============ # 会话引用（近期会话补全数据源）============
+  // 列表已双层过滤 side/subagent 会话（session/list 服务端滤 + sess_subagent 前缀滤），
+  // 这里再排除当前会话自身；上限 20 条对齐桌面端每 workspace 配额
+  const sessions = useStore((s) => s.sessions)
+  const loadSessionsAction = useStore((s) => s.loadSessions)
 
   // ============ 模型图片能力（带图发送提示）============
   const models = useStore((s) => s.models)
@@ -296,6 +309,7 @@ export function InputBox({ onSend, isStreaming = false, onStop, disabled = false
       setSlashQuery(null)
       setGhostSuffix('')
       convertCompletedPaths(el, true)
+      convertCompletedSessionRefs(el, (id) => sessionTitleResolverRef.current(id))
       placeCursorEnd(el)
     }
     clearEnhanceResult()
@@ -564,8 +578,9 @@ export function InputBox({ onSend, isStreaming = false, onStop, disabled = false
         })),
       ])
     }
-    // 回填文本里的 @绝对路径 回显为内联 chip
+    // 回填文本里的 @绝对路径 / #sess_ 会话引用 回显为内联 chip
     convertCompletedPaths(el, true)
+    convertCompletedSessionRefs(el, (id) => sessionTitleResolverRef.current(id))
     el.focus()
     // 光标移到末尾（contenteditable 聚焦后默认在开头）
     const sel = window.getSelection()
@@ -597,11 +612,12 @@ export function InputBox({ onSend, isStreaming = false, onStop, disabled = false
       }
     }
 
-    // 检测 / 斜杠命令（行首），命中时 @ 不触发（互斥）
+    // 检测 / 斜杠命令（行首），命中时 @/# 不触发（互斥）
     const slashOpen = checkSlashTrigger(el)
     const mentionOpen = !slashOpen && checkMentionTrigger(el)
-    // 历史前缀幽灵建议（@ / / 补全打开时不显示，方向键归下拉）
-    updateGhostSuggestion(el, slashOpen, mentionOpen)
+    if (!slashOpen && !mentionOpen) checkSessionRefTrigger(el)
+    // 历史前缀幽灵建议（@ / / / # 补全打开时不显示，方向键归下拉）
+    updateGhostSuggestion(el, slashOpen, mentionOpen || sessQuery !== null)
   }, [])
 
   /** 读入图片文件（剪贴板 image 项），压缩后加入附件列表 */
@@ -710,6 +726,7 @@ export function InputBox({ onSend, isStreaming = false, onStop, disabled = false
       const el = editorRef.current
       if (!el) return
       convertCompletedPaths(el, true)
+      convertCompletedSessionRefs(el, (id) => sessionTitleResolverRef.current(id))
       setHasText(!!el.textContent?.trim())
     }, 0)
   }, [])
@@ -717,11 +734,11 @@ export function InputBox({ onSend, isStreaming = false, onStop, disabled = false
   /** 内联 chip 的 ✕ 删除（编辑器内动态 DOM，事件委托；文件 chip 与命令 chip 共用）*/
   const handleEditorClick = useCallback((e: React.MouseEvent) => {
     const target = e.target as HTMLElement
-    const closeBtn = target.closest('.file-ref__remove, .cmd-ref__remove')
+    const closeBtn = target.closest('.file-ref__remove, .cmd-ref__remove, .sess-ref__remove')
     if (!closeBtn) return
     e.preventDefault()
     e.stopPropagation()
-    closeBtn.closest('.file-ref--inline, .cmd-ref--inline')?.remove()
+    closeBtn.closest('.file-ref--inline, .cmd-ref--inline, .sess-ref--inline')?.remove()
     // chip 被删后 mouseout 不再触发（元素已脱离 DOM），tooltip 须主动清掉
     document.getElementById(INLINE_CHIP_TIP_ID)?.remove()
     tipChipRef.current = null
@@ -770,12 +787,12 @@ export function InputBox({ onSend, isStreaming = false, onStop, disabled = false
     }
     const hideTip = () => document.getElementById(INLINE_CHIP_TIP_ID)?.remove()
     const onOver = (e: MouseEvent) => {
-      const chip = (e.target as HTMLElement)?.closest?.('.file-ref--inline, .cmd-ref--inline') as HTMLElement | null
+      const chip = (e.target as HTMLElement)?.closest?.('.file-ref--inline, .cmd-ref--inline, .sess-ref--inline') as HTMLElement | null
       if (chip) showTip(chip)
     }
     const onOut = (e: MouseEvent) => {
-      const from = (e.target as HTMLElement)?.closest?.('.file-ref--inline, .cmd-ref--inline')
-      const to = (e.relatedTarget as HTMLElement)?.closest?.('.file-ref--inline, .cmd-ref--inline')
+      const from = (e.target as HTMLElement)?.closest?.('.file-ref--inline, .cmd-ref--inline, .sess-ref--inline')
+      const to = (e.relatedTarget as HTMLElement)?.closest?.('.file-ref--inline, .cmd-ref--inline, .sess-ref--inline')
       if (from && !to) hideTip()
     }
     el.addEventListener('mouseover', onOver)
@@ -818,6 +835,7 @@ export function InputBox({ onSend, isStreaming = false, onStop, disabled = false
     if (atMatch) {
       const query = atMatch[1]
       setMentionQuery(query)
+      setSessQuery(null) // 互斥：@ 命中时关 # 会话补全（防双下拉）
       requestFiles(query)
       return true
     }
@@ -916,9 +934,10 @@ export function InputBox({ onSend, isStreaming = false, onStop, disabled = false
     const slashMatch = beforeCursor.match(/(?:^|\n)\/([^\s/]*)$/)
     if (slashMatch) {
       setSlashQuery(slashMatch[1])
-      // 关闭 @ 补全（互斥）
+      // 关闭 @ 补全（互斥）与 # 会话补全
       setMentionQuery(null)
       setMentionFiles([])
+      setSessQuery(null)
       requestCommands()
     } else {
       setSlashQuery(null)
@@ -1100,6 +1119,99 @@ export function InputBox({ onSend, isStreaming = false, onStop, disabled = false
     }
   }
 
+  // ============ # 会话引用补全 ============
+
+  /**
+   * 检测光标前是否有未完成的 #xxx，触发会话补全。与 @ / 行首 / 互斥（调用方保证）。
+   * 防误判：`#` 前还是 `#` 不触发（正文 markdown 标题 "## "）；query 匹配
+   * 行号模式（L10 / L10-20，文件 chip 后补行号引用的既有输入习惯）不触发。
+   */
+  function checkSessionRefTrigger(el: HTMLDivElement): boolean {
+    const sel = window.getSelection()
+    if (!sel || sel.rangeCount === 0) return false
+    const beforeCursor = textBeforeCaret(el, sel.getRangeAt(0))
+    const hashMatch = beforeCursor.match(/([^#]|^)#([^\s#]*)$/)
+    if (hashMatch && !/^L\d*(-\d*)?$/.test(hashMatch[2])) {
+      setSessQuery(hashMatch[2])
+      return true
+    }
+    setSessQuery(null)
+    return false
+  }
+
+  /** 面板打开时刷新会话列表（新会话/标题变更不滞后；/ 下拉 loadAgents 同款模式）*/
+  useEffect(() => {
+    if (sessQuery !== null) {
+      loadSessionsAction()
+      setSessIndex(0)
+    }
+  }, [sessQuery !== null, loadSessionsAction]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  /** sessionId → 标题反查（裸 token 回显成 chip 时补标题）。
+   *  ref 持有：setTextFromHistory 等空 deps 的 useCallback 闭包捕获首次渲染绑定，
+   *  直接传函数会冻结旧会话数据，ref 转发保证回填时用最新列表 */
+  const sessionTitleResolverRef = useRef<(id: string) => string | undefined>(() => undefined)
+  useEffect(() => {
+    const map = new Map(sessions.map((s) => [s.sessionId, s.title]))
+    sessionTitleResolverRef.current = (id) => map.get(id)
+  }, [sessions])
+
+  /** # 下拉候选：排除当前会话，标题/id 包含匹配，更新时间倒序，上限 20 */
+  const filteredSessionItems = useMemo(() => {
+    if (sessQuery === null) return []
+    const q = sessQuery.toLowerCase()
+    return sessions
+      .filter((s) => s.sessionId !== sessionId)
+      .filter(
+        (s) =>
+          !q ||
+          s.title.toLowerCase().includes(q) ||
+          s.sessionId.toLowerCase().includes(q),
+      )
+      .sort((a, b) => b.updatedAt - a.updatedAt)
+      .slice(0, 20)
+  }, [sessQuery, sessions, sessionId])
+
+  /** 从编辑器删除光标前的 #xxx 触发文本（Selection API 精确删除，同 removeMentionTriggerText）*/
+  function removeSessionRefTriggerText() {
+    const el = editorRef.current
+    if (!el) return
+    try {
+      const sel = window.getSelection()
+      if (sel && sel.rangeCount > 0) {
+        const beforeCursor = textBeforeCaret(el, sel.getRangeAt(0))
+        const m = beforeCursor.match(/([^#]|^)#([^\s#]*)$/)
+        if (m) {
+          // 只删 #query（前置字符 m[1] 可能是多字节中文，不用 m[0].length）
+          const delLen = m[2].length + 1
+          const tmpRange = sel.getRangeAt(0).cloneRange()
+          tmpRange.collapse(true)
+          sel.removeAllRanges()
+          sel.addRange(tmpRange)
+          for (let i = 0; i < delLen; i++) {
+            sel.modify('extend', 'backward', 'character')
+          }
+          sel.getRangeAt(0).deleteContents()
+        }
+      }
+    } catch {
+      el.textContent = el.textContent?.replace(/#([^\s#]*)$/, '') ?? ''
+    }
+    setHasText(!!el.textContent?.trim())
+    el.focus()
+  }
+
+  /** 选中会话：删触发文本 → 光标处插内联会话 chip（序列化回 [#标题](#sess_id)）*/
+  function selectSessionRef(s: { sessionId: string; title: string }) {
+    setSessQuery(null)
+    removeSessionRefTriggerText()
+    const el = editorRef.current
+    if (el) {
+      insertSessionChipAtCursor(el, s.sessionId, s.title)
+      setHasText(true)
+    }
+  }
+
   // 监听文件列表响应
   useEffect(() => {
     const unsub = onMessage((msg: JavaResponse) => {
@@ -1235,6 +1347,32 @@ export function InputBox({ onSend, isStreaming = false, onStop, disabled = false
       if (e.key === 'Enter' && !e.shiftKey) {
         e.preventDefault()
         selectMention(mentionFiles[mentionIndex])
+        return
+      }
+    }
+    // # 会话引用补全打开时，方向键/Enter/Escape 由补全处理（与 @ / / 互斥）
+    if (sessQuery !== null && filteredSessionItems.length > 0) {
+      if (e.key === 'ArrowDown') {
+        e.preventDefault()
+        setSessIndex((i) => (i + 1) % filteredSessionItems.length)
+        return
+      }
+      if (e.key === 'ArrowUp') {
+        e.preventDefault()
+        setSessIndex((i) => (i - 1 + filteredSessionItems.length) % filteredSessionItems.length)
+        return
+      }
+      if (e.key === 'Escape') {
+        e.preventDefault()
+        setSessQuery(null)
+        return
+      }
+      if (e.key === 'Enter' && !e.shiftKey) {
+        e.preventDefault()
+        // 过滤列表变短时 index 可能超界（filter 变化不重置导航位），clamp 防越界
+        selectSessionRef(
+          filteredSessionItems[Math.min(sessIndex, filteredSessionItems.length - 1)],
+        )
         return
       }
     }
@@ -1419,6 +1557,7 @@ export function InputBox({ onSend, isStreaming = false, onStop, disabled = false
           >
             <span className="codicon codicon-attach" />
           </button>
+          {/* 引用会话（#）：不设附件栏入口（非高频），输入框 # 直接触发补全 */}
           {/* 定时任务（日历）：上下文圆环左侧排列；角标=待执行任务总数 */}
           <div className="schedule-entry">
             <button
@@ -1720,6 +1859,39 @@ export function InputBox({ onSend, isStreaming = false, onStop, disabled = false
                 <span className="input-box__mention-path">{f}</span>
               </div>
             ))}
+          </div>
+        )}
+
+        {/* # 会话引用补全下拉（# 触发近期会话；引用以 [#标题](#sess_id) 随正文发送，
+            模型侧 ReadSessionContext 内置工具按需拉取目标会话上下文）*/}
+        {sessQuery !== null && (
+          <div className="input-box__mention input-box__sess">
+            {filteredSessionItems.length === 0 ? (
+              <div className="input-box__sess-empty">{t('input.sessRef.empty')}</div>
+            ) : (
+              filteredSessionItems.map((s, i) => (
+                <div
+                  key={s.sessionId}
+                  className={`input-box__mention-item input-box__sess-item ${i === Math.min(sessIndex, filteredSessionItems.length - 1) ? 'active' : ''}`}
+                  onMouseEnter={() => setSessIndex(i)}
+                  onMouseDown={(e) => {
+                    e.preventDefault() // 不让编辑器失焦
+                    selectSessionRef(s)
+                  }}
+                >
+                  <span className="codicon codicon-comment-discussion input-box__mention-icon input-box__sess-icon" />
+                  <span className="input-box__sess-main">
+                    <span className="input-box__sess-title">
+                      {s.title?.trim() || s.sessionId}
+                    </span>
+                    <span className="input-box__sess-desc">
+                      {relativeTime(s.updatedAt)}
+                      {typeof s.messageCount === 'number' ? ` · ${s.messageCount} ${t('input.sessRef.messages')}` : ''}
+                    </span>
+                  </span>
+                </div>
+              ))
+            )}
           </div>
         )}
 

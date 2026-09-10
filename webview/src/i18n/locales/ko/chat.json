@@ -42,7 +42,9 @@
     "edit": "편집",
     "editCancel": "취소",
     "editRegenerate": "다시 생성",
-    "fork": "이 답변에서 분기"
+    "fork": "이 답변에서 분기",
+    "showRaw": "원본 보기",
+    "showRefs": "참조 칩 표시"
   },
   "edit": {
     "replaying": "편집된 메시지로 다시 생성하는 중…",

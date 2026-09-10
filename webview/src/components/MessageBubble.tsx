@@ -26,6 +26,7 @@ import { createPortal } from 'react-dom'
 import { useTranslation } from 'react-i18next'
 import type { ZCodeMessage, MessagePart, TextPart, ImagePart, FilePart } from '@/types/messages'
 import { useStore } from '@/store/useStore'
+import { renderUserRefChips, hasUserRefChips, type CmdRefInfo } from '@/utils/userRefChips'
 import { MarkdownBlock } from './MarkdownBlock'
 import { AgentNotificationCard } from './AgentNotificationCard'
 import { isAgentNotification, isCompactSummaryMessage, findTimelinePart } from '@/utils/parseNotification'
@@ -155,11 +156,33 @@ function UserBubble({
 }) {
   const { t } = useTranslation()
   const [showFull, setShowFull] = useState(false)
+  // 引用 chip 化显示（@路径 / #会话引用 与输入框同视觉）：默认开，「显示原文」切回纯文本。
+  // 判据与解析同源（utils/userRefChips），无引用的普通消息零差异
+  const [showRaw, setShowRaw] = useState(false)
+  const sessions = useStore((s) => s.sessions)
+  const slashCommands = useStore((s) => s.slashCommands)
   const lines = useMemo(() => text.split('\n').length, [text])
   const collapsible = lines >= USER_COLLAPSE_LINES || text.length >= USER_COLLAPSE_CHARS
   // 搜索面板激活时强制展开：高亮 mark 与 scrollIntoView 定位需要全文可见
   const collapsed = collapsible && !searchActive
   const hasImages = imageParts.length > 0
+  // 会话 chip 标题反查（裸 token 场景）；selector 返回原数组引用（zustand 纪律）
+  const titleResolver = useMemo(() => {
+    const map = new Map(sessions.map((s) => [s.sessionId, s.title]))
+    return (id: string) => map.get(id)
+  }, [sessions])
+  // /命令·技能引用识别清单：slashCommands（含 kind）+ 内置 goal（扫描器不列，下拉注入同款）
+  const cmdNames = useMemo(() => {
+    const map = new Map<string, CmdRefInfo>()
+    slashCommands?.forEach((c) => map.set(c.name, { kind: c.kind, icon: c.icon }))
+    if (!map.has('goal')) map.set('goal', { kind: 'goal' })
+    return map
+  }, [slashCommands])
+  const refChips = useMemo(
+    () => (showRaw ? null : renderUserRefChips(text, titleResolver, cmdNames)),
+    [text, titleResolver, cmdNames, showRaw],
+  )
+  const hasRefChips = useMemo(() => hasUserRefChips(text, cmdNames), [text, cmdNames])
   const images = useMemo(
     () =>
       imageParts
@@ -205,7 +228,7 @@ function UserBubble({
             ))}
           </div>
         )}
-        {text ? text : hasImages ? null : t('chat.message.emptyText')}
+        {text ? (refChips ?? text) : hasImages ? null : t('chat.message.emptyText')}
         {collapsed && (
           <button type="button" className="msg__expand" onClick={() => setShowFull(true)}>
             <span className="codicon codicon-unfold" />
@@ -214,6 +237,18 @@ function UserBubble({
         )}
       </div>
       <div className="msg__actions">
+        {/* 引用 chip 化的消息才显示「显示原文」切换（普通消息零噪音）*/}
+        {hasRefChips && (
+          <button
+            type="button"
+            className={`msg__action-btn${showRaw ? ' msg__action-btn--active' : ''}`}
+            onClick={() => setShowRaw((v) => !v)}
+            title={showRaw ? t('chat.message.showRefs') : t('chat.message.showRaw')}
+            aria-label={showRaw ? t('chat.message.showRefs') : t('chat.message.showRaw')}
+          >
+            <span className="codicon codicon-code" />
+          </button>
+        )}
         <button
           type="button"
           className="msg__action-btn"

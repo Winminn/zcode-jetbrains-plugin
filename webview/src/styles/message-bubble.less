@@ -143,9 +143,90 @@
       cursor: default;
     }
 
+    /* 「显示原文」激活态（当前正显示纯文本）*/
+    &--active {
+      color: var(--accent, #3794ff);
+    }
+
     /* 复制成功：短暂打勾反馈（1.2s，对齐官方）*/
     &--ok {
       color: var(--success, #3fb950);
+    }
+  }
+
+  /* ============ 用户消息内只读引用 chip（@路径 / #会话引用）============ */
+  /* 客户端同款：无背景形状，仅用颜色高亮图标与文字（0.3.4 测试包真机反馈——
+     气泡本身是彩色底，chip 任何底色要么融合要么突兀，去形状最干净）。
+     纯 inline 流式布局：inline-flex 首项是无文本基线的 SVG 图标时容器基线
+     回退到盒底边，整体抬高约一个 descender（真机"没对齐"根因）；
+     改 inline 后文字与正文严格同基线，长标题自然换行（同客户端） */
+  .user-ref-chip {
+    display: inline;
+    padding: 0;
+    margin: 0 1px;
+    /* 压掉 .file-ref/.sess-ref 基础块的底色/边框/圆角（消息内无形状）*/
+    background: none;
+    border: none;
+    border-radius: 0;
+    font-size: inherit;
+    vertical-align: baseline; /* 压掉 .sess-ref 基础块的 middle */
+    user-select: none;
+
+    /* 类型色走专用变量：不能用 --color-tool-name（浅色主题下翻成深色，压蓝底不可读）*/
+    &.file-ref {
+      color: var(--color-userchip-file, #4fc1ff);
+    }
+
+    &.sess-ref {
+      color: var(--color-userchip-sess, #2fd6c5);
+    }
+
+    /* 命令/技能/goal：与输入框内联 chip 的变体配色同族 */
+    &.cmd-ref--command,
+    &.cmd-ref--compact {
+      color: var(--color-userchip-cmd, #4ec9b0);
+    }
+
+    &.cmd-ref--skill {
+      color: var(--color-userchip-skill, #b39ddb);
+    }
+
+    &.cmd-ref--goal {
+      color: var(--color-userchip-goal, #d7ba7d);
+    }
+
+    /* 文件 chip 基础块的 CSS tooltip（content: attr(data-tip)）在消息内没有
+       data-tip 属性，悬浮会渲染空壳盒——禁掉，完整路径靠原生 title */
+    &:hover::after {
+      display: none;
+    }
+
+    /* 图标与文字同色（文件图标 SVG 的按类型多彩 fill 由 mono 模式换 currentColor）：
+       svg 图标 text-bottom 贴齐文字底；codicon 是字体字形、em 格全在基线上方，
+       走基线会整体偏高——用 middle 让图标中点对齐 x-height 中点（视觉居中） */
+    .file-ref__icon {
+      vertical-align: text-bottom;
+      margin-right: 2px;
+    }
+
+    .codicon {
+      font-size: 1em;
+      margin-right: 2px;
+      vertical-align: middle;
+    }
+
+    /* 行号后缀弱化一档但保持同色系（继承 chip 色，别被基础块的 muted 灰压掉）*/
+    .file-ref__lines {
+      color: inherit;
+      opacity: 0.75;
+    }
+
+    /* 基础块的 nowrap/max-width 是输入框 chip 的限宽省略，消息内要自然换行 */
+    .sess-ref__name,
+    .cmd-ref__name {
+      white-space: normal;
+      max-width: none;
+      line-height: inherit;
     }
   }
 

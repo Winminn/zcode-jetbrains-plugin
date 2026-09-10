@@ -182,3 +182,56 @@
     }
   }
 }
+
+// ============ 内联会话引用 chip（# 会话引用，随正文序列化 [#标题](#sess_id)）============
+// 会话蓝（区别于文件灰/命令绿/技能紫/goal 琥珀）；结构同 .cmd-ref。
+.sess-ref {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 8px;
+  border-radius: 4px;
+  font-size: 12px;
+  vertical-align: middle;
+  user-select: none;
+  margin: 0 1px;
+  position: relative;
+  background: rgba(86, 156, 214, 0.14);
+  border: 1px solid rgba(86, 156, 214, 0.32);
+  color: #569cd6;
+
+  // codicon 基础样式 (0,2,0) 压单类 font-size（cmd-ref 同坑）
+  .codicon {
+    font-size: 12px;
+    line-height: 1;
+  }
+
+  &__name {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    max-width: 220px;
+    line-height: 1;
+  }
+
+  &__remove {
+    background: none;
+    border: none;
+    cursor: pointer;
+    font-size: 11px;
+    padding: 0 0 0 2px;
+    opacity: 0.6;
+    line-height: 1;
+    color: #569cd6;
+
+    &:hover {
+      opacity: 1;
+      color: var(--status-error);
+    }
+  }
+
+  // tooltip 走 JS 挂 body（InputBox INLINE_CHIP_TIP_ID 机制，同 file/cmd chip）
+  &:hover::after {
+    display: none;
+  }
+}

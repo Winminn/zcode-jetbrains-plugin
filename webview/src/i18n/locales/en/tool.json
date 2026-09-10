@@ -16,7 +16,8 @@
     "EnterPlanMode": "Enter Plan Mode",
     "ExitPlanMode": "Exit Plan Mode",
     "TaskStop": "Stop Task",
-    "TaskOutput": "View Output"
+    "TaskOutput": "View Output",
+    "ReadSessionContext": "Read session context"
   },
   "mcpToolName": "MCP·{{name}}",
   "editFileTitle": "Edit file: {{name}}",

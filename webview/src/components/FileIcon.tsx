@@ -14,10 +14,16 @@ interface Props {
   /** 文件或文件夹路径（文件夹末尾带 / 或 \）*/
   path: string
   className?: string
+  /** 单色模式：按类型的多彩 fill/stroke 换 currentColor，跟随容器文字色
+   *  （用户消息 chip 纯色高亮场景——图标色与文字色统一）*/
+  mono?: boolean
 }
 
-function FileIconInner({ path, className = 'file-type-icon' }: Props) {
-  const svg = useMemo(() => (/[\\/]$/.test(path) ? getFolderIcon() : getFileIcon(path)), [path])
+function FileIconInner({ path, className = 'file-type-icon', mono = false }: Props) {
+  const svg = useMemo(() => {
+    const raw = /[\\/]$/.test(path) ? getFolderIcon() : getFileIcon(path)
+    return mono ? raw.replace(/(fill|stroke)="#[0-9a-fA-F]{3,8}"/g, '$1="currentColor"') : raw
+  }, [path, mono])
   return <span className={className} dangerouslySetInnerHTML={{ __html: svg }} aria-hidden="true" />
 }
 

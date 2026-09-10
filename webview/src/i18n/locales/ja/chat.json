@@ -42,7 +42,9 @@
     "edit": "編集",
     "editCancel": "キャンセル",
     "editRegenerate": "再生成",
-    "fork": "この返答からフォーク"
+    "fork": "この返答からフォーク",
+    "showRaw": "原文を表示",
+    "showRefs": "参照チップを表示"
   },
   "edit": {
     "replaying": "編集後のメッセージで再生成中…",

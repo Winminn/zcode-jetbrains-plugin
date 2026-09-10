@@ -52,6 +52,8 @@ function toolIcon(tool: string): string {
     EnterPlanMode: 'codicon-bookmark',
     ExitPlanMode: 'codicon-bookmark',
     TaskStop: 'codicon-close',
+    // #会话引用的上下文拉取（与输入框会话 chip 同图标）
+    ReadSessionContext: 'codicon-comment-discussion',
   }
   // mcp__ 前缀的工具统一用 package 图标
   if (tool.startsWith('mcp__')) return 'codicon-package'
@@ -109,6 +111,11 @@ function inputSummary(tool: string, input?: Record<string, unknown>): string {
     case 'TaskOutput':
     case 'TaskStop':
       return String(input.task_id || '')
+    case 'ReadSessionContext':
+      // #会话引用的上下文拉取：摘要显示检索意图（handoff 策略加前缀区分「接续交接」）
+      return input.strategy === 'handoff'
+        ? `[handoff] ${String(input.query || '').slice(0, 60)}`
+        : String(input.query || '').slice(0, 80)
     default:
       // mcp__* 工具用 title，其他用第一个字符串值
       if (tool.startsWith('mcp__') && typeof input.title === 'string') return input.title
@@ -232,7 +239,17 @@ export function ToolCallCard({ part }: Props) {
     const firstLine = source.split('\n').find((l) => l.trim()) ?? ''
     return firstLine.replace(/^\/\*\*?|^\*|^\/\/\s*/g, '').trim().slice(0, 40)
   })()
-  const summary = inputSummary(tool, state.input) ||
+  // ReadSessionContext（#会话引用）标题反查：input.sessionId → 会话列表标题，
+  // 用户认会话靠标题而非 36 位 id；查不到（已删/别的项目）时摘要退回 query。
+  // selector 返回原始字符串（引用稳定，避免 useSyncExternalStore 重建循环）
+  const sessCtxTitle = useStore((s) => {
+    if (tool !== 'ReadSessionContext') return ''
+    const sid = (state.input as Record<string, unknown> | undefined)?.sessionId
+    return typeof sid === 'string' ? (s.sessions.find((x) => x.sessionId === sid)?.title ?? '') : ''
+  })
+  const summary = tool === 'ReadSessionContext' && sessCtxTitle
+    ? `${sessCtxTitle}${inputSummary(tool, state.input) ? ` · ${inputSummary(tool, state.input)}` : ''}`
+    : inputSummary(tool, state.input) ||
     (isWriteEdit && filePath ? fileName(filePath) : '') ||
     streamTitle ||
     (rawInput ? rawInput.replace(/\s+/g, ' ').slice(0, 80) : '')
