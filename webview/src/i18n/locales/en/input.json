@@ -80,7 +80,6 @@
     "groupAgents": "Subagents"
   },
   "sessRef": {
-    "empty": "No matching recent sessions",
     "messages": "msgs"
   },
   "agent": {

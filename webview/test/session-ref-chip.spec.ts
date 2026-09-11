@@ -12,8 +12,36 @@ import {
   escapeSessionTitle,
   buildSessionChipHTML,
   convertCompletedSessionRefs,
+  matchSessionRefTrigger,
   serializeEditor,
 } from '../src/utils/inlineFileTags'
+
+describe('matchSessionRefTrigger（缺陷BJ：URL # 误触发与空态无法消除）', () => {
+  it('URL 锚点不触发：# 前紧跟 ASCII 词字符', () => {
+    expect(
+      matchSessionRefTrigger('看下官方对于侧聊的定义，https://zcode.z.ai/cn/docs/agents#side-conversation'),
+    ).toBeNull()
+    expect(matchSessionRefTrigger('www.example.com#frag')).toBeNull()
+  })
+
+  it('issue#123 等粘连纯文本不触发', () => {
+    expect(matchSessionRefTrigger('参考 issue#123')).toBeNull()
+    expect(matchSessionRefTrigger('版本 1.2.3#rc')).toBeNull()
+  })
+
+  it('边界后正常触发：起始/空白/中文/左括号', () => {
+    expect(matchSessionRefTrigger('#')).toBe('')
+    expect(matchSessionRefTrigger('看 #侧聊')).toBe('侧聊')
+    expect(matchSessionRefTrigger('看下#侧聊')).toBe('侧聊')
+    expect(matchSessionRefTrigger('(#abc')).toBe('abc')
+  })
+
+  it('markdown 标题 ## 与行号模式 L10 不触发', () => {
+    expect(matchSessionRefTrigger('正文 ##')).toBeNull()
+    expect(matchSessionRefTrigger('见 #L10')).toBeNull()
+    expect(matchSessionRefTrigger('见 #L10-20')).toBeNull()
+  })
+})
 
 describe('sessionRefText 序列化', () => {
   it('常规形态：[#标题](#sess_id)', () => {

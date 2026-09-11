@@ -75,7 +75,6 @@
     "groupAgents": "サブエージェント"
   },
   "sessRef": {
-    "empty": "一致する最近のセッションはありません",
     "messages": "件"
   },
   "agent": {

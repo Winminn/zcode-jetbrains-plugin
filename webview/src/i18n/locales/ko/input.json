@@ -75,7 +75,6 @@
     "groupAgents": "서브 에이전트"
   },
   "sessRef": {
-    "empty": "일치하는 최근 세션이 없습니다",
     "messages": "개 메시지"
   },
   "agent": {

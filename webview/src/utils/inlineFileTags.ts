@@ -230,6 +230,23 @@ const SESS_MD_RE = /\[#((?:\\.|[^\]])*)\]\(#(sess_[A-Za-z0-9._-]+)\)/g
 const SESS_BARE_RE = /(^|[\s\u4e00-\u9fa5])#(sess_[A-Za-z0-9._-]+)(?=$|[\s\u4e00-\u9fa5])/g
 
 /**
+ * # 会话引用补全触发判定：光标前文本命中"未完成的 #query"时返回 query，否则 null。
+ * 防误判三条（缺陷BJ）：
+ *   1. `##`（markdown 标题，# 前还是 #）不触发；
+ *   2. query 是行号模式（L10 / L10-20，文件 chip 后补行号引用的既有输入习惯）不触发；
+ *   3. # 前紧跟 ASCII 词字符或 URL 标点（. : / -）不触发——URL 锚点
+ *      （https://host/path#frag）和 issue#123 这类粘连纯文本不该弹会话列表；
+ *      空白/起始/中文/括号等边界后仍正常触发（与 SESS_BARE_RE 的词边界语义对齐）。
+ */
+export function matchSessionRefTrigger(beforeCursor: string): string | null {
+  const m = beforeCursor.match(/([^#]|^)#([^\s#]*)$/)
+  if (!m) return null
+  if (/^L\d*(-\d*)?$/.test(m[2])) return null
+  if (m[1] && /[\w.:/-]/.test(m[1])) return null
+  return m[2]
+}
+
+/**
  * 把编辑器里"已结束"的会话引用文本转成内联 chip（粘贴/历史回填/队列回填场景；
  * 打字中间不转换——用户几乎不会手打 36 位 id，此函数只服务内容已完整落地的回显）。
  * markdown 链接形态可出现在任意位置；裸 token 要求词边界（空白/行首/中文边界）。

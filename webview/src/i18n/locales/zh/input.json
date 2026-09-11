@@ -80,7 +80,6 @@
     "groupAgents": "子智能体"
   },
   "sessRef": {
-    "empty": "没有匹配的近期会话",
     "messages": "条消息"
   },
   "agent": {

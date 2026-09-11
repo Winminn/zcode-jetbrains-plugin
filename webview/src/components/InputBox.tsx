@@ -40,7 +40,7 @@ import { AgentSelect, AgentColorDot } from './AgentSelect'
 import { PromptEnhancerDialog } from './PromptEnhancerDialog'
 import { sendToJava, onMessage } from '@/ipc/bridge'
 import type { JavaResponse, SlashCommand, AgentDef, ImageAttachmentInput } from '@/types/messages'
-import { insertChipAtCursor, insertCommandChipAtCursor, insertSessionChipAtCursor, convertCompletedPaths, convertCompletedSessionRefs, serializeEditor, type CmdChipKind } from '@/utils/inlineFileTags'
+import { insertChipAtCursor, insertCommandChipAtCursor, insertSessionChipAtCursor, convertCompletedPaths, convertCompletedSessionRefs, matchSessionRefTrigger, serializeEditor, type CmdChipKind } from '@/utils/inlineFileTags'
 import { relativeTime } from '@/utils/time'
 import { parseGoalCommand } from '@/utils/goalCommand'
 import { KV_HYDRATED_EVENT, KV_DISABLED_EVENT } from '@/utils/persist'
@@ -551,6 +551,11 @@ export function InputBox({ onSend, isStreaming = false, onStop, disabled = false
       setHasText(false)
     }
     setGhostSuffix('')
+    // 文本已清空，@/# 补全弹层一并关闭（弹层状态不随程序清空自动复位，缺陷BJ：
+    // 带 # 的 URL 消息发送后空态面板残留）
+    setMentionQuery(null)
+    setMentionFiles([])
+    setSessQuery(null)
   }
 
   /**
@@ -1125,16 +1130,15 @@ export function InputBox({ onSend, isStreaming = false, onStop, disabled = false
 
   /**
    * 检测光标前是否有未完成的 #xxx，触发会话补全。与 @ / 行首 / 互斥（调用方保证）。
-   * 防误判：`#` 前还是 `#` 不触发（正文 markdown 标题 "## "）；query 匹配
-   * 行号模式（L10 / L10-20，文件 chip 后补行号引用的既有输入习惯）不触发。
+   * 防误判规则（## 标题 / L行号 / URL 锚点等 # 粘连纯文本）收在 matchSessionRefTrigger。
    */
   function checkSessionRefTrigger(el: HTMLDivElement): boolean {
     const sel = window.getSelection()
     if (!sel || sel.rangeCount === 0) return false
     const beforeCursor = textBeforeCaret(el, sel.getRangeAt(0))
-    const hashMatch = beforeCursor.match(/([^#]|^)#([^\s#]*)$/)
-    if (hashMatch && !/^L\d*(-\d*)?$/.test(hashMatch[2])) {
-      setSessQuery(hashMatch[2])
+    const query = matchSessionRefTrigger(beforeCursor)
+    if (query !== null) {
+      setSessQuery(query)
       return true
     }
     setSessQuery(null)
@@ -1352,14 +1356,16 @@ export function InputBox({ onSend, isStreaming = false, onStop, disabled = false
         return
       }
     }
-    // # 会话引用补全打开时，方向键/Enter/Escape 由补全处理（与 @ / / 互斥）
-    if (sessQuery !== null && filteredSessionItems.length > 0) {
-      if (e.key === 'ArrowDown') {
+    // # 会话引用补全打开时，方向键/Enter/Escape 由补全处理（与 @ / / 互斥）。
+    // 零候选面板不渲染，但触发态仍在：Esc 清 sessQuery，Enter/方向键放行给正常编辑
+    if (sessQuery !== null) {
+      const hasCandidates = filteredSessionItems.length > 0
+      if (hasCandidates && e.key === 'ArrowDown') {
         e.preventDefault()
         setSessIndex((i) => (i + 1) % filteredSessionItems.length)
         return
       }
-      if (e.key === 'ArrowUp') {
+      if (hasCandidates && e.key === 'ArrowUp') {
         e.preventDefault()
         setSessIndex((i) => (i - 1 + filteredSessionItems.length) % filteredSessionItems.length)
         return
@@ -1369,7 +1375,7 @@ export function InputBox({ onSend, isStreaming = false, onStop, disabled = false
         setSessQuery(null)
         return
       }
-      if (e.key === 'Enter' && !e.shiftKey) {
+      if (hasCandidates && e.key === 'Enter' && !e.shiftKey) {
         e.preventDefault()
         // 过滤列表变短时 index 可能超界（filter 变化不重置导航位），clamp 防越界
         selectSessionRef(
@@ -1865,13 +1871,11 @@ export function InputBox({ onSend, isStreaming = false, onStop, disabled = false
         )}
 
         {/* # 会话引用补全下拉（# 触发近期会话；引用以 [#标题](#sess_id) 随正文发送，
-            模型侧 ReadSessionContext 内置工具按需拉取目标会话上下文）*/}
-        {sessQuery !== null && (
+            模型侧 ReadSessionContext 内置工具按需拉取目标会话上下文。
+            零候选不渲染面板：# 可能是用户的其他用途（URL 锚点/纯文本），弹「没有匹配」反成骚扰）*/}
+        {sessQuery !== null && filteredSessionItems.length > 0 && (
           <div className="input-box__mention input-box__sess">
-            {filteredSessionItems.length === 0 ? (
-              <div className="input-box__sess-empty">{t('input.sessRef.empty')}</div>
-            ) : (
-              filteredSessionItems.map((s, i) => (
+            {filteredSessionItems.map((s, i) => (
                 <div
                   key={s.sessionId}
                   className={`input-box__mention-item input-box__sess-item ${i === Math.min(sessIndex, filteredSessionItems.length - 1) ? 'active' : ''}`}
@@ -1892,8 +1896,7 @@ export function InputBox({ onSend, isStreaming = false, onStop, disabled = false
                     </span>
                   </span>
                 </div>
-              ))
-            )}
+              ))}
           </div>
         )}
 

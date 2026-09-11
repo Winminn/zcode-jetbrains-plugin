@@ -3,7 +3,7 @@
  *
  * 锁定：
  * 1. `#` 触发近期会话补全下拉（store sessions 数据源，排除当前会话）
- * 2. 无匹配显示空态；行号模式 #L10 不误触发；@ 命中时 # 下拉关闭（互斥）
+ * 2. 无匹配不渲染面板（# 可能是其他用途，弹空态成骚扰）；行号模式 #L10 不误触发；@ 命中时 # 下拉关闭（互斥）
  * 3. 选中条目插内联 chip，发送序列化 [#标题](#sess_id)（模型侧 ReadSessionContext 协议）
  * 4. 粘贴 markdown 链接文本自动转 chip，发送保留引用形态
  */
@@ -152,7 +152,7 @@ describe('InputBox # 会话引用', () => {
     expect(items[1].textContent).toContain('修复登录 bug')
   })
 
-  it('`#关键词` 过滤；无匹配显示空态', () => {
+  it('`#关键词` 过滤；无匹配整个面板不渲染（# 可能是其他用途），改回有匹配重新出现', () => {
     const { container, editor } = setup()
     type(editor, '#暗号')
     const items = container.querySelectorAll('.input-box__sess-item')
@@ -160,8 +160,10 @@ describe('InputBox # 会话引用', () => {
     expect(items[0].textContent).toContain('暗号测试会话')
 
     type(editor, '#不存在的关键词')
-    expect(container.querySelectorAll('.input-box__sess-item').length).toBe(0)
-    expect(container.querySelector('.input-box__sess-empty')?.textContent).toContain('没有匹配')
+    expect(container.querySelector('.input-box__sess')).toBeNull()
+
+    type(editor, '#暗号')
+    expect(container.querySelectorAll('.input-box__sess-item').length).toBe(1)
   })
 
   it('行号模式 #L10 不触发（文件 chip 行号引用防误判）；## 连续井号不触发', () => {
