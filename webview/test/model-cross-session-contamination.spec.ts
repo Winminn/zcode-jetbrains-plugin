@@ -45,7 +45,7 @@ vi.mock('@/ipc/bridge', () => ({
   sendToJava: (req: Record<string, unknown>) => { sentRequests.push(req) },
 }))
 
-import { useStore } from '@/store/useStore'
+import { useStore, scheduleModelApplyAfterSubscribe } from '@/store/useStore'
 
 const SID1 = 'sess_issue9_1'
 const SID2 = 'sess_issue9_2'
@@ -132,16 +132,21 @@ describe('缺陷BI：会话级模型记忆（issue #9 修复）', () => {
     // 模拟新 webview（重启/新标签）：已应用集合为空
     useStore.setState({ modelAppliedSessions: new Set() })
     setModelMemory({ [SID1]: GLM, [SID2]: KIMI })
-    // 切到会话 2：重放会话 2 自己的 kimi（不是全局默认）
+    // 切到会话 2：重放会话 2 自己的 kimi（不是全局默认）——subscribed 回执前挂起不下发
+    // （十五轮错峰：大会话冷启动时即发 setModel 必撞忙窗口超时）
     useStore.getState().selectSession({ sessionId: SID2, workspacePath: 'G:\\mock' })
+    expect(setModelReqs(SID2)).toEqual([])
+    pushResponse({ op: 'subscribed', sessionId: SID2 })
     expect(lastSetModelReq()).toMatchObject({ sessionId: SID2, ...KIMI })
     // 切回会话 1：重放会话 1 自己的 GLM——修复前（全局记忆）这里会把 kimi 切给会话 1
     useStore.getState().selectSession({ sessionId: SID1, workspacePath: 'G:\\mock' })
+    pushResponse({ op: 'subscribed', sessionId: SID1 })
     expect(lastSetModelReq()).toMatchObject({ sessionId: SID1, ...GLM })
     expect(useStore.getState().currentModel).toEqual(GLM)
     // Set 守卫：再切回会话 2 不重发（首见才下发）
     sentRequests.length = 0
     useStore.getState().selectSession({ sessionId: SID2, workspacePath: 'G:\\mock' })
+    pushResponse({ op: 'subscribed', sessionId: SID2 })
     expect(setModelReqs()).toEqual([])
   })
 
@@ -154,6 +159,9 @@ describe('缺陷BI：会话级模型记忆（issue #9 修复）', () => {
       modelAppliedSessions: new Set(),
       createdSessionIds: new Set([SID_NEW]),
     })
+    // 懒创建落定后 createSession 路径挂 subscribed 错峰；本用例 setState 短路了
+    // createSession，手动补挂起保持与真实链路一致（导出函数=测试同款入口）
+    scheduleModelApplyAfterSubscribe(SID_NEW, true)
     pushResponse({
       op: 'models',
       models: [
@@ -161,6 +169,9 @@ describe('缺陷BI：会话级模型记忆（issue #9 修复）', () => {
         { ...KIMI, label: 'Kimi K3' },
       ],
     })
+    // 新会话同样挂 subscribed 回执错峰（十五轮）；回执未到前不下发
+    expect(setModelReqs(SID_NEW)).toEqual([])
+    pushResponse({ op: 'subscribed', sessionId: SID_NEW })
     expect(lastSetModelReq()).toMatchObject({ sessionId: SID_NEW, ...KIMI })
     expect(useStore.getState().currentModel).toEqual(KIMI)
   })
@@ -182,6 +193,7 @@ describe('缺陷BI：会话级模型记忆（issue #9 修复）', () => {
       ],
     })
     // 修复前：setModel(会话1, kimi)（11:25:59 真机日志现场）；修复后：重放会话 1 自己的 GLM
+    pushResponse({ op: 'subscribed', sessionId: SID1 })
     expect(lastSetModelReq()).toMatchObject({ sessionId: SID1, ...GLM })
     expect(useStore.getState().currentModel).toEqual(GLM)
   })

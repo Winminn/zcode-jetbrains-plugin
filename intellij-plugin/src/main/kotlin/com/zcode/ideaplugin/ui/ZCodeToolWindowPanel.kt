@@ -3611,10 +3611,20 @@ if (!window.__ZCODE_LOG_HOOK__) {
                 log.warn("subscribe failed: resident pool likely full (reopen IDE to free slots): ${e.message}")
                 return errorResponse("订阅失败: ${e.message}")
             }
+            // 忙窗口超时（缺陷AB + 十五轮静默化）：大会话冷启动恢复时 resume/messages/
+            // setModel 把 app-server 单线程队列堵住，subscribe 10s 超时是排队而非失败——
+            // 事件流经全局监听器照常转发、busy-retry 会补订成功。不再 SEVERE+堆栈、
+            // 不回 error（前端不弹报错横幅），乐观回 subscribed + 后台补订；补订失败
+            // busyRetry 自身的轮次上限兜底，用户无感知
+            if (isTimeoutEx(e)) {
+                log.info("subscribe session $sessionId timed out in busy window (events still flow via global listener; busy-retry will confirm)")
+                scheduleSubscribeBusyRetry(sessionId)
+                return buildJsonObject {
+                    put("op", "subscribed")
+                    put("sessionId", sessionId)
+                }
+            }
             log.error("subscribe session $sessionId failed", e)
-            // 忙窗口超时（缺陷AB）：应答仍即时回错误，后台延迟重试——事件流经全局监听器
-            // 转发，重试成功后无需额外通知（事件自然开始流动）
-            if (isTimeoutEx(e)) scheduleSubscribeBusyRetry(sessionId)
             return errorResponse("订阅失败: ${e.message}")
         }
 

@@ -1217,8 +1217,11 @@ export const useStore = create<StoreState>((set, get) => ({
     // 则不补发，顶栏只剩一条"恢复中"提示
     // 拉取运行时设置（mode + 思考级别，级别列表随模型变化）
     get().loadSettings()
-    // 会话切换后重放该会话自己的模型记忆（会话级；首见会话才下发，见 applyModelIfReady）
-    get().applyModelIfReady(session.sessionId)
+    // 会话切换后重放该会话自己的模型记忆——挂到 subscribed 回执后错峰下发（十五轮：
+    // 大会话冷启动时 resume/messages 堵 app-server 单线程队列 10s+，即发 setModel 必然
+    // 排队超时、还反过来挤压 subscribe 的超时窗；订阅回执=resume 已完成、队列已消化）。
+    // 回执丢失（订阅失败）时由 subscribedTimeoutBus 的 8s 兜底触发，不丢恢复
+    scheduleModelApplyAfterSubscribe(session.sessionId)
   },
 
   sendMessage: (text, attachments?, opts?) => {
@@ -2592,6 +2595,31 @@ function writeThoughtLevelCache(modelId: string | null | undefined, info: Though
   }))
 }
 
+// subscribed 后模型恢复错峰（十五轮）：sessionId → 兜底定时器。selectSession 不再
+// 即发 setModel（大会话冷启动时堵队列必超时），改挂本表等 subscribed 回执消费；回执
+// 丢失（订阅失败/事件被吞）由 8s 兜底触发——恢复不依赖单一事件，只延迟不缺席
+const pendingModelApplyAfterSubscribe = new Map<string, { timer: ReturnType<typeof setTimeout>; newSession: boolean }>()
+
+/** 挂起模型记忆恢复：subscribed 回执或 8s 兜底（先到者）触发 applyModelIfReady。
+ *  导出：spec 模拟懒创建链路时复用（setState 短路 createSession 的场景）*/
+export function scheduleModelApplyAfterSubscribe(sessionId: string, newSession = false): void {
+  cancelPendingModelApply(sessionId)
+  const timer = setTimeout(() => {
+    pendingModelApplyAfterSubscribe.delete(sessionId)
+    const st = useStore.getState()
+    if (st.currentSessionId === sessionId) st.applyModelIfReady(sessionId, newSession)
+  }, 8000)
+  pendingModelApplyAfterSubscribe.set(sessionId, { timer, newSession })
+}
+
+function cancelPendingModelApply(sessionId: string): void {
+  const t = pendingModelApplyAfterSubscribe.get(sessionId)
+  if (t) {
+    clearTimeout(t.timer)
+    pendingModelApplyAfterSubscribe.delete(sessionId)
+  }
+}
+
 /** 模型切换是否在途（setModel 已发出、modelSet 未回；5s 未回视为切换失败已过期）*/
 function isModelSwitchInFlight(state: { modelSwitchInFlightAt: number | null }): boolean {
   return state.modelSwitchInFlightAt != null && Date.now() - state.modelSwitchInFlightAt < 5000
@@ -2859,7 +2887,10 @@ export function handleResponse(
         // 模型注册与回合执行改由首条 send 携带的 runtimeModel 承担（send 已带 currentModel），
         // 仅标记已应用防 messages/models 刷新时重发
         if (!pendingFirst) {
-          get().applyModelIfReady(sid, true)
+          // 新会话同样错峰（十五轮）：新建会话在服务端要 spawn runtime，setModel 即发
+          // 与首回合在服务端赛跑（-32603 家族），挂 subscribed 回执后下发（newSession
+          // 语义不变：models 迟到时仍按新会话回退全局默认）
+          scheduleModelApplyAfterSubscribe(sid, true)
         } else {
           set({ modelAppliedSessions: new Set([...get().modelAppliedSessions, sid]) })
         }
@@ -3295,6 +3326,13 @@ export function handleResponse(
         set({ pendingGoalCreation: null })
         get().goalManage('set', pendingGoal.objective)
       }
+      // selectSession 挂起的模型记忆恢复在此消费（订阅落定=resume 完成、服务端会话
+      // 队列已消化，setModel 不再与 resume/messages 抢单线程——十五轮错峰）
+      const pendingApply = pendingModelApplyAfterSubscribe.get(msg.sessionId)
+      if (pendingApply) {
+        cancelPendingModelApply(msg.sessionId)
+        if (get().currentSessionId === msg.sessionId) get().applyModelIfReady(msg.sessionId, pendingApply.newSession)
+      }
       break
     }
     case 'subscribedChild': // 子会话订阅 ack：记录 v4 通道可用性（弹窗据此停用快照轮询）
@@ -3607,10 +3645,11 @@ export function handleResponse(
         const inferred = inferCurrentModel(get().messages, msg.models)
         if (inferred) set({ currentModel: inferred })
       }
-      // models 就绪后，若当前会话还没下发过 setModel → 真正下发（修复"选 deepseek 实际 GLM5"）
+      // models 就绪后，若当前会话还没下发过 setModel → 真正下发（修复"选 deepseek 实际 GLM5"）。
+      // 已挂 subscribed 错峰的会话不在此直发（挂起表消费时统一走，防回执前双发）
       {
         const sid = get().currentSessionId
-        if (sid) get().applyModelIfReady(sid)
+        if (sid && !pendingModelApplyAfterSubscribe.has(sid)) get().applyModelIfReady(sid)
       }
       // 待命态：currentModel 刚水合，按它恢复缓存的级别集（ThoughtLevelSelect 预选显示）
       get().hydrateThoughtLevelStandby()
