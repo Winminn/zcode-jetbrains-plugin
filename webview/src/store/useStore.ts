@@ -448,10 +448,14 @@ interface StoreState {
 
   // 模型切换（config.json provider 注册表）
   models: ModelOption[]
-  /** 当前会话选择的模型（persist 记忆）*/
+  /** 当前会话选择的模型（显示值；会话级记忆见 zcode.modelMemory）*/
   currentModel: { modelId: string; providerId: string } | null
-  /** 已为该会话下发过 setModel（避免每次 messages 刷新重复下发）*/
-  modelAppliedForSession: string | null
+  /** 已下发过 setModel 的会话集合（避免 messages/models 刷新重复下发；Set 而非
+   * 单槽——单槽在切走再切回时守卫失效，是缺陷BI跨会话重放的入口之一）*/
+  modelAppliedSessions: Set<string>
+  /** 本 webview 内新建的会话集合：applyModelIfReady 对它们才回退全局默认模型
+   * （新会话跟随上次选择的既有体验）；存量会话只重放会话级记忆（缺陷BI）*/
+  createdSessionIds: Set<string>
   /** 已选模型因清单变更失效被清除（防 inferCurrentModel 按模型名反查到别的 provider 复活；用户重选/切会话后复位）*/
   modelInvalidated: boolean
 
@@ -720,7 +724,7 @@ interface StoreState {
   /** 切换当前会话模型（session/setModel）*/
   setModel: (modelId: string, providerId: string) => void
   /** 把 persist 记忆的模型下发给指定会话（models 列表已就绪时才生效）*/
-  applyModelIfReady: (sessionId: string) => void
+  applyModelIfReady: (sessionId: string, newSession?: boolean) => void
   /** 拉取当前会话的运行时设置（mode + thoughtLevel）*/
   loadSettings: () => void
   /** 待命态（无会话）按当前模型恢复缓存的思考级别集（预选显示用；有会话时无操作）*/
@@ -981,7 +985,8 @@ export const useStore = create<StoreState>((set, get) => ({
   teamPlanNoOverride: false,
   currentModel: null,
   modelInvalidated: false,
-  modelAppliedForSession: null,
+  modelAppliedSessions: new Set<string>(),
+  createdSessionIds: new Set<string>(),
   thoughtLevel: null,
   currentMode: null,
   prePlanMode: null,
@@ -1183,6 +1188,10 @@ export const useStore = create<StoreState>((set, get) => ({
       currentSessionId: session.sessionId,
       currentWorkspacePath: workspacePath,
       modelInvalidated: false, // 切会话后按新会话消息推断模型是合理行为，解除失效锁定
+      // 模型显示取该会话自己的记忆（缺陷BI：会话级记忆）；无记忆置空，等消息快照
+      // inferCurrentModel 推断——不再沿用上一会话/全局记忆的显示（别的会话选过的
+      // 模型不该出现在这里）；own 存在时紧随其后的 applyModelIfReady 会重放同值
+      currentModel: readSessionModel(session.sessionId),
       modelPendingSwitch: null, // 旧会话的延迟切换提示不带到新会话（补发 modelSet 有 sessionId 守卫）
       modelSwitchPrevModel: null,
       lastNotice: null,
@@ -1208,7 +1217,7 @@ export const useStore = create<StoreState>((set, get) => ({
     // 则不补发，顶栏只剩一条"恢复中"提示
     // 拉取运行时设置（mode + 思考级别，级别列表随模型变化）
     get().loadSettings()
-    // 会话切换后，把 persist 记忆的模型真正下发 setModel（见 models 响应里的 applyModelIfReady）
+    // 会话切换后重放该会话自己的模型记忆（会话级；首见会话才下发，见 applyModelIfReady）
     get().applyModelIfReady(session.sessionId)
   },
 
@@ -1798,6 +1807,10 @@ export const useStore = create<StoreState>((set, get) => ({
     if (cur && cur.modelId === modelId && cur.providerId === providerId) {
       const hadPending = !!get().modelPendingSwitch
       setPersisted('zcode.currentModel', JSON.stringify({ modelId, providerId }))
+      // 会话级记忆同步归位（缺陷BI）：撤销后该会话的记忆应回到生效模型，
+      // 否则重启恢复会重放已放弃的目标
+      const cancelSid = get().currentSessionId
+      if (cancelSid) rememberSessionModel(cancelSid, { modelId, providerId })
       set({
         modelInvalidated: false,
         modelSwitchInFlightAt: null,
@@ -1809,7 +1822,8 @@ export const useStore = create<StoreState>((set, get) => ({
       if (hadPending && sid) sendToJava({ op: 'cancelModelSwitch', sessionId: sid })
       return
     }
-    // 记忆当前选择（persist 通道），切换会话后仍显示；无会话（懒创建待命态）也先记忆，
+    // 记忆当前选择：全局（新会话默认）+ 会话级（本会话切回/重启恢复时重放自己的选择，
+    // 不再带入别的会话选过的模型——缺陷BI）；无会话（懒创建待命态）只写全局，
     // 会话建立后由 applyModelIfReady 真正下发（见 createSession 响应处理）
     setPersisted('zcode.currentModel', JSON.stringify({ modelId, providerId }))
     // 暂存翻转前模型：回合中切换会被 Java 挂起（modelSetPending），届时回滚选中态
@@ -1818,39 +1832,50 @@ export const useStore = create<StoreState>((set, get) => ({
     get().hydrateThoughtLevelStandby()
     const sid = get().currentSessionId
     if (!sid) return
+    rememberSessionModel(sid, { modelId, providerId })
     // 标记切换在途：期间到达的 settings 级别部分计算于旧模型（modelSet 响应时清除）
     set({ modelSwitchInFlightAt: Date.now() })
     sendToJava({ op: 'setModel', sessionId: sid, modelId, providerId })
   },
 
-  applyModelIfReady: (sessionId) => {
-    // 同一会话只下发一次（避免 messages 刷新重复触发）
-    if (get().modelAppliedForSession === sessionId) return
-    let saved: { modelId: string; providerId: string } | null = null
-    try {
-      const raw = getPersisted('zcode.currentModel')
-      if (raw) saved = JSON.parse(raw)
-    } catch { /* ignore */ }
-    if (!saved) return
-    // 等待 models 列表就绪，且记忆的模型仍在列表里（避免下发无效模型）
+  applyModelIfReady: (sessionId, newSession = false) => {
+    // 同一会话只下发一次（Set 守卫；单槽时代切走再切回守卫即失效，每次来回都重发，
+    // 撞上在跑回合还会产生"本轮结束后生效"的无效挂起）
+    if (get().modelAppliedSessions.has(sessionId)) return
+    // 等待 models 列表就绪（迟到的 models 响应会再触发一次）
     const models = get().models
     if (models.length === 0) return
-    const exists = models.some((m) => m.modelId === saved!.modelId && m.providerId === saved!.providerId)
+    // 会话级记忆优先（缺陷BI）：已有会话只重放它自己的选择，绝不带入别的会话选过的
+    // 模型；仅新建会话（懒创建/显式 newSession）回退全局默认——保留"新会话跟随上次
+    // 选择"的既有体验。存量会话无记忆则不重放：服务端本就持有其模型，显示由消息
+    // 快照的 inferCurrentModel 推断（applyMessagesSnapshot）
+    const own = readSessionModel(sessionId)
+    let target: ModelChoice | null = own
+    if (!target && (newSession || get().createdSessionIds.has(sessionId))) {
+      try {
+        const raw = getPersisted('zcode.currentModel')
+        if (raw) target = JSON.parse(raw) as ModelChoice
+      } catch { /* ignore */ }
+    }
+    if (!target) return
+    // 记忆的模型已不在可选列表（典型：provider 被禁/体验套餐被过滤/配置已删）：
+    // 兜底生效套餐（个人/团队，issue #8）首选、其次列表首个，并回写对应层记忆
+    // （会话级→会话级、全局→全局）——否则会话静默跑在服务端默认模型上、选择器空占位
+    const exists = models.some((m) => m.modelId === target!.modelId && m.providerId === target!.providerId)
     if (!exists) {
-      // 记忆的模型已不在可选列表（典型：体验套餐 captcha 门控渠道被后端过滤，或配置已删）：
-      // 兜底生效套餐（个人/团队，issue #8）首选、其次列表首个，并回写记忆——否则会话静默
-      // 跑在服务端默认模型上、选择器空占位（2026-08-28 体验套餐过滤定案）
       const fb = models.find((m) => m.plan === 'personal' || m.plan === 'team') ?? models[0]
       const fallback = { modelId: fb.modelId, providerId: fb.providerId }
-      setPersisted('zcode.currentModel', JSON.stringify(fallback))
-      set({ currentModel: fallback, modelAppliedForSession: sessionId, modelSwitchInFlightAt: Date.now() })
-      sendToJava({ op: 'setModel', sessionId, modelId: fallback.modelId, providerId: fallback.providerId })
-      return
+      if (own) rememberSessionModel(sessionId, fallback)
+      else setPersisted('zcode.currentModel', JSON.stringify(fallback))
+      target = fallback
     }
-    set({ currentModel: saved, modelAppliedForSession: sessionId })
+    set({ currentModel: { modelId: target.modelId, providerId: target.providerId } })
     // 标记切换在途：期间到达的 settings 级别部分计算于旧模型（modelSet 响应时清除）
-    set({ modelSwitchInFlightAt: Date.now() })
-    sendToJava({ op: 'setModel', sessionId, modelId: saved.modelId, providerId: saved.providerId })
+    set({
+      modelAppliedSessions: new Set([...get().modelAppliedSessions, sessionId]),
+      modelSwitchInFlightAt: Date.now(),
+    })
+    sendToJava({ op: 'setModel', sessionId, modelId: target.modelId, providerId: target.providerId })
   },
 
   loadSettings: () => {
@@ -2490,6 +2515,54 @@ function inferCurrentMode(messages: ZCodeMessage[]): string | null {
   return null
 }
 
+/* ============ 会话级模型记忆（缺陷BI：模型记忆全局单值跨会话污染） ============
+ * zcode.currentModel 是全局单值（新会话的默认模型），历史行为把它当成所有会话的
+ * 记忆在切会话/重启恢复时重放 → 别的会话选过的模型被自动切到当前会话（issue #9）。
+ * 修复：每个会话的选择单独记忆（zcode.modelMemory，LRU≤50）；切回已有会话只重放
+ * 它自己的选择，无记忆则不重放（显示由消息快照 inferCurrentModel 推断，服务端本就
+ * 持有其模型）；仅新建会话回退全局默认（保留"新会话跟随上次选择"的既有体验）。 */
+const MODEL_MEMORY_KEY = 'zcode.modelMemory'
+const MODEL_MEMORY_MAX = 50
+
+type ModelChoice = { modelId: string; providerId: string }
+type ModelMemoryEntry = ModelChoice & { t: number }
+
+function readModelMemory(): Record<string, ModelMemoryEntry> {
+  try {
+    const raw = getPersisted(MODEL_MEMORY_KEY)
+    if (!raw) return {}
+    const parsed = JSON.parse(raw) as Record<string, ModelMemoryEntry>
+    return parsed && typeof parsed === 'object' ? parsed : {}
+  } catch {
+    return {}
+  }
+}
+
+/** 读某会话自己的模型记忆（无 → null）*/
+function readSessionModel(sessionId: string): ModelChoice | null {
+  const e = readModelMemory()[sessionId]
+  return e ? { modelId: e.modelId, providerId: e.providerId } : null
+}
+
+/** 写会话级记忆（带 LRU 截断，防 kv 无限增长；条目随会话选择覆盖更新）*/
+function rememberSessionModel(sessionId: string, model: ModelChoice): void {
+  const map = readModelMemory()
+  map[sessionId] = { ...model, t: Date.now() }
+  const keys = Object.keys(map)
+  if (keys.length > MODEL_MEMORY_MAX) {
+    keys.sort((a, b) => map[a].t - map[b].t)
+    for (const k of keys.slice(0, keys.length - MODEL_MEMORY_MAX)) delete map[k]
+  }
+  setPersisted(MODEL_MEMORY_KEY, JSON.stringify(map))
+}
+
+function forgetSessionModel(sessionId: string): void {
+  const map = readModelMemory()
+  if (!(sessionId in map)) return
+  delete map[sessionId]
+  setPersisted(MODEL_MEMORY_KEY, JSON.stringify(map))
+}
+
 /* ============ 思考级别 info 按模型缓存 ============
  * settings（session/read）需要会话，待命态（新标签/新建会话，懒创建前）拿不到级别集。
  * settings 响应时按当前模型把 available/defaultLevel 落 persist，待命态恢复显示，
@@ -2778,14 +2851,17 @@ export function handleResponse(
           }, 2500)
         }
         // 新会话也按记忆模型下发 setModel（等 models 就绪，由 applyModelIfReady 内部判断）。
+        // 登记为本 webview 新建会话：models 迟到时后续 models 响应的 applyModelIfReady
+        // 仍按"新会话"回退全局默认（缺陷BI 后全局默认仅对新会话生效）
+        set({ createdSessionIds: new Set([...get().createdSessionIds, sid]) })
         // 懒创建首条消息在途时跳过独立 setModel：它与首回合在服务端赛跑会撞 -32603
         // Unsupported（08-29 定时触发实测：新会话 runtime 未注册任何 provider），
         // 模型注册与回合执行改由首条 send 携带的 runtimeModel 承担（send 已带 currentModel），
         // 仅标记已应用防 messages/models 刷新时重发
         if (!pendingFirst) {
-          get().applyModelIfReady(sid)
+          get().applyModelIfReady(sid, true)
         } else {
-          set({ modelAppliedForSession: sid })
+          set({ modelAppliedSessions: new Set([...get().modelAppliedSessions, sid]) })
         }
         // 待命态预选的模式补下发——必须先于首条消息，预选 plan 时首问就按计划模式跑
         if (preselectedMode) get().setMode(preselectedMode)
@@ -3442,7 +3518,23 @@ export function handleResponse(
       {
         const cur = get().currentModel
         if (cur && !msg.models.some((m) => m.modelId === cur.modelId && m.providerId === cur.providerId)) {
-          removePersisted('zcode.currentModel')
+          // 全局默认若同样指向失效模型 → 兜底回写而非删除：删除会让待命态（新建标签）
+          // 失去默认、选择器空占位（真机二轮反馈根因——invalidation 清空显示后恢复块
+          // 无全局可恢复）；列表为空才回退删除。待命态显示由紧随的恢复块用回写值填回
+          let savedG: { modelId: string; providerId: string } | null = null
+          try {
+            const raw = getPersisted('zcode.currentModel')
+            if (raw) savedG = JSON.parse(raw)
+          } catch { /* ignore */ }
+          const globalInvalid = !savedG
+            || !msg.models.some((m) => m.modelId === savedG!.modelId && m.providerId === savedG!.providerId)
+          if (globalInvalid) {
+            const gfb = msg.models.find((m) => m.plan === 'personal' || m.plan === 'team') ?? msg.models[0]
+            if (gfb) setPersisted('zcode.currentModel', JSON.stringify({ modelId: gfb.modelId, providerId: gfb.providerId }))
+            else removePersisted('zcode.currentModel')
+          }
+          // 当前会话的会话级记忆一并清除（缺陷BI 后重启恢复按它重放，失效模型不能复活）
+          if (get().currentSessionId) forgetSessionModel(get().currentSessionId!)
           // 兜底选中而非清空等重选：assistant 消息 info 的 providerID/modelID 是服务端
           // 权威（Zcode 侧禁用 qwen 后服务端回退 GLM，新一轮回复的 info 即真实在用
           // 模型）——推断得出且仍在列表则直接选上（下拉有勾选），推不出才保持空占位。
@@ -3481,13 +3573,31 @@ export function handleResponse(
           }
         }
       }
-      // 恢复记忆的模型选择（如仍在列表里）
+      // 恢复记忆的模型选择。仅待命态与新建会话用全局默认做显示——存量会话切入时
+      // currentModel 为空（无会话级记忆，等消息推断），拿全局默认显示会把别的会话
+      // 选过的模型顶进当前会话（缺陷BI 显示面）。
+      // 全局默认缺失（失效清除回写失败/全新安装）或已不在清单（provider 被禁/配置已删）：
+      // 兜底生效套餐首选、其次列表首个并回写——待命态选择器不空占位（"新建标签模型
+      // 是空的需手动选"反馈，与 applyModelIfReady 新会话兜底同语义；失效清除把待命态
+      // 显示清空的场景也由此填回）
       try {
         const saved = getPersisted('zcode.currentModel')
-        if (saved && get().currentModel === null) {
-          const parsed = JSON.parse(saved) as { modelId: string; providerId: string }
-          if (msg.models.some((m) => m.modelId === parsed.modelId && m.providerId === parsed.providerId)) {
+        const curSid = get().currentSessionId
+        const mayUseGlobal = !curSid || get().createdSessionIds.has(curSid)
+        if (get().currentModel === null && mayUseGlobal) {
+          const parsed = saved ? (JSON.parse(saved) as { modelId: string; providerId: string }) : null
+          const hit = parsed
+            ? msg.models.find((m) => m.modelId === parsed.modelId && m.providerId === parsed.providerId)
+            : undefined
+          if (parsed && hit) {
             set({ currentModel: parsed })
+          } else {
+            const fb = hit ?? msg.models.find((m) => m.plan === 'personal' || m.plan === 'team') ?? msg.models[0]
+            if (fb) {
+              const fallback = { modelId: fb.modelId, providerId: fb.providerId }
+              setPersisted('zcode.currentModel', JSON.stringify(fallback))
+              set({ currentModel: fallback })
+            }
           }
         }
       } catch { /* ignore */ }
@@ -3607,6 +3717,9 @@ export function handleResponse(
     }
 
     case 'modelSetPending': {
+      // 会话守卫（缺陷BI）：别的会话的挂起不应污染当前会话——挂起回执本应只达发起
+      // 会话（多标签各自处理），但单标签切会话的竞态窗口/广播场景下可能迟到串台
+      if (msg.sessionId && msg.sessionId !== get().currentSessionId) break
       // 回合中切换被 Java 挂起（缺陷AC）：回滚选中态到切换前模型（口径统一——显示的
       // 就是服务端实际在用的模型），挂起目标驱动提示条；persist 记忆保持目标值
       // （新会话/重开时按目标模型应用）。在途标记清除：服务端仍在旧模型上，期间到达
@@ -3622,6 +3735,23 @@ export function handleResponse(
     }
 
     case 'modelSetFailed': {
+      // 会话级记忆修复——在下方显示守卫之前（code-review Spec#1）：延迟补发失败可
+      // 晚到数分钟、用户多已切走，守卫 break 会连记忆修复一起跳过 → 失败目标留存
+      // zcode.modelMemory，重启恢复照旧重放毒目标。仅当记忆仍指向失败目标才修复
+      //（期间用户已改选别的模型则不动，防误删新记忆）；回滚依据 prev 与
+      // modelPendingSwitch 同生命周期（切会话同清），只有挂起/当前会话仍属目标时
+      // prev 才可信（防别的会话新切换的 prev 串写）；迟到场景 prev 已清 → 删除该
+      // 会话记忆（无记忆 = 重启不重放，显示由消息快照推断恢复——宁缺毋错）
+      const prev = get().modelSwitchPrevModel
+      const mem = msg.sessionId ? readSessionModel(msg.sessionId) : null
+      if (mem && msg.modelId && mem.modelId === msg.modelId && mem.providerId === msg.providerId) {
+        const prevOwned = !!prev
+          && (get().modelPendingSwitch?.sessionId === msg.sessionId || get().currentSessionId === msg.sessionId)
+        if (prevOwned) rememberSessionModel(msg.sessionId, prev!)
+        else forgetSessionModel(msg.sessionId)
+      }
+      // 显示/报错会话守卫（缺陷BI）：别的会话的切换失败不落到当前会话
+      if (msg.sessionId && msg.sessionId !== get().currentSessionId) break
       // 挂起的切换回合结束后补发仍失败（真不支持/会话已死等）：清提示并走通用错误展示
       if (get().modelPendingSwitch?.sessionId === msg.sessionId) {
         set({ modelPendingSwitch: null, modelSwitchPrevModel: null, lastNotice: null })
@@ -3629,7 +3759,6 @@ export function handleResponse(
       // 即时切换失败路径回滚选中态（此前停在目标模型上，勾选与实际不符）；延迟路径
       // modelSetPending 已回滚，prev 与 currentModel 相同，再回滚是无操作。
       // captchaGated（体验套餐 zcode-plan 网关渠道被 Java 入口拦截）映射本地化文案
-      const prev = get().modelSwitchPrevModel
       set({
         modelSwitchInFlightAt: null,
         modelSwitchPrevModel: null,

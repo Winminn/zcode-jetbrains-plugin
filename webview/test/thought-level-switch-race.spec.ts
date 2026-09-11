@@ -94,7 +94,8 @@ function resetStandby(opts: { savedLevel: string; withQwenCache: boolean }): voi
     thoughtLevel: null,
     currentMode: null,
     thoughtLevelAppliedForSession: null,
-    modelAppliedForSession: null,
+    modelAppliedSessions: new Set<string>(),
+    createdSessionIds: new Set<string>(),
     modelSwitchInFlightAt: null,
     pendingThoughtLevel: null,
     models: [{ providerId: QWEN.providerId, providerName: '千帆', modelId: QWEN.modelId, modelName: 'qwen3.8-max' }],
@@ -138,7 +139,7 @@ describe('竞态1：createSession 级别补发须等权威 settings 校验', () 
     expect(st.pendingThoughtLevel).toBeNull()
     expect(st.modelSwitchInFlightAt).toBeNull()
     // 仅标记已应用：防 messages/models 刷新重发 setModel
-    expect(st.modelAppliedForSession).toBe(NEW_SID)
+    expect(st.modelAppliedSessions.has(NEW_SID)).toBe(true)
 
     // 权威 settings（qwen=enabled/disabled）到达 → 合法级别校准补发
     // （current=disabled ≠ saved → 需要下发；current 已等于 saved 时服务端无需变更，不下发）
@@ -168,7 +169,8 @@ describe('竞态1：createSession 级别补发须等权威 settings 校验', () 
       thoughtLevel: null,
       currentMode: null,
       thoughtLevelAppliedForSession: null,
-      modelAppliedForSession: null,
+      modelAppliedSessions: new Set<string>(),
+    createdSessionIds: new Set<string>(),
       modelSwitchInFlightAt: null,
       pendingThoughtLevel: null,
       models: [{ providerId: 'builtin', providerName: '智谱', modelId: 'GLM-5.3', modelName: 'GLM-5.3' }],

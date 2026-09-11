@@ -615,9 +615,11 @@ export function InputBox({ onSend, isStreaming = false, onStop, disabled = false
     // 检测 / 斜杠命令（行首），命中时 @/# 不触发（互斥）
     const slashOpen = checkSlashTrigger(el)
     const mentionOpen = !slashOpen && checkMentionTrigger(el)
-    if (!slashOpen && !mentionOpen) checkSessionRefTrigger(el)
+    // # 下拉开合取检测函数的实时返回（code-review Spec#4）：sessQuery 在本空 deps
+    // useCallback 里是首渲染的陈旧值恒 null，幽灵建议的抑制会失效
+    const sessOpen = !slashOpen && !mentionOpen && checkSessionRefTrigger(el)
     // 历史前缀幽灵建议（@ / / / # 补全打开时不显示，方向键归下拉）
-    updateGhostSuggestion(el, slashOpen, mentionOpen || sessQuery !== null)
+    updateGhostSuggestion(el, slashOpen, mentionOpen || sessOpen)
   }, [])
 
   /** 读入图片文件（剪贴板 image 项），压缩后加入附件列表 */

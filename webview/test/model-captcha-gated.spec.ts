@@ -65,7 +65,8 @@ beforeEach(() => {
     modelSwitchPrevModel: null,
     lastNotice: null,
     lastError: null,
-    modelAppliedForSession: null,
+    modelAppliedSessions: new Set<string>(),
+    createdSessionIds: new Set<string>(),
     models: [
       { providerId: 'builtin:bigmodel-coding-plan', providerName: 'BigModel - Coding Plan', plan: 'personal', modelId: 'GLM-5.3', modelName: 'GLM-5.3' },
       { providerId: 'p-other', providerName: 'Other', modelId: 'qwen3.7-plus', modelName: 'qwen3.7-plus' },
@@ -106,25 +107,42 @@ describe('体验套餐 captcha 门控', () => {
     expect(s.modelSwitchPrevModel).toBeNull()
   })
 
-  it('applyModelIfReady：记忆的模型被过滤 → 兜底个人套餐首选 + 回写记忆 + 下发 setModel', () => {
-    storage.set('zcode.currentModel', JSON.stringify(FLASH_GATED))
+  it('applyModelIfReady：会话级记忆的模型被过滤 → 兜底个人套餐首选 + 回写会话级记忆 + 下发 setModel', () => {
+    // 缺陷BI 后兜底走会话级记忆路径（该会话选过但模型后来被禁/过滤；全局默认不受影响）
+    storage.set('zcode.modelMemory', JSON.stringify({ [SID]: { ...FLASH_GATED, t: 1 } }))
+    storage.set('zcode.currentModel', JSON.stringify(GLM))
     useStore.setState({ currentModel: null })
     useStore.getState().applyModelIfReady(SID)
     const s = useStore.getState()
     expect(s.currentModel).toEqual(GLM) // plan='personal' 优先
-    expect(s.modelAppliedForSession).toBe(SID)
+    expect(s.modelAppliedSessions.has(SID)).toBe(true)
+    // 回写会话级记忆（重启恢复不再重放被过滤模型）
+    const mem = JSON.parse(storage.get('zcode.modelMemory')!) as Record<string, { modelId: string }>
+    expect(mem[SID].modelId).toBe(GLM.modelId)
+    // 全局默认不动（own 路径只回写 own 层）
     expect(JSON.parse(storage.get('zcode.currentModel')!)).toEqual(GLM)
     const setModelReq = sentRequests.find((r) => r.op === 'setModel')
     expect(setModelReq).toMatchObject({ op: 'setModel', sessionId: SID, ...GLM })
   })
 
   it('applyModelIfReady：无个人套餐时兜底列表首个', () => {
-    storage.set('zcode.currentModel', JSON.stringify(FLASH_GATED))
+    storage.set('zcode.modelMemory', JSON.stringify({ [SID]: { ...FLASH_GATED, t: 1 } }))
     useStore.setState({
       currentModel: null,
       models: [{ providerId: 'p-other', providerName: 'Other', modelId: 'qwen3.7-plus', modelName: 'qwen3.7-plus' }],
     })
     useStore.getState().applyModelIfReady(SID)
     expect(useStore.getState().currentModel).toEqual({ modelId: 'qwen3.7-plus', providerId: 'p-other' })
+  })
+
+  it('applyModelIfReady：新建会话的全局默认被过滤 → 兜底并回写全局（升级场景）', () => {
+    // 旧版本残留的全局默认指向被过滤模型；新建会话仍按全局默认起步（缺陷BI 后仅此
+    // 路径用全局），不在列表 → 兜底个人套餐 + 回写全局
+    storage.set('zcode.currentModel', JSON.stringify(FLASH_GATED))
+    useStore.setState({ currentModel: null, createdSessionIds: new Set([SID]) })
+    useStore.getState().applyModelIfReady(SID)
+    expect(useStore.getState().currentModel).toEqual(GLM)
+    expect(JSON.parse(storage.get('zcode.currentModel')!)).toEqual(GLM)
+    expect(sentRequests.find((r) => r.op === 'setModel')).toMatchObject({ sessionId: SID, ...GLM })
   })
 })
