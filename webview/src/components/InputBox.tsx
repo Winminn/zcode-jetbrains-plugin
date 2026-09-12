@@ -118,7 +118,8 @@ export function InputBox({ onSend, isStreaming = false, onStop, disabled = false
   /** 粘贴的图片附件（压缩后的 base64 载荷），发送时随消息走 attachments 协议 */
   const [images, setImages] = useState<ImageAttachment[]>([])
   /** 正在大图预览的图片（输入框附件缩略图点击）*/
-  const [previewImage, setPreviewImage] = useState<{ src: string; title?: string } | null>(null)
+  // 大图预览的附件下标（null=关闭；预览 overlay 挡住输入区，打开期间 images 稳定）
+  const [previewImageIdx, setPreviewImageIdx] = useState<number | null>(null)
   /** 正在预览的粘贴文本 id（null = 弹窗关闭）*/
   const [previewPasteId, setPreviewPasteId] = useState<string | null>(null)
   const [hasText, setHasText] = useState(false)
@@ -1527,7 +1528,7 @@ export function InputBox({ onSend, isStreaming = false, onStop, disabled = false
                 onRemove={() => setPastedTexts((prev) => prev.filter((x) => x.id !== p.id))}
               />
             ))}
-            {images.map((img) => {
+            {images.map((img, i) => {
               const src = `data:${img.mediaType};base64,${img.base64}`
               return (
                 <span key={img.id} className="img-attachment">
@@ -1536,7 +1537,7 @@ export function InputBox({ onSend, isStreaming = false, onStop, disabled = false
                     src={src}
                     alt={img.filename}
                     title={img.filename}
-                    onClick={() => setPreviewImage({ src, title: img.filename })}
+                    onClick={() => setPreviewImageIdx(i)}
                   />
                   <button
                     type="button"
@@ -1958,12 +1959,15 @@ export function InputBox({ onSend, isStreaming = false, onStop, disabled = false
           ) : null
         })()}
 
-      {/* 图片大图预览（输入框附件缩略图点击，portal 挂 body）*/}
-      {previewImage && (
+      {/* 图片大图预览（输入框附件缩略图点击，portal 挂 body；多附件可左右切换）*/}
+      {previewImageIdx != null && images[previewImageIdx] && (
         <ImagePreview
-          src={previewImage.src}
-          title={previewImage.title}
-          onClose={() => setPreviewImage(null)}
+          images={images.map((img) => ({
+            src: `data:${img.mediaType};base64,${img.base64}`,
+            title: img.filename,
+          }))}
+          initialIndex={previewImageIdx}
+          onClose={() => setPreviewImageIdx(null)}
         />
       )}
 

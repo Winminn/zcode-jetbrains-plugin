@@ -27,6 +27,9 @@
   },
   "message": {
     "emptyText": "（空）",
+    "imagePreview": "画像プレビュー",
+    "imagePrev": "前の画像",
+    "imageNext": "次の画像",
     "working": "処理中",
     "worked": "処理済み",
     "processLabel": "実行プロセス",

@@ -51,12 +51,27 @@ export function imagePartTitle(img: ImagePart | FilePart): string | undefined {
 
 /**
  * 消息内图片（限宽圆角，点击大图预览）。主聊天 user 气泡与 part 渲染共用。
+ * onOpen：多图场景由父组件接管打开动作（在整个图片组内左右切换），不传走单图预览。
  */
-export function MessageImage({ src, title }: { src: string; title?: string }) {
+export function MessageImage({
+  src,
+  title,
+  onOpen,
+}: {
+  src: string
+  title?: string
+  onOpen?: () => void
+}) {
   const [preview, setPreview] = useState(false)
   return (
     <>
-      <img className="msg__image" src={src} alt={title ?? ''} title={title} onClick={() => setPreview(true)} />
+      <img
+        className="msg__image"
+        src={src}
+        alt={title ?? ''}
+        title={title}
+        onClick={() => (onOpen ? onOpen() : setPreview(true))}
+      />
       {preview && <ImagePreview src={src} title={title} onClose={() => setPreview(false)} />}
     </>
   )

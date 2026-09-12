@@ -46,6 +46,7 @@ import {
   MessageImage,
   renderPartUnits,
 } from './PartUnits'
+import { ImagePreview } from './ImagePreview'
 import { groupParts } from '@/utils/groupParts'
 import '../styles/message-bubble.less'
 import '../styles/text-preview-dialog.less'
@@ -156,6 +157,8 @@ function UserBubble({
 }) {
   const { t } = useTranslation()
   const [showFull, setShowFull] = useState(false)
+  // 多图预览：点击任一张在整个图片组内打开（overlay 内左右切换），null=关闭
+  const [previewIdx, setPreviewIdx] = useState<number | null>(null)
   // 引用 chip 化显示（@路径 / #会话引用 与输入框同视觉）：默认开，「显示原文」切回纯文本。
   // 判据与解析同源（utils/userRefChips），无引用的普通消息零差异
   const [showRaw, setShowRaw] = useState(false)
@@ -223,8 +226,8 @@ function UserBubble({
       <div className={`msg__bubble${collapsed ? ' msg__bubble--collapsed' : ''}`}>
         {hasImages && (
           <div className="msg__images">
-            {images.map((img) => (
-              <MessageImage key={img.key} src={img.src} title={img.title} />
+            {images.map((img, i) => (
+              <MessageImage key={img.key} src={img.src} title={img.title} onOpen={() => setPreviewIdx(i)} />
             ))}
           </div>
         )}
@@ -273,6 +276,13 @@ function UserBubble({
       </div>
       {showFull && (
         <UserTextPreviewDialog text={text} lines={lines} onClose={() => setShowFull(false)} />
+      )}
+      {previewIdx != null && images[previewIdx] && (
+        <ImagePreview
+          images={images}
+          initialIndex={previewIdx}
+          onClose={() => setPreviewIdx(null)}
+        />
       )}
     </div>
   )

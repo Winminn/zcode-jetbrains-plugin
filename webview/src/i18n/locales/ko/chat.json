@@ -27,6 +27,9 @@
   },
   "message": {
     "emptyText": "(비어 있음)",
+    "imagePreview": "이미지 미리보기",
+    "imagePrev": "이전 이미지",
+    "imageNext": "다음 이미지",
     "working": "작업 중",
     "worked": "작업 완료",
     "processLabel": "실행 과정",

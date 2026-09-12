@@ -27,6 +27,9 @@
   },
   "message": {
     "emptyText": "(empty)",
+    "imagePreview": "Image preview",
+    "imagePrev": "Previous image",
+    "imageNext": "Next image",
     "working": "Working",
     "worked": "Worked",
     "processLabel": "Execution process",

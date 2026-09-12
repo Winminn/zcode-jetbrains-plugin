@@ -27,6 +27,9 @@
   },
   "message": {
     "emptyText": "(空)",
+    "imagePreview": "圖片預覽",
+    "imagePrev": "上一張",
+    "imageNext": "下一張",
     "working": "工作中",
     "worked": "已工作",
     "processLabel": "執行過程",
