@@ -52,7 +52,11 @@
   "edit": {
     "replaying": "편집된 메시지로 다시 생성하는 중…",
     "staleTarget": "대화가 변경되어 편집이 취소되었습니다",
-    "rewindFailed": "메시지 되감기가 적용되지 않아 편집이 취소되었습니다. 다시 시도해 주세요"
+    "rewindFailed": "메시지 되감기가 적용되지 않아 편집이 취소되었습니다. 다시 시도해 주세요",
+    "removeImage": "이미지 제거",
+    "unsupportedMidTurn": "이 CLI 버전은 턴 진행 중 편집을 지원하지 않습니다. 턴이 끝난 후 다시 시도해 주세요",
+        "queuedNotApplied": "턴이 도구를 실행 중이어서 편집이 적용되지 않았습니다. 중단 후 다시 편집해 주세요",
+    "unsupportedWithAttachments": "이 세션에서는 편집을 일시적으로 사용할 수 없어 이미지를 유지한 채 재전송할 수 없습니다. 이미지를 제거 후 편집하거나 새 세션에서 시도해 주세요"
   },
   "thinking": {
     "thinking": "생각 중",

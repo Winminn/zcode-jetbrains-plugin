@@ -52,7 +52,11 @@
   "edit": {
     "replaying": "正在按編輯後的訊息重新生成…",
     "staleTarget": "會話已變化，編輯已取消",
-    "rewindFailed": "訊息回退未生效，編輯已取消，請重試"
+    "rewindFailed": "訊息回退未生效，編輯已取消，請重試",
+    "removeImage": "移除圖片",
+    "unsupportedMidTurn": "目前 CLI 版本不支援回合未結束時的編輯，請等回合結束後重試",
+        "queuedNotApplied": "回合正在執行工具，編輯未能生效，請停止後重新編輯",
+    "unsupportedWithAttachments": "該會話的編輯通道暫時不可用，無法在保留圖片的前提下重新發送。可刪掉圖片後編輯，或新建會話重試"
   },
   "thinking": {
     "thinking": "思考中",

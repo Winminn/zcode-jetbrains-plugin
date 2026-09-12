@@ -114,6 +114,28 @@ function handleTurnStarted(
   const p = payload as { messageId?: string; input?: string }
   const msgId = p.messageId || `stream_${event.turnId || event.seq}`
 
+  // 乐观用户消息 id 对齐（回合中编辑的前置条件）：turn.started 的 messageId 是
+  // 本轮 user 消息的服务端 id，而发送时插入的乐观气泡还是 local_u_ 命名空间——
+  // 文本一致即视为真身，就地改名让「最后一轮用户消息」持有服务端 id。回合中
+  // 编辑的 v4 editUserQuery target 和 rewind 截断都按服务端 id 定位，不改名就
+  // 定位不到刚发出的消息。快照整包替换与该 id 天然对账（内容未动，重拉后同 id
+  // 真身顶替）；改名后下方重复创建检查命中 user 消息分支，流式壳换独立命名空间
+  if (p.messageId && !messages.some((m) => m.info.id === p.messageId)) {
+    const last = messages[messages.length - 1]
+    if (last && last.info.role === 'user' && last.info.id.startsWith('local_u_')) {
+      const lastText = last.parts
+        ?.filter((x) => x.type === 'text')
+        .map((x) => (x as { text?: string }).text ?? '')
+        .join('\n')
+        .trim()
+      if (typeof p.input === 'string' && p.input.trim() !== '' && p.input.trim() === lastText) {
+        messages = messages.map((m, i) =>
+          i === messages.length - 1 ? { ...m, info: { ...m.info, id: p.messageId! } } : m,
+        )
+      }
+    }
+  }
+
   // 避免重复创建（turn.started 可能重发）；命中 user 消息不算重发——
   // 协议的 messageId 是触发 turn 的 user 消息 id，与重拉后的服务端 user 消息
   // 同 id，直接复用会让后续 delta 叠进用户气泡（排队消息过期重拉竞态），

@@ -3,6 +3,7 @@ package com.zcode.ideaplugin.protocol
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
@@ -29,6 +30,17 @@ import java.security.MessageDigest
 object ImageArtifactMapper {
 
     private const val ARTIFACT_SCHEME = "zcode-artifact://"
+
+    /**
+     * 编辑重发附件的读回兜底命名（2026-09-12 真机实锤 sess_34858bc0 坏图回归）：
+     * zcode.cjs 只在【原始内联发送】时把附件图落盘 image-cache（vOt），v4 编辑
+     * ref 重发的图产生新 artifact uri 但没人写 cache——uri 换算必然落空。但插件
+     * 编辑传的 ref basename 会被服务端存进 part.filename（实测），而插件的 ref
+     * basename 是受控命名（与 ZCodeWebviewServer.imageFilePattern 同一套，改动
+     * 须两端同步）：cache 保留图=cache 文件名，inline 新图=内容 hash 临时文件名，
+     * 按 filename 直接命中即可救回渲染。
+     */
+    private val EDIT_REF_NAME_PATTERN = Regex("""^image-[0-9a-f]{32}\.(png|jpg|jpeg|gif|webp)$""")
 
     /** mime → image-cache 落盘扩展名（对齐 zcode.cjs aEn；未知格式不落盘 → 无扩展名不转换）*/
     internal fun extOf(mime: String): String? = when (mime.substringAfter(';').trim().lowercase()) {
@@ -90,7 +102,16 @@ object ImageArtifactMapper {
                 val uri = part["url"]?.jsonPrimitive?.content ?: return@map partEl
                 val fileName = cacheFileName(uri, mime) ?: return@map partEl
                 val sid = sessionIdOf(uri) ?: return@map partEl
-                val url = urlProvider(sid, fileName) ?: return@map partEl
+                var url = urlProvider(sid, fileName)
+                if (url == null) {
+                    // uri 换算的 cache 文件不存在（编辑 ref 重发的图没有 cache 落盘）
+                    // → 按受控命名的 part.filename 兜底（编辑 ref basename，见类注释）
+                    val refName = part["filename"]?.jsonPrimitive?.contentOrNull
+                    if (refName != null && refName != fileName && EDIT_REF_NAME_PATTERN.matches(refName)) {
+                        url = urlProvider(sid, refName)
+                    }
+                }
+                if (url == null) return@map partEl
                 msgChanged = true
                 buildJsonObject {
                     part.forEach { (k, v) -> put(k, v) }

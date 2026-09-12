@@ -134,21 +134,43 @@ describe('findEditableUserMessage', () => {
     expect(findEditableUserMessage(msgs)?.info.id).toBe('u1')
   })
 
-  it('排除带图片/文件附件的消息（一期不支持附件编辑）', () => {
+  it('v4 通道：带图片附件的消息可编辑，非图片文件附件仍排除', () => {
     const withImage: ZCodeMessage = {
       info: { role: 'user', time: { created: 1 }, id: 'u_img', sessionID: 's1' },
       parts: [
-        { type: 'image', mediaType: 'image/png', dataUrl: 'data:image/png;base64,x' } as MessagePart,
+        { type: 'file', mime: 'image/png', url: 'http://127.0.0.1:9/zcode-image/s1/image-x.png' } as MessagePart,
         { type: 'text', text: '看图' },
       ],
     }
-    const msgs = [um('u1', '一'), withImage]
-    expect(findEditableUserMessage(msgs)?.info.id).toBe('u1')
+    const withPdf: ZCodeMessage = {
+      info: { role: 'user', time: { created: 1 }, id: 'u_pdf', sessionID: 's1' },
+      parts: [
+        { type: 'file', mime: 'application/pdf', url: 'zcode-artifact://s1/tool-result-x' } as MessagePart,
+        { type: 'text', text: '读文件' },
+      ],
+    }
+    // 默认（v4 通道）：pdf 消息排除，向前落到更早的图片消息（图片可编辑）
+    const msgs = [um('u1', '一'), withImage, withPdf]
+    expect(findEditableUserMessage(msgs)?.info.id).toBe('u_img')
+    expect(findEditableUserMessage([um('u1', '一'), withImage])?.info.id).toBe('u_img')
+    // legacy 回退通道：附件消息维持一期限制
+    expect(findEditableUserMessage([um('u1', '一'), withImage], { allowImages: false })?.info.id).toBe('u1')
   })
 
-  it('排除空文本与 rewind 命令消息', () => {
-    const msgs = [um('u1', '一'), um('u2', ''), um('u3', '/rewind conversation msg_x')]
+  it('v4 通道：纯图无文本消息可编辑（补文字）；legacy 通道排除', () => {
+    const imageOnly: ZCodeMessage = {
+      info: { role: 'user', time: { created: 1 }, id: 'u_img_only', sessionID: 's1' },
+      parts: [{ type: 'file', mime: 'image/png', url: 'http://127.0.0.1:9/zcode-image/s1/image-x.png' } as MessagePart],
+    }
+    expect(findEditableUserMessage([um('u1', '一'), imageOnly])?.info.id).toBe('u_img_only')
+    expect(findEditableUserMessage([um('u1', '一'), imageOnly], { allowImages: false })?.info.id).toBe('u1')
+  })
+
+  it('v4 通道：空文本消息可编辑（官方同款）；rewind 命令消息始终排除', () => {
+    expect(findEditableUserMessage([um('u1', '一'), um('u2', '')])?.info.id).toBe('u2')
+    const msgs = [um('u1', '一'), um('u3', '/rewind conversation msg_x')]
     expect(findEditableUserMessage(msgs)?.info.id).toBe('u1')
+    expect(findEditableUserMessage(msgs, { allowImages: false })?.info.id).toBe('u1')
   })
 
   it('排除子代理通知与 compact 摘要卡', () => {
@@ -161,6 +183,24 @@ describe('findEditableUserMessage', () => {
     expect(findEditableUserMessage(msgs)?.info.id).toBe('u1')
   })
 
+  it('刚发出的带图乐观消息（image part + dataBase64）可编辑；无 dataBase64 的仍排除', () => {
+    // 真机回归补（2026-09-12）：带图消息回合中可编辑——字节在本地（dataBase64），
+    // 编辑走 inline 临时文件 ref，不依赖 cache 落盘
+    const optimisticImage: ZCodeMessage = {
+      info: { role: 'user', time: { created: 1 }, id: 'msg_server_renamed', sessionID: 's1' },
+      parts: [
+        { type: 'image', mediaType: 'image/png', dataUrl: 'data:image/png;base64,AAA', dataBase64: 'AAA' } as MessagePart,
+        { type: 'text', text: '看图' },
+      ],
+    }
+    const noBytes: ZCodeMessage = {
+      info: { role: 'user', time: { created: 1 }, id: 'u_nobytes', sessionID: 's1' },
+      parts: [{ type: 'image', mediaType: 'image/png', dataUrl: 'data:image/png;base64,AAA' } as MessagePart],
+    }
+    expect(findEditableUserMessage([um('u1', '一'), optimisticImage])?.info.id).toBe('msg_server_renamed')
+    expect(findEditableUserMessage([um('u1', '一'), noBytes])?.info.id).toBe('u1')
+  })
+
   it('无可编辑消息返回 null', () => {
     expect(findEditableUserMessage([am('a1', '答')])).toBeNull()
     expect(findEditableUserMessage([])).toBeNull()
@@ -169,7 +209,7 @@ describe('findEditableUserMessage', () => {
 
 describe('rewind cuts kv 记忆', () => {
   beforeEach(() => {
-    window.localStorage.removeItem('zcode.edit.rewind-cuts')
+    window.localStorage.removeItem('zcode.edit.rewind-cuts-v2')
   })
 
   it('追加与读取（按会话隔离、去重）', () => {
@@ -183,7 +223,7 @@ describe('rewind cuts kv 记忆', () => {
   })
 
   it('损坏数据 fail-soft 返回空', () => {
-    window.localStorage.setItem('zcode.edit.rewind-cuts', '{broken json')
+    window.localStorage.setItem('zcode.edit.rewind-cuts-v2', '{broken json')
     expect(loadRewindCuts('s1')).toEqual([])
   })
 })

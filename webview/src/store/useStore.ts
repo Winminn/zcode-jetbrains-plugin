@@ -16,7 +16,7 @@ import { create } from 'zustand'
 import { onMessage, onStreamEvent, onStreamBatch, sendToJava, initBridge, isInJcef, getWorkspacePath, getInitialSessionId } from '@/ipc/bridge'
 import { parseGoalCommand } from '@/utils/goalCommand'
 import { extractTitleExcerpt } from '@/utils/titleExcerpt'
-import type { JavaResponse, SessionInfo, ZCodeMessage, StreamEvent, ModelOption, ModelManageProvider, TodoItem, AgentItem, FileChangeItem, QuotaData, ModelUsageData, ToolUsageData, UsageRange, AppUsageData, AppUsageRange, ContextBreakdownItem, ThoughtLevelInfo, SubagentActivity, SubagentInfo, ToolUpdatedPayload, MemoryFileInfo, SkillInfo, McpServerInfo, McpToolsState, McpLogEntry, EnvStatus, BrowserClearedSite, BrowserDataOverview, AgentDef, AgentDefInput, ImageAttachmentInput, GoalState, AutoArchiveRecord, ToolPart, SlashCommand } from '@/types/messages'
+import type { JavaResponse, SessionInfo, ZCodeMessage, StreamEvent, ModelOption, ModelManageProvider, TodoItem, AgentItem, FileChangeItem, QuotaData, ModelUsageData, ToolUsageData, UsageRange, AppUsageData, AppUsageRange, ContextBreakdownItem, ThoughtLevelInfo, SubagentActivity, SubagentInfo, ToolUpdatedPayload, MemoryFileInfo, SkillInfo, McpServerInfo, McpToolsState, McpLogEntry, EnvStatus, BrowserClearedSite, BrowserDataOverview, AgentDef, AgentDefInput, ImageAttachmentInput, GoalState, AutoArchiveRecord, ToolPart, SlashCommand, MessagePart } from '@/types/messages'
 import { applyStreamEvent, isSubagentToolEvent, applySubagentToolEvent, markActivityOutcome, finalizeActivitiesFromNotifications, asSubagentLifecycle, asGoalTargetPayload, looksLikeQuotaError, asSteerDrainedInputs, appendSteerUserMessages } from '@/utils/streamReducer'
 import type { TurnErrorInfo, SubagentLifecyclePayload } from '@/utils/streamReducer'
 import i18n from '@/i18n/config'
@@ -45,7 +45,10 @@ import {
   applyRewindCuts,
   loadRewindCuts,
   addRewindCut,
+  stageRewindCut,
+  commitStagedRewindCuts,
   asConversationRewind,
+  type EditAttachmentInput,
 } from '@/utils/editHistory'
 
 export type ConnectionStatus = 'connecting' | 'connected' | 'mock' | 'error'
@@ -77,6 +80,117 @@ const STREAM_DEAD_PROBES = 8
 /** 最近一次当前会话流式活动（事件到达/消息发出）时刻——看门狗静默计时基准 */
 let lastStreamActivityAt = 0
 let streamWatchTimer: ReturnType<typeof setInterval> | null = null
+
+// ===== v4 编辑 ack 兜底（正常路径由 rewind.triggered/turnEnded 收尾）=====
+// op 应答本身无超时保证（JCEF 桥无超时回调），v4/command 双 CAS 尝试 + rowsRange
+// 翻页最坏 ~50s+：90s 仍未见 rewind.triggered 确认（rewound=false）则按失败清理，
+// 防「正在按编辑后的消息重新生成」指示器永久悬挂、队列 flush 被无限抑制
+const EDIT_ACK_TIMEOUT_MS = 90_000
+let editAckTimer: ReturnType<typeof setTimeout> | null = null
+
+function cancelEditAckTimeout(): void {
+  if (editAckTimer) {
+    clearTimeout(editAckTimer)
+    editAckTimer = null
+  }
+}
+
+function armEditAckTimeout(): void {
+  cancelEditAckTimeout()
+  editAckTimer = setTimeout(() => {
+    editAckTimer = null
+    const replay = useStore.getState().editReplay
+    if (replay?.via === 'v4' && !replay.rewound) {
+      useStore.setState({
+        editReplay: null,
+        lastError: i18n.t('chat.edit.rewindFailed'),
+      })
+    }
+  }, EDIT_ACK_TIMEOUT_MS)
+}
+
+/**
+ * 编辑重发被服务端排队的防御（diag-edit-blocked 实锤）：回合「执行工具中」时
+ * editUserQuery，服务端 abort 不生效 → 重发被 turn.steerQueued 静默排队且队列
+ * 不自动排水——ack accepted 但编辑永不生效。stop-first 两段式编排下此事件仅在
+ * 停止失败/竞态漏网时出现：明确失败并提示，防编辑指示器无限悬挂。
+ * 匹配判据：payload.input 与编辑后文本一致（stop-first 后编辑文本只有本流程会发）。
+ * @return true=命中编辑排队（调用方跳过后续处理）
+ */
+function handleEditSteerQueuedDefence(
+  payload: unknown,
+  set: (partial: Partial<StoreState>) => void,
+  get: () => StoreState,
+): boolean {
+  const p = payload as { input?: unknown }
+  const replay = get().editReplay
+  if (
+    replay?.via === 'v4' &&
+    typeof p.input === 'string' &&
+    p.input.trim() !== '' &&
+    p.input.trim() === replay.text.trim()
+  ) {
+    cancelEditAckTimeout()
+    set({ editReplay: null, lastError: i18n.t('chat.edit.queuedNotApplied') })
+    return true
+  }
+  return false
+}
+
+/**
+ * 编辑重放编排终点提前（2026-09-12 用户三轮反馈三）：editReplay 原本挂到编辑后
+ * 新回合 turnEnded 才清，其间 editOpen/startEdit/submitEdit 三处守卫全挡——表现为
+ * 「编辑一次后，实时会话中不允许再编辑」。turn.started（编辑重发的新回合）到达 =
+ * rewind 已生效 + 服务端已用编辑文本重发，编排使命完成，此处提前退休：回合运行期
+ * editReplay 为空 → 立即可再编辑（服务端对连续编辑无限制，diag-edit-double 实锤）。
+ * 匹配条件保守：rewound（rewind.triggered 已消费——turn.started 可能先于截断事件
+ * 到达，提前清会让气泡补插失去 editReplay 匹配）+ payload.input 与编辑文本一致
+ * （确认是编辑重发回合而非巧合）；stopping（两段式第一段）不 retire。
+ */
+function retireEditReplayOnTurnStarted(
+  payload: unknown,
+  set: (partial: Partial<StoreState>) => void,
+  get: () => StoreState,
+): void {
+  const replay = get().editReplay
+  if (!replay || replay.via !== 'v4' || !replay.rewound || replay.stopping) return
+  const input = (payload as { input?: unknown } | undefined)?.input
+  if (typeof input === 'string' && input.trim() === replay.text.trim()) {
+    set({ editReplay: null })
+  }
+}
+
+/**
+ * 编辑重发截断后补插的用户气泡（v4 通道，2026-09-12 真机回归补）：
+ * rewind.triggered 截断旧轮后，编辑后的新 user 消息在实时流里没有任何建立机制
+ * （turn.started 只建 assistant 壳），要等轮末重拉才出现——表现为"实时流的用户
+ * 消息丢失"。本地按 local_u_ 命名空间补插，turn.started 到达时文本与 payload.
+ * input 一致 → 乐观改名机制自动对齐服务端 id（回合中编辑是就地改写语义，新消息
+ * 复用同一 id；空闲编辑是新 id，同样命中）。附件渲染双形态：cache=FilePart url，
+ * inline=ImagePart dataUrl。
+ */
+function editedUserBubble(
+  replay: { text: string; attachments?: EditAttachmentInput[] },
+  sid: string,
+): ZCodeMessage {
+  const imageParts = (replay.attachments ?? []).map((a): MessagePart =>
+    a.source === 'cache'
+      ? { type: 'file', mime: a.mime, url: a.url, filename: a.fileName }
+      : {
+          type: 'image',
+          mediaType: a.mime,
+          dataUrl: `data:${a.mime};base64,${a.dataBase64}`,
+          dataBase64: a.dataBase64,
+        },
+  )
+  return {
+    info: { role: 'user', time: { created: Date.now() }, id: `local_u_${Date.now()}`, sessionID: sid },
+    parts: [
+      ...(replay.text ? [{ type: 'text', text: replay.text } as MessagePart] : []),
+      ...imageParts,
+    ],
+  }
+}
 
 // ===== 切换模型后首回合零输出提示（2026-08-30 定时 flush 挂死事故）=====
 // 定时消息 flush 携带切模型时 setModel+send 紧贴 turn.completed 背靠背发出，实测会把
@@ -190,6 +304,7 @@ function sessionResetBase(): Partial<StoreState> {
     // 编辑态与重放编排绑定当前会话，切会话作废
     editingMessageId: null,
     editReplay: null,
+    editViaV4: null,
   }
 }
 let reconcileProbeInFlight = false
@@ -486,9 +601,30 @@ interface StoreState {
   // 编辑历史消息（对齐官方 Edit History：仅最后一轮用户消息可编辑，改写重新生成）
   /** 行内编辑态锚定的消息 id（null=不在编辑态）；提交/取消/切会话清除 */
   editingMessageId: string | null
-  /** 编辑重放编排：rewind 命令已发出，等 rewind turn 完成 + 快照落地（case 'messages'）
-   *  后自动重发 text。rewound=服务端 rewind.triggered 已确认（turn 结束时未确认则判失败）。 */
-  editReplay: { targetMsgId: string; text: string; rewound: boolean } | null
+  /**
+   * 编辑重放编排。via='v4'（diag-edit-v4 实测定案的主路径）：op:editUserQuery
+   * 已发出，服务端自己 abort 旧回合 + rewind + 用新文本（+附件）重发——rewind.
+   * triggered 确认截断（rewound），编辑后新 turn 结束即编排终点；via='legacy'
+   * （老 CLI 回退）：/rewind 命令已发出，turn 结束重拉落地后由 case 'messages'
+   * 自动重发 text。rewound=服务端 rewind.triggered 已确认。
+   */
+  editReplay: {
+    targetMsgId: string
+    text: string
+    rewound: boolean
+    via: 'v4' | 'legacy'
+    attachments?: EditAttachmentInput[]
+    /** 两段式回合中编辑（diag-edit-blocked 实锤）：true=stop 已发、等收尾帧后转第二段
+     *  发 editUserQuery——服务端对「执行工具中」的回合 abort 不生效，直接编辑会被
+     *  steerQueued 静默排队且队列不自动排水（accepted 却永不生效） */
+    stopping?: boolean
+  } | null
+  /**
+   * 编辑走 v4 editUserQuery 通道（回合中编辑+带图编辑的前提）：
+   * true/false/null=确认可用/确认不支持（老 CLI 无 v4 面，editUnsupported 回应）/
+   * 未知（forkSupported=false 的老 CLI 直接按 false 处理）。会话属性，全局记忆。
+   */
+  editViaV4: boolean | null
 
   // 会话分叉（B2 一期：从任意历史消息派生平行会话，v4 forkAssistant 官方同款通道）
   /** fork 请求在途（按钮 loading + 防重复点击）；应答/失败复位 */
@@ -654,10 +790,12 @@ interface StoreState {
   /** 退出编辑态（不提交） */
   cancelEdit: () => void
   /**
-   * 提交编辑（编辑重新生成）：发 `/rewind conversation <msgId>` 截断该轮，rewind
-   * turn 完成重拉快照落地后自动重发编辑文本（editReplay 编排，见 case 'messages'）
+   * 提交编辑（编辑重新生成）。v4 主路径（回合中也可用）：op:editUserQuery，
+   * 服务端 abort+rewind+重发一气呵成；老 CLI 回退 legacy：/rewind 命令 + 快照
+   * 落地后自动重发（editReplay 编排，见 case 'messages'）。images=编辑后的
+   * 图片附件全量清单（保留+新增−删除），仅 v4 通道消费
    */
-  submitEdit: (text: string) => void
+  submitEdit: (text: string, images?: EditAttachmentInput[]) => void
   /** 从历史消息分叉新会话（B2 一期）：session/fork 保留到该消息（含），应答后新标签打开 */
   forkFromMessage: (sessionId: string, messageId: string) => void
   createSession: () => void
@@ -969,6 +1107,7 @@ export const useStore = create<StoreState>((set, get) => ({
   goal: null,
   editingMessageId: null,
   editReplay: null,
+  editViaV4: null,
   forkBusy: false,
   forkSupported: true,
   scheduledMessages: [],
@@ -1376,8 +1515,13 @@ export const useStore = create<StoreState>((set, get) => ({
 
   startEdit: () => {
     const st = get()
-    if (st.editingMessageId || st.streaming || st.editReplay) return
-    const target = findEditableUserMessage(st.messages)
+    // 回合中开放编辑的前提是 v4 通道可用（服务端 abort+重发，diag-edit-v4）；
+    // legacy /rewind 与活动回合互斥，维持仅空闲态
+    const v4Edit = st.editViaV4 !== false && st.forkSupported !== false
+    const interactionPending = !!(st.askUser || st.exitPlanApproval || st.permissionRequest || st.askUserPendingActive)
+    if (st.editingMessageId || st.editReplay || st.steerPending || interactionPending) return
+    if (st.streaming && (!v4Edit || st.compacting)) return
+    const target = findEditableUserMessage(st.messages, { allowImages: v4Edit })
     if (!target) return
     set({ editingMessageId: target.info.id })
   },
@@ -1408,28 +1552,70 @@ export const useStore = create<StoreState>((set, get) => ({
   },
 
   /**
-   * 提交编辑（编辑重新生成）：
+   * 提交编辑（编辑重新生成），双通道：
+   * v4 主路径（diag-edit-v4 实测定案）——op:editUserQuery（Java → v4/command），
+   *   服务端执行链自带「活动回合先 abort」+ rewind + 用新文本/附件重发，故
+   *   **回合进行中也可编辑**（带图编辑同样走此通道，images 传全量附件清单）；
+   *   ack 应答前 rewind.triggered/turn.started 可能已先到（探针实测乱序），
+   *   乐观置 editReplay 让截断编排不等 ack。
+   * legacy 回退（老 CLI 无 v4 面）——
    * 1. 守卫（回合进行中/排队非空/编辑目标已过期则放弃）
    * 2. 发 `/rewind conversation <msgId>`（hiddenCommand：不插乐观消息）——
    *    服务端截断模型上下文，rewind.triggered 事件到达时截断内存消息并落 kv 记忆
    * 3. rewind turn 完成 → 300ms 常规重拉 → case 'messages' 落地（applyRewindCuts
    *    应用 kv 记忆）→ 消费 editReplay 自动重发编辑文本
+   * 编辑期间会话被外部推进（目标已非最新可编辑消息）则放弃。等待审批/提问/
+   * 压缩中一律不编辑（abort 挂着反向请求的回合有弹窗残留风险）。
    */
-  submitEdit: (text) => {
+  submitEdit: (text, images) => {
     const st = get()
     const trimmed = text.trim()
     const sid = st.currentSessionId
     const targetId = st.editingMessageId
-    if (!sid || !targetId || !trimmed || st.streaming || st.editReplay || st.queuedMessages.length > 0) {
+    const v4Edit = st.editViaV4 !== false && st.forkSupported !== false
+    const interactionPending = !!(st.askUser || st.exitPlanApproval || st.permissionRequest || st.askUserPendingActive)
+    if (!sid || !targetId || st.editReplay || st.queuedMessages.length > 0 || st.steerPending) {
       return
     }
+    if (st.streaming && (!v4Edit || interactionPending || st.compacting)) return
+    if (!v4Edit && (!trimmed || interactionPending)) return
     // 编辑目标仍是最后一条可编辑消息（编辑期间会话被外部推进则放弃）
-    const target = findEditableUserMessage(st.messages)
+    const target = findEditableUserMessage(st.messages, { allowImages: v4Edit })
     if (!target || target.info.id !== targetId) {
       set({ editingMessageId: null, lastError: i18n.t('chat.edit.staleTarget') })
       return
     }
-    set({ editingMessageId: null, editReplay: { targetMsgId: targetId, text: trimmed, rewound: false } })
+    if (v4Edit) {
+      if (st.streaming) {
+        // 两段式回合中编辑（diag-edit-blocked 实锤）：服务端对「执行工具中」的回合
+        // abort 不生效——直接编辑会把新文本 steerQueued 静默排队且队列不自动排水
+        // （ack accepted 但永不生效）。先主动 stop（v4 stop 40ms 真终止+真实收尾帧，
+        // 不带 taskIds：编辑不该连带杀后台任务），turnEnded 收到收尾帧后转第二段
+        // 发 editUserQuery（届时回合已死，服务端走空闲编辑路径）
+        set({
+          editingMessageId: null,
+          editReplay: { targetMsgId: targetId, text: trimmed, rewound: false, via: 'v4', attachments: images, stopping: true },
+        })
+        sendToJava({ op: 'stop', sessionId: sid })
+        return
+      }
+      set({
+        editingMessageId: null,
+        editReplay: { targetMsgId: targetId, text: trimmed, rewound: false, via: 'v4', attachments: images },
+      })
+      armEditAckTimeout()
+      sendToJava({
+        op: 'editUserQuery',
+        sessionId: sid,
+        messageId: targetId,
+        newText: trimmed,
+        // images=[] 也必须透传：原消息带图、编辑时被删光 = 显式清空附件清单；
+        // undefined 才是"不带字段"（服务端沿用原附件，仅限纯文本消息）
+        ...(images ? { attachments: images } : {}),
+      })
+      return
+    }
+    set({ editingMessageId: null, editReplay: { targetMsgId: targetId, text: trimmed, rewound: false, via: 'legacy' } })
     get().sendMessage(buildEditRewindCommand(targetId), undefined, { hiddenCommand: true })
   },
 
@@ -3108,6 +3294,63 @@ export function handleResponse(
       break
     }
 
+    case 'editAccepted': {
+      // v4 编辑受理（diag-edit-v4 实测）：服务端已 abort 旧回合 + rewind + 用新
+      // 文本/附件重发，后续编排全由事件流驱动——rewind.triggered 截断（ack 应答
+      // 可能晚于事件到达，不在此处理状态）、新 turn 流式、turnEnded 收尾。
+      // 附件 ref 临时文件由 Java 侧惰性清理，此处无收尾动作
+      break
+    }
+
+    case 'editUnsupported': {
+      // 两种来源（2026-09-12 三轮反馈分流）：
+      // - 老 CLI 无 v4 面（-32601，无 reason）：全局记不支持（会话属性）；空闲发起的
+      //   编辑回退 legacy /rewind 编排（rewind 与活动回合互斥，回合中发起的只能
+      //   放弃并提示）。
+      // - reason=targetGone（行流里找不到目标行：会话级行流缺失/乐观 id 过期）：
+      //   **不**记全局不可用（会话级瞬态，永久降级会误伤后续新会话）。纯文本目标
+      //   （attachments 为空/未传）本次回退 legacy /rewind（legacy 不依赖行流）；
+      //   带图目标不能回退——legacy 重发只有文本，图片会丢，明确提示。
+      // editReplay 是乐观置位的，两种来源都要修正 via
+      const replay = get().editReplay
+      const targetGone = msg.reason === 'targetGone'
+      const hasImages = (replay?.attachments?.length ?? 0) > 0
+      if (targetGone && replay?.via === 'v4' && hasImages) {
+        // 行流缺失 + 带图目标：legacy 回退必丢图，放弃并说明原因
+        cancelEditAckTimeout()
+        set({
+          editReplay: null,
+          lastError: msg.message || i18n.t('chat.edit.unsupportedWithAttachments'),
+        })
+        break
+      }
+      if (replay?.via === 'v4') {
+        if (!get().streaming) {
+          set({ editReplay: { ...replay, via: 'legacy' } })
+          get().sendMessage(buildEditRewindCommand(replay.targetMsgId), undefined, { hiddenCommand: true })
+        } else {
+          set({ editReplay: null, lastError: i18n.t('chat.edit.unsupportedMidTurn') })
+        }
+      }
+      if (!targetGone) set({ editViaV4: false })
+      break
+    }
+
+    case 'editRejected': {
+      // v4 编辑被拒（守卫不过/目标过期/附件解析失败等）：专用 op 不走全局 error
+      // 复位（编辑可能发生在回合进行中，streaming 不能被误清）。ack 已明确拒绝 =
+      // 未执行，若 rewind.triggered 已抢先到达（不可能——stale/redirect 在执行前
+      // 拒绝）也只损失本地截断，重拉自愈。迟到编辑无主时静默吞掉
+      cancelEditAckTimeout()
+      const replay = get().editReplay
+      if (replay?.via === 'v4' && !replay.rewound) {
+        set({ editReplay: null, lastError: msg.message || i18n.t('chat.edit.rewindFailed') })
+      } else if (!replay) {
+        set({ lastError: msg.message })
+      }
+      break
+    }
+
     case 'steerMessage': {
       // 仅失败需要处理（成功由 turn.steerDrained 事件驱动）：清乐观 chip + 横幅
       // 提示 + 队列条目回滚（乐观移除发生在受理之前，失败必须物归原主——按
@@ -3220,10 +3463,11 @@ export function handleResponse(
         // 打开会话的首拉标志（selectSession 置位、下方快照落地复位）：P2 补发依据
         const firstFetch = get().loadingMessages
         applyMessagesSnapshot(msg, set, get)
-        // 编辑重放的正路径：rewind turn 结束触发的重拉已落地（applyRewindCuts
-        // 已截断），此刻 streaming=false，重发编辑文本开启新生成轮
+        // 编辑重放的正路径（仅 legacy 通道）：rewind turn 结束触发的重拉已落地
+        // （applyRewindCuts 已截断），此刻 streaming=false，重发编辑文本开启新生成轮。
+        // v4 通道的重发由服务端完成（editReplay 已在 turnEnded 清理），不能重发
         const replay = get().editReplay
-        if (replay?.rewound) {
+        if (replay?.rewound && replay.via === 'legacy') {
           set({ editReplay: null })
           get().sendMessage(replay.text)
         }
@@ -4606,13 +4850,28 @@ function handleStreamBatchDirect(
       turnStarted = true
       turnHasModelOutput = false
       armSwitchStallHint(sessionId, set, get)
+      // 编辑重放编排终点提前（回合运行期放开再编辑，见函数注释）
+      retireEditReplayOnTurnStarted(event.payload, set, get)
+    }
+    // 编辑重发被服务端排队防御（steerQueued 携带 input 与编辑文本一致即命中；
+    // steer 自身的 steerQueued 只有 queueLength 不带 input，不受影响）
+    if (event.type === 'turn.steerQueued' && handleEditSteerQueuedDefence(event.payload, set, get)) {
+      continue
     }
     // 编辑重放的 rewind 生效确认（同单推路径）：截断本批局部 messages（编辑目标
-    // 轮到尾部，含 turn.started 建的流式空壳）+ kv 落记忆，不走消息归约
+    // 轮到尾部，含 turn.started 建的流式空壳）+ kv 落记忆，不走消息归约。
+    // 截断不再要求 editReplay 匹配：v4 editUserQuery 的 ack 应答与事件乱序（探针
+    // 实测 rewind.triggered 可先于 accepted 到达，乐观 editReplay 通常已就位），
+    // 且 ack 丢失/应答超时的场合事件也是截断生效的权威信号——凡会话级 rewind
+    // 都截断显示并落 kv 记忆，与模型上下文保持一致。
+    // v4 编辑匹配时（2026-09-12 真机回归补）：①截断后立即补插编辑后的用户气泡
+    // （本地 local_u_ 命名空间，turn.started 文本一致时自动改名成服务端 id），
+    // 否则实时流里新 user 消息要等轮末重拉才出现；②kv cut 走 staged 判别提交
+    // （回合中编辑是就地改写语义，无判别落 kv 会在重放时删光新轮=空白主屏）
     if (event.type === 'rewind.triggered') {
       const targetId = asConversationRewind(event.payload)
-      const replay = get().editReplay
-      if (targetId && replay?.targetMsgId === targetId) {
+      if (targetId) {
+        const replay = get().editReplay
         const tIdx = messages.findIndex((m) => m.info.id === targetId && m.info.role === 'user')
         if (tIdx >= 0) {
           messages = messages.slice(0, tIdx)
@@ -4620,8 +4879,18 @@ function handleStreamBatchDirect(
             streamingMessageId = null
           }
         }
-        set({ editReplay: { ...replay, rewound: true } })
-        if (sessionId) addRewindCut(sessionId, targetId)
+        if (replay?.targetMsgId === targetId) {
+          set({ editReplay: { ...replay, rewound: true } })
+          if (replay.via === 'v4') {
+            const sid = sessionId ?? get().currentSessionId
+            if (sid) messages = [...messages, editedUserBubble(replay, sid)]
+            if (sessionId) stageRewindCut(sessionId, targetId, replay.text)
+          } else if (sessionId) {
+            addRewindCut(sessionId, targetId)
+          }
+        } else if (sessionId) {
+          addRewindCut(sessionId, targetId)
+        }
       }
       continue
     }
@@ -4749,9 +5018,33 @@ function handleStreamBatchDirect(
 
   if (turnEnded) {
     console.log(`[store] turn 结束（批量），重新拉取消息确保一致`)
-    // 编辑重放失败清理（同单推路径）：rewound 未确认或回合失败 → 放弃重发并提示
+    // 编辑编排收尾（同单推路径）：v4 通道重发由服务端完成，编辑后新 turn 结束即
+    // 终点（含失败回合——编辑本身已生效）；stopping=两段式第一段（stop 收尾）转
+    // 第二段发编辑；legacy 通道 rewound 未确认或回合失败 → 放弃重发并提示
     const replay = get().editReplay
-    if (replay && (!replay.rewound || turnError)) {
+    if (replay?.via === 'v4' && replay.stopping) {
+      const sid = get().currentSessionId
+      if (turnError || !sid) {
+        set({ editReplay: null, ...(turnError ? {} : { lastError: i18n.t('chat.edit.rewindFailed') }) })
+      } else {
+        // 回合已死，发第二段（服务端走空闲编辑路径）；ack 兜底定时器此刻才起算
+        set({ editReplay: { ...replay, stopping: false } })
+        armEditAckTimeout()
+        sendToJava({
+          op: 'editUserQuery',
+          sessionId: sid,
+          messageId: replay.targetMsgId,
+          newText: replay.text,
+          ...(replay.attachments ? { attachments: replay.attachments } : {}),
+        })
+      }
+    } else if (replay?.via === 'v4') {
+      cancelEditAckTimeout()
+      set({
+        editReplay: null,
+        ...(!replay.rewound ? { lastError: i18n.t('chat.edit.rewindFailed') } : {}),
+      })
+    } else if (replay && (!replay.rewound || turnError)) {
       set({
         editReplay: null,
         ...(turnError ? {} : { lastError: i18n.t('chat.edit.rewindFailed') }),
@@ -4819,27 +5112,42 @@ function handleStreamEvent(
     return
   }
 
+  // 编辑重发被服务端排队防御（同批量路径；steer 自身的 steerQueued 只有
+  // queueLength 不带 input，不受影响）
+  if (event.type === 'turn.steerQueued' && handleEditSteerQueuedDefence(event.payload, set, get)) {
+    return
+  }
+
   // 编辑重放的 rewind 生效确认（diag-edit-rewind.py 实测时序：turn.started →
   // rewind.triggered → turn.completed）：服务端已截断模型上下文，此处同步截断
   // 内存消息（删除编辑目标轮到尾部——编辑守卫保证目标轮之后只有本命令轮），
-  // 并把 targetId 落 kv 截断记忆（快照不反映截断，重拉时按轮删除重放）
+  // 并把 targetId 落 kv 截断记忆（快照不反映截断，重拉时按轮删除重放）。
+  // 截断不再要求 editReplay 匹配（同批量路径：v4 通道 ack 与事件乱序，事件是
+  // 截断生效的权威信号；手动 /rewind 命令的显示截断同样由此对账）。
+  // v4 编辑匹配时同批量路径：补插编辑后用户气泡 + staged 判别落 kv
   if (event.type === 'rewind.triggered') {
     const targetId = asConversationRewind(event.payload)
-    const st = get()
-    if (targetId && st.editReplay && st.editReplay.targetMsgId === targetId) {
+    if (targetId) {
+      const st = get()
       const tIdx = st.messages.findIndex((m) => m.info.id === targetId && m.info.role === 'user')
       // 流式空壳（turn.started 建立的）随截断一并清除：streamingMessageId 指向
       // 已删消息时清空（rewind turn 无后续 delta，turnEnded 也会兜底清）
-      const cutMessages = tIdx >= 0 ? st.messages.slice(0, tIdx) : st.messages
+      let cutMessages = tIdx >= 0 ? st.messages.slice(0, tIdx) : st.messages
+      const matched = st.editReplay?.targetMsgId === targetId
+      const viaV4 = matched && st.editReplay?.via === 'v4'
+      if (viaV4 && st.editReplay) {
+        cutMessages = [...cutMessages, editedUserBubble(st.editReplay, st.currentSessionId ?? '')]
+        if (st.currentSessionId) stageRewindCut(st.currentSessionId, targetId, st.editReplay.text)
+      }
       set({
         messages: cutMessages,
         ...(st.streamingMessageId && !cutMessages.some((m) => m.info.id === st.streamingMessageId)
           ? { streamingMessageId: null }
           : {}),
-        editReplay: { ...st.editReplay, rewound: true },
+        ...(matched ? { editReplay: { ...st.editReplay!, rewound: true } } : {}),
       })
       const sid = get().currentSessionId
-      if (sid) addRewindCut(sid, targetId)
+      if (sid && !viaV4) addRewindCut(sid, targetId)
     }
     return
   }
@@ -4991,6 +5299,8 @@ function handleStreamEvent(
   if (event.type === 'turn.started') {
     turnHasModelOutput = false
     armSwitchStallHint(sessionId, set, get)
+    // 编辑重放编排终点提前（同批量路径，回合运行期放开再编辑）
+    retireEditReplayOnTurnStarted(event.payload, set, get)
   }
 
   const { messages, streamingMessageId, turnEnded, modeEvent, turnError } = applyStreamEvent(
@@ -5019,11 +5329,34 @@ function handleStreamEvent(
   if (turnEnded) {
     cancelSwitchStallHint()
     const wasCompacting = get().compacting
-    // 编辑重放的 rewind turn 结束：rewound 未确认（rewind.triggered 丢失 / 命令
-    // 被服务端降级拒绝）或回合失败 → 截断未生效，放弃重发并提示（模型上下文
-    // 未变，原消息原样保留，用户可重试编辑）
+    // 编辑重放的 rewind turn 结束：v4 通道重发由服务端完成，编辑后新 turn 结束即
+    // 终点（含失败回合——编辑本身已生效）；stopping=两段式第一段（stop 收尾）转
+    // 第二段发编辑（同批量路径）；legacy 通道 rewound 未确认（rewind.triggered
+    // 丢失 / 命令被服务端降级拒绝）或回合失败 → 截断未生效，放弃重发并提示
+    // （模型上下文未变，原消息原样保留，用户可重试编辑）
     const replay = get().editReplay
-    if (replay && (!replay.rewound || turnError)) {
+    if (replay?.via === 'v4' && replay.stopping) {
+      const sid = get().currentSessionId
+      if (turnError || !sid) {
+        set({ editReplay: null, ...(turnError ? {} : { lastError: i18n.t('chat.edit.rewindFailed') }) })
+      } else {
+        set({ editReplay: { ...replay, stopping: false } })
+        armEditAckTimeout()
+        sendToJava({
+          op: 'editUserQuery',
+          sessionId: sid,
+          messageId: replay.targetMsgId,
+          newText: replay.text,
+          ...(replay.attachments ? { attachments: replay.attachments } : {}),
+        })
+      }
+    } else if (replay?.via === 'v4') {
+      cancelEditAckTimeout()
+      set({
+        editReplay: null,
+        ...(!replay.rewound ? { lastError: i18n.t('chat.edit.rewindFailed') } : {}),
+      })
+    } else if (replay && (!replay.rewound || turnError)) {
       set({
         editReplay: null,
         ...(turnError ? {} : { lastError: i18n.t('chat.edit.rewindFailed') }),
@@ -5405,8 +5738,11 @@ function applyMessagesSnapshot(
   // 同轮 turn 的多条 assistant step 合并为一条（耗时/token 取整轮），
   // 否则重拉后"已工作"塌缩成最后一个 step 的耗时。
   // 编辑截断记忆重放（快照不反映 rewind——diag-rewind-meta.py 实测服务端
-  // Rbt 过滤链缺 createdMessageID，目标轮原样返回；按 kv 记录轮删除还原）
+  // Rbt 过滤链缺 createdMessageID，目标轮原样返回；按 kv 记录轮删除还原）。
+  // v4 通道的 cut 先经 staged 判别提交（2026-09-12 真机实锤：回合中编辑是就地
+  // 改写语义、快照自行截断且新消息复用同 id——无判别落 kv 会把新轮删光=空白主屏）
   const sid = get().currentSessionId
+  if (sid) commitStagedRewindCuts(sid, msg.messages)
   const visibleMessages = applyRewindCuts(
     mergeTurnMessages(
       stripLeadingModelChangeMarkers(

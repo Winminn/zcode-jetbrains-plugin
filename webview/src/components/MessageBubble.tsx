@@ -48,8 +48,8 @@ import {
 } from './PartUnits'
 import { ImagePreview } from './ImagePreview'
 import { groupParts } from '@/utils/groupParts'
+import type { EditAttachmentInput } from '@/utils/editHistory'
 import '../styles/message-bubble.less'
-import '../styles/text-preview-dialog.less'
 
 interface Props {
   message: ZCodeMessage
@@ -203,7 +203,16 @@ function UserBubble({
   const onCopy = () => { void showResult(() => copyText(text)) }
 
   if (editing) {
-    return <EditComposer initialText={text} lines={lines} />
+    return (
+      <EditComposer
+        initialText={text}
+        lines={lines}
+        initialImages={imageParts.filter(
+          (p): p is FilePart | ImagePart =>
+            (p.type === 'file' && !!p.url) || (p.type === 'image' && !!p.dataBase64),
+        )}
+      />
+    )
   }
 
   return (
@@ -275,7 +284,12 @@ function UserBubble({
         )}
       </div>
       {showFull && (
-        <UserTextPreviewDialog text={text} lines={lines} onClose={() => setShowFull(false)} />
+        <UserTextPreviewDialog
+          text={text}
+          lines={lines}
+          images={images}
+          onClose={() => setShowFull(false)}
+        />
       )}
       {previewIdx != null && images[previewIdx] && (
         <ImagePreview
@@ -288,17 +302,62 @@ function UserBubble({
   )
 }
 
+/** 编辑器图片附件条目：cache=原消息图片（FilePart，url 即 image-cache 映射），inline=编辑时新粘贴 */
+interface EditImageChip {
+  key: string
+  kind: 'cache' | 'inline'
+  url?: string
+  dataBase64?: string
+  dataUrl?: string
+  mime: string
+  fileName: string
+}
+
 /**
  * 用户消息行内编辑器（官方 Edit History 形态：原消息展开为可编辑输入框）。
- * 提交走 store.submitEdit（rewind + 重发编排）；Enter 提交、Shift+Enter 换行、
- * Esc 取消（对齐 InputBox 键位）；IME 组合中的 Enter 不当提交。
+ * 图片附件以 chip 形态随编辑（可移除、可粘贴新增，对齐官方编辑器的附件保留语义）；
+ * chip 双形态：cache=历史消息 file part（保留时引用 image-cache 磁盘文件），
+ * inline=刚发出消息的本地 dataUrl（乐观未重拉，回合中编辑；保留时 dataBase64
+ * 走临时文件 ref）。提交走 store.submitEdit（v4 editUserQuery / rewind + 重发
+ * 编排）；Enter 提交、Shift+Enter 换行、Esc 取消（对齐 InputBox 键位）；IME
+ * 组合中的 Enter 不当提交。
  */
-function EditComposer({ initialText, lines }: { initialText: string; lines: number }) {
+function EditComposer({
+  initialText,
+  initialImages,
+  lines,
+}: {
+  initialText: string
+  initialImages: Array<FilePart | ImagePart>
+  lines: number
+}) {
   const { t } = useTranslation()
   const [value, setValue] = useState(initialText)
+  const [chips, setChips] = useState<EditImageChip[]>(() =>
+    initialImages.map((p, i) =>
+      p.type === 'file'
+        ? {
+            key: p.id ?? `img-${i}`,
+            kind: 'cache' as const,
+            url: p.url!,
+            mime: p.mime ?? 'image/png',
+            fileName: p.filename ?? 'image.png',
+          }
+        : {
+            key: p.id ?? `img-${i}`,
+            kind: 'inline' as const,
+            dataBase64: p.dataBase64!,
+            dataUrl: p.dataUrl ?? `data:${p.mediaType ?? 'image/png'};base64,${p.dataBase64}`,
+            mime: p.mediaType ?? 'image/png',
+            fileName: 'image.png',
+          },
+    ),
+  )
   const ref = useRef<HTMLTextAreaElement>(null)
   const submitEdit = useStore((s) => s.submitEdit)
   const cancelEdit = useStore((s) => s.cancelEdit)
+  // chip 点击放大（复用消息态的 ImagePreview；Esc 逐层让位见 onKeyDown）
+  const [previewIdx, setPreviewIdx] = useState<number | null>(null)
 
   // 挂载即聚焦：光标置于末尾（保留全选改写的可能——用户直接输入即整体替换的
   // 常见编辑动线由「全选」自行触发，不做预设）
@@ -310,12 +369,26 @@ function EditComposer({ initialText, lines }: { initialText: string; lines: numb
   }, [])
 
   const submit = () => {
-    if (!value.trim()) return
-    submitEdit(value)
+    const hasText = !!value.trim()
+    if (!hasText && chips.length === 0) return
+    // 全量清单语义：原消息带图而 chips 已清空 → 显式传 []（编辑时删光图片）；
+    // 原消息无图也未新增 → undefined（Java 不带 attachments 字段）
+    const images: EditAttachmentInput[] | undefined = chips.length
+      ? chips.map((c) =>
+          c.kind === 'cache'
+            ? { source: 'cache' as const, url: c.url!, mime: c.mime, fileName: c.fileName }
+            : { source: 'inline' as const, dataBase64: c.dataBase64!, mime: c.mime, fileName: c.fileName },
+        )
+      : initialImages.length > 0
+        ? []
+        : undefined
+    submitEdit(value, images)
   }
 
   const onKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.key === 'Escape') {
+      // 预览打开时 Esc 先关预览（ImagePreview 的 document 级监听负责），不连带取消编辑
+      if (previewIdx != null) return
       e.preventDefault()
       cancelEdit()
       return
@@ -326,9 +399,68 @@ function EditComposer({ initialText, lines }: { initialText: string; lines: numb
     }
   }
 
+  // 粘贴图片 → 新增 chip（与 InputBox 粘贴图同动线；非图片粘贴放行默认行为）
+  const onPaste = (e: React.ClipboardEvent<HTMLTextAreaElement>) => {
+    const files = Array.from(e.clipboardData?.files ?? []).filter((f) => f.type.startsWith('image/'))
+    if (files.length === 0) return
+    e.preventDefault()
+    void Promise.all(
+      files.map(
+        (f) =>
+          new Promise<EditImageChip | null>((resolve) => {
+            const reader = new FileReader()
+            reader.onload = () => {
+              const dataUrl = typeof reader.result === 'string' ? reader.result : ''
+              const dataBase64 = dataUrl.split(',')[1] ?? ''
+              if (!dataBase64) return resolve(null)
+              resolve({
+                key: `paste-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+                kind: 'inline',
+                dataUrl,
+                dataBase64,
+                mime: f.type,
+                fileName: f.name || 'image.png',
+              })
+            }
+            reader.onerror = () => resolve(null)
+            reader.readAsDataURL(f)
+          }),
+      ),
+    ).then((added) => {
+      const ok = added.filter((x): x is EditImageChip => !!x)
+      if (ok.length) setChips((cur) => [...cur, ...ok])
+    })
+  }
+
   const rows = Math.min(Math.max(lines + 1, 3), 14)
   return (
-    <div className="msg msg--user msg--editing" >
+    <div className="msg msg--user msg--editing">
+      {chips.length > 0 && (
+        <div className="msg__edit-images">
+          {chips.map((c, i) => (
+            <span
+              key={c.key}
+              className="msg__edit-image msg__edit-image--zoomable"
+              title={c.fileName}
+              onClick={() => setPreviewIdx(i)}
+            >
+              <img src={c.kind === 'cache' ? c.url : c.dataUrl} alt={c.fileName} />
+              <button
+                type="button"
+                className="msg__edit-image-remove"
+                title={t('chat.edit.removeImage')}
+                aria-label={t('chat.edit.removeImage')}
+                onClick={(e) => {
+                  e.stopPropagation()
+                  setChips((cur) => cur.filter((x) => x.key !== c.key))
+                }}
+              >
+                <span className="codicon codicon-close" />
+              </button>
+            </span>
+          ))}
+        </div>
+      )}
       <textarea
         ref={ref}
         className="msg__edit-textarea"
@@ -336,17 +468,34 @@ function EditComposer({ initialText, lines }: { initialText: string; lines: numb
         rows={rows}
         onChange={(e) => setValue(e.target.value)}
         onKeyDown={onKeyDown}
+        onPaste={onPaste}
         aria-label={t('chat.message.edit')}
       />
       <div className="msg__edit-actions">
         <button type="button" className="msg__edit-btn msg__edit-btn--ghost" onClick={cancelEdit}>
           {t('chat.message.editCancel')}
         </button>
-        <button type="button" className="msg__edit-btn msg__edit-btn--primary" onClick={submit} disabled={!value.trim()}>
+        <button
+          type="button"
+          className="msg__edit-btn msg__edit-btn--primary"
+          onClick={submit}
+          disabled={!value.trim() && chips.length === 0}
+        >
           <span className="codicon codicon-send" />
           {t('chat.message.editRegenerate')}
         </button>
       </div>
+      {previewIdx != null && chips[previewIdx] && (
+        <ImagePreview
+          images={chips.map((c) => ({
+            src: c.kind === 'cache' ? c.url! : c.dataUrl!,
+            key: c.key,
+            title: c.fileName,
+          }))}
+          initialIndex={previewIdx}
+          onClose={() => setPreviewIdx(null)}
+        />
+      )}
     </div>
   )
 }
@@ -355,51 +504,85 @@ function EditComposer({ initialText, lines }: { initialText: string; lines: numb
  * 用户消息全文弹窗。portal 挂 body（脱离 messages-container），
  * 避免全文 pre/文本进入会话内搜索的 TreeWalker 与代码块匹配范围。
  */
+/**
+ * 用户消息全文弹窗（长文折叠「查看全文」入口）。骨架复用上下文压缩摘要弹窗的
+ * subagent-detail 系类名（760px 宽弹窗，2026-09-12 用户反馈替换旧 text-preview-dialog
+ * 形态）：带图消息在正文顶部渲染图片网格（点击 ImagePreview 放大，Esc 逐层让位），
+ * 文本保持 pre 原文形态。portal 挂 body（脱离 messages-container），避免全文进入
+ * 会话内搜索的 TreeWalker 与代码块匹配范围。
+ */
 function UserTextPreviewDialog({
   text,
   lines,
+  images,
   onClose,
 }: {
   text: string
   lines: number
+  images: { src: string; key: string; title: string | undefined }[]
   onClose: () => void
 }) {
   const { t } = useTranslation()
-  const bodyRef = useRef<HTMLPreElement>(null)
+  const bodyRef = useRef<HTMLDivElement>(null)
+  const [previewIdx, setPreviewIdx] = useState<number | null>(null)
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') onClose()
+      // 图片预览打开时 Esc 先关预览（其 document 级监听负责），不连带关弹窗
+      if (e.key === 'Escape' && previewIdx == null) onClose()
     }
     document.addEventListener('keydown', onKey)
     return () => document.removeEventListener('keydown', onKey)
-  }, [onClose])
+  }, [onClose, previewIdx])
 
   return createPortal(
-    <div className="modal-overlay" role="presentation" onClick={onClose}>
+    <div className="subagent-detail-overlay" role="presentation" onClick={onClose}>
       <div
-        className="modal-content text-preview-dialog msg-fulltext"
+        className="subagent-detail-dialog msg-fulltext"
         role="dialog"
         aria-label={t('chat.message.fullTextAria')}
         onClick={(e) => e.stopPropagation()}
       >
-        <div className="text-preview-dialog__header">
-          <span className="codicon codicon-comment-discussion text-preview-dialog__icon" />
-          <span className="text-preview-dialog__title">
-            {t('chat.message.fullTextTitle', { lines, count: text.length })}
-          </span>
+        <div className="subagent-detail-header">
+          <span className="codicon codicon-comment-discussion subagent-detail-header__icon" />
+          <div className="subagent-detail-header__main">
+            <span className="subagent-detail-header__title">
+              {t('chat.message.fullTextTitle', { lines, count: text.length })}
+            </span>
+          </div>
           <button
-            className="text-preview-dialog__close"
+            className="subagent-detail-icon-btn"
             onClick={onClose}
             title={t('chat.message.closeFull')}
             aria-label={t('chat.message.closeFull')}
             type="button"
           >
-            <span className="codicon codicon-close" />
+            <span className="codicon codicon-chrome-close" />
           </button>
         </div>
-        <pre ref={bodyRef} className="text-preview-dialog__body msg-fulltext__body">{text}</pre>
+        <div ref={bodyRef} className="subagent-detail-body msg-fulltext__body">
+          {images.length > 0 && (
+            <div className="msg__images msg-fulltext__images">
+              {images.map((img, i) => (
+                <MessageImage
+                  key={img.key}
+                  src={img.src}
+                  title={img.title}
+                  onOpen={() => setPreviewIdx(i)}
+                />
+              ))}
+            </div>
+          )}
+          <pre className="msg-fulltext__text">{text}</pre>
+        </div>
         <ScrollJumpButton containerRef={bodyRef} />
+        {previewIdx != null && images[previewIdx] && (
+          <ImagePreview
+            images={images}
+            initialIndex={previewIdx}
+            onClose={() => setPreviewIdx(null)}
+          />
+        )}
       </div>
     </div>,
     document.body,

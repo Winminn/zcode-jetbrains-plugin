@@ -36,15 +36,18 @@ import com.zcode.ideaplugin.ZCodeService
 import com.zcode.ideaplugin.ZCodeWebviewServer
 import com.zcode.ideaplugin.zCodeService
 import com.zcode.ideaplugin.protocol.Credentials
+import com.zcode.ideaplugin.protocol.EditTargetGoneException
 import com.zcode.ideaplugin.protocol.ImageArtifactMapper
 import com.zcode.ideaplugin.protocol.ZCodeProtocolClient
 import com.zcode.ideaplugin.protocol.ZCodeProtocolException
 import com.zcode.ideaplugin.protocol.SessionStat
 import com.zcode.ideaplugin.protocol.model.AttachmentInput
 import com.zcode.ideaplugin.protocol.model.SessionInfo
+import com.zcode.ideaplugin.protocol.model.V4AttachmentRef
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonArray
@@ -835,6 +838,7 @@ if (!window.__ZCODE_LOG_HOOK__) {
                         "subagentMessages" -> handleSubagentMessages(msg)
                         "createSession" -> handleCreateSession(msg)
                         "forkSession" -> handleForkSession(msg)
+                        "editUserQuery" -> handleEditUserQuery(msg)
                         "subscribe" -> handleSubscribe(msg)
                         "subscribeChild" -> handleSubscribeChild(msg)
                         "unsubscribeChild" -> handleUnsubscribeChild(msg)
@@ -1798,6 +1802,168 @@ if (!window.__ZCODE_LOG_HOOK__) {
         } catch (e: Exception) {
             log.warn("Fork session failed: ${e.message}")
             errorResponse("分叉失败：${e.message ?: "未知错误"}")
+        }
+    }
+
+    /**
+     * 编辑最后一轮用户消息 — v4/command editUserQuery（官方客户端同款通道）。
+     * 相比 legacy /rewind 方案的两个升级（diag-edit-v4 实测定案，协议细节见
+     * editUserQueryViaV4 注释）：① 服务端执行链自带「活动回合先 abort」，回合未
+     * 完成也可编辑；② 附件走 ref 引用形态，带图消息可保留/增删图片。
+     *
+     * 应答用专用 op 而非 errorResponse（op:error 会全量复位前端流式态——编辑
+     * 可能发生在回合进行中，此时回合仍在跑，不能误清 streaming）。
+     */
+    private fun handleEditUserQuery(msg: JsonObject): JsonObject {
+        val sessionId = msg["sessionId"]?.jsonPrimitive?.content
+            ?: return editRejected("缺少 sessionId")
+        val messageId = msg["messageId"]?.jsonPrimitive?.content
+            ?: return editRejected("缺少 messageId")
+        val newText = msg["newText"]?.jsonPrimitive?.content
+            ?: return editRejected("缺少 newText")
+        val attachmentsEl = msg["attachments"]
+        val refs: List<V4AttachmentRef>? = when {
+            attachmentsEl == null || attachmentsEl is JsonNull -> null
+            else -> resolveEditAttachmentRefs(attachmentsEl)
+                ?: return editRejected("图片附件解析失败（缓存文件缺失或数据损坏），请重试或删掉对应图片后再编辑")
+        }
+        return try {
+            val client = project.zCodeService().getClient()
+            val result = client.editUserQueryViaV4(sessionId, messageId, newText, refs)
+            log.info("Edit user query accepted: $sessionId msg=$messageId")
+            buildJsonObject {
+                put("op", "editAccepted")
+                put("sessionId", sessionId)
+                put(
+                    "disposition",
+                    result["result"]?.jsonObject?.get("disposition")?.jsonPrimitive?.content ?: "rewind",
+                )
+            }
+        } catch (e: ZCodeProtocolException) {
+            if (e.code == -32601) {
+                log.info("Edit via v4 unavailable (no v4 surface), frontend falls back to legacy /rewind")
+                buildJsonObject { put("op", "editUnsupported") }
+            } else {
+                log.warn("Edit user query failed: ${e.message}")
+                editRejected(e.message ?: "未知错误")
+            }
+        } catch (e: EditTargetGoneException) {
+            // 行流里找不到目标行（会话级行流缺失/乐观 id 过期）：降级信号而非报错。
+            // reason=targetGone 让前端区分「CLI 无 v4 面」（永久记否）与「本会话目标
+            // 定位失败」（仅本次降级，带图目标不得回退 legacy——legacy 重发会丢图）
+            log.info("Edit target not found in row log, frontend degrades: ${e.message}")
+            buildJsonObject {
+                put("op", "editUnsupported")
+                put("reason", "targetGone")
+                put("message", e.message ?: "")
+            }
+        } catch (e: Exception) {
+            log.warn("Edit user query failed: ${e.message}")
+            editRejected(e.message ?: "未知错误")
+        }
+    }
+
+    private fun editRejected(message: String): JsonObject = buildJsonObject {
+        put("op", "editRejected")
+        put("message", message)
+    }
+
+    /**
+     * op:editUserQuery 的 attachments 数组 → v4 ref 引用形态列表。
+     * 两种来源（webview EditComposer）：
+     * - cache：保留的原消息图片，url 是内置 server 的 /zcode-image/<sid>/<fileName>
+     *   （或未映射成功的 zcode-artifact://）——对应 zcode.cjs 自己落盘的 image-cache
+     *   文件（ImageArtifactMapper 同一套确定性命名），直接引用其磁盘绝对路径；
+     * - inline：编辑时新粘贴的图（含回合中编辑乐观消息的本地图），dataBase64 →
+     *   内容 hash 确定性命名落临时目录供服务端读（服务端在命令执行时同步读文件，
+     *   >7 天惰性清理防在途请求与近期消息读回被删）。
+     * fileName 字段统一传 ref basename（受控命名 image-<32hex>.<ext>）：实测服务端
+     * 把 ref basename 存进消息 part.filename，读回换算兜底链（ImageArtifactMapper
+     * filename 兜底 + serveImageCache 临时目录回退）依赖这个名字可命中。
+     * 任一条目解析失败返回 null（调用方整体报错——部分保留部分丢的编辑结果不可预期）。
+     */
+    private fun resolveEditAttachmentRefs(el: JsonElement): List<V4AttachmentRef>? {
+        val arr = el as? JsonArray ?: return null
+        val out = ArrayList<V4AttachmentRef>(arr.size)
+        for (item in arr) {
+            val o = item as? JsonObject ?: return null
+            val mime = o["mime"]?.jsonPrimitive?.contentOrNull ?: return null
+            val path = when (o["source"]?.jsonPrimitive?.content) {
+                "cache" -> locateImageCacheFile(o) ?: return null
+                "inline" -> {
+                    val data = o["dataBase64"]?.jsonPrimitive?.contentOrNull ?: return null
+                    writeEditTempAttachment(data, mime) ?: return null
+                }
+                else -> return null
+            }
+            val f = File(path)
+            if (!f.isFile) return null
+            out.add(V4AttachmentRef(ref = path, fileName = f.name, mime = mime, bytes = f.length()))
+        }
+        return out
+    }
+
+    /** /zcode-image/ URL 或 zcode-artifact:// uri → image-cache 落盘文件绝对路径。
+     *  cache miss 时回退编辑附件临时目录（serveImageCache 同款兜底）：编辑重发图片
+     *  的 ref 文件在 editAttachmentsRoot（image-cache 只在原始内联发送时由 zcode.cjs
+     *  落盘），重发消息 part.filename=ref basename（diag-edit-double 实锤），二次
+     *  编辑反查时 basename 即 temp 文件名——不回退则「图片附件解析失败」。 */
+    private fun locateImageCacheFile(o: JsonObject): String? {
+        val url = o["url"]?.jsonPrimitive?.contentOrNull ?: return null
+        val mime = o["mime"]?.jsonPrimitive?.contentOrNull ?: ""
+        val file: File? = if (url.contains("/zcode-image/")) {
+            val segs = url.substringAfter("/zcode-image/").trim('/').split('/')
+            if (segs.size != 2 || !ZCodeWebviewServer.sidPattern.matches(segs[0]) ||
+                !ZCodeWebviewServer.imageFilePattern.matches(segs[1])
+            ) {
+                null
+            } else {
+                File(File(ZCodeWebviewServer.imageCacheRoot, segs[0]), segs[1])
+                    .takeIf { it.isFile }
+                    ?: File(ZCodeWebviewServer.editAttachmentsRoot, segs[1]).takeIf { it.isFile }
+            }
+        } else if (url.startsWith("zcode-artifact://")) {
+            val fileName = ImageArtifactMapper.cacheFileName(url, mime)
+            val sid = ImageArtifactMapper.sessionIdOf(url)
+            if (fileName == null || sid == null || !ZCodeWebviewServer.sidPattern.matches(sid)) null
+            else File(File(ZCodeWebviewServer.imageCacheRoot, sid), fileName)
+        } else null
+        return file?.takeIf { it.isFile }?.absolutePath
+    }
+
+    /**
+     * 编辑新增图片 → 临时文件（ref 引用形态要求真文件）；返回绝对路径。
+     * 命名 = image-<sha256(内容)[:32]>.<ext>（与 image-cache/读回兜底同一套受控
+     * 命名，编辑消息读回时按 part.filename 命中此文件渲染）：内容 hash 确定性
+     * 保证同图幂等（重复编辑/多消息同图只落一份）。
+     */
+    private fun writeEditTempAttachment(dataBase64: String, mime: String): String? {
+        return try {
+            val bytes = java.util.Base64.getMimeDecoder().decode(dataBase64)
+            val ext = when (mime.substringBefore(';').trim().lowercase()) {
+                "image/png" -> "png"
+                "image/jpeg", "image/jpg" -> "jpg"
+                "image/gif" -> "gif"
+                "image/webp" -> "webp"
+                else -> return null
+            }
+            val dir = ZCodeWebviewServer.editAttachmentsRoot
+            if (!dir.isDirectory) dir.mkdirs()
+            // >7 天惰性清理：命令执行时服务端才读文件，立即删有在途竞态；编辑后
+            // 消息读回渲染也走这里，24h 太短（历史会话图会过期）——7 天足够覆盖
+            runCatching {
+                dir.listFiles()?.forEach {
+                    if (it.isFile && it.lastModified() < System.currentTimeMillis() - 7 * 24 * 3600_000L) it.delete()
+                }
+            }
+            val hash = java.security.MessageDigest.getInstance("SHA-256")
+                .digest(bytes).joinToString("") { "%02x".format(it) }.take(32)
+            val f = File(dir, "image-$hash.$ext")
+            if (!f.isFile) f.writeBytes(bytes)
+            f.absolutePath
+        } catch (e: Exception) {
+            log.warn("Edit attachment temp write failed: ${e.message}")
+            null
         }
     }
 
@@ -3419,11 +3585,16 @@ if (!window.__ZCODE_LOG_HOOK__) {
         resumeSessionDeduped(client, sessionId, workspacePath)
         val messages = client.messages(sessionId)
         // 用户图片 part 读回适配：type:"file" + zcode-artifact:// uri → 内置 server
-        // 的 /zcode-image/ URL（<img> 可加载）。fail-soft，见 ImageArtifactMapper
+        // 的 /zcode-image/ URL（<img> 可加载）。fail-soft，见 ImageArtifactMapper。
+        // 存在性检查含编辑附件临时目录回退（第三处对齐点）：编辑 ref 重发图的
+        // filename=ref basename（temp 文件名），image-cache 永远不会有这个名字——
+        // 映射端只查 cache 时兜底链必失效，part 原样保留 zcode-artifact:// uri，
+        // <img> 加载不了 = 编辑器/消息里坏图（09-12 三轮回归实证）
         return ImageArtifactMapper.mapMessages(messages) { sid, fileName ->
-            if (!ImageArtifactMapper.cacheFileExists(ZCodeWebviewServer.imageCacheRoot, sid, fileName)) {
-                return@mapMessages null
-            }
+            val inCache = ImageArtifactMapper.cacheFileExists(ZCodeWebviewServer.imageCacheRoot, sid, fileName)
+            val inTemp = !inCache && ZCodeWebviewServer.imageFilePattern.matches(fileName) &&
+                File(ZCodeWebviewServer.editAttachmentsRoot, fileName).isFile
+            if (!inCache && !inTemp) return@mapMessages null
             ZCodeWebviewServer.imageUrl(sid, fileName)
         }
     }

@@ -81,5 +81,14 @@
   }
 }
 
-/* 预览弹窗：骨架与样式已迁 text-preview-dialog.less（头部行 + 下沉内容区），
-   .pasted-text-preview 类名保留作宽度挂点（640px，在共享样式里三类覆盖）*/
+/* 预览弹窗：骨架已统一为压缩摘要弹窗同款（subagent-detail 系，2026-09-12），
+   此处只补 mono 正文形态（粘贴原文可能是日志/代码）*/
+.pasted-text-preview__body {
+  margin: 0;
+  font-family: var(--font-mono);
+  font-size: var(--fs-body);
+  line-height: 1.6;
+  white-space: pre-wrap;
+  word-break: break-word;
+  color: var(--color-tool-value);
+}

@@ -96,11 +96,19 @@ object ZCodeWebviewServer {
     internal val imageCacheRoot: File
         get() = File(File(System.getProperty("user.home"), ".zcode"), "cli/image-cache")
 
-    /** sessionId 目录名白名单（zcode.cjs sj 净化规则：非 [a-zA-Z0-9._-] 替换 _、截 120）*/
-    private val sidPattern = Regex("""^[A-Za-z0-9._-]{1,120}$""")
+    /**
+     * v4 编辑 inline 新图的临时目录（handleEditUserQuery 写、serveImageCache 兜底读）。
+     * zcode.cjs 不为编辑 ref 重发的图写 image-cache，读回换算靠 part.filename 命中
+     * 这里的同名文件（内容 hash 确定性命名，见 writeEditTempAttachment）。
+     */
+    internal val editAttachmentsRoot: File
+        get() = File(System.getProperty("java.io.tmpdir"), "zcode-gui-edit-att")
+
+    /** sessionId 目录名白名单（zcode.cjs sj 净化规则：非 [A-Za-z0-9._-] 替换 _、截 120）*/
+    internal val sidPattern = Regex("""^[A-Za-z0-9._-]{1,120}$""")
 
     /** 落盘文件名白名单（image-<sha256(uri) 前 32 hex>.<ext>）*/
-    private val imageFilePattern = Regex("""^image-[0-9a-f]{32}\.(png|jpg|jpeg|gif|webp)$""")
+    internal val imageFilePattern = Regex("""^image-[0-9a-f]{32}\.(png|jpg|jpeg|gif|webp)$""")
 
     /**
      * 用户消息图片的可渲染 URL（ImageArtifactMapper 调用）：把 image-cache 落盘文件
@@ -119,7 +127,10 @@ object ZCodeWebviewServer {
             respond(exchange, 404, "not found".toByteArray(), "text/plain; charset=utf-8")
             return
         }
-        val f = File(File(imageCacheRoot, segs[0]), segs[1])
+        // 先查 zcode.cjs 的 image-cache，未命中回退编辑 inline 图临时目录（同一套
+        // 受控命名——读回换算兜底链的取数端，见 editAttachmentsRoot 注释）
+        var f = File(File(imageCacheRoot, segs[0]), segs[1])
+        if (!f.isFile) f = File(editAttachmentsRoot, segs[1])
         if (!f.isFile) {
             respond(exchange, 404, "not found".toByteArray(), "text/plain; charset=utf-8")
             return

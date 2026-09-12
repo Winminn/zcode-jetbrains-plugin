@@ -328,6 +328,16 @@ export interface ImageAttachmentInput {
   dataBase64: string
 }
 
+/**
+ * 编辑附件条目（op:editUserQuery 的 attachments 元素，Java 侧解析为 v4 ref 引用
+ * 形态 {ref,fileName,mime,bytes}）。cache=保留的原消息图片（url 为 /zcode-image/
+ * 映射或 zcode-artifact://，背后是 zcode.cjs image-cache 落盘文件，直接引用磁盘
+ * 路径）；inline=编辑时新粘贴的图（dataBase64 → Java 落临时文件供服务端读）。
+ */
+export type JavaEditAttachment =
+  | { source: 'cache'; url: string; mime: string; fileName?: string }
+  | { source: 'inline'; dataBase64: string; mime: string; fileName?: string }
+
 export type JavaRequest =  | { op: 'askUserPendingState' }
   /** 前端诊断日志直落 idea.log（Java handleJsMessage 的 [webview-console] 通道） */
   | { op: '__jsLog'; level: string; text: string }
@@ -466,6 +476,19 @@ export type JavaRequest =  | { op: 'askUserPendingState' }
   | { op: 'gotoSession'; sessionId: string }
   /** 从历史消息分叉新会话（B2 一期）：保留到该消息（含），新会话由 sessionForked 应答承载 */
   | { op: 'forkSession'; sessionId: string; messageId: string }
+  /**
+   * 编辑最后一轮用户消息（v4/command editUserQuery，diag-edit-v4 定案）：服务端
+   * abort 活动回合 + rewind + 重发，回合中可编辑。attachments=编辑后的图片附件
+   * 全量清单（cache=保留原图 image-cache 引用 / inline=新增粘贴图）；缺省=不带
+   * 字段（服务端沿用原附件，仅限纯文本消息），[] =显式清空附件
+   */
+  | {
+      op: 'editUserQuery'
+      sessionId: string
+      messageId: string
+      newText: string
+      attachments?: JavaEditAttachment[]
+    }
   /** 历史列表打开前定位：查所有标签是否已绑定该会话（有则 Java 直接激活宿主标签跳转，无副作用）*/
   | { op: 'locateSession'; sessionId: string }
   /** mermaid 复制图片：PNG 纯 base64 → Java 系统剪贴板（JCEF 的 clipboard.write 图片不可靠的降级通道）*/
@@ -834,6 +857,14 @@ export type JavaResponse =
   | { op: 'sessionForked'; forkedSessionId: string; parentSessionId?: string }
   /** 老 CLI 无 v4 面（-32601）：隐藏分叉入口（不做 legacy 回退——该路径带文件恢复副作用）*/
   | { op: 'forkUnsupported' }
+  /** editUserQuery 应答：v4 编辑受理（后续编排全由事件流驱动，ack 可能晚于事件到达）*/
+  | { op: 'editAccepted'; sessionId: string; disposition?: string }
+  /** 老 CLI 无 v4 edit 面（-32601，无 reason）：前端记忆全局不可用，空闲时回退 legacy 编排。
+   *  reason=targetGone（2026-09-12 三轮反馈）：行流里找不到目标行（会话级行流缺失/
+   *  乐观 id 过期）——不记忆全局不可用，仅本次降级（带图目标不得回退，legacy 丢图） */
+  | { op: 'editUnsupported'; reason?: 'targetGone'; message?: string }
+  /** v4 编辑被拒（守卫不过/附件解析失败等）：专用 op，不走全局 error 复位（回合可能在跑）*/
+  | { op: 'editRejected'; message?: string }
   /** steerMessage 应答：accepted=true 时 UI 由 turn.steerQueued/steerDrained 事件驱动；error=受理失败（清 chip + 横幅）。queueItemId=queue_<commandId>（前端已预置，ack 仅核对）*/
   | { op: 'steerMessage'; sessionId: string; accepted?: boolean; delivery?: string; queueItemId?: string; error?: string }
   /** cancelSteer 应答：removed=true 已撤销（清 chip + 队列条目回插）；false=已注入落位（queue.itemMissing），提示不可撤 */

@@ -52,7 +52,11 @@
   "edit": {
     "replaying": "Regenerating with the edited message…",
     "staleTarget": "Conversation changed; edit cancelled",
-    "rewindFailed": "Message rewind did not take effect; edit cancelled, please retry"
+    "rewindFailed": "Message rewind did not take effect; edit cancelled, please retry",
+    "removeImage": "Remove image",
+    "unsupportedMidTurn": "This CLI version doesn't support editing while a turn is in progress. Please wait for the turn to finish and try again.",
+        "queuedNotApplied": "The turn was running a tool, so the edit didn't take effect. Please stop the turn and edit again.",
+    "unsupportedWithAttachments": "Editing is temporarily unavailable for this session and the images can't be kept on resend. Remove the images and edit again, or start a new session."
   },
   "thinking": {
     "thinking": "Thinking",

@@ -1913,6 +1913,10 @@ flowchart LR
     case 'forkSession':
       // mock：分叉应答（伪 id；验 forkBusy 复位与 sessionForked 分支，新标签编排需真机）
       return { op: 'sessionForked', forkedSessionId: `sess_fork_${Date.now()}`, parentSessionId: req.sessionId }
+    case 'editUserQuery':
+      // mock：v4 编辑受理 ack。真实编排（rewind.triggered 截断 + 服务端重发流式）
+      // 由事件流驱动，mock 无事件流——ack 后指示器挂着属预期，新文本重发/截断需真机验
+      return { op: 'editAccepted', sessionId: req.sessionId, disposition: 'rewind' }
     case 'gotoSession':
       // mock：跳转会话 ack（dev 无多标签宿主，仅防误报"mock 不支持 op"错误条）
       return { op: 'gotoSessionOpened' }

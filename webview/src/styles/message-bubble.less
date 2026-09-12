@@ -236,6 +236,60 @@
     width: 100%;
   }
 
+  &__edit-images {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin-bottom: 8px;
+  }
+
+  &__edit-image {
+    position: relative;
+    width: 64px;
+    height: 64px;
+    border-radius: 6px;
+    overflow: hidden;
+    border: 1px solid var(--border-color, rgba(255, 255, 255, 0.12));
+
+    img {
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+      display: block;
+    }
+  }
+
+  // chip 点击放大（ImagePreview）；✕ 移除按钮自身已有 pointer 光标
+  &__edit-image--zoomable {
+    cursor: zoom-in;
+  }
+
+  &__edit-image-remove {
+    position: absolute;
+    top: 2px;
+    right: 2px;
+    width: 16px;
+    height: 16px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 0;
+    border: none;
+    border-radius: 50%;
+    background: rgba(0, 0, 0, 0.6);
+    color: #fff;
+    cursor: pointer;
+    opacity: 0.85;
+
+    .codicon {
+      font-size: 10px;
+    }
+
+    &:hover {
+      opacity: 1;
+    }
+  }
+
   &__edit-textarea {
     width: 100%;
     min-height: 72px;
@@ -450,5 +504,20 @@
   to { opacity: 1; transform: translateY(0); }
 }
 
-/* 用户消息全文弹窗：骨架与样式已迁 text-preview-dialog.less（头部行 + 下沉内容区），
-   .msg-fulltext 类名保留作测试/宽度挂点 */
+/* 用户消息全文弹窗：骨架复用压缩摘要弹窗的 subagent-detail 系类名（2026-09-12
+   用户反馈替换旧 text-preview-dialog 形态，带图消息正文渲染图片网格），
+   .msg-fulltext 类名保留作测试挂点 */
+.msg-fulltext__images {
+  margin: 0 0 12px;
+}
+
+.msg-fulltext__text {
+  margin: 0;
+  font-family: inherit;
+  font-size: 13px;
+  line-height: 1.6;
+  color: var(--text-primary);
+  white-space: pre-wrap;
+  word-break: break-word;
+  user-select: text;
+}

@@ -1358,6 +1358,178 @@ class ZCodeProtocolClient private constructor(
         }
     }
 
+    /**
+     * v4/command editUserQuery — 编辑最后一轮用户消息并重新生成（官方桌面客户端同款通道）。
+     *
+     * 链路与 forkAssistantViaV4 同构：临时 v4 订阅取 ack.logEpoch → rowsRange 定位目标
+     * userInput 行（entityId == legacy 消息 id，diag-edit-v4 实测）→ v4/command CAS
+     * （baseRevision 首发必 stale，取 revisionAtDecision 重试一次即 accepted）。
+     *
+     * 相比 legacy `/rewind conversation` 命令方案的两个本质升级（diag-edit-v4 实测定案）：
+     * ① **回合中可编辑**——服务端执行链自带「活动回合先 abort」（abortMessage =
+     *    "v4 editUserQuery preempts active turn"），行投影的 canEdit 只要求「最新
+     *    realUser userInput 行」、不随活动回合收回；legacy 流上被中止的旧回合【没有】
+     *    turn 终点帧，直接 rewind.triggered → turn.started(新文本)。
+     * ② **附件可保留**——payload.attachments 走 [V4AttachmentRef] ref 引用形态；
+     *    不传时服务端沿用原回合 intent 的 ref 附件（ofn 过滤），而插件 legacy
+     *    dataBase64 内联发的图在 intent 里 ref=原文件名（解析不了，实测重发后图
+     *    变 "[Attached image/png: xxx]" 文字占位）——**带图消息必须显式传全量
+     *    列表**（保留图=image-cache 落盘路径 ref，由调用方解析）。
+     *
+     * 编辑语义 = 服务端就地 rewindConversationToMessage + 用 newText（+ attachments）
+     * 重发，legacy 快照仍不反映截断（前端 rewind-cuts 记忆机制不变）。
+     *
+     * @param attachments null=不传字段（服务端沿用原附件，仅限纯文本消息）；
+     *   空列表=显式清空附件（编辑时删掉了全部图片）
+     * @return v4/command 应答 result（status=accepted/duplicate，含 result.disposition）
+     * @throws ZCodeProtocolException code=-32601 老版本 CLI 无 v4 面；目标行存在但
+     *   已不是最新可编辑消息 / rejected 带 reasonCode 原文案
+     * @throws EditTargetGoneException 行流窗口内找不到目标行（会话级行流缺失或乐观
+     *   id 过期）——调用方应降级（editUnsupported）而非报错
+     */
+    fun editUserQueryViaV4(
+        sessionId: String,
+        messageId: String,
+        newText: String,
+        attachments: List<V4AttachmentRef>? = null,
+        timeoutMs: Long = 20000,
+    ): JsonObject {
+        // 订阅块与 forkAssistantViaV4 同款：临时订阅只为 ack.logEpoch/rowsRange 信封/退订，
+        // 不进 v4SubscribedSessions 白名单（initial snapshot 帧进白名单会被 V4FrameMapper
+        // 回放出全量事件推给会话标签，前端误入流式态——diag-fork19 定案）
+        val wasSubscribed = sessionId in v4SubscribedSessions
+        val subParams = buildJsonObject {
+            put("topic", "conversation/$sessionId")
+            put("connectionId", v4ConnectionId)
+            put("clientMode", "desktop-continuous")
+        }
+        val subResp = request("v4/conversation/subscribe", subParams, timeoutMs)
+        requireOk(subResp)
+        subResp["result"]?.jsonObject?.get("ack")?.jsonObject
+            ?.get("subscriptionId")?.jsonPrimitive?.contentOrNull
+            ?.let { v4SubscriptionIds[sessionId] = it }
+        val logEpoch = subResp["result"]?.jsonObject?.get("ack")?.jsonObject
+            ?.get("logEpoch")?.jsonPrimitive?.content
+            ?: throw ZCodeProtocolException("v4 订阅应答缺 ack.logEpoch")
+        try {
+            // rowsRange 定位目标 userInput 行：编辑目标是最新 user 消息，通常首页命中，
+            // 翻页兜底同 fork（投影活窗口有限，limit=200×50 页封顶）。找到即校验 canEdit：
+            // 行存在但 canEdit!=true = 已不是最新可编辑消息（服务端 guard.actionUnavailable
+            // 的前置版，省一次必拒的命令往返）
+            var beforeRowId: Long? = null
+            var hasMore = true
+            var pages = 0
+            var targetSeen = false
+            var row: JsonObject? = null
+            while (hasMore && pages < 50 && row == null) {
+                val rowsParams = buildJsonObject {
+                    put("sessionId", sessionId)
+                    put("topic", "conversation/$sessionId")
+                    put("limit", 200)
+                    beforeRowId?.let { put("beforeRowId", it) }
+                }
+                val rowsResp = request("v4/conversation/rowsRange", rowsParams, timeoutMs)
+                requireOk(rowsResp)
+                val result = rowsResp["result"]?.jsonObject
+                    ?: throw ZCodeProtocolException("rowsRange 应答缺 result")
+                val rows = result["rows"]?.jsonArray ?: JsonArray(emptyList())
+                if (rows.isEmpty()) break
+                for (element in rows) {
+                    val o = element.jsonObject
+                    if (o["kind"]?.jsonPrimitive?.contentOrNull == "userInput" &&
+                        o["entityId"]?.jsonPrimitive?.contentOrNull == messageId
+                    ) {
+                        targetSeen = true
+                        if ((o["actions"] as? JsonObject)?.get("canEdit")
+                                ?.jsonPrimitive?.booleanOrNull == true
+                        ) {
+                            row = o
+                        }
+                        break
+                    }
+                }
+                if (row == null) {
+                    hasMore = result["hasMore"]?.jsonPrimitive?.booleanOrNull == true
+                    beforeRowId = rows.firstOrNull()?.jsonObject?.get("rowId")?.jsonPrimitive?.longOrNull
+                    pages += 1
+                }
+            }
+            val target = row ?: if (targetSeen) {
+                throw ZCodeProtocolException("只能编辑最后一轮用户消息（该消息已不是最新可编辑消息）")
+            } else {
+                // 行流里没有目标行：会话级行流缺失（用户三轮反馈实锤，探针无法复现）
+                // 或前端传了乐观/过期 id——走降级信号而非报错（调用方回 editUnsupported，
+                // 前端按 reason 决定 legacy 回退或明确提示）
+                throw EditTargetGoneException("原对话已不包含那条消息")
+            }
+            val targetRowId = target["rowId"]?.jsonPrimitive?.intOrNull
+                ?: throw ZCodeProtocolException("rowsRange 行缺 rowId")
+            val targetEntityId = target["entityId"]?.jsonPrimitive?.contentOrNull
+                ?: throw ZCodeProtocolException("rowsRange 行缺 entityId")
+
+            // CAS：baseRevision 首发必 stale，revisionAtDecision 重试一次（fork12 模式）
+            var baseRevision = 0
+            var res: JsonObject = JsonObject(emptyMap())
+            var accepted = false
+            for (attempt in 0 until 2) {
+                val payload = buildJsonObject {
+                    put("target", buildJsonObject {
+                        put("rowId", targetRowId)
+                        put("entityId", targetEntityId)
+                    })
+                    put("newText", newText)
+                    if (attachments != null) {
+                        put("attachments", buildJsonArray {
+                            attachments.forEach { a ->
+                                add(buildJsonObject {
+                                    put("ref", a.ref)
+                                    put("fileName", a.fileName)
+                                    put("mime", a.mime)
+                                    put("bytes", a.bytes)
+                                })
+                            }
+                        })
+                    }
+                }
+                val params = buildJsonObject {
+                    put("commandId", "edit-${java.util.UUID.randomUUID()}")
+                    put("clientId", "zcode-idea-plugin")
+                    put("sessionId", sessionId)
+                    put("type", "editUserQuery")
+                    put("payload", payload)
+                    put("issuedAt", System.currentTimeMillis())
+                    put("baseRevision", baseRevision)
+                    put("baseLogEpoch", logEpoch)
+                }
+                val r = request("v4/command", params, timeoutMs)
+                requireOk(r)
+                res = r["result"]?.jsonObject ?: JsonObject(emptyMap())
+                val status = res["status"]?.jsonPrimitive?.content
+                if (status == "accepted" || status == "duplicate") {
+                    accepted = true
+                    break
+                }
+                if (status == "stale" && attempt == 0) {
+                    baseRevision = res["revisionAtDecision"]?.jsonPrimitive?.intOrNull ?: break
+                } else {
+                    break
+                }
+            }
+            if (!accepted) {
+                val reason = res["reasonCode"]?.jsonPrimitive?.content ?: ""
+                val detail = res["message"]?.jsonPrimitive?.content ?: ""
+                throw ZCodeProtocolException(
+                    "编辑被拒绝: ${res["status"]?.jsonPrimitive?.content ?: "unknown"} $reason $detail".trim()
+                )
+            }
+            return res
+        } finally {
+            if (!wasSubscribed) {
+                unsubscribeConversationV4(sessionId, timeoutMs)
+            }
+        }
+    }
+
     /** session/resume — 续会话（命门） */
     fun resume(sessionId: String, workspace: Workspace, timeoutMs: Long = 15000): JsonObject {
         // 归一原生分隔符（同 createSession：防 0.16.5 原样落库造成同项目双形态行）
@@ -2034,8 +2206,15 @@ class ZCodeProtocolException(message: String, val code: Int = -1, cause: Throwab
             val msg = err["message"]?.jsonPrimitive?.jsonStringOrNull ?: "未知错误"
             return ZCodeProtocolException("[$code] $msg", code = code)
         }
-    }
-}
+    }}
+
+/**
+ * v4 编辑目标行在行流里找不到（2026-09-12 用户三轮反馈定性）：会话的 v4 行流
+ * （rowsRange 数据源）为空或不含目标行——实测会话级发生（连 send 都不产生行流，
+ * 探针复刻插件启动形态无法复现，zcode.cjs 内部行为）。调用方（editUserQuery /
+ * forkAssistant 命令）收到此异常应走降级路径而非直接报错。
+ */
+class EditTargetGoneException(message: String) : RuntimeException(message)
 
 /** node:sqlite 内联脚本：递归删子会话 + 删所有关联表记录（表名硬编码，无注入）
  * 参数经环境变量 ZCODE_DELETE_DB / ZCODE_DELETE_SID 传入（Windows 上 node -e 命令行参数会被吃掉）*/

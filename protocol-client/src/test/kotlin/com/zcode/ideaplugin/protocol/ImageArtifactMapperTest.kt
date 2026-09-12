@@ -92,6 +92,34 @@ class ImageArtifactMapperTest {
     }
 
     @Test
+    fun `uri 换算落空时按受控命名 filename 兜底（编辑 ref 重发的图无 cache 落盘）`() {
+        // 真机实锤 2026-09-12（sess_34858bc0）：v4 编辑 ref 重发的图产生新 artifact uri，
+        // zcode.cjs 不为它写 image-cache——但服务端把插件传的 ref basename 存进了
+        // part.filename，按它兜底命中
+        val refBasename = "image-9843a724acf83cf2549de89d31f4920e.png"
+        val raw = msg(
+            """{"type":"file","mime":"image/png","url":"$realUri","filename":"$refBasename"}""",
+        )
+        val messages = Json.parseToJsonElement("[$raw]").jsonArray
+        val out = ImageArtifactMapper.mapMessages(messages) { sid, f ->
+            if (f == realFile) null // uri 换算的 cache 文件不存在
+            else "http://127.0.0.1:1/zcode-image/$sid/$f"
+        }
+        val part = out[0].jsonObject["parts"]!!.jsonArray[0].jsonObject
+        assertEquals("http://127.0.0.1:1/zcode-image/$realSid/$refBasename", part["url"]!!.jsonPrimitive.content)
+    }
+
+    @Test
+    fun `filename 非受控命名不兜底（原样返回）`() {
+        val raw = msg(
+            """{"type":"file","mime":"image/png","url":"$realUri","filename":"../../evil.png"}""",
+            """{"type":"file","mime":"image/png","url":"$realUri","filename":"截图.png"}""",
+        )
+        val messages = Json.parseToJsonElement("[$raw]").jsonArray
+        assertSame(messages, ImageArtifactMapper.mapMessages(messages) { _, _ -> null })
+    }
+
+    @Test
     fun `无 parts 或 assistant 消息安全跳过`() {
         val messages = Json.parseToJsonElement(
             """[{"info":{"role":"assistant"},"parts":[{"type":"text","text":"hi"}]},{"info":{"role":"user"}},{"whatever":1}]"""

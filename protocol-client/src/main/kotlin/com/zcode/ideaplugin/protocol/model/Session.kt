@@ -78,6 +78,20 @@ data class AttachmentInput(
     val localPath: String? = null
 )
 
+/**
+ * v4 编辑/发送通道的附件 ref 引用形态（diag-edit-v4 实测 + zcode.cjs schema qB：
+ * `f.object({ref,fileName,mime,bytes,previewRef?}).strict()`——字段名固定，多字段必拒）。
+ * ref 消费规则（mapAttachmentRef）：匹配 URI 形态走 content 通道，否则按磁盘路径读。
+ * 与 legacy [AttachmentInput] 的 dataBase64 内联形态相对：编辑重发带图消息必须走
+ * ref 形态（服务端 rewrite 消息时不落盘 inline 数据，见 editUserQueryViaV4 注释）。
+ */
+data class V4AttachmentRef(
+    val ref: String,
+    val fileName: String,
+    val mime: String,
+    val bytes: Long
+)
+
 
 /**
  * 事件类型（规格书 §4：type 在 params 顶层）

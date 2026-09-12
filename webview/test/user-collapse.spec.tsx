@@ -85,4 +85,31 @@ describe('用户消息长文折叠', () => {
     fireEvent.keyDown(document, { key: 'Escape' })
     expect(document.body.querySelector('.msg-fulltext')).toBeNull()
   })
+
+  it('带图消息全文弹窗渲染图片网格（压缩弹窗骨架），点图放大且 Esc 先关预览', () => {
+    const msg: ZCodeMessage = {
+      info: { id: 'm_u2', sessionID: 's1', role: 'user', time: { created: 1787283860314 } },
+      parts: [
+        { type: 'file', mime: 'image/png', url: 'http://127.0.0.1:9/zcode-image/s1/image-x.png', filename: 'shot.png' } as never,
+        { type: 'text', text: LONG_12_LINES },
+      ],
+    }
+    render(<MessageBubble message={msg} />)
+    fireEvent.click(expandBtn()!)
+    const dialog = document.body.querySelector('.msg-fulltext') as HTMLElement
+    expect(dialog).not.toBeNull()
+    // 图片网格在弹窗正文内（subagent-detail 骨架）
+    expect(dialog.querySelector('.msg-fulltext__images .msg__image')).not.toBeNull()
+    // 点图 → ImagePreview（portal 挂 body，z-index 高于弹窗）
+    fireEvent.click(dialog.querySelector('.msg-fulltext__images .msg__image')!)
+    const preview = document.body.querySelector('.image-preview-overlay')
+    expect(preview).not.toBeNull()
+    // 预览开着时 Esc 只关预览，弹窗保留
+    fireEvent.keyDown(document, { key: 'Escape' })
+    expect(document.body.querySelector('.image-preview-overlay')).toBeNull()
+    expect(document.body.querySelector('.msg-fulltext')).not.toBeNull()
+    // 再 Esc → 关弹窗
+    fireEvent.keyDown(document, { key: 'Escape' })
+    expect(document.body.querySelector('.msg-fulltext')).toBeNull()
+  })
 })

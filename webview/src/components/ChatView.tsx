@@ -61,13 +61,28 @@ export function ChatView({ messages, loading, waiting, waitingSince, streamingMe
   const streaming = useStore((s) => s.streaming)
   const queuedCount = useStore((s) => s.queuedMessages.length)
   const editReplay = useStore((s) => s.editReplay)
-  // 编辑按钮仅出现在最后一轮可编辑用户消息上（官方 Edit History 语义），
-  // 且仅在空闲态（无回合/无排队/非编辑重放）开放——rewind 与活动回合互斥
+  const editViaV4 = useStore((s) => s.editViaV4)
+  const forkSupported = useStore((s) => s.forkSupported)
+  const steerPending = useStore((s) => !!s.steerPending)
+  const interactionPending = useStore((s) =>
+    !!(s.askUser || s.exitPlanApproval || s.permissionRequest || s.askUserPendingActive),
+  )
+  // 编辑按钮仅出现在最后一轮可编辑用户消息上（官方 Edit History 语义）。
+  // v4 editUserQuery 通道（diag-edit-v4 定案）：服务端 abort+rewind+重发一气呵成，
+  // **回合进行中也可编辑**——仅排除发出瞬间到 turn.started 的窗口（waitingSince，
+  // 目标尚是乐观 local_u_ 无法定位服务端 id）；legacy /rewind 回退通道与活动回合
+  // 互斥，仍仅空闲态。共用排除：排队非空、编辑重放中、引导插队中、审批/提问
+  // 弹窗挂着（abort 挂着反向请求的回合有弹窗残留风险）、压缩回合
+  const v4Edit = editViaV4 !== false && forkSupported !== false
+  const editOpen =
+    queuedCount === 0 &&
+    !editReplay &&
+    !steerPending &&
+    !interactionPending &&
+    (v4Edit ? !waitingSince && !compacting : !streaming)
   const editableMsgId = useMemo(
-    () => (!streaming && queuedCount === 0 && !editReplay
-      ? findEditableUserMessage(messages)?.info.id ?? null
-      : null),
-    [messages, streaming, queuedCount, editReplay],
+    () => (editOpen ? findEditableUserMessage(messages, { allowImages: v4Edit })?.info.id ?? null : null),
+    [messages, editOpen, v4Edit],
   )
   // 最近一次滚轮上滑时刻：其后的短窗口内 scroll 的"到底判定"不恢复自动跟滚——
   // 上滑断跟后流式置底/微小回弹引发的 scroll 会把跟滚立刻拉回（上滑弹跳根因）
