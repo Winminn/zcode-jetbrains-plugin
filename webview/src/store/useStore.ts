@@ -110,6 +110,24 @@ function armEditAckTimeout(): void {
 }
 
 /**
+ * editRejected reason 码 → i18n key（2026-09-13 review：协议层不做 i18n，只发机器码，
+ * 文案收口在五语言包；未知码/无码回退服务端 message 原文）。
+ */
+const EDIT_REJECT_REASON_KEYS: Record<string, string> = {
+  missingParams: 'chat.edit.rejectMissingParams',
+  attachmentResolveFailed: 'chat.edit.rejectAttachmentResolveFailed',
+  notLatestUserMessage: 'chat.edit.rejectNotLatestUserMessage',
+  commandFailed: 'chat.edit.rejectCommandFailed',
+  internalError: 'chat.edit.rejectInternalError',
+}
+
+/** reason 码优先出五语文案，否则回退 message 原文，再兜底通用失败文案 */
+function editRejectText(reason: unknown, message: string | undefined): string {
+  const key = typeof reason === 'string' ? EDIT_REJECT_REASON_KEYS[reason] : undefined
+  return (key ? i18n.t(key) : '') || message || i18n.t('chat.edit.rewindFailed')
+}
+
+/**
  * 编辑重发被服务端排队的防御（diag-edit-blocked 实锤）：回合「执行工具中」时
  * editUserQuery，服务端 abort 不生效 → 重发被 turn.steerQueued 静默排队且队列
  * 不自动排水——ack accepted 但编辑永不生效。stop-first 两段式编排下此事件仅在
@@ -189,6 +207,86 @@ function editedUserBubble(
       ...(replay.text ? [{ type: 'text', text: replay.text } as MessagePart] : []),
       ...imageParts,
     ],
+  }
+}
+
+/**
+ * rewind.triggered 共享核心（2026-09-13 review 收口：批量 handleStreamBatchDirect 与
+ * 单推 handleStreamEvent 原各持一份近逐字拷贝，且气泡归属 sid 解析写法已漂移——
+ * 两路径均有 sessionId===currentSessionId 守卫，统一由调用方传事件归属会话 id）。
+ * 截断编辑目标轮到尾部 + 清理指向被删消息的流式壳；命中 editReplay 标记 rewound，
+ * v4 通道补插编辑后用户气泡 + staged 判别落 kv（回合中编辑就地改写语义），否则/
+ * legacy 走 addRewindCut 常规落记忆。纯计算 + kv 副作用，调用方按各自状态模型
+ * 应用返回值（批量=局部变量批末一次 set，单推=立即 set）。
+ */
+function applyRewindTriggeredCore(
+  messages: ZCodeMessage[],
+  streamingMessageId: string | null,
+  targetId: string,
+  replay: StoreState['editReplay'],
+  sid: string,
+): { messages: ZCodeMessage[]; streamingMessageId: string | null; matched: boolean; viaV4: boolean } {
+  let out = messages
+  let outStreaming = streamingMessageId
+  const tIdx = out.findIndex((m) => m.info.id === targetId && m.info.role === 'user')
+  if (tIdx >= 0) {
+    out = out.slice(0, tIdx)
+    if (outStreaming && !out.some((m) => m.info.id === outStreaming)) outStreaming = null
+  }
+  if (replay?.targetMsgId === targetId) {
+    if (replay.via === 'v4') {
+      out = [...out, editedUserBubble(replay, sid)]
+      stageRewindCut(sid, targetId, replay.text)
+    } else {
+      addRewindCut(sid, targetId)
+    }
+    return { messages: out, streamingMessageId: outStreaming, matched: true, viaV4: replay.via === 'v4' }
+  }
+  addRewindCut(sid, targetId)
+  return { messages: out, streamingMessageId: outStreaming, matched: false, viaV4: false }
+}
+
+/**
+ * turnEnded 编辑编排收尾（2026-09-13 review 收口：批量/单推两路径逐字拷贝）：
+ * stopping=两段式第一段（stop 收尾）转第二段发编辑命令（服务端走空闲编辑路径，
+ * ack 兜底定时器此刻才起算）；v4 非 stopping（编辑后新回合）回合结束即终点（含
+ * 失败回合——编辑本身已生效）；legacy 通道 rewound 未确认或回合失败 → 截断未生效，
+ * 放弃重发并提示。无 editReplay 时不做任何事。
+ */
+function finalizeEditReplayOnTurnEnd(
+  turnError: TurnErrorInfo | undefined,
+  set: (partial: Partial<StoreState>) => void,
+  get: () => StoreState,
+): void {
+  const replay = get().editReplay
+  if (!replay) return
+  if (replay.via === 'v4' && replay.stopping) {
+    const sid = get().currentSessionId
+    if (turnError || !sid) {
+      set({ editReplay: null, ...(turnError ? {} : { lastError: i18n.t('chat.edit.rewindFailed') }) })
+    } else {
+      // 回合已死，发第二段（服务端走空闲编辑路径）；ack 兜底定时器此刻才起算
+      set({ editReplay: { ...replay, stopping: false } })
+      armEditAckTimeout()
+      sendToJava({
+        op: 'editUserQuery',
+        sessionId: sid,
+        messageId: replay.targetMsgId,
+        newText: replay.text,
+        ...(replay.attachments ? { attachments: replay.attachments } : {}),
+      })
+    }
+  } else if (replay.via === 'v4') {
+    cancelEditAckTimeout()
+    set({
+      editReplay: null,
+      ...(!replay.rewound ? { lastError: i18n.t('chat.edit.rewindFailed') } : {}),
+    })
+  } else if (!replay.rewound || turnError) {
+    set({
+      editReplay: null,
+      ...(turnError ? {} : { lastError: i18n.t('chat.edit.rewindFailed') }),
+    })
   }
 }
 
@@ -3316,11 +3414,12 @@ export function handleResponse(
       const targetGone = msg.reason === 'targetGone'
       const hasImages = (replay?.attachments?.length ?? 0) > 0
       if (targetGone && replay?.via === 'v4' && hasImages) {
-        // 行流缺失 + 带图目标：legacy 回退必丢图，放弃并说明原因
+        // 行流缺失 + 带图目标：legacy 回退必丢图，放弃并说明原因（五语文案优先，
+        // message 原文=协议层中文仅兜底——2026-09-13 review i18n 收口）
         cancelEditAckTimeout()
         set({
           editReplay: null,
-          lastError: msg.message || i18n.t('chat.edit.unsupportedWithAttachments'),
+          lastError: i18n.t('chat.edit.unsupportedWithAttachments') || msg.message,
         })
         break
       }
@@ -3340,13 +3439,14 @@ export function handleResponse(
       // v4 编辑被拒（守卫不过/目标过期/附件解析失败等）：专用 op 不走全局 error
       // 复位（编辑可能发生在回合进行中，streaming 不能被误清）。ack 已明确拒绝 =
       // 未执行，若 rewind.triggered 已抢先到达（不可能——stale/redirect 在执行前
-      // 拒绝）也只损失本地截断，重拉自愈。迟到编辑无主时静默吞掉
+      // 拒绝）也只损失本地截断，重拉自愈。迟到编辑无主时静默吞掉。
+      // 文案 reason 码优先（五语言包映射），message 原文仅作未知码回退
       cancelEditAckTimeout()
       const replay = get().editReplay
       if (replay?.via === 'v4' && !replay.rewound) {
-        set({ editReplay: null, lastError: msg.message || i18n.t('chat.edit.rewindFailed') })
+        set({ editReplay: null, lastError: editRejectText(msg.reason, msg.message) })
       } else if (!replay) {
-        set({ lastError: msg.message })
+        set({ lastError: editRejectText(msg.reason, msg.message) })
       }
       break
     }
@@ -4871,25 +4971,14 @@ function handleStreamBatchDirect(
     if (event.type === 'rewind.triggered') {
       const targetId = asConversationRewind(event.payload)
       if (targetId) {
+        // 截断核心见 applyRewindTriggeredCore（同单推路径共享收口）；命中 editReplay
+        // 的 rewound 标记批内立即 set——同批后续事件可能读 get().editReplay
         const replay = get().editReplay
-        const tIdx = messages.findIndex((m) => m.info.id === targetId && m.info.role === 'user')
-        if (tIdx >= 0) {
-          messages = messages.slice(0, tIdx)
-          if (streamingMessageId && !messages.some((m) => m.info.id === streamingMessageId)) {
-            streamingMessageId = null
-          }
-        }
-        if (replay?.targetMsgId === targetId) {
+        const r = applyRewindTriggeredCore(messages, streamingMessageId, targetId, replay, sessionId)
+        messages = r.messages
+        streamingMessageId = r.streamingMessageId
+        if (r.matched && replay) {
           set({ editReplay: { ...replay, rewound: true } })
-          if (replay.via === 'v4') {
-            const sid = sessionId ?? get().currentSessionId
-            if (sid) messages = [...messages, editedUserBubble(replay, sid)]
-            if (sessionId) stageRewindCut(sessionId, targetId, replay.text)
-          } else if (sessionId) {
-            addRewindCut(sessionId, targetId)
-          }
-        } else if (sessionId) {
-          addRewindCut(sessionId, targetId)
         }
       }
       continue
@@ -5018,38 +5107,11 @@ function handleStreamBatchDirect(
 
   if (turnEnded) {
     console.log(`[store] turn 结束（批量），重新拉取消息确保一致`)
-    // 编辑编排收尾（同单推路径）：v4 通道重发由服务端完成，编辑后新 turn 结束即
-    // 终点（含失败回合——编辑本身已生效）；stopping=两段式第一段（stop 收尾）转
-    // 第二段发编辑；legacy 通道 rewound 未确认或回合失败 → 放弃重发并提示
-    const replay = get().editReplay
-    if (replay?.via === 'v4' && replay.stopping) {
-      const sid = get().currentSessionId
-      if (turnError || !sid) {
-        set({ editReplay: null, ...(turnError ? {} : { lastError: i18n.t('chat.edit.rewindFailed') }) })
-      } else {
-        // 回合已死，发第二段（服务端走空闲编辑路径）；ack 兜底定时器此刻才起算
-        set({ editReplay: { ...replay, stopping: false } })
-        armEditAckTimeout()
-        sendToJava({
-          op: 'editUserQuery',
-          sessionId: sid,
-          messageId: replay.targetMsgId,
-          newText: replay.text,
-          ...(replay.attachments ? { attachments: replay.attachments } : {}),
-        })
-      }
-    } else if (replay?.via === 'v4') {
-      cancelEditAckTimeout()
-      set({
-        editReplay: null,
-        ...(!replay.rewound ? { lastError: i18n.t('chat.edit.rewindFailed') } : {}),
-      })
-    } else if (replay && (!replay.rewound || turnError)) {
-      set({
-        editReplay: null,
-        ...(turnError ? {} : { lastError: i18n.t('chat.edit.rewindFailed') }),
-      })
-    }
+    // 编辑编排收尾（收口见 finalizeEditReplayOnTurnEnd，同单推路径）：v4 通道重发由
+    // 服务端完成，编辑后新 turn 结束即终点（含失败回合——编辑本身已生效）；stopping=
+    // 两段式第一段（stop 收尾）转第二段发编辑；legacy 通道 rewound 未确认或回合失败
+    // → 放弃重发并提示
+    finalizeEditReplayOnTurnEnd(turnError, set, get)
     // 本批未同时开启新 turn 时自动发送队列下一条（同批 completed+started 说明服务端已自动续轮）
     if (!turnStarted) {
       // 压缩回合结束：摘要卡只经下方重拉快照落地，队列非空时延迟到快照落地后再
@@ -5128,26 +5190,15 @@ function handleStreamEvent(
   if (event.type === 'rewind.triggered') {
     const targetId = asConversationRewind(event.payload)
     if (targetId) {
+      // 截断核心见 applyRewindTriggeredCore（同批量路径共享收口）：截断+流式壳清理+
+      // v4 补插气泡/staged 落 kv 或 legacy addRewindCut，kv 副作用在核心内完成
       const st = get()
-      const tIdx = st.messages.findIndex((m) => m.info.id === targetId && m.info.role === 'user')
-      // 流式空壳（turn.started 建立的）随截断一并清除：streamingMessageId 指向
-      // 已删消息时清空（rewind turn 无后续 delta，turnEnded 也会兜底清）
-      let cutMessages = tIdx >= 0 ? st.messages.slice(0, tIdx) : st.messages
-      const matched = st.editReplay?.targetMsgId === targetId
-      const viaV4 = matched && st.editReplay?.via === 'v4'
-      if (viaV4 && st.editReplay) {
-        cutMessages = [...cutMessages, editedUserBubble(st.editReplay, st.currentSessionId ?? '')]
-        if (st.currentSessionId) stageRewindCut(st.currentSessionId, targetId, st.editReplay.text)
-      }
+      const r = applyRewindTriggeredCore(st.messages, st.streamingMessageId, targetId, st.editReplay, sessionId)
       set({
-        messages: cutMessages,
-        ...(st.streamingMessageId && !cutMessages.some((m) => m.info.id === st.streamingMessageId)
-          ? { streamingMessageId: null }
-          : {}),
-        ...(matched ? { editReplay: { ...st.editReplay!, rewound: true } } : {}),
+        messages: r.messages,
+        streamingMessageId: r.streamingMessageId,
+        ...(r.matched && st.editReplay ? { editReplay: { ...st.editReplay, rewound: true } } : {}),
       })
-      const sid = get().currentSessionId
-      if (sid && !viaV4) addRewindCut(sid, targetId)
     }
     return
   }
@@ -5329,39 +5380,10 @@ function handleStreamEvent(
   if (turnEnded) {
     cancelSwitchStallHint()
     const wasCompacting = get().compacting
-    // 编辑重放的 rewind turn 结束：v4 通道重发由服务端完成，编辑后新 turn 结束即
-    // 终点（含失败回合——编辑本身已生效）；stopping=两段式第一段（stop 收尾）转
-    // 第二段发编辑（同批量路径）；legacy 通道 rewound 未确认（rewind.triggered
-    // 丢失 / 命令被服务端降级拒绝）或回合失败 → 截断未生效，放弃重发并提示
-    // （模型上下文未变，原消息原样保留，用户可重试编辑）
-    const replay = get().editReplay
-    if (replay?.via === 'v4' && replay.stopping) {
-      const sid = get().currentSessionId
-      if (turnError || !sid) {
-        set({ editReplay: null, ...(turnError ? {} : { lastError: i18n.t('chat.edit.rewindFailed') }) })
-      } else {
-        set({ editReplay: { ...replay, stopping: false } })
-        armEditAckTimeout()
-        sendToJava({
-          op: 'editUserQuery',
-          sessionId: sid,
-          messageId: replay.targetMsgId,
-          newText: replay.text,
-          ...(replay.attachments ? { attachments: replay.attachments } : {}),
-        })
-      }
-    } else if (replay?.via === 'v4') {
-      cancelEditAckTimeout()
-      set({
-        editReplay: null,
-        ...(!replay.rewound ? { lastError: i18n.t('chat.edit.rewindFailed') } : {}),
-      })
-    } else if (replay && (!replay.rewound || turnError)) {
-      set({
-        editReplay: null,
-        ...(turnError ? {} : { lastError: i18n.t('chat.edit.rewindFailed') }),
-      })
-    }
+    // 编辑重放的 rewind turn 结束收尾（收口见 finalizeEditReplayOnTurnEnd，同批量路径）：
+    // stopping 转第二段发编辑；v4 编辑后新回合结束即终点；legacy rewound 未确认或
+    // 回合失败 → 放弃重发并提示（模型上下文未变，原消息原样保留，用户可重试编辑）
+    finalizeEditReplayOnTurnEnd(turnError, set, get)
     // steer 插队 chip 活到回合结束：未落位（同批量路径），清 chip + 提示可重发。
     // 带附件引导已砍（0.3.4 定案），无回合末促发分支。
     // cancelling 在途不碰（同批量路径：撤回应答要按 restore 回插，先清 pending

@@ -3,6 +3,7 @@ package com.zcode.ideaplugin
 import com.intellij.openapi.diagnostic.Logger
 import com.sun.net.httpserver.HttpExchange
 import com.sun.net.httpserver.HttpServer
+import com.zcode.ideaplugin.protocol.ImageArtifactMapper
 import java.io.File
 import java.net.InetSocketAddress
 import java.net.URLDecoder
@@ -107,8 +108,8 @@ object ZCodeWebviewServer {
     /** sessionId 目录名白名单（zcode.cjs sj 净化规则：非 [A-Za-z0-9._-] 替换 _、截 120）*/
     internal val sidPattern = Regex("""^[A-Za-z0-9._-]{1,120}$""")
 
-    /** 落盘文件名白名单（image-<sha256(uri) 前 32 hex>.<ext>）*/
-    internal val imageFilePattern = Regex("""^image-[0-9a-f]{32}\.(png|jpg|jpeg|gif|webp)$""")
+    /** 落盘文件名白名单（image-<sha256(uri) 前 32 hex>.<ext>）——唯一定义在 ImageArtifactMapper.EDIT_REF_NAME_PATTERN */
+    internal val imageFilePattern = ImageArtifactMapper.EDIT_REF_NAME_PATTERN
 
     /**
      * 用户消息图片的可渲染 URL（ImageArtifactMapper 调用）：把 image-cache 落盘文件

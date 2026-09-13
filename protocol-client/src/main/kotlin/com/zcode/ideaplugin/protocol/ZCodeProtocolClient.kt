@@ -1421,7 +1421,7 @@ class ZCodeProtocolClient private constructor(
             var pages = 0
             var targetSeen = false
             var row: JsonObject? = null
-            while (hasMore && pages < 50 && row == null) {
+            while (hasMore && pages < 50 && row == null && !targetSeen) {
                 val rowsParams = buildJsonObject {
                     put("sessionId", sessionId)
                     put("topic", "conversation/$sessionId")
@@ -1449,13 +1449,19 @@ class ZCodeProtocolClient private constructor(
                     }
                 }
                 if (row == null) {
+                    // targetSeen（entityId 已命中但 canEdit!=true）时短路：entityId 全会话
+                    // 唯一，继续翻页不可能再命中，白耗最多 50 页往返（2026-09-13 review）
+                    if (targetSeen) break
                     hasMore = result["hasMore"]?.jsonPrimitive?.booleanOrNull == true
                     beforeRowId = rows.firstOrNull()?.jsonObject?.get("rowId")?.jsonPrimitive?.longOrNull
                     pages += 1
                 }
             }
             val target = row ?: if (targetSeen) {
-                throw ZCodeProtocolException("只能编辑最后一轮用户消息（该消息已不是最新可编辑消息）")
+                throw ZCodeProtocolException(
+                    "只能编辑最后一轮用户消息（该消息已不是最新可编辑消息）",
+                    reason = "notLatestUserMessage",
+                )
             } else {
                 // 行流里没有目标行：会话级行流缺失（用户三轮反馈实锤，探针无法复现）
                 // 或前端传了乐观/过期 id——走降级信号而非报错（调用方回 editUnsupported，
@@ -1519,7 +1525,8 @@ class ZCodeProtocolClient private constructor(
                 val reason = res["reasonCode"]?.jsonPrimitive?.content ?: ""
                 val detail = res["message"]?.jsonPrimitive?.content ?: ""
                 throw ZCodeProtocolException(
-                    "编辑被拒绝: ${res["status"]?.jsonPrimitive?.content ?: "unknown"} $reason $detail".trim()
+                    "编辑被拒绝: ${res["status"]?.jsonPrimitive?.content ?: "unknown"} $reason $detail".trim(),
+                    reason = "commandFailed",
                 )
             }
             return res
@@ -2197,8 +2204,17 @@ class ZCodeProtocolClient private constructor(
     fun isAlive(): Boolean = process.isAlive
 }
 
-/** 协议异常 */
-class ZCodeProtocolException(message: String, val code: Int = -1, cause: Throwable? = null) : RuntimeException(message, cause) {
+/**
+ * 协议异常。reason 是可选的机器可读错误码（如 v4 编辑链路的 notLatestUserMessage /
+ * commandFailed）：本模块无 i18n 依赖，用户可见文案由前端按 reason 映射五语言包，
+ * message 原文仅落日志与回退兜底。
+ */
+class ZCodeProtocolException(
+    message: String,
+    val code: Int = -1,
+    cause: Throwable? = null,
+    val reason: String? = null,
+) : RuntimeException(message, cause) {
     companion object {
         fun fromError(errorElement: JsonElement): ZCodeProtocolException {
             val err = errorElement.jsonObject

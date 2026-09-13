@@ -55,8 +55,13 @@
     "rewindFailed": "Message rewind did not take effect; edit cancelled, please retry",
     "removeImage": "Remove image",
     "unsupportedMidTurn": "This CLI version doesn't support editing while a turn is in progress. Please wait for the turn to finish and try again.",
-        "queuedNotApplied": "The turn was running a tool, so the edit didn't take effect. Please stop the turn and edit again.",
-    "unsupportedWithAttachments": "Editing is temporarily unavailable for this session and the images can't be kept on resend. Remove the images and edit again, or start a new session."
+    "queuedNotApplied": "The turn was running a tool, so the edit didn't take effect. Please stop the turn and edit again.",
+    "unsupportedWithAttachments": "Editing is temporarily unavailable for this session and the images can't be kept on resend. Remove the images and edit again, or start a new session.",
+    "rejectMissingParams": "The edit request is missing required parameters. Please try again.",
+    "rejectAttachmentResolveFailed": "Failed to resolve the image attachments (cache file missing or corrupted). Please retry, or remove the affected images and edit again.",
+    "rejectNotLatestUserMessage": "Only the latest user message can be edited (this message is no longer the newest editable one).",
+    "rejectCommandFailed": "The server rejected the edit request. Please try again.",
+    "rejectInternalError": "The edit could not be executed (internal error). Please retry; if it persists, check the IDE log."
   },
   "thinking": {
     "thinking": "Thinking",

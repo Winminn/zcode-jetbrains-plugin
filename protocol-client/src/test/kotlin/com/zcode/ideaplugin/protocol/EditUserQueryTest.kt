@@ -55,11 +55,12 @@ class EditUserQueryTest {
                 if (mode === 'missing') {
                     process.stdout.write(JSON.stringify({ id: m.id, result: { rows: [{ rowId: 2, turnId: 'turn_x', entityId: 'msg_other', kind: 'userInput' }] } }) + '\n');
                 } else if (mode === 'noteditable') {
-                    // 目标行存在但已非最新可编辑消息（canEdit 被服务端投影收回）
+                    // 目标行存在但已非最新可编辑消息（canEdit 被服务端投影收回）；
+                    // hasMore=true 模拟大会话——entityId 命中后客户端必须短路，不再翻页
                     process.stdout.write(JSON.stringify({ id: m.id, result: { rows: [
                         { rowId: 2, turnId: 'turn_a', entityId: 'msg_target', kind: 'userInput', text: 'old' },
                         { rowId: 9, turnId: 'turn_b', entityId: 'msg_newer', kind: 'userInput', actions: { canEdit: true, editDisposition: 'rewind' }, text: 'new' }
-                    ] } }) + '\n');
+                    ], hasMore: true } }) + '\n');
                 } else if (mode === 'paged' && rowsRangeCalls === 1) {
                     // 目标行在更老端（翻页先遇到大 rowId，beforeRowId 向前翻）
                     process.stdout.write(JSON.stringify({ id: m.id, result: { rows: [
@@ -187,6 +188,14 @@ class EditUserQueryTest {
                 client.editUserQueryViaV4("sess_fake", "msg_target", "编辑后的消息")
             }
             assertTrue(e.message?.contains("只能编辑最后一轮") == true, "文案应含「只能编辑最后一轮」: ${e.message}")
+            // 2026-09-13 review：①机器码供前端映射 i18n（文案不进协议层）；②entityId
+            // 命中后必须短路——fake hasMore=true，翻页会拉出第 2 次 rowsRange
+            assertEquals("notLatestUserMessage", e.reason, "应携带机器可读 reason 码")
+            assertEquals(
+                1,
+                readEchoLines(tempDir.resolve("echo-ne.jsonl")).count { it["kind"]?.jsonPrimitive?.content == "rowsRange" },
+                "canEdit 守卫命中后应停止翻页（只发一次 rowsRange）",
+            )
         }
     }
 

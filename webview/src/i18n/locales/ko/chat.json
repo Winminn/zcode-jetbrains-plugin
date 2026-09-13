@@ -55,8 +55,13 @@
     "rewindFailed": "메시지 되감기가 적용되지 않아 편집이 취소되었습니다. 다시 시도해 주세요",
     "removeImage": "이미지 제거",
     "unsupportedMidTurn": "이 CLI 버전은 턴 진행 중 편집을 지원하지 않습니다. 턴이 끝난 후 다시 시도해 주세요",
-        "queuedNotApplied": "턴이 도구를 실행 중이어서 편집이 적용되지 않았습니다. 중단 후 다시 편집해 주세요",
-    "unsupportedWithAttachments": "이 세션에서는 편집을 일시적으로 사용할 수 없어 이미지를 유지한 채 재전송할 수 없습니다. 이미지를 제거 후 편집하거나 새 세션에서 시도해 주세요"
+    "queuedNotApplied": "턴이 도구를 실행 중이어서 편집이 적용되지 않았습니다. 중단 후 다시 편집해 주세요",
+    "unsupportedWithAttachments": "이 세션에서는 편집을 일시적으로 사용할 수 없어 이미지를 유지한 채 재전송할 수 없습니다. 이미지를 제거 후 편집하거나 새 세션에서 시도해 주세요",
+    "rejectMissingParams": "편집 요청에 필수 매개변수가 없습니다. 다시 시도해 주세요",
+    "rejectAttachmentResolveFailed": "이미지 첨부 파일 처리에 실패했습니다(캐시 파일 없음 또는 손상). 다시 시도하거나 해당 이미지를 삭제한 후 편집해 주세요",
+    "rejectNotLatestUserMessage": "마지막 사용자 메시지만 편집할 수 있습니다(이 메시지는 더 이상 편집 가능한 최신 메시지가 아닙니다)",
+    "rejectCommandFailed": "서버가 편집 요청을 거부했습니다. 다시 시도해 주세요",
+    "rejectInternalError": "편집을 실행하지 못했습니다(내부 오류). 다시 시도해 주세요. 문제가 계속되면 IDE 로그를 확인해 주세요"
   },
   "thinking": {
     "thinking": "생각 중",

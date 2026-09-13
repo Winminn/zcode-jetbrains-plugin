@@ -1816,16 +1816,19 @@ if (!window.__ZCODE_LOG_HOOK__) {
      */
     private fun handleEditUserQuery(msg: JsonObject): JsonObject {
         val sessionId = msg["sessionId"]?.jsonPrimitive?.content
-            ?: return editRejected("缺少 sessionId")
+            ?: return editRejected("缺少 sessionId", "missingParams")
         val messageId = msg["messageId"]?.jsonPrimitive?.content
-            ?: return editRejected("缺少 messageId")
+            ?: return editRejected("缺少 messageId", "missingParams")
         val newText = msg["newText"]?.jsonPrimitive?.content
-            ?: return editRejected("缺少 newText")
+            ?: return editRejected("缺少 newText", "missingParams")
         val attachmentsEl = msg["attachments"]
         val refs: List<V4AttachmentRef>? = when {
             attachmentsEl == null || attachmentsEl is JsonNull -> null
             else -> resolveEditAttachmentRefs(attachmentsEl)
-                ?: return editRejected("图片附件解析失败（缓存文件缺失或数据损坏），请重试或删掉对应图片后再编辑")
+                ?: return editRejected(
+                    "图片附件解析失败（缓存文件缺失或数据损坏），请重试或删掉对应图片后再编辑",
+                    "attachmentResolveFailed",
+                )
         }
         return try {
             val client = project.zCodeService().getClient()
@@ -1845,7 +1848,10 @@ if (!window.__ZCODE_LOG_HOOK__) {
                 buildJsonObject { put("op", "editUnsupported") }
             } else {
                 log.warn("Edit user query failed: ${e.message}")
-                editRejected(e.message ?: "未知错误")
+                // reason 优先取协议层机器码（notLatestUserMessage/commandFailed），无码的
+                // 协议内部错误归 internalError——前端按 reason 映射五语言包，message 原文
+                // 仅作回退兜底（2026-09-13 review：勿把中文原文顶到多语言用户面前）
+                editRejected(e.message ?: "未知错误", e.reason ?: "internalError")
             }
         } catch (e: EditTargetGoneException) {
             // 行流里找不到目标行（会话级行流缺失/乐观 id 过期）：降级信号而非报错。
@@ -1859,13 +1865,19 @@ if (!window.__ZCODE_LOG_HOOK__) {
             }
         } catch (e: Exception) {
             log.warn("Edit user query failed: ${e.message}")
-            editRejected(e.message ?: "未知错误")
+            editRejected(e.message ?: "未知错误", "internalError")
         }
     }
 
-    private fun editRejected(message: String): JsonObject = buildJsonObject {
+    /**
+     * 编辑拒绝应答：reason 是机器可读错误码（missingParams/attachmentResolveFailed/
+     * notLatestUserMessage/commandFailed/internalError），前端映射 i18n key 出五语言
+     * 文案；message 保留原文案作日志与未知码回退。
+     */
+    private fun editRejected(message: String, reason: String? = null): JsonObject = buildJsonObject {
         put("op", "editRejected")
         put("message", message)
+        reason?.let { put("reason", it) }
     }
 
     /**
@@ -1940,13 +1952,8 @@ if (!window.__ZCODE_LOG_HOOK__) {
     private fun writeEditTempAttachment(dataBase64: String, mime: String): String? {
         return try {
             val bytes = java.util.Base64.getMimeDecoder().decode(dataBase64)
-            val ext = when (mime.substringBefore(';').trim().lowercase()) {
-                "image/png" -> "png"
-                "image/jpeg", "image/jpg" -> "jpg"
-                "image/gif" -> "gif"
-                "image/webp" -> "webp"
-                else -> return null
-            }
+            // 扩展名映射共用 ImageArtifactMapper.extOf（2026-09-13 review 收口，防两处漂移）
+            val ext = ImageArtifactMapper.extOf(mime) ?: return null
             val dir = ZCodeWebviewServer.editAttachmentsRoot
             if (!dir.isDirectory) dir.mkdirs()
             // >7 天惰性清理：命令执行时服务端才读文件，立即删有在途竞态；编辑后

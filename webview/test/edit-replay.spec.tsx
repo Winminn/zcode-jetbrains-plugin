@@ -268,6 +268,18 @@ describe('v4 通道（editUserQuery，主路径）', () => {
     expect(useStore.getState().streaming).toBe(true)
   })
 
+  it('editRejected reason 码优先映射 i18n 文案（2026-09-13 review：协议层只发机器码）', () => {
+    useStore.setState({ editingMessageId: 'u2' })
+    act(() => { useStore.getState().submitEdit('问题二（改）') })
+    useStore.setState({ streaming: true })
+    // 已知码：文案取语言包（zh），message 原文（假设为英文/他语环境产物）不顶到用户
+    act(() => { messageHandler?.({ op: 'editRejected', reason: 'attachmentResolveFailed', message: 'image attachment resolve failed' }) })
+    expect(useStore.getState().lastError).toContain('图片附件解析失败')
+    // 未知码：回退 message 原文
+    act(() => { messageHandler?.({ op: 'editRejected', reason: 'futureCode', message: 'fallback text' }) })
+    expect(useStore.getState().lastError).toBe('fallback text')
+  })
+
   it('rewind.triggered 无 editReplay 匹配（ack 丢失）也照常截断并落 kv 记忆', () => {
     streamBatch([
       { type: 'turn.started', sessionId: SID, turnId: 't_rw', timestamp: 10, payload: { turnNumber: 2, input: 'x', messageId: 'u2' } },

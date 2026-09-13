@@ -55,8 +55,13 @@
     "rewindFailed": "訊息回退未生效，編輯已取消，請重試",
     "removeImage": "移除圖片",
     "unsupportedMidTurn": "目前 CLI 版本不支援回合未結束時的編輯，請等回合結束後重試",
-        "queuedNotApplied": "回合正在執行工具，編輯未能生效，請停止後重新編輯",
-    "unsupportedWithAttachments": "該會話的編輯通道暫時不可用，無法在保留圖片的前提下重新發送。可刪掉圖片後編輯，或新建會話重試"
+    "queuedNotApplied": "回合正在執行工具，編輯未能生效，請停止後重新編輯",
+    "unsupportedWithAttachments": "該會話的編輯通道暫時不可用，無法在保留圖片的前提下重新發送。可刪掉圖片後編輯，或新建會話重試",
+    "rejectMissingParams": "編輯請求缺少必要參數，請重試",
+    "rejectAttachmentResolveFailed": "圖片附件解析失敗（快取檔案缺失或資料損壞），請重試或刪除對應圖片後再編輯",
+    "rejectNotLatestUserMessage": "只能編輯最後一輪使用者訊息（該訊息已不是最新可編輯訊息）",
+    "rejectCommandFailed": "伺服器拒絕了編輯請求，請重試",
+    "rejectInternalError": "編輯未能執行（內部錯誤），請重試；問題持續請查看 IDE 日誌"
   },
   "thinking": {
     "thinking": "思考中",

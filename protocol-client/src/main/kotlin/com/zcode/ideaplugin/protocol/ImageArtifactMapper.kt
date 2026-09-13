@@ -36,14 +36,20 @@ object ImageArtifactMapper {
      * zcode.cjs 只在【原始内联发送】时把附件图落盘 image-cache（vOt），v4 编辑
      * ref 重发的图产生新 artifact uri 但没人写 cache——uri 换算必然落空。但插件
      * 编辑传的 ref basename 会被服务端存进 part.filename（实测），而插件的 ref
-     * basename 是受控命名（与 ZCodeWebviewServer.imageFilePattern 同一套，改动
-     * 须两端同步）：cache 保留图=cache 文件名，inline 新图=内容 hash 临时文件名，
-     * 按 filename 直接命中即可救回渲染。
+     * basename 是受控命名：cache 保留图=cache 文件名，inline 新图=内容 hash 临时
+     * 文件名，按 filename 直接命中即可救回渲染。
+     *
+     * 受控命名的唯一权威定义（2026-09-13 review 收口）：ZCodeWebviewServer.
+     * imageFilePattern 直接引用本值，改动只改这一处。
      */
-    private val EDIT_REF_NAME_PATTERN = Regex("""^image-[0-9a-f]{32}\.(png|jpg|jpeg|gif|webp)$""")
+    val EDIT_REF_NAME_PATTERN = Regex("""^image-[0-9a-f]{32}\.(png|jpg|jpeg|gif|webp)$""")
 
-    /** mime → image-cache 落盘扩展名（对齐 zcode.cjs aEn；未知格式不落盘 → 无扩展名不转换）*/
-    internal fun extOf(mime: String): String? = when (mime.substringAfter(';').trim().lowercase()) {
+    /**
+     * mime → image-cache 落盘扩展名（对齐 zcode.cjs aEn：取参数分号前的类型段；
+     * 未知格式不落盘 → 无扩展名不转换）。编辑附件临时落盘（ZCodeToolWindowPanel.
+     * writeEditTempAttachment）共用本映射，勿在本模块外另写 when 副本。
+     */
+    fun extOf(mime: String): String? = when (mime.substringBefore(';').trim().lowercase()) {
         "image/png" -> "png"
         "image/jpeg", "image/jpg" -> "jpg"
         "image/gif" -> "gif"

@@ -863,8 +863,10 @@ export type JavaResponse =
    *  reason=targetGone（2026-09-12 三轮反馈）：行流里找不到目标行（会话级行流缺失/
    *  乐观 id 过期）——不记忆全局不可用，仅本次降级（带图目标不得回退，legacy 丢图） */
   | { op: 'editUnsupported'; reason?: 'targetGone'; message?: string }
-  /** v4 编辑被拒（守卫不过/附件解析失败等）：专用 op，不走全局 error 复位（回合可能在跑）*/
-  | { op: 'editRejected'; message?: string }
+  /** v4 编辑被拒（守卫不过/附件解析失败等）：专用 op，不走全局 error 复位（回合可能在跑）。
+   *  reason=机器可读错误码（missingParams/attachmentResolveFailed/notLatestUserMessage/
+   *  commandFailed/internalError）→ 前端映射 i18n 五语言文案；message 原文仅回退兜底 */
+  | { op: 'editRejected'; message?: string; reason?: string }
   /** steerMessage 应答：accepted=true 时 UI 由 turn.steerQueued/steerDrained 事件驱动；error=受理失败（清 chip + 横幅）。queueItemId=queue_<commandId>（前端已预置，ack 仅核对）*/
   | { op: 'steerMessage'; sessionId: string; accepted?: boolean; delivery?: string; queueItemId?: string; error?: string }
   /** cancelSteer 应答：removed=true 已撤销（清 chip + 队列条目回插）；false=已注入落位（queue.itemMissing），提示不可撤 */

@@ -39,6 +39,8 @@ class ImageArtifactMapperTest {
         assertEquals("webp", ImageArtifactMapper.extOf("image/webp"))
         assertNull(ImageArtifactMapper.extOf("application/pdf"))
         assertNull(ImageArtifactMapper.extOf("image/svg+xml")) // svg 不落盘，无转换
+        // 参数分号取类型段（对齐 zcode.cjs aEn 与编辑附件落盘的同语义；2026-09-13 收口）
+        assertEquals("png", ImageArtifactMapper.extOf("image/png;base64"))
     }
 
     @Test
