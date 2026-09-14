@@ -2975,9 +2975,14 @@ if (!window.__ZCODE_LOG_HOOK__) {
             client.setModel(sessionId, modelId, providerId, runtimeModel)
             log.info("Model switched: $sessionId → $providerId/$modelId")
         } catch (e: Exception) {
-            // 竞态兜底：请求下发瞬间回合刚开始（turn.started 未及到达），-32603 同样
-            // 转延迟切换——回合结束后补发重试会给出真实结果（真不支持则报 modelSetFailed）
-            if (isUnsupportedModelEx(e) && sessionId in streamingTurns) {
+            // 竞态兜底：-32603 一律转延迟切换（2026-09-14 扩展）。原先仅在回合已注册时转挂起，
+            // 但冷启动窗口 send 已受理而 turn.started 滞后注册 streamingTurns（实测 ~1.9s），
+            // defer 判定与此处兜底双双漏判 → 即时 setModel 撞服务端回合准备期吃 -32603 报错，
+            // 数分钟后同一会话同一目标补发成功（模型本身无辜）。setModel 恒带完整 runtimeModel
+            // （注册即绕过可选模型校验），空闲态真不支持的模型极罕见——一律挂起的代价只是
+            // 提示"本轮结束后生效"，deferModelSwitch 里的空闲自愈踢保证无回合时也及时补发
+            // 或如实报错，不会永久悬挂
+            if (isUnsupportedModelEx(e)) {
                 return deferModelSwitch(sessionId, modelId, providerId)
             }
             // 冷会话（-32004 Session is not active）：启动恢复上次会话时 applyModelIfReady
@@ -3005,6 +3010,19 @@ if (!window.__ZCODE_LOG_HOOK__) {
     /** 挂起回合中的切换并应答 modelSetPending（前端回滚选中态、显示延迟提示）*/
     private fun deferModelSwitch(sessionId: String, modelId: String, providerId: String): JsonObject {
         pendingModelSwitches[sessionId] = PendingModelSwitch(modelId, providerId)
+        // 空闲自愈踢（-32603 一律转挂起的配套，2026-09-14）：挂起语义是"回合结束补发"，
+        // 但挂起可能发生在回合注册滞后窗口里（send 在途、回合未起）——若该回合最终没起来
+        //（或本就无回合），补发永远没有触发点。15s 后仍空闲且挂起未消费 → 直接补发
+        //（applyPendingModelSwitch 自带锁滞后重试/回合再现重挂/如实报错全链路）；
+        // 回合在跑或挂起已被回合结束消费 → 无操作
+        busyRetry.schedule("pending-kick:$sessionId") {
+            if (disposed) true
+            else if (pendingModelSwitches.containsKey(sessionId) && sessionId !in streamingTurns) {
+                log.info("pending model switch idle kick: $sessionId")
+                applyPendingModelSwitch(sessionId)
+                true
+            } else true
+        }
         log.info("Model switch deferred (turn in flight): $sessionId → $providerId/$modelId")
         return buildJsonObject {
             put("op", "modelSetPending")

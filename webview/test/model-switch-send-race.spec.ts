@@ -80,6 +80,8 @@ beforeEach(() => {
     models: [...MODELS],
     currentModel: { ...GLM },
     modelSwitchInFlightAt: null,
+    modelPendingSwitch: null,
+    modelSwitchPrevModel: null,
     lastNotice: null,
     lastError: null,
     queuedMessages: [],
@@ -136,6 +138,62 @@ describe('切模型后发送时序（setModel+send 背靠背撞清算窗口）',
     // 5s 在途过期 + 6s 等待上限内不再推进……直接推到上限之后
     await vi.advanceTimersByTimeAsync(6100)
     expect(sentRequests.find((r) => r.op === 'send')).toMatchObject({ text: '超时兜底' })
+  })
+})
+
+describe('挂起切换下的排队 flush（2026-09-14：回合中切模型+排队消息按旧模型发出实测）', () => {
+  /**
+   * 复现链路：回合中 setModel(B) 被 Java 挂起（modelSetPending 回执把 currentModel
+   * 回滚到 A、清在途标记，目标只剩 modelPendingSwitch 持有）→ 排队消息入队 → 回合
+   * 结束 flushQueue。修复前：send 取回滚后的 A 立即发出（在途已清不等待），切换
+   * 补发撞上新回合再次挂起——排队消息永远跑在旧模型上。
+   */
+  async function pendSwitchThenEnqueue(text: string) {
+    useStore.setState({ streaming: true })
+    useStore.getState().setModel(FLASH.modelId, FLASH.providerId) // 回合中：Java 挂起
+    pushResponse({ op: 'modelSetPending', sessionId: SID, ...FLASH })
+    expect(useStore.getState().currentModel).toEqual(GLM) // 已回滚旧模型
+    expect(useStore.getState().modelPendingSwitch).toMatchObject({ modelId: FLASH.modelId })
+    useStore.getState().sendMessage(text) // streaming=true → 入队
+    useStore.setState({ streaming: false }) // 回合结束
+    sentRequests.length = 0
+    useStore.getState().flushQueue()
+  }
+
+  it('挂起切换 + flush：send 等补发落定，按切换目标模型发出', async () => {
+    await pendSwitchThenEnqueue('排队消息')
+    // 挂起未落定：send 不抢跑（等 Java 补发的 modelSet ack）
+    expect(sentRequests.filter((r) => r.op === 'send')).toHaveLength(0)
+    pushResponse({ op: 'modelSet', sessionId: SID, ...FLASH }) // 补发落定
+    await vi.advanceTimersByTimeAsync(700) // 轮询 100ms + 缓冲 500ms
+    const send = sentRequests.find((r) => r.op === 'send')
+    expect(send).toMatchObject({ text: '排队消息', modelId: FLASH.modelId, providerId: FLASH.providerId })
+  })
+
+  it('挂起切换补发失败：send 按回滚后的现值（旧模型）发出，不对失败目标开回合', async () => {
+    await pendSwitchThenEnqueue('排队消息')
+    pushResponse({ op: 'modelSetFailed', sessionId: SID, modelId: FLASH.modelId, providerId: FLASH.providerId, message: 'boom' })
+    await vi.advanceTimersByTimeAsync(700)
+    const send = sentRequests.find((r) => r.op === 'send')
+    expect(send).toMatchObject({ text: '排队消息', modelId: GLM.modelId, providerId: GLM.providerId })
+  })
+
+  it('补发迟迟不落定：6s 上限放行，send 自带挂起目标 runtimeModel 顶上', async () => {
+    await pendSwitchThenEnqueue('排队消息')
+    // 挂起态不等 5s 在途过期，一直等到 6s 上限 + 500ms 缓冲
+    await vi.advanceTimersByTimeAsync(6700)
+    const send = sentRequests.find((r) => r.op === 'send')
+    expect(send).toMatchObject({ text: '排队消息', modelId: FLASH.modelId, providerId: FLASH.providerId })
+  })
+
+  it('无挂起切换：flush 行为不变（send 立即按 currentModel 发出）', () => {
+    useStore.setState({ streaming: true })
+    useStore.getState().sendMessage('普通排队')
+    useStore.setState({ streaming: false })
+    sentRequests.length = 0
+    useStore.getState().flushQueue()
+    const send = sentRequests.find((r) => r.op === 'send')
+    expect(send).toMatchObject({ text: '普通排队', modelId: GLM.modelId })
   })
 })
 

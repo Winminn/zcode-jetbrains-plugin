@@ -332,12 +332,17 @@ function armSwitchStallHint(
  * 并随会话落盘（此后该模型所有回合无声挂死）。等 modelSet ack 再缓冲 500ms，对齐手动
  * 「切换→发送」的天然健康间隔（实测 ~1.5s 间隔正常出流）。上限 6s：ack 迟迟不回也放行，
  * 退化为旧时序不阻塞发送。
+ * sessionId 给定时把该会话的挂起切换（modelPendingSwitch，回合中切换被 Java 挂起、
+ * 回合结束才补发）一并纳入等待——否则挂起态在途标记已被 modelSetPending 清除，
+ * 等待空转，send 抢在补发前发出（2026-09-14 排队消息按旧模型发出实测）。
  */
-function waitForModelSwitchSettled(maxWaitMs = 6000): Promise<void> {
+function waitForModelSwitchSettled(maxWaitMs = 6000, sessionId?: string): Promise<void> {
   return new Promise((resolve) => {
     const start = Date.now()
     const tick = () => {
-      if (isModelSwitchInFlight(useStore.getState()) && Date.now() - start < maxWaitMs) {
+      const st = useStore.getState()
+      const pendingSwitch = sessionId != null && st.modelPendingSwitch?.sessionId === sessionId
+      if ((isModelSwitchInFlight(st) || pendingSwitch) && Date.now() - start < maxWaitMs) {
         setTimeout(tick, 100)
         return
       }
@@ -1529,27 +1534,47 @@ export const useStore = create<StoreState>((set, get) => ({
             (!opts.scheduledProviderId || m.providerId === opts.scheduledProviderId),
         )
       : undefined
+    // 挂起切换目标（2026-09-14 实测：回合中切换被 Java 挂起后 modelSetPending 已把
+    // currentModel 回滚到旧模型、清掉在途标记，目标只剩 modelPendingSwitch 持有——
+    // 此刻回合结束 flush 排队消息若照旧取 currentModel 就按旧模型发出，Java 补发撞上
+    // 新回合再次挂起，切换永远追着排队回合跑）。挂起目标仍在清单才用（下架回退 cm）
+    const pend = get().modelPendingSwitch
+    const pendingSwitchModel = pend?.sessionId === sid
+      ? get().models.find((m) => m.modelId === pend.modelId && m.providerId === pend.providerId)
+      : undefined
     const sendModel = schedModel
       ? { providerId: schedModel.providerId, modelId: schedModel.modelId }
-      : cm
+      : pendingSwitchModel
+        ? { providerId: pendingSwitchModel.providerId, modelId: pendingSwitchModel.modelId }
+        : cm
     // 受理定时指定模型时同步切换会话模型（下拉跟随、后续手动消息沿用）：本回合正确性
     // 由 send 自带 runtimeModel 保证；setModel 在回合中会被 Java 挂起至回合结束补发
     // （延迟切模型机制），互不冲突
     // 等待判定必须在 setModel 之前：目标=当前显示模型时 setModel 走 no-op 分支会清掉
-    // 在途标记（切回语义），但真实切换仍可能在途（ack 未回），send 不能贴上去
+    // 在途标记（切回语义），但真实切换仍可能在途（ack 未回），send 不能贴上去。
+    // 挂起切换同样算在途：必须等 Java 回合结束补发落定再发（send 紧贴补发会撞服务端
+    // 回合清算滞后窗口，2026-08-30 实测写坏运行时状态），模型取值也依赖落定结果
     const curModel = get().currentModel
     const switchUnderway = isModelSwitchInFlight(get())
+      || (!schedModel && pendingSwitchModel != null)
       || (schedModel != null
         && (curModel?.modelId !== schedModel.modelId || curModel?.providerId !== schedModel.providerId))
     if (schedModel) get().setModel(schedModel.modelId, schedModel.providerId)
     const wsPath = get().currentWorkspacePath
     const doSend = () => {
+      // 放行时刻重算（仅挂起目标路径）：等待期间补发可能已落定——成功（modelSet ack
+      // 清挂起，currentModel=目标）或失败（modelSetFailed 清挂起，currentModel=回滚后
+      // 旧模型），以落定后的现值为准，别对已失败的目标开回合；仍未落定（6s 超时放行）
+      // → send 自带目标 runtimeModel 顶上，回合正确性由 send 携带保证
+      const finalModel = pendingSwitchModel
+        ? (get().modelPendingSwitch?.sessionId === sid ? sendModel : (get().currentModel ?? sendModel))
+        : sendModel
       sendToJava({
         op: 'send',
         sessionId: sid,
         text,
         workspacePath: wsPath,
-        ...(sendModel ? { providerId: sendModel.providerId, modelId: sendModel.modelId } : {}),
+        ...(finalModel ? { providerId: finalModel.providerId, modelId: finalModel.modelId } : {}),
         ...(attachments?.length ? { attachments } : {}),
       })
       // 定时消息真发上报：Java 记入已发历史（持久化），历史重拉/重启后按 sessionId+text
@@ -1563,7 +1588,7 @@ export const useStore = create<StoreState>((set, get) => ({
     // 实测（2026-08-30）把该会话新模型运行时状态写坏并落盘——所有后续该模型回合无声挂死。
     // 乐观 UI（下方用户消息/标题占位）不等待，立即呈现
     if (switchUnderway) {
-      void waitForModelSwitchSettled().then(doSend)
+      void waitForModelSwitchSettled(6000, sid).then(doSend)
     } else {
       doSend()
     }
