@@ -15,6 +15,7 @@
 
 import { getFileIcon, getFolderIcon } from '@/utils/fileIcons'
 import { splitReference, basename, refTooltip } from '@/components/FileRef'
+import { SESS_MD_RE, SESS_BARE_RE, sessionRefShortLabel, sessionRefTip } from '@/utils/sessionRefPattern'
 
 const CHIP_CLASS = 'file-ref--inline'
 const CMD_CHIP_CLASS = 'cmd-ref--inline'
@@ -183,8 +184,8 @@ export function sessionRefText(sessionId: string, title: string): string {
 export function buildSessionChipHTML(sessionId: string, title: string): string {
   const t = title.trim()
   // 裸 token 无标题：显示 id 前缀（sess_ 后 8 位 + …），tooltip 给完整 id
-  const label = t || `${sessionId.replace(/^sess_/, '').slice(0, 8)}…`
-  const tip = t ? `${t} · ${sessionId}` : sessionId
+  const label = sessionRefShortLabel(sessionId, t)
+  const tip = sessionRefTip(sessionId, t)
   return (
     `<span class="sess-ref ${SESS_CHIP_CLASS}" contenteditable="false" data-sess="${escapeHtml(sessionId)}" data-title="${escapeHtml(t)}" data-tip="${escapeHtml(tip)}">` +
     `<span class="codicon codicon-comment-discussion sess-ref__icon"></span>` +
@@ -225,9 +226,8 @@ export function insertSessionChipAtCursor(el: HTMLElement, sessionId: string, ti
 }
 
 /** 编辑器内文本中的会话引用两种形态（markdown 链接优先，避免链接被拆成裸 token）。
- *  链接标题允许 `\x` 转义序列（sessionRefText 会转义 [ ] \，`[^\]]*` 会在 `\]` 处截断）*/
-const SESS_MD_RE = /\[#((?:\\.|[^\]])*)\]\(#(sess_[A-Za-z0-9._-]+)\)/g
-const SESS_BARE_RE = /(^|[\s\u4e00-\u9fa5])#(sess_[A-Za-z0-9._-]+)(?=$|[\s\u4e00-\u9fa5])/g
+ *  链接标题允许 `\x` 转义序列（sessionRefText 会转义 [ ] \，`[^\]]*` 会在 `\]` 处截断）。
+ *  正则定义收口在 utils/sessionRefPattern（与消息 chip 渲染共享同一来源）*/
 
 /**
  * # 会话引用补全触发判定：光标前文本命中"未完成的 #query"时返回 query，否则 null。

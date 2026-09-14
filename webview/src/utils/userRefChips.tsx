@@ -19,14 +19,8 @@
 import type { ReactNode } from 'react'
 import { splitReference, basename } from '@/components/FileRef'
 import { FileIcon } from '@/components/FileIcon'
+import { SESS_MD_RE, SESS_BARE_RE, sessionRefShortLabel, sessionRefTip } from '@/utils/sessionRefPattern'
 
-/** 会话 id 形态（服务端 ReadSessionContext input schema 同款）*/
-const SESS_ID = String.raw`sess_[A-Za-z0-9._-]+`
-
-/** markdown 会话链接（标题允许 \x 转义序列——序列化会转义 [ ] \）*/
-const SESS_MD_RE = new RegExp(`\\[#((?:\\\\.|[^\\]])*)\\]\\(#(${SESS_ID})\\)`, 'g')
-/** 词边界裸 token（前缀字符算进 match，拼接时保留在文本段；中文边界对齐中文输入习惯）*/
-const SESS_BARE_RE = new RegExp(`(^|[\\s\\u4e00-\\u9fa5])(#${SESS_ID})(?=$|[\\s\\u4e00-\\u9fa5])`, 'g')
 /** /命令·技能引用（名字字符集对齐 SlashCommand.name，如 code-review、review:code；
  *  前缀限词首，@/ 路径不会被命中）*/
 const CMD_TOKEN_RE = /(^|[\s\u4e00-\u9fa5])(\/[A-Za-z][A-Za-z0-9._:-]*)/g
@@ -70,12 +64,10 @@ function fileChip(path: string, key: string): ReactNode {
 
 /** 只读会话 chip（title 完整标题 + id）*/
 function sessionChip(sessionId: string, title: string, key: string): ReactNode {
-  const t = title.trim()
-  const label = t || `${sessionId.replace(/^sess_/, '').slice(0, 8)}…`
   return (
-    <span key={key} className="sess-ref user-ref-chip" title={t ? `${t} · ${sessionId}` : sessionId}>
+    <span key={key} className="sess-ref user-ref-chip" title={sessionRefTip(sessionId, title)}>
       <span className="codicon codicon-comment-discussion sess-ref__icon" />
-      <span className="sess-ref__name">{label}</span>
+      <span className="sess-ref__name">{sessionRefShortLabel(sessionId, title)}</span>
     </span>
   )
 }
@@ -116,10 +108,10 @@ export function renderUserRefChips(
   SESS_BARE_RE.lastIndex = 0
   for (let m = SESS_BARE_RE.exec(text); m; m = SESS_BARE_RE.exec(text)) {
     const start = m.index + m[1].length
-    const end = start + m[2].length
+    const end = start + m[2].length + 1 // 组2是裸 id，+1 补被消费的 #
     if (overlap(start, end)) continue
-    const title = resolveSessionTitle?.(m[2].slice(1)) ?? ''
-    tokens.push({ start, end, node: sessionChip(m[2].slice(1), title, `c${chipSeq++}`) })
+    const title = resolveSessionTitle?.(m[2]) ?? ''
+    tokens.push({ start, end, node: sessionChip(m[2], title, `c${chipSeq++}`) })
   }
   if (cmdNames) {
     CMD_TOKEN_RE.lastIndex = 0

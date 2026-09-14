@@ -16,6 +16,7 @@ import { useTranslation } from 'react-i18next'
 import { useStore } from '@/store/useStore'
 import type { TimelinePart } from '@/types/messages'
 import { compactTokens } from '@/utils/time'
+import { sameModel } from '@/utils/modelChoice'
 import '../styles/compaction.less'
 
 interface Props {
@@ -76,11 +77,10 @@ export function TimelineSeparator({ part }: Props) {
     // 无 fromModel = 老服务端「以模型 X 开始」固有标记；from==to 且供应商也相同 =
     // 净零切换（实测 2026-09-03 db.sqlite：服务端连相同模型的注册重放也记 marker）——
     // 两者都无信息量，整条隐藏。供应商参与判定：同名模型跨供应商切换是真变化，不能吞
-    const fromId = part.fromModel?.modelId ?? part.fromModel?.modelID
-    const toId = part.toModel?.modelId ?? part.toModel?.modelID
+    // （sameModel 收口三处净零判定，providerID/providerId 双形态在工具内归一）
     const fromProv = providerOf(part.fromModel)
     const toProv = providerOf(part.toModel)
-    if (!part.fromModel || (fromId && fromId === toId && fromProv === toProv)) return null
+    if (!part.fromModel || sameModel(part.fromModel, part.toModel)) return null
     const from = modelLabel(part.fromModel)
     const to = modelLabel(part.toModel)
     // 供应名展示（2026-09-14 定案）：切换卡始终带供应名——显示名不同（跨供应商）

@@ -1262,6 +1262,31 @@ class ZCodeProtocolClient private constructor(
     }
 
     /**
+     * v4 临时订阅（forkAssistant/editUserQuery 共用块）：订阅只为取 ack.logEpoch
+     * （rowsRange 信封 + CAS baseLogEpoch）并记 subscriptionId（退订要用），不进
+     * v4SubscribedSessions 白名单——initial snapshot 帧进白名单会被 V4FrameMapper
+     * 回放出全量事件推给会话标签，前端误入流式态（diag-fork19 定案）。
+     *
+     * @return ack.logEpoch
+     * @throws ZCodeProtocolException 应答缺 ack.logEpoch
+     */
+    private fun tempV4Subscribe(sessionId: String, timeoutMs: Long): String {
+        val subParams = buildJsonObject {
+            put("topic", "conversation/$sessionId")
+            put("connectionId", v4ConnectionId)
+            put("clientMode", "desktop-continuous")
+        }
+        val subResp = request("v4/conversation/subscribe", subParams, timeoutMs)
+        requireOk(subResp)
+        subResp["result"]?.jsonObject?.get("ack")?.jsonObject
+            ?.get("subscriptionId")?.jsonPrimitive?.contentOrNull
+            ?.let { v4SubscriptionIds[sessionId] = it }
+        return subResp["result"]?.jsonObject?.get("ack")?.jsonObject
+            ?.get("logEpoch")?.jsonPrimitive?.content
+            ?: throw ZCodeProtocolException("v4 订阅应答缺 ack.logEpoch")
+    }
+
+    /**
      * v4/command forkAssistant — 会话分叉（官方桌面客户端同款通道，行为对齐定案）。
      *
      * 链路（diag-fork10~16/26 探针全链路实测）：v4/conversation/subscribe（ack.logEpoch）→
@@ -1285,25 +1310,7 @@ class ZCodeProtocolClient private constructor(
      */
     fun forkAssistantViaV4(sessionId: String, messageId: String, timeoutMs: Long = 20000): JsonObject {
         val wasSubscribed = sessionId in v4SubscribedSessions
-        val subParams = buildJsonObject {
-            put("topic", "conversation/$sessionId")
-            put("connectionId", v4ConnectionId)
-            put("clientMode", "desktop-continuous")
-        }
-        val subResp = request("v4/conversation/subscribe", subParams, timeoutMs)
-        requireOk(subResp)
-        // 不把会话加入 v4SubscribedSessions（diag-fork19 定案）：该集合是 v4 帧→legacy
-        // 事件的映射白名单（子会话实时流通道），而订阅建立即推 initial snapshot 帧——
-        // 进白名单会被 V4FrameMapper 回放出 turn.started+全量消息事件推给父会话标签，
-        // 前端误入流式态、完成轮折叠全展开（fork 后「当前会话莫名实时流」缺陷）。
-        // fork 的订阅只为取 ack.logEpoch/subscriptionId（rowsRange 信封 + 退订要用），
-        // 帧到达时因不在白名单被 handleNotification 直接丢弃，父会话零扰动。
-        subResp["result"]?.jsonObject?.get("ack")?.jsonObject
-            ?.get("subscriptionId")?.jsonPrimitive?.contentOrNull
-            ?.let { v4SubscriptionIds[sessionId] = it }
-        val logEpoch = subResp["result"]?.jsonObject?.get("ack")?.jsonObject
-            ?.get("logEpoch")?.jsonPrimitive?.content
-            ?: throw ZCodeProtocolException("v4 订阅应答缺 ack.logEpoch")
+        val logEpoch = tempV4Subscribe(sessionId, timeoutMs)
         try {
             // rowsRange 定位分叉行。注意四点（fork14~16/26 真会话取证定案）：
             // ① 分页参数是 beforeRowId（没有 fromRowId），从最新往回翻页，hasMore 标记还有更早的行；
@@ -1461,23 +1468,10 @@ class ZCodeProtocolClient private constructor(
         attachments: List<V4AttachmentRef>? = null,
         timeoutMs: Long = 20000,
     ): JsonObject {
-        // 订阅块与 forkAssistantViaV4 同款：临时订阅只为 ack.logEpoch/rowsRange 信封/退订，
-        // 不进 v4SubscribedSessions 白名单（initial snapshot 帧进白名单会被 V4FrameMapper
-        // 回放出全量事件推给会话标签，前端误入流式态——diag-fork19 定案）
+        // 订阅块与 forkAssistantViaV4 同款，收口在 tempV4Subscribe：临时订阅只为
+        // ack.logEpoch/rowsRange 信封/退订，不进 v4SubscribedSessions 白名单
         val wasSubscribed = sessionId in v4SubscribedSessions
-        val subParams = buildJsonObject {
-            put("topic", "conversation/$sessionId")
-            put("connectionId", v4ConnectionId)
-            put("clientMode", "desktop-continuous")
-        }
-        val subResp = request("v4/conversation/subscribe", subParams, timeoutMs)
-        requireOk(subResp)
-        subResp["result"]?.jsonObject?.get("ack")?.jsonObject
-            ?.get("subscriptionId")?.jsonPrimitive?.contentOrNull
-            ?.let { v4SubscriptionIds[sessionId] = it }
-        val logEpoch = subResp["result"]?.jsonObject?.get("ack")?.jsonObject
-            ?.get("logEpoch")?.jsonPrimitive?.content
-            ?: throw ZCodeProtocolException("v4 订阅应答缺 ack.logEpoch")
+        val logEpoch = tempV4Subscribe(sessionId, timeoutMs)
         try {
             // rowsRange 定位目标 userInput 行：编辑目标是最新 user 消息，通常首页命中，
             // 翻页兜底同 fork（投影活窗口有限，limit=200×50 页封顶）。找到即校验 canEdit：
@@ -2289,7 +2283,8 @@ class ZCodeProtocolException(
             val msg = err["message"]?.jsonPrimitive?.jsonStringOrNull ?: "未知错误"
             return ZCodeProtocolException("[$code] $msg", code = code)
         }
-    }}
+    }
+}
 
 /**
  * v4 编辑目标行在行流里找不到（2026-09-12 用户三轮反馈定性）：会话的 v4 行流

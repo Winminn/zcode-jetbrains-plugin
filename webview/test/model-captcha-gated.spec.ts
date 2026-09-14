@@ -65,7 +65,7 @@ beforeEach(() => {
     modelSwitchPrevModel: null,
     lastNotice: null,
     lastError: null,
-    modelAppliedSessions: new Set<string>(),
+    modelAppliedSessions: new Map<string, number>(),
     createdSessionIds: new Set<string>(),
     models: [
       { providerId: 'builtin:bigmodel-coding-plan', providerName: 'BigModel - Coding Plan', plan: 'personal', modelId: 'GLM-5.3', modelName: 'GLM-5.3' },
