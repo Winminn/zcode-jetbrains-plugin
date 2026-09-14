@@ -173,6 +173,13 @@ class ZCodeProtocolClient private constructor(
             readyTimeoutMs: Long = 30_000
         ): ZCodeProtocolClient {
             val env = (System.getenv() + (credentials?.toEnvMap() ?: emptyMap())).toMutableMap()
+            // 模型请求 UA 版本号对齐官方客户端：zcode.cjs 请求头构造读 env.ZCODE_APP_VERSION
+            // 优先（w4i），官方客户端经 clientHello 带真实版本，插件不发握手 → 不注入则 UA 落
+            // "ZCode/unknown"（工具级权益如 1.5 倍用量的识别信号在请求头族，2026-09-14 探针
+            // 实证 env 路径生效）。用户显式设置时不覆盖；探测失败 fail-soft 不注入。
+            if (env["ZCODE_APP_VERSION"].isNullOrBlank()) {
+                detectAppVersion(zcodePath, nodePath)?.let { env["ZCODE_APP_VERSION"] = it }
+            }
 
             val pb = ProcessBuilder(nodePath, zcodePath.toString(), "app-server")
             pb.environment().clear()
@@ -223,6 +230,46 @@ class ZCodeProtocolClient private constructor(
             }
             return client
         }
+
+        /** --version 探测缓存：CLI 升级（mtime 变）自动失效；null 也缓存——崩溃循环重连时不反复 spawn */
+        private val appVersionCache = ConcurrentHashMap<Path, Pair<Long, String?>>()
+
+        private const val VERSION_PROBE_TIMEOUT_SECONDS = 15L
+
+        /**
+         * 探测 CLI 版本注入 ZCODE_APP_VERSION（UA 用）。spawn `node <cli> --version`，
+         * 与 ZCodeEnvChecker.probeCliVersion 同口径；仅首次/升级后探测（mtime 缓存）。
+         */
+        internal fun detectAppVersion(zcodePath: Path, nodePath: String): String? {
+            val mtime = try {
+                java.nio.file.Files.getLastModifiedTime(zcodePath).toMillis()
+            } catch (e: Exception) {
+                return null
+            }
+            appVersionCache[zcodePath]?.let { (cachedMtime, cached) ->
+                if (cachedMtime == mtime) return cached
+            }
+            val version = try {
+                val proc = ProcessBuilder(nodePath, zcodePath.toString(), "--version")
+                    .redirectErrorStream(true)
+                    .start()
+                try {
+                    if (!proc.waitFor(VERSION_PROBE_TIMEOUT_SECONDS, TimeUnit.SECONDS)) null
+                    else if (proc.exitValue() != 0) null
+                    else parseCliVersion(proc.inputStream.bufferedReader().readText())
+                } finally {
+                    proc.destroyForcibly()
+                }
+            } catch (e: Exception) {
+                null
+            }
+            appVersionCache[zcodePath] = mtime to version
+            return version
+        }
+
+        /** `--version` 输出解析：取首个语义化版本号（"0.16.5" 形，含 prerelease/build 段）；无则 null */
+        internal fun parseCliVersion(output: String): String? =
+            Regex("""\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.+-]+)?""").find(output.trim())?.value
 
         /** 从 PATH 找 node */
         private fun findNode(): String {
