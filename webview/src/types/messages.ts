@@ -144,9 +144,11 @@ export interface TimelinePart {
   preCompactTokenCount?: number
   postCompactTokenCount?: number
   truePostCompactTokenCount?: number
-  /** model_change：切换前后模型（服务端实测字段为 modelId 小写 d，modelID 为老类型定义笔误保留兼容）*/
-  fromModel?: { modelID?: string; modelId?: string; label?: string; variant?: string }
-  toModel?: { modelID?: string; modelId?: string; label?: string; variant?: string }
+  /** model_change：切换前后模型（服务端实测字段为 modelId 小写 d，modelID 为老类型定义笔误保留兼容；
+   * providerID 大写 D 为 2026-09-14 db.sqlite 实测字段——供应商变化时渲染要带上供应名，
+   * 本地合成卡写入时沿用同名字段保持两源一致）*/
+  fromModel?: { modelID?: string; modelId?: string; label?: string; variant?: string; providerID?: string }
+  toModel?: { modelID?: string; modelId?: string; label?: string; variant?: string; providerID?: string }
   /** goal_verification：目标校验（消息 id 形如 msg_goal_verify_<targetId>_<iteration>）*/
   targetId?: string
   verificationId?: string

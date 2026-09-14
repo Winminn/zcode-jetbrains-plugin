@@ -4039,7 +4039,10 @@ export function handleResponse(
               if (lastCardIdx >= 0) {
                 const anchor = pending[lastCardIdx].parts.find((p) => p.type === 'timeline')?.fromModel
                 const rest = pending.filter((_, i) => i !== lastCardIdx)
-                if (anchor?.modelId && anchor.modelId === msg.modelId) {
+                // 净零判定含供应商维度：同名模型跨供应商切回（A@p1 → A@p2 → A@p1 中
+                // 的最后一步）才是真回起点；同名不同供应商（A@p1 → A@p2）是真切换不折叠
+                if (anchor?.modelId && anchor.modelId === msg.modelId
+                  && (anchor.providerID ?? '') === (msg.providerId ?? '')) {
                   return {
                     messages: msgs.slice(0, -1),
                     syntheticModelChanges: { ...get().syntheticModelChanges, [sid]: rest },
@@ -4056,9 +4059,9 @@ export function handleResponse(
                     type: 'timeline',
                     timelineType: 'model_change',
                     ...(anchor
-                      ? { fromModel: { modelId: anchor.modelId, label: anchor.label ?? anchor.modelId } }
+                      ? { fromModel: { modelId: anchor.modelId, label: anchor.label ?? anchor.modelId, providerID: anchor.providerID } }
                       : {}),
-                    toModel: { modelId: msg.modelId, label: msg.modelId },
+                    toModel: { modelId: msg.modelId, label: msg.modelId, providerID: msg.providerId },
                   }],
                 }
                 return {
@@ -4068,8 +4071,12 @@ export function handleResponse(
               }
               // 初始注册不合成：插件建会话/切会话时 applyModelIfReady 自动下发的
               // setModel（currentModel 已先被置为目标 → prev==to，如 A→A）与服务端
-              // 落库的无 fromModel marker 同源，都非真实切换，无信息量不插卡
-              if (!prevModelForMarker || prevModelForMarker.modelId === msg.modelId) return {}
+              // 落库的无 fromModel marker 同源，都非真实切换，无信息量不插卡。
+              // 判定含供应商维度：同名模型不同供应商（如内置套餐 → 自定义渠道同名
+              // 模型）是真实切换，须插卡
+              if (!prevModelForMarker
+                || (prevModelForMarker.modelId === msg.modelId
+                  && prevModelForMarker.providerId === msg.providerId)) return {}
               const card: ZCodeMessage = {
                 info: {
                   role: 'assistant',
@@ -4080,8 +4087,8 @@ export function handleResponse(
                 parts: [{
                   type: 'timeline',
                   timelineType: 'model_change',
-                  fromModel: { modelId: prevModelForMarker.modelId, label: prevModelForMarker.modelId },
-                  toModel: { modelId: msg.modelId, label: msg.modelId },
+                  fromModel: { modelId: prevModelForMarker.modelId, label: prevModelForMarker.modelId, providerID: prevModelForMarker.providerId },
+                  toModel: { modelId: msg.modelId, label: msg.modelId, providerID: msg.providerId },
                 }],
               }
               return {

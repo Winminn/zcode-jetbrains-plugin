@@ -13,6 +13,7 @@
  */
 
 import { useTranslation } from 'react-i18next'
+import { useStore } from '@/store/useStore'
 import type { TimelinePart } from '@/types/messages'
 import { compactTokens } from '@/utils/time'
 import '../styles/compaction.less'
@@ -31,8 +32,23 @@ function modelLabel(m?: { modelID?: string; modelId?: string; label?: string }):
   return m?.modelId ?? m?.modelID ?? m?.label
 }
 
+/** from/to 供应商 id：服务端 marker 实测独立字段 providerID（大写 D），合成卡写入同名 */
+function providerOf(m?: { providerID?: string; providerId?: string }): string | undefined {
+  return m?.providerID ?? m?.providerId
+}
+
+/** 供应商显示名：config.json 注册表（store.models）查 providerName；查不到（渠道已删
+ *  的历史会话）回退剥 builtin: 前缀的 providerId——UUID 自定义渠道只能原样，罕见可接受 */
+function providerNameOf(providerId: string, models: { providerId: string; providerName: string }[]): string {
+  return models.find((m) => m.providerId === providerId)?.providerName
+    ?? providerId.replace(/^builtin:/, '')
+}
+
 export function TimelineSeparator({ part }: Props) {
   const { t } = useTranslation()
+  // 供应名映射数据源（config.json 注册表，异步加载）：hook selector 保持响应式，
+  // models 后到时已渲染的切换卡随加载重渲补上可读名
+  const models = useStore((s) => s.models)
 
   if (part.timelineType === 'context_compaction') {
     const pre = part.preCompactTokenCount
@@ -57,14 +73,26 @@ export function TimelineSeparator({ part }: Props) {
   }
 
   if (part.timelineType === 'model_change') {
-    // 无 fromModel = 老服务端「以模型 X 开始」固有标记；from==to = 净零切换
-    // （实测 2026-09-03 db.sqlite：服务端连相同模型的注册重放也记 marker）——
-    // 两者都无信息量，整条隐藏
+    // 无 fromModel = 老服务端「以模型 X 开始」固有标记；from==to 且供应商也相同 =
+    // 净零切换（实测 2026-09-03 db.sqlite：服务端连相同模型的注册重放也记 marker）——
+    // 两者都无信息量，整条隐藏。供应商参与判定：同名模型跨供应商切换是真变化，不能吞
     const fromId = part.fromModel?.modelId ?? part.fromModel?.modelID
     const toId = part.toModel?.modelId ?? part.toModel?.modelID
-    if (!part.fromModel || (fromId && fromId === toId)) return null
+    const fromProv = providerOf(part.fromModel)
+    const toProv = providerOf(part.toModel)
+    if (!part.fromModel || (fromId && fromId === toId && fromProv === toProv)) return null
     const from = modelLabel(part.fromModel)
     const to = modelLabel(part.toModel)
+    // 供应名展示（2026-09-14 定案）：切换卡始终带供应名——显示名不同（跨供应商）
+    // 两端各带；显示名相同（同供应商，或 providerId 不同但注册表 name 一样如个人/
+    // 团队内置套餐）只在尾部带一个，不重复。provider 缺失（老 marker 无该字段）无从
+    // 得知，维持纯模型名观感；渠道 id 差异仍可从 title 悬停（label 复合）分辨
+    const fromName = fromProv ? providerNameOf(fromProv, models) : undefined
+    const toName = toProv ? providerNameOf(toProv, models) : undefined
+    const sameName = !!fromName && !!toName && fromName === toName
+    const fromText = fromName && !sameName ? `${from} (${fromName})` : from
+    const toText = toName && !sameName ? `${to} (${toName})` : to
+    const tailName = sameName ? ` (${fromName})` : ''
     return (
       <div className="tl-sep">
         <span className="tl-sep__line" />
@@ -73,12 +101,12 @@ export function TimelineSeparator({ part }: Props) {
             <span className="codicon codicon-arrow-swap" />
             {t('chat.timeline.modelChanged')}
           </span>
-          {from && to && (
+          {fromText && toText && (
             <span
               className="tl-sep__meta"
               title={`${part.fromModel?.label ?? from} → ${part.toModel?.label ?? to}`}
             >
-              {`${from} → ${to}`}
+              {`${fromText} → ${toText}${tailName}`}
             </span>
           )}
         </span>
