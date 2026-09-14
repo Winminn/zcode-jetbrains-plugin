@@ -678,6 +678,12 @@ interface StoreState {
    * （忙窗口重试耗尽、回执丢失）按过期放行，下一次触发重发——失败不永久锁死
    * （review Spec①：先登记后发送 + 守卫只进不出，超时后显示停在目标、永不重发）*/
   modelAppliedSessions: Map<string, number>
+  /** setModel 回执已到（modelSet/modelSetPending）的会话集合（缺陷BO）：applyModelIfReady
+   *  见之即跳过——登记 TTL 只该解锁「回执丢失」场景，无法区分时对已落定会话也放行，
+   *  任何 models 刷新（设置页模型管理/provider 启停/重连）都会重放 setModel，回合中
+   *  被 Java 挂起成幽灵「本轮结束后生效」横幅。modelSetFailed/用户 setModel 清除，
+   *  失败与在途场景仍可由 TTL/重试链路兜住 */
+  modelAckSessions: Set<string>
   /** 本 webview 内新建的会话集合：applyModelIfReady 对它们才回退全局默认模型
    * （新会话跟随上次选择的既有体验）；存量会话只重放会话级记忆（缺陷BI）*/
   createdSessionIds: Set<string>
@@ -1235,6 +1241,7 @@ export const useStore = create<StoreState>((set, get) => ({
   currentModel: null,
   modelInvalidated: false,
   modelAppliedSessions: new Map<string, number>(),
+  modelAckSessions: new Set<string>(),
   createdSessionIds: new Set<string>(),
   thoughtLevel: null,
   currentMode: null,
@@ -2151,15 +2158,23 @@ export const useStore = create<StoreState>((set, get) => ({
     const sid = get().currentSessionId
     if (!sid) return
     rememberSessionModel(sid, { modelId, providerId })
-    // 标记切换在途：期间到达的 settings 级别部分计算于旧模型（modelSet 响应时清除）
-    set({ modelSwitchInFlightAt: Date.now() })
+    // 标记切换在途：期间到达的 settings 级别部分计算于旧模型（modelSet 响应时清除）；
+    // 同时清回执标记（缺陷BO）——新切换在途，若其回执丢失，TTL 过期后的追发不能被
+    // 上一轮切换的旧 ack 拦截
+    const ackNext = new Set(get().modelAckSessions)
+    ackNext.delete(sid)
+    set({ modelSwitchInFlightAt: Date.now(), modelAckSessions: ackNext })
     sendToJava({ op: 'setModel', sessionId: sid, modelId, providerId })
   },
 
   applyModelIfReady: (sessionId, newSession = false) => {
+    // 回执已到（缺陷BO）：切换已落定（modelSet）或 Java 已接管补发（modelSetPending），
+    // 重放纯属多余——回合中还会被挂起成幽灵"本轮结束后生效"横幅。send 恒带 runtimeModel
+    // 兜正每回合，重放链路不承担已回执会话的模型一致性
+    if (get().modelAckSessions.has(sessionId)) return
     // 同一会话只下发一次（登记守卫；单槽时代切走再切回守卫即失效，每次来回都重发，
     // 撞上在跑回合还会产生"本轮结束后生效"的无效挂起）。登记带 TTL：回执永久丢失
-    // （忙窗口重试耗尽）时过期放行，下一次触发重发而非永久锁死（review Spec①）
+    //（忙窗口重试耗尽）时过期放行，下一次触发重发而非永久锁死（review Spec①）
     const registeredAt = get().modelAppliedSessions.get(sessionId)
     if (registeredAt != null && Date.now() - registeredAt < MODEL_APPLY_REGISTRATION_TTL_MS) return
     // 等待 models 列表就绪（迟到的 models 响应会再触发一次）
@@ -4040,6 +4055,13 @@ export function handleResponse(
       break
 
     case 'modelSet': {
+      // 切换落定即回执（缺陷BO）：此后 applyModelIfReady 不再重放该会话。须在下方
+      // 会话守卫之前——其他会话的落定同样要记，守卫只管显示面
+      if (msg.sessionId) {
+        const ackNext = new Set(get().modelAckSessions)
+        ackNext.add(msg.sessionId)
+        set({ modelAckSessions: ackNext })
+      }
       // 延迟切换的补发可能晚到数分钟（挂起期间用户已切走会话）：目标会话不是当前
       // 会话时丢弃，避免旧会话的模型翻转污染当前会话显示与级别缓存
       if (msg.sessionId && msg.sessionId !== get().currentSessionId) break
@@ -4047,6 +4069,28 @@ export function handleResponse(
       // 切换前模型（合成 model_change 分隔卡用，须在下方 set 覆盖 currentModel 前捕获；
       // 即时路径=setModel 下发时暂存的 prev，延迟路径=modelSetPending 回滚后的现值）
       const prevModelForMarker = get().modelSwitchPrevModel ?? get().currentModel
+      // 合成卡构造（三处共用：折叠换卡/普通插卡/流式窗口插卡）。from 形状对齐
+      // timeline part 的 fromModel（字段全可选：anchor 来自旧卡 part，modelId 可能缺）
+      const sidForCard = msg.sessionId ?? get().currentSessionId ?? ''
+      const makeSwitchCard = (
+        from: { modelID?: string; modelId?: string; label?: string; providerID?: string } | null,
+        to: { modelId: string; providerId: string },
+      ): ZCodeMessage => ({
+        info: {
+          role: 'assistant',
+          id: `synthetic-model-change-${Date.now()}`,
+          sessionID: sidForCard,
+          time: { created: Date.now() },
+        },
+        parts: [{
+          type: 'timeline',
+          timelineType: 'model_change',
+          ...(from
+            ? { fromModel: { modelID: from.modelID, modelId: from.modelId, label: from.label ?? from.modelId ?? from.modelID, providerID: from.providerID } }
+            : {}),
+          toModel: { modelId: to.modelId, label: to.modelId, providerID: to.providerId },
+        }],
+      })
       set({
         currentModel: { modelId: msg.modelId, providerId: msg.providerId },
         modelInvalidated: false,
@@ -4059,13 +4103,34 @@ export function handleResponse(
         // 尾部，与服务端将来落库位置一致（切换后第一条新消息之前）。延迟切换路径
         // 合成卡插入后紧跟回合结束重拉，而快照里还没有 marker——整包替换会顶掉
         // 合成卡，靠 syntheticModelChanges 暂存在重拉落地时补挂（applyMessagesSnapshot）
-        // 流式中到达的延迟补发（罕见：补发恰逢下一回合已开跑）跳过——插入位置会错到
-        // 流式消息之后，服务端真身由回合结束重拉显示。
+        // 流式中到达的延迟补发：尾部是本轮乐观 user 消息（排队 flush / 用户连发场景，
+        // sendMessage 的乐观转圈在补发 RPC 往返期间就置了 streaming，2026-09-14 排队
+        // 消息实测主路径）→ 插到它前面，与服务端落库位置（本轮新消息之前）一致；
+        // 其余流式形态（流式壳已建，补发晚于 turn.started）维持跳过——插入位置无法
+        // 对齐，服务端真身由回合结束重拉显示。
         // 连续切换折叠：消息流末尾仍是未被服务端真身接管的合成卡（两次切换之间
         // 没发过消息）→ 本次切换顶掉旧卡、from 锚定链条起点模型；切回起点
         // （净变化为零）→ 卡整体隐藏
         ...(get().streaming
-          ? {}
+          ? (() => {
+              const sid = sidForCard
+              const msgs = get().messages
+              const last = msgs[msgs.length - 1]
+              if (!last || last.info.role !== 'user' || !String(last.info.id ?? '').startsWith('local_u_')) return {}
+              // 净零（初始注册/切回现值）不插卡，判定同非流式路径
+              if (!prevModelForMarker || sameModel(prevModelForMarker, msg)) return {}
+              const card = makeSwitchCard(
+                { modelId: prevModelForMarker.modelId, providerID: prevModelForMarker.providerId },
+                { modelId: msg.modelId, providerId: msg.providerId },
+              )
+              return {
+                messages: [...msgs.slice(0, -1), card, last],
+                syntheticModelChanges: {
+                  ...get().syntheticModelChanges,
+                  [sid]: [...(get().syntheticModelChanges[sid] ?? []), card],
+                },
+              }
+            })()
           : (() => {
               const sid = msg.sessionId ?? get().currentSessionId ?? ''
               const pending = get().syntheticModelChanges[sid] ?? []
@@ -4085,22 +4150,7 @@ export function handleResponse(
                     syntheticModelChanges: { ...get().syntheticModelChanges, [sid]: rest },
                   }
                 }
-                const card: ZCodeMessage = {
-                  info: {
-                    role: 'assistant',
-                    id: `synthetic-model-change-${Date.now()}`,
-                    sessionID: sid,
-                    time: { created: Date.now() },
-                  },
-                  parts: [{
-                    type: 'timeline',
-                    timelineType: 'model_change',
-                    ...(anchor
-                      ? { fromModel: { modelId: anchor.modelId, label: anchor.label ?? anchor.modelId, providerID: anchor.providerID } }
-                      : {}),
-                    toModel: { modelId: msg.modelId, label: msg.modelId, providerID: msg.providerId },
-                  }],
-                }
+                const card = makeSwitchCard(anchor ?? null, { modelId: msg.modelId, providerId: msg.providerId })
                 return {
                   messages: [...msgs.slice(0, -1), card],
                   syntheticModelChanges: { ...get().syntheticModelChanges, [sid]: [...rest, card] },
@@ -4112,20 +4162,10 @@ export function handleResponse(
               // 判定含供应商维度：同名模型不同供应商（如内置套餐 → 自定义渠道同名
               // 模型）是真实切换，须插卡
               if (!prevModelForMarker || sameModel(prevModelForMarker, msg)) return {}
-              const card: ZCodeMessage = {
-                info: {
-                  role: 'assistant',
-                  id: `synthetic-model-change-${Date.now()}`,
-                  sessionID: sid,
-                  time: { created: Date.now() },
-                },
-                parts: [{
-                  type: 'timeline',
-                  timelineType: 'model_change',
-                  fromModel: { modelId: prevModelForMarker.modelId, label: prevModelForMarker.modelId, providerID: prevModelForMarker.providerId },
-                  toModel: { modelId: msg.modelId, label: msg.modelId, providerID: msg.providerId },
-                }],
-              }
+              const card = makeSwitchCard(
+                { modelId: prevModelForMarker.modelId, providerID: prevModelForMarker.providerId },
+                { modelId: msg.modelId, providerId: msg.providerId },
+              )
               return {
                 messages: [...msgs, card],
                 syntheticModelChanges: {
@@ -4144,6 +4184,13 @@ export function handleResponse(
     }
 
     case 'modelSetPending': {
+      // 挂起也是回执（缺陷BO）：Java 已接管回合结束补发，applyModelIfReady 重放属
+      // 重复（回合中还会再挂起一次产生幽灵横幅）。须在会话守卫之前记，理由同 modelSet
+      if (msg.sessionId) {
+        const ackNext = new Set(get().modelAckSessions)
+        ackNext.add(msg.sessionId)
+        set({ modelAckSessions: ackNext })
+      }
       // 会话守卫（缺陷BI）：别的会话的挂起不应污染当前会话——挂起回执本应只达发起
       // 会话（多标签各自处理），但单标签切会话的竞态窗口/广播场景下可能迟到串台
       if (msg.sessionId && msg.sessionId !== get().currentSessionId) break
@@ -4170,6 +4217,13 @@ export function handleResponse(
         const nextApplied = new Map(get().modelAppliedSessions)
         nextApplied.delete(msg.sessionId)
         set({ modelAppliedSessions: nextApplied })
+      }
+      // 回执标记同步清除（缺陷BO）：失败目标不能被 ack 拦住后续重试（与上方登记
+      // 解锁同语义；不依赖 has 守卫——用户 setModel 直发路径失败时无登记但有 ack）
+      if (msg.sessionId) {
+        const ackNext = new Set(get().modelAckSessions)
+        ackNext.delete(msg.sessionId)
+        set({ modelAckSessions: ackNext })
       }
       // 会话级记忆修复——在下方显示守卫之前（code-review Spec#1）：延迟补发失败可
       // 晚到数分钟、用户多已切走，守卫 break 会连记忆修复一起跳过 → 失败目标留存

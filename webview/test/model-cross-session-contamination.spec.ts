@@ -94,6 +94,7 @@ beforeEach(() => {
       { ...KIMI, label: 'Kimi K3' },
     ],
     modelAppliedSessions: new Map<string, number>([[SID1, Date.now()]]),
+    modelAckSessions: new Set<string>(),
     createdSessionIds: new Set(),
     modelSwitchInFlightAt: null,
     modelPendingSwitch: null,
@@ -129,8 +130,8 @@ describe('缺陷BI：会话级模型记忆（issue #9 修复）', () => {
   })
 
   it('首见会话重放它自己的记忆（重启恢复场景）：各会话互不串', () => {
-    // 模拟新 webview（重启/新标签）：已应用集合为空
-    useStore.setState({ modelAppliedSessions: new Map() })
+    // 模拟新 webview（重启/新标签）：已应用集合与回执集合都为空
+    useStore.setState({ modelAppliedSessions: new Map(), modelAckSessions: new Set() })
     setModelMemory({ [SID1]: GLM, [SID2]: KIMI })
     // 切到会话 2：重放会话 2 自己的 kimi（不是全局默认）——subscribed 回执前挂起不下发
     // （十五轮错峰：大会话冷启动时即发 setModel 必撞忙窗口超时）
@@ -157,6 +158,7 @@ describe('缺陷BI：会话级模型记忆（issue #9 修复）', () => {
       currentSessionId: SID_NEW,
       currentModel: null,
       modelAppliedSessions: new Map(),
+      modelAckSessions: new Set(),
       createdSessionIds: new Set([SID_NEW]),
     })
     // 懒创建落定后 createSession 路径挂 subscribed 错峰；本用例 setState 短路了
@@ -183,6 +185,7 @@ describe('缺陷BI：会话级模型记忆（issue #9 修复）', () => {
       currentSessionId: SID1,
       currentModel: null,
       modelAppliedSessions: new Map(), // 新 webview：恢复时首见
+      modelAckSessions: new Set(),
       createdSessionIds: new Set(),
     })
     pushResponse({
