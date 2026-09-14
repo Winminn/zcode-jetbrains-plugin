@@ -137,7 +137,8 @@ export function renderUserRefChips(
   PATH_RE.lastIndex = 0
   for (let m = PATH_RE.exec(text); m; m = PATH_RE.exec(text)) {
     const start = m.index + m[1].length
-    const end = start + m[2].length
+    // m[2] 不含被 @? 消耗的 @，end 必须取匹配全长，否则差一位（chip 后残留路径尾字符）
+    const end = m.index + m[0].length
     if (overlap(start, end)) continue
     tokens.push({ start, end, node: fileChip(m[2], `c${chipSeq++}`) })
   }

@@ -43,6 +43,15 @@ describe('renderUserRefChips 解析', () => {
     expect(html).toContain('和')
   })
 
+  it('带 @ 的路径 chip 边界含 @（差一位回归：chip 后不残留路径尾字符）', () => {
+    const nodes = renderUserRefChips(
+      '@G:/metrics/代码仓库数据.xlsx\n根据数据@G:/metrics/account_mapping.csv ，总结',
+    )!
+    const segs = nodes.filter((n): n is string => typeof n === 'string')
+    // chip 吞掉 @，尾段从路径后的空白/标点开始；若 end 少算 @ 的 1 位，会残留 'x'/'v'
+    expect(segs).toEqual(['\n根据数据', ' ，总结'])
+  })
+
   it('markdown 链接优先：链接体内不重复识别路径/裸 token（重叠防护）', () => {
     const nodes = renderUserRefChips('[#标题](#sess_a) [#标题2](#sess_b)')!
     const html = JSON.stringify(nodes)
