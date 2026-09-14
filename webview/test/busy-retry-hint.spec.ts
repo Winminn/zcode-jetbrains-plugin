@@ -60,6 +60,16 @@ describe('忙窗口错误提示（缺陷AB）', () => {
     expect(useStore.getState().lastError).toBe('其他错误: something broke')
   })
 
+  it('session/create 等非忙窗口方法的超时不套恢复中指引（issue #11 误套回归）', () => {
+    // 崩溃循环场景：create 超时是连接死了，"请勿重启 IDE、稍后自动恢复"恰是反向指导
+    messageHandler!({ op: 'error', message: '处理失败: 请求超时: session/create (20000ms)' })
+    expect(useStore.getState().lastError).toBe('处理失败: 请求超时: session/create (20000ms)')
+    expect(useStore.getState().lastError).not.toContain('请勿重启')
+    useStore.setState({ lastError: null })
+    messageHandler!({ op: 'error', message: '处理失败: 请求超时: session/list (10000ms)' })
+    expect(useStore.getState().lastError).not.toContain('请勿重启')
+  })
+
   it('busyRetryRecovered 清除忙窗口提示', () => {
     messageHandler!({ op: 'error', message: '读取设置失败: 请求超时: session/read (10000ms)' })
     expect(useStore.getState().lastError).toBeTruthy()

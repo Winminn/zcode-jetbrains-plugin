@@ -9,6 +9,7 @@ import java.io.PrintWriter
 import java.nio.file.Path
 import java.util.concurrent.CompletableFuture
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.ExecutionException
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.TimeoutException
 import java.util.concurrent.atomic.AtomicLong
@@ -160,11 +161,16 @@ class ZCodeProtocolClient private constructor(
          * @param credentials 凭证（默认从 ~/.zcode/v2/config.json 读；null = 无明文凭证，
          *   不注入 env，app-server 用自身凭证链——cli/config.json 的 provider 注册）
          * @param nodePath node 可执行文件路径（默认从 PATH 找）
+         * @param readyTimeoutMs 就绪探测超时：等 app-server 首个轻量响应的上限。慢机器
+         *   冷启动（12MB bundle 解析 + 杀软首扫）实测可达 10s+，30s 是"慢而活"与
+         *   "快而死"的分界余量；探测超时即杀进程抛人话异常（issue #11 崩溃循环，
+         *   此前首个业务请求独自撞 20s 超时还会被前端误套"恢复中"指引）
          */
         fun start(
             zcodePath: Path = ZCodeLocator.detect(),
             credentials: ZCodeCredentials? = Credentials.loadOrNull(),
-            nodePath: String = findNode()
+            nodePath: String = findNode(),
+            readyTimeoutMs: Long = 30_000
         ): ZCodeProtocolClient {
             val env = (System.getenv() + (credentials?.toEnvMap() ?: emptyMap())).toMutableMap()
 
@@ -206,6 +212,14 @@ class ZCodeProtocolClient private constructor(
             Thread({ client.readLoop() }, "zcode-protocol-reader").apply {
                 isDaemon = true
                 start()
+            }
+            // 就绪探测：同步等首个轻量响应再返回（崩溃快速失败+杀进程，慢启动安静等待），
+            // 保证调用方拿到的 client 必然已就绪——详见 awaitReady 注释
+            try {
+                client.awaitReady(readyTimeoutMs)
+            } catch (e: Exception) {
+                client.close()
+                throw e
             }
             return client
         }
@@ -251,6 +265,12 @@ class ZCodeProtocolClient private constructor(
                 // 进程异常退出
                 System.err.println("[ZCodeProtocolClient] reader error: ${e.message}")
             }
+        } finally {
+            // 管道关闭（进程退出/崩溃）即连接终结：在途请求立即失败，不再各自干等超时
+            // （completeExceptionally 幂等，与 close() 的集中 fail 并存无害）
+            val ex = IOException("app-server 进程已退出，连接已断开")
+            pendingResponses.values.forEach { it.completeExceptionally(ex) }
+            pendingResponses.clear()
         }
     }
 
@@ -522,6 +542,53 @@ class ZCodeProtocolClient private constructor(
         } catch (e: TimeoutException) {
             pendingResponses.remove(id)
             throw ZCodeProtocolException("请求超时: $method (${timeoutMs}ms)")
+        } catch (e: ExecutionException) {
+            // readLoop 退出时集中 fail（进程退出/崩溃）：解包抛原始异常，
+            // 避免 ExecutionException 的全限定类名前缀漏进用户可见文案
+            pendingResponses.remove(id)
+            throw e.cause as? Exception ?: IOException("app-server 连接已断开", e)
+        }
+    }
+
+    /**
+     * 启动后就绪探测：发一个轻量请求并等待任意响应（result / error 均算就绪——收到
+     * 应答即证明 JSON-RPC 循环已活）。
+     *
+     * 背景（issue #11 崩溃循环）：start() 起进程即返回，首个业务请求独自承担 node
+     * 冷启动等待（12MB bundle 解析 + 杀软首扫，慢机器 10s+）；session/create 等非幂等
+     * 方法禁止超时重试，一次撞墙就直接报错。探测把冷启动等待收敛到进程生命周期起点：
+     * 崩溃/秒退场景经 send()（checkError 检出断管）或 readLoop 退出（pending 被 fail）
+     * 快速失败，慢启动场景安静等待——两者共同保证"返回的 client 必然已就绪"。
+     *
+     * 探测选 session/list + limit=1：插件既有的最轻幂等读，全版本 CLI 支持、无副作用。
+     */
+    fun awaitReady(timeoutMs: Long) {
+        val startedAt = System.currentTimeMillis()
+        val id = idCounter.incrementAndGet()
+        val future = CompletableFuture<JsonObject>()
+        pendingResponses[id] = future
+        // 进程秒退时 send() 的 checkError 在此抛 IOException（断管），直接走 start() 的失败收尾
+        send(buildJsonObject {
+            put("id", id)
+            put("method", "session/list")
+            put("params", buildJsonObject { put("limit", 1) })
+        })
+        try {
+            future.get(timeoutMs, TimeUnit.MILLISECONDS)
+            println("[ZCodeProtocolClient] app-server ready in ${System.currentTimeMillis() - startedAt}ms (probe=session/list)")
+        } catch (e: TimeoutException) {
+            pendingResponses.remove(id)
+            throw IOException(
+                "app-server 启动超时：${timeoutMs / 1000} 秒内未响应就绪探测，进程可能已崩溃" +
+                    "（第一现场见 idea.log 中 \"app-server stderr\" 行；常见原因：node 版本过旧、ZCode 客户端损坏）"
+            )
+        } catch (e: ExecutionException) {
+            pendingResponses.remove(id)
+            val cause = e.cause as? Exception ?: e
+            throw IOException(
+                "app-server 进程启动后即退出（第一现场见 idea.log 中 \"app-server stderr\" 行；" +
+                    "常见原因：node 版本过旧、ZCode 客户端损坏）", cause
+            )
         }
     }
 

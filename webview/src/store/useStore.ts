@@ -3745,10 +3745,12 @@ export function handleResponse(
       // 未清前队列下一条大概率再撞，会连环报错，2026-08-20 实测）
       const promptRunning = /-32010|prompt is already running/i.test(msg.message)
       // 会话级请求超时（缺陷AB 忙窗口）：resume 恢复带中断回合的会话时，app-server 对
-      // 该会话的请求全部排队约 1~2 分钟后自愈；Java 侧已对 subscribe/setModel/settings
+      // 该会话的既有请求全部排队约 1~2 分钟后自愈；Java 侧已对 subscribe/setModel/settings
       // 延迟自动重试。追加指引防用户"一看报错就重启"（重启重新 resume 重新进窗口，
-      // 永远观察不到自愈——2026-08-27 用户 b5756ab4 四轮重启全超时、放置 100s 自愈实测）
-      const resumeBusy = /请求超时: session\//.test(msg.message)
+      // 永远观察不到自愈——2026-08-27 用户 b5756ab4 四轮重启全超时、放置 100s 自愈实测）。
+      // 方法白名单而非 session/* 通配：session/create 等新建/全库路径与忙窗口无关
+      // （issue #11 崩溃循环场景的 create 超时被误套"请勿重启"指引，恰是反向指导）
+      const resumeBusy = /请求超时: session\/(subscribe|setModel|read|messages|subagents) \(/.test(msg.message)
       // 浏览器数据操作在途时一并取消其兜底定时器，防后续误报超时
       if (get().browserBusy) Array.from(browserBusyTimers.keys()).forEach(cancelBrowserBusyTimer)
       set({
