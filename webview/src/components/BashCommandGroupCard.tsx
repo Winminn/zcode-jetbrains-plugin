@@ -18,6 +18,7 @@ import { useTick } from '@/hooks/useTick'
 import { formatToolDuration } from '@/utils/time'
 import { isBackgroundTaskOutput } from '@/utils/backgroundTask'
 import { toolErrorText } from '@/utils/parseStatus'
+import { NEAR_BOTTOM_PX } from './ScrollJumpButton'
 import '../styles/tool-call-card.less'
 
 /** 列表最大可见高度（3.5 项 × 32px/项），超出内部滚动 */
@@ -79,6 +80,9 @@ export function BashCommandGroupCard({ parts, softenError }: {
   const [expandedIdx, setExpandedIdx] = useState<number | null>(null)
   const listRef = useRef<HTMLDivElement>(null)
   const prevCountRef = useRef(0)
+  // 距底附近才自动跟滚：用户上滚回看历史命令时不被新命令置底打断，
+  // 滚回底部附近自动恢复（语义同 ChatView 主容器跟滚）
+  const stickToBottom = useRef(true)
 
   const items = useMemo(() => parts.map(parseBashItem), [parts])
 
@@ -92,13 +96,19 @@ export function BashCommandGroupCard({ parts, softenError }: {
   })
   const bgNow = useTick(hasBgRunning, 1000)
 
-  // 流式追加新命令时自动滚到底部（新命令总是出现在尾部）
+  // 流式追加新命令时自动滚到底部（新命令总是出现在尾部；用户上滚查看历史时不打扰）
   useEffect(() => {
-    if (listRef.current && items.length > prevCountRef.current) {
+    if (listRef.current && items.length > prevCountRef.current && stickToBottom.current) {
       listRef.current.scrollTop = listRef.current.scrollHeight
     }
     prevCountRef.current = items.length
   }, [items.length])
+
+  const handleListScroll = () => {
+    const el = listRef.current
+    if (!el) return
+    stickToBottom.current = el.scrollHeight - el.scrollTop - el.clientHeight < NEAR_BOTTOM_PX
+  }
 
   const totalCount = items.length
   // 后台化确认的 result 已回（part 状态变 completed）但任务仍在后台跑——
@@ -156,6 +166,7 @@ export function BashCommandGroupCard({ parts, softenError }: {
           ref={listRef}
           className="bash-group__timeline"
           style={{ maxHeight: listMaxHeight, overflowY }}
+          onScroll={handleListScroll}
         >
           {items.map((item, index) => {
             const isLast = index === totalCount - 1

@@ -14,6 +14,7 @@ import type { ToolPart } from '@/types/messages'
 import { parsePartialToolInput, lineCount } from '@/utils/partialToolInput'
 import { sendToJava } from '@/ipc/bridge'
 import { FileIcon } from './FileIcon'
+import { NEAR_BOTTOM_PX } from './ScrollJumpButton'
 import '../styles/tool-call-card.less'
 
 type FileGroupKind = 'read' | 'edit' | 'search'
@@ -132,6 +133,9 @@ export function FileToolGroupCard({ kind, parts, softenError }: {
   const [expanded, setExpanded] = useState(true)
   const listRef = useRef<HTMLDivElement>(null)
   const prevCountRef = useRef(0)
+  // 距底附近才自动跟滚：用户上滚回看历史项时不被新项置底打断，
+  // 滚回底部附近自动恢复（语义同 ChatView 主容器跟滚）
+  const stickToBottom = useRef(true)
 
   const fileItems = useMemo(
     () => (kind === 'search' ? [] : parts.map(parseFileItem)),
@@ -143,13 +147,19 @@ export function FileToolGroupCard({ kind, parts, softenError }: {
   )
   const count = kind === 'search' ? searchItems.length : fileItems.length
 
-  // 流式追加新项时自动滚到底部
+  // 流式追加新项时自动滚到底部（用户上滚查看历史时不打扰）
   useEffect(() => {
-    if (listRef.current && count > prevCountRef.current) {
+    if (listRef.current && count > prevCountRef.current && stickToBottom.current) {
       listRef.current.scrollTop = listRef.current.scrollHeight
     }
     prevCountRef.current = count
   }, [count])
+
+  const handleListScroll = () => {
+    const el = listRef.current
+    if (!el) return
+    stickToBottom.current = el.scrollHeight - el.scrollTop - el.clientHeight < NEAR_BOTTOM_PX
+  }
 
   const totalAdditions = fileItems.reduce((s, i) => s + i.additions, 0)
   const totalDeletions = fileItems.reduce((s, i) => s + i.deletions, 0)
@@ -204,6 +214,7 @@ export function FileToolGroupCard({ kind, parts, softenError }: {
           ref={listRef}
           className="file-group__list"
           style={{ maxHeight: listMaxHeight, overflowY }}
+          onScroll={handleListScroll}
         >
           {kind !== 'search' &&
             fileItems.map((item, index) => {
