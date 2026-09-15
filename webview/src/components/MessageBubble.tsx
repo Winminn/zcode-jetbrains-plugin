@@ -174,10 +174,17 @@ function UserBubble({
     const map = new Map(sessions.map((s) => [s.sessionId, s.title]))
     return (id: string) => map.get(id)
   }, [sessions])
-  // /命令·技能引用识别清单：slashCommands（含 kind）+ 内置 goal（扫描器不列，下拉注入同款）
+  // /命令·技能引用识别清单：slashCommands（含 kind）+ 内置 goal（扫描器不列，下拉注入同款）。
+  // 内置命令以命令名作 kind（与输入框内联 chip 同规则：compact→fold 专属图标；
+  // 未配的名如 init 兜底 terminal），磁盘命令/技能走通用 kind
   const cmdNames = useMemo(() => {
     const map = new Map<string, CmdRefInfo>()
-    slashCommands?.forEach((c) => map.set(c.name, { kind: c.kind, icon: c.icon }))
+    slashCommands?.forEach((c) =>
+      map.set(c.name, {
+        kind: c.kind === 'command' && c.source === 'builtin' ? (c.name as CmdRefInfo['kind']) : c.kind,
+        icon: c.icon,
+      }),
+    )
     if (!map.has('goal')) map.set('goal', { kind: 'goal' })
     return map
   }, [slashCommands])

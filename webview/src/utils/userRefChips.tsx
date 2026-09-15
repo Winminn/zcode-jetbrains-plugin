@@ -31,15 +31,18 @@ const PATH_RE = new RegExp(
   'g',
 )
 
-/** 命令/技能引用的已知信息（kind 决定 chip 变体配色，与输入框下拉/内联 chip 一致）*/
+/** 命令/技能引用的已知信息（kind 决定 chip 变体配色，与输入框下拉/内联 chip 一致；
+ *  内置命令以命令名作 kind，与 inlineFileTags.CmdChipKind 同规则）*/
 export interface CmdRefInfo {
-  kind: 'skill' | 'command' | 'goal'
+  kind: 'skill' | 'command' | 'goal' | 'compact'
   icon?: string
 }
 
-/** 消息内 cmd chip 的 kind → 图标与配色变体（inlineFileTags CMD_META 的只读子集）*/
+/** 消息内 cmd chip 的 kind → 图标与配色变体（inlineFileTags CMD_META 的只读子集；
+ *  未配名的内置命令如 init 兜底 terminal，与输入框口径一致）*/
 const MSG_CMD_META: Record<CmdRefInfo['kind'], { icon: string; variant: string }> = {
   goal: { icon: 'codicon-target', variant: 'goal' },
+  compact: { icon: 'codicon-fold', variant: 'compact' },
   command: { icon: 'codicon-terminal', variant: 'command' },
   skill: { icon: 'codicon-wand', variant: 'skill' },
 }

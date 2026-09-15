@@ -172,27 +172,15 @@
     vertical-align: baseline; /* 压掉 .sess-ref 基础块的 middle */
     user-select: none;
 
-    /* 类型色走专用变量：不能用 --color-tool-name（浅色主题下翻成深色，压蓝底不可读）*/
-    &.file-ref {
-      color: var(--color-userchip-file, #4fc1ff);
-    }
-
-    &.sess-ref {
-      color: var(--color-userchip-sess, #2fd6c5);
-    }
-
-    /* 命令/技能/goal：与输入框内联 chip 的变体配色同族 */
+    /* 单一高亮色：全部引用 chip 同色（金黄互补蓝底最醒目，变量内含两主题调优），
+       类型区分交给图标，不再用颜色编码（多色在彩底上被反馈暗淡难辨）*/
+    &.file-ref,
+    &.sess-ref,
     &.cmd-ref--command,
-    &.cmd-ref--compact {
-      color: var(--color-userchip-cmd, #4ec9b0);
-    }
-
-    &.cmd-ref--skill {
-      color: var(--color-userchip-skill, #b39ddb);
-    }
-
+    &.cmd-ref--compact,
+    &.cmd-ref--skill,
     &.cmd-ref--goal {
-      color: var(--color-userchip-goal, #d7ba7d);
+      color: var(--color-userchip, #ffdf6b);
     }
 
     /* 文件 chip 基础块的 CSS tooltip（content: attr(data-tip)）在消息内没有
