@@ -406,6 +406,7 @@ function sessionResetBase(): Partial<StoreState> {
     streamingMessageId: null,
     waitingSince: null,
     queuedMessages: [],
+    steerCancelRestore: null,
     goal: null,
     todos: [],
     agents: [],
@@ -671,6 +672,18 @@ interface StoreState {
    * （窗口内 + 文本一致）跳过注入与徽标；懒过期。
    */
   planFeedbackEcho: { text: string; at: number } | null
+  /**
+   * 撤销引导的竞态观察记录（transient，缺陷BQ）：服务端 drainPendingInput 取出
+   * 待注入条目时不同步设置 reservation（只查不设），取出后到 steerDrained 发出
+   * 的窗口内 deleteQueueItem 会走 discardHeldPendingInputById 路径照样返回
+   * removed=true——「撤销成功」与「注入发生」可并存。此处记录已按 removed=true
+   * 回插队列的条目：随后的 steerDrained 命中同文本 = 注入实际发生，把刚回插的
+   * 条目撤下（防回合结束 flushQueue 重复发送）；回合结束仍未命中 = 真撤销成功，
+   * 条目留在队列正常排队。
+   * 置位：cancelSteer 应答 removed=true 且有 restore；消费：steerDrained 命中；
+   * 清理：回合结束 / 新引导置位 / 切换会话（sessionResetBase）。
+   */
+  steerCancelRestore: { itemId: string; text: string; at: number } | null
   /**
    * 目标模式状态（session/goal，2026-09 协议实测定案）：null=无目标。
    * 数据三路：messages 首拉（session.target）恢复 + goalManaged 响应 +
@@ -1180,6 +1193,9 @@ interface StoreState {
 
 /** 审批意见回显豁免窗口：意见应答到服务端 guide 回显（steerDrained）到达的合理时距上限 */
 const PLAN_FEEDBACK_ECHO_MS = 15000
+/** 撤销引导竞态观察窗口（缺陷BQ）：回插后等 steerDrained 迟到的上限。注入受理
+ * 到落位正常秒级内；超窗未命中 = 撤销真成功，回合结束收口作废（双保险） */
+const STEER_CANCEL_RESTORE_MS = 30000
 
 let bridgeInitialized = false
 
@@ -1246,6 +1262,7 @@ export const useStore = create<StoreState>((set, get) => ({
   backgroundTasks: {},
   queuedMessages: [],
   steerPending: null,
+  steerCancelRestore: null,
   steeredMessageIds: readSteerMarkers(),
   planFeedbackEcho: null,
   goal: null,
@@ -1998,6 +2015,8 @@ export const useStore = create<StoreState>((set, get) => ({
         queueItemId: `queue_${commandId}`,
         ...(restore ? { restore } : {}),
       },
+      // 上一次撤销的观察记录作废（防同文本新引导落位被误判为竞态注入）
+      steerCancelRestore: null,
     })
     sendToJava({
       op: 'steerMessage',
@@ -3580,11 +3599,19 @@ export function handleResponse(
       // 撤回应答：removed=true → 清 chip + 按 restore 插回队列（非乐观——撤回
       // 失败的真实原因是已注入落位，那时隔着注入气泡插回队列条目是错的）。
       // removed=false = 已落位/已促发（queue.itemMissing）：chip 退出 cancelling
-      // 态并横幅提示，落位交给在途的 steerDrained 正常收尾
+      // 态并横幅提示，落位交给在途的 steerDrained 正常收尾。
+      // 竞态守卫（缺陷BQ）：服务端 drain 取出条目后到落位事件发出的窗口内，
+      // 删除走 discardHeld 路径照样返回 removed=true，「撤销成功」与「注入发生」
+      // 可并存——回插的同时留观察记录，steerDrained 命中同文本时把条目撤下
       const pending = get().steerPending
       if (!pending) break
       if (msg.removed) {
-        const patch: Partial<StoreState> = { steerPending: null }
+        const patch: Partial<StoreState> = {
+          steerPending: null,
+          ...(pending.restore
+            ? { steerCancelRestore: { itemId: pending.restore.item.id, text: pending.text, at: Date.now() } }
+            : {}),
+        }
         if (pending.restore) {
           const q = [...get().queuedMessages]
           q.splice(Math.min(pending.restore.index, q.length), 0, pending.restore.item)
@@ -5045,6 +5072,12 @@ function handleStreamBatchDirect(
   let steerPending = get().steerPending
   // 审批意见回显豁免标志的批内过渡值（steerDrained 命中时清，批末进 patch）
   let planFeedbackEcho = get().planFeedbackEcho
+  // 撤销引导竞态观察记录的批内过渡值（缺陷BQ，steerDrained 命中时清）
+  let steerCancelRestore = get().steerCancelRestore
+  // steerDrained 命中竞态时撤下回插条目的结果（null = 本批未命中）
+  let queuedAfterSteerCancel: QueuedMessage[] | null = null
+  // 竞态命中 = 取消未生效（消息已注入），批末横幅告知
+  let steerCancelTooLate = false
   // 本批落位的注入消息 id（徽标标记，批末统一持久化 + 进 patch）
   const steerNewIds: string[] = []
   const childKeyPatch: Record<string, string> = {}
@@ -5194,6 +5227,17 @@ function handleStreamBatchDirect(
       messages = appendSteerUserMessages(messages, entries, sessionId, event.timestamp)
       streamingMessageId = null
       steerPending = null
+      // 撤销竞态守卫（缺陷BQ）：removed=true 回插的条目在注入实际发生时撤下，
+      // 防回合结束 flushQueue 把同一条再发一遍（气泡落位不受影响，上面已追加）。
+      // 命中即"用户刚点过取消但消息已注入"——横幅如实告知取消未生效，防误以为
+      // 撤销成功（服务端 drain 取出后取消窗口即关闭，此场景实测远多于真撤销）
+      const cancelled = steerCancelRestore
+      if (cancelled && Date.now() - cancelled.at < STEER_CANCEL_RESTORE_MS
+        && entries.some((e) => e.text.trim() === cancelled.text)) {
+        queuedAfterSteerCancel = get().queuedMessages.filter((m) => m.id !== cancelled.itemId)
+        steerCancelRestore = null
+        steerCancelTooLate = true
+      }
       continue
     }
     if (event.type === 'turn.started' && steerPending) {
@@ -5263,11 +5307,18 @@ function handleStreamBatchDirect(
         if (!turnError) patch.lastError = i18n.t('input.steer.notDelivered')
       }
     }
+    // 撤销竞态观察收口（缺陷BQ）：回合结束仍无 steerDrained = 撤销真成功，
+    // 条目留在队列正常 flush，观察记录作废
+    steerCancelRestore = null
   }
   // steer chip 批内有变更才进 patch（引用稳定防多余重渲染）
   if (steerPending !== get().steerPending) patch.steerPending = steerPending
   // 审批意见回显豁免标志批内被消费 → 清空进 patch
   if (planFeedbackEcho !== get().planFeedbackEcho) patch.planFeedbackEcho = planFeedbackEcho
+  // 撤销竞态观察记录批内有变更 → 进 patch；命中时一并撤下回插条目
+  if (steerCancelRestore !== get().steerCancelRestore) patch.steerCancelRestore = steerCancelRestore
+  if (queuedAfterSteerCancel) patch.queuedMessages = queuedAfterSteerCancel
+  if (steerCancelTooLate) patch.lastNotice = i18n.t('input.steer.cancelTooLate')
   // 本批落位的注入消息：kv 持久化 + 进 patch（气泡「⚡引导」徽标，MessageBubble 读）
   if (steerNewIds.length > 0) {
     addSteerMarkers(steerNewIds)
@@ -5403,6 +5454,14 @@ function handleStreamEvent(
     }
     const known = new Set(get().messages.map((m) => m.info.id))
     const newIds = entries.filter((e) => !known.has(e.messageId)).map((e) => e.messageId)
+    // 撤销竞态守卫（缺陷BQ，同批量路径）：removed=true 回插的条目在注入实际
+    // 发生时撤下，防回合结束 flushQueue 把同一条再发一遍
+    const cancelled = get().steerCancelRestore
+    const cancelHit = !!cancelled && Date.now() - cancelled.at < STEER_CANCEL_RESTORE_MS
+      && entries.some((e) => e.text.trim() === cancelled.text)
+    const queuedAfterCancel = cancelled && cancelHit
+      ? get().queuedMessages.filter((m) => m.id !== cancelled.itemId)
+      : null
     if (newIds.length > 0) {
       addSteerMarkers(newIds)
       set({
@@ -5410,12 +5469,14 @@ function handleStreamEvent(
         streamingMessageId: null,
         steeredMessageIds: [...get().steeredMessageIds, ...newIds],
         messages: appendSteerUserMessages(get().messages, entries, event.sessionId, event.timestamp),
+        ...(queuedAfterCancel ? { queuedMessages: queuedAfterCancel, steerCancelRestore: null, lastNotice: i18n.t('input.steer.cancelTooLate') } : {}),
       })
     } else {
       set({
         steerPending: null,
         streamingMessageId: null,
         messages: appendSteerUserMessages(get().messages, entries, event.sessionId, event.timestamp),
+        ...(queuedAfterCancel ? { queuedMessages: queuedAfterCancel, steerCancelRestore: null, lastNotice: i18n.t('input.steer.cancelTooLate') } : {}),
       })
     }
     return
@@ -5579,6 +5640,9 @@ function handleStreamEvent(
       streamingMessageId: null,
       waitingSince: null,
       compacting: false,
+      // 撤销竞态观察收口（缺陷BQ，同批量路径）：回合结束仍无 steerDrained
+      // = 撤销真成功，条目留在队列正常 flush，观察记录作废
+      steerCancelRestore: null,
       // 后台任务指示器不在回合结束清除（同批量路径：由任务完成通知清除）
       // 失败回合展示错误详情（此前 payload.error 被丢弃，失败只表现为"转圈停了"）
       ...steerEndPatch,

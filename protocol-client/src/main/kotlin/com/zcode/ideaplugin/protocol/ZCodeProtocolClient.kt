@@ -1766,25 +1766,47 @@ class ZCodeProtocolClient private constructor(
     }
 
     /**
-     * v4/command {type:"deleteQueueItem"} — 撤销队列/引导条目（2026-09-08 zcode.cjs
-     * 核验）：app.removeQueueItem → runtime.removePendingInputById（reason=user_removed），
-     * 运行中回合的 pending steer 输入与会话级队列项都走这条撤销通道；已注入落位/
-     * 已促发的条目返回 queue.itemMissing 错误（调用方按"太迟了"处理，幂等无害）。
+     * v4/command {type:"deleteQueueItem"} — 撤销队列/引导条目。
+     *
+     * 【缺陷BQ二轮重审定案 2026-09-15，diag-steer4/5/6 真机探针】新 CLI 给写命令加了
+     * 乐观并发校验（decide() 的 qft 集合）：baseRevision 必须严格等于服务端 revision
+     * （每次会话状态变化 +1），否则拒绝且不执行——status=stale（值不等）/rejected
+     * （缺省），两者均非 JSON-RPC error，旧实现据此误判"撤销成功"（removed=true）。
+     * 三步重试法（探针终验）：首发带 0 → stale 应答的 revisionAtDecision 即服务端
+     * 当前 revision → 带该值重发 → accepted（真删，session_input→cancelled）/
+     * noop（条目不存在=已落位，旧版 queue.itemMissing error 的新形态）。
+     * part.delta 不推进 revision（只有状态结构变化 +1），流式期实测 2-4 轮收敛。
      */
     fun deleteQueueItemViaV4(sessionId: String, queueItemId: String, timeoutMs: Long = 8000): JsonObject {
-        val params = buildJsonObject {
-            put("commandId", "delq-${java.util.UUID.randomUUID()}")
-            put("clientId", "zcode-idea-plugin")
-            put("sessionId", sessionId)
-            put("type", "deleteQueueItem")
-            put("payload", buildJsonObject { put("queueItemId", queueItemId) })
-            put("issuedAt", System.currentTimeMillis())
-            put("connectionId", "zcode-idea-plugin")
-            put("clientMode", "desktop-continuous")
+        var baseRevision = 0L
+        repeat(5) { attempt ->
+            val params = buildJsonObject {
+                put("commandId", "delq-${java.util.UUID.randomUUID()}")
+                put("clientId", "zcode-idea-plugin")
+                put("sessionId", sessionId)
+                put("type", "deleteQueueItem")
+                put("payload", buildJsonObject { put("queueItemId", queueItemId) })
+                put("issuedAt", System.currentTimeMillis())
+                put("connectionId", "zcode-idea-plugin")
+                put("clientMode", "desktop-continuous")
+                put("baseRevision", baseRevision)
+            }
+            val r = requireOk(request("v4/command", params, timeoutMs))
+            val result = r["result"]?.jsonObject ?: JsonObject(emptyMap())
+            when (result["status"]?.jsonPrimitive?.content) {
+                "accepted" -> return result
+                // 太迟：条目已落位/已促发/不存在（调用方按 removed=false 处理）
+                "noop" -> throw IllegalStateException("queue.itemMissing (status=noop)")
+                else -> {
+                    result["revisionAtDecision"]?.jsonPrimitive?.content?.toLongOrNull()?.let {
+                        baseRevision = it
+                    }
+                    if (attempt == 4) throw IllegalStateException(
+                        "deleteQueueItem stale retry exhausted (baseRevision=$baseRevision)")
+                }
+            }
         }
-        val r = request("v4/command", params, timeoutMs)
-        requireOk(r)
-        return r["result"]?.jsonObject ?: JsonObject(emptyMap())
+        throw IllegalStateException("deleteQueueItem retry loop exited unexpectedly")
     }
 
     /**

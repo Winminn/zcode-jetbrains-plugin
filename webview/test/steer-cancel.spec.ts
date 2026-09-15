@@ -18,6 +18,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 
 let messageHandler: ((msg: unknown) => void) | null = null
 let streamBatchHandler: ((sid: string, events: unknown[]) => void) | null = null
+let streamEventHandler: ((sid: string, event: unknown) => void) | null = null
 const sentRequests: Array<Record<string, unknown>> = []
 
 vi.mock('@/ipc/bridge', () => ({
@@ -26,7 +27,7 @@ vi.mock('@/ipc/bridge', () => ({
   getWorkspacePath: () => 'G:\\mock',
   getInitialSessionId: () => '',
   onMessage: (fn: (msg: unknown) => void) => { messageHandler = fn },
-  onStreamEvent: () => {},
+  onStreamEvent: (fn: (sid: string, event: unknown) => void) => { streamEventHandler = fn },
   onStreamBatch: (fn: (sid: string, events: unknown[]) => void) => { streamBatchHandler = fn },
   sendToJava: (req: Record<string, unknown>) => { sentRequests.push(req) },
 }))
@@ -149,3 +150,79 @@ describe('引导撤回（chip ✕ → v4 deleteQueueItem）', () => {
 
 // 消化 unused 变量（与 steer-rollback.spec 同款 mock 形态，handler 供扩展用）
 void messageHandler
+
+// ============ 撤销竞态守卫（缺陷BQ，2026-09-15 用户实测）============
+// 服务端 drainPendingInput 取出待注入条目时只查 reservation 不设置——取出后到
+// steerDrained 发出的窗口内 deleteQueueItem 走 discardHeldPendingInputById 照样
+// 返回 removed=true，「撤销成功」与「注入发生」并存 → removed=true 回插队列 +
+// 注入照常落位 → 回合结束 flushQueue 把回插条目再发一遍 = 同一条消息发两条。
+// 守卫：removed=true 回插时留观察记录，steerDrained 命中同文本即撤下回插条目。
+describe('撤销竞态守卫（缺陷BQ：removed=true 回插后 steerDrained 迟到）', () => {
+  beforeEach(() => {
+    sentRequests.length = 0
+    resetWithQueue()
+    void useStore.getState().init()
+  })
+
+  it('批量路径：撤回成功回插后 steerDrained 命中同文本 → 回插条目撤下 + 气泡落位', () => {
+    useStore.getState().sendQueuedAsSteer('q2')
+    const qid = useStore.getState().steerPending?.queueItemId
+    handleResponse({ op: 'cancelSteer', sessionId: SID, queueItemId: qid!, removed: true }, useStore.setState, useStore.getState)
+    expect(useStore.getState().queuedMessages.map((m) => m.id)).toEqual(['q1', 'q2', 'q3']) // 已回插
+    expect(useStore.getState().steerCancelRestore?.itemId).toBe('q2') // 观察记录在
+    streamBatchHandler!(SID, [{
+      type: 'turn.steerDrained', seq: 1, sessionId: SID, timestamp: Date.now(),
+      payload: { pendingInputIds: [qid], injectedMessageIds: ['msg_u2'], drainedInputs: [{ pendingInputId: qid, messageId: 'msg_u2', text: '引导我' }] },
+    }])
+    // 注入实际发生：回插条目撤下（防回合结束 flush 重复发送）+ 观察记录清
+    expect(useStore.getState().queuedMessages.map((m) => m.id)).toEqual(['q1', 'q3'])
+    expect(useStore.getState().steerCancelRestore).toBeNull()
+    // 横幅如实告知取消未生效（消息已注入，防误以为撤销成功）；走 notice
+    // 中性通道（琥珀 info 条）不走红色 error 条——这是告知不是错误
+    expect(useStore.getState().lastNotice).toContain('无法撤回')
+    // 气泡照常落位（撤销竞态不影响注入渲染）
+    const bubble = useStore.getState().messages.find((m) => m.info.id === 'msg_u2')
+    expect(bubble?.parts[0]).toMatchObject({ type: 'text', text: '引导我' })
+  })
+
+  it('单推路径：撤回成功回插后 steerDrained 迟到 → 同样撤下回插条目', () => {
+    useStore.getState().sendQueuedAsSteer('q2')
+    const qid = useStore.getState().steerPending?.queueItemId
+    handleResponse({ op: 'cancelSteer', sessionId: SID, queueItemId: qid!, removed: true }, useStore.setState, useStore.getState)
+    expect(useStore.getState().steerCancelRestore?.itemId).toBe('q2')
+    streamEventHandler!(SID, {
+      type: 'turn.steerDrained', seq: 2, sessionId: SID, timestamp: Date.now(),
+      payload: { pendingInputIds: [qid], injectedMessageIds: ['msg_u3'], drainedInputs: [{ pendingInputId: qid, messageId: 'msg_u3', text: '引导我' }] },
+    })
+    expect(useStore.getState().queuedMessages.map((m) => m.id)).toEqual(['q1', 'q3'])
+    expect(useStore.getState().steerCancelRestore).toBeNull()
+    expect(useStore.getState().lastNotice).toContain('无法撤回')
+    expect(useStore.getState().messages.some((m) => m.info.id === 'msg_u3')).toBe(true)
+  })
+
+  it('撤回真成功：回合结束仍无 steerDrained → 条目保留 + 观察记录收口作废', () => {
+    useStore.getState().sendQueuedAsSteer('q2')
+    const qid = useStore.getState().steerPending?.queueItemId
+    handleResponse({ op: 'cancelSteer', sessionId: SID, queueItemId: qid!, removed: true }, useStore.setState, useStore.getState)
+    expect(useStore.getState().queuedMessages.map((m) => m.id)).toEqual(['q1', 'q2', 'q3'])
+    // 清空其余排队项：隔离其余条目干扰（q1/q3 会先被 flush 发走）
+    useStore.setState({ queuedMessages: [queuedItem('q2', '引导我')] })
+    streamBatchHandler!(SID, [{ type: 'turn.completed', seq: 3, sessionId: SID, timestamp: Date.now(), turnId: 'turn_9', payload: {} }])
+    // 撤销真成功：条目按排队语义在回合结束时 flush 发出（撤回引导=回到正常排队），
+    // 观察记录作废
+    expect(useStore.getState().queuedMessages).toEqual([])
+    expect(useStore.getState().steerCancelRestore).toBeNull()
+    const sent = sentRequests.find((r) => r.op === 'send') as Record<string, unknown> | undefined
+    expect((sent?.text as string | undefined)?.trim()).toBe('引导我')
+  })
+
+  it('新引导置位清观察记录（防同文本新引导落位被误撤）', () => {
+    useStore.getState().sendQueuedAsSteer('q2')
+    const qid = useStore.getState().steerPending?.queueItemId
+    handleResponse({ op: 'cancelSteer', sessionId: SID, queueItemId: qid!, removed: true }, useStore.setState, useStore.getState)
+    expect(useStore.getState().steerCancelRestore).not.toBeNull()
+    // 再次引导（同文本条目已回插，重新出队）
+    useStore.getState().sendQueuedAsSteer('q2')
+    expect(useStore.getState().steerCancelRestore).toBeNull() // 旧观察记录作废
+  })
+})
