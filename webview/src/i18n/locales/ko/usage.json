@@ -11,7 +11,7 @@
   "plan": {
     "tab": "GLM 플랜 사용량",
     "credHint": "조회 자격증명: {{name}}",
-    "credForeign": "조회 자격증명: {{name}} (구독 채널이 아니라 데이터가 다를 수 있음)"
+    "credForeign": "조회 자격증명: {{name}} (데이터는 이 키 소유 계정의 플랜 기준)"
   },
   "app": {
     "tab": "앱 사용량",

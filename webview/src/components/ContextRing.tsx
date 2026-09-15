@@ -16,7 +16,7 @@
 import { useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { useTranslation } from 'react-i18next'
-import { useStore, GLM_PLAN_PROVIDER } from '@/store/useStore'
+import { useStore, isBigmodelProvider } from '@/store/useStore'
 import { fmtTokens, limitTitle, fmtResetTime, fmtTime } from '@/utils/format'
 import type { ContextBreakdownItem, ContextSource } from '@/types/messages'
 import '../styles/input-box.less'
@@ -87,8 +87,9 @@ export function ContextRing() {
         ? 'var(--status-warning)'
         : 'var(--status-success)'
 
-  // 仅 GLM 套餐模型可查额度（apiKey 认证），其他 provider 不显示也不拉取
-  const isGlmPlan = currentModel?.providerId === GLM_PLAN_PROVIDER
+  // bigmodel 系模型可查额度（coding-plan 订阅 + API Key 渠道，monitor 按账号返回套餐；
+  // 第三方 provider 不显示也不拉取）
+  const isGlmPlan = isBigmodelProvider(currentModel?.providerId)
 
   // 分类明细聚合
   const categoryRows = breakdown && breakdown.length > 0 ? aggregateBreakdown(breakdown) : []

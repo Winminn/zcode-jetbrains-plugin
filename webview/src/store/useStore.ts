@@ -57,6 +57,17 @@ export type ConnectionStatus = 'connecting' | 'connected' | 'mock' | 'error'
 /** GLM 套餐 providerId（有 apiKey 可查额度；悬浮栏与额度定时轮询共用判定）*/
 export const GLM_PLAN_PROVIDER = 'builtin:bigmodel-coding-plan'
 
+/**
+ * bigmodel 系渠道判定（额度查询的显示/拉取门）：
+ * coding-plan 订阅与 API Key 自定义渠道（builtin:bigmodel）都查 bigmodel monitor——
+ * 该 API 按 Key 所属账号返回套餐额度，同账号 API Key 查到的就是订阅套餐
+ * （2026-09-15 用户实测，此前严格只认 coding-plan 导致 API Key 渠道悬浮框无额度）。
+ * 第三方渠道（DeepSeek 等自定义 id）不命中，不查不显示——key 打不通 monitor 属预期。
+ */
+export function isBigmodelProvider(providerId?: string | null): boolean {
+  return !!providerId && providerId.includes('bigmodel')
+}
+
 /** 子代理失败判定白名单（缺陷AO，2026-09-01）：仅这些 status 词判失败，
  *  未知词只当"未识别"跳过——此前"非成功白名单即失败"会把服务端新词误读成失败 */
 const SUBAGENT_FAILURE_STATUSES = ['failed', 'error', 'interrupted', 'aborted', 'cancelled']
@@ -534,6 +545,12 @@ interface StoreState {
   envSaving: boolean
   /** EnvBanner「去设置」的跳转意图：App 切 settings 视图同时置位，BasicSettingsView 消费后清除 */
   pendingSettingsSection: 'env' | 'agents' | 'models' | null
+
+  // 网络代理（与 ZCode 客户端共享 ~/.zcode/v2/setting.json，issue #12）
+  /** null = 尚未拉取（进设置页环境 tab 时拉取）；restartPending=app-server 在跑、保存后需重启吃到新代理 */
+  proxyConfig: { httpProxy: string; noProxy: string; caCertPath: string; restartPending: boolean } | null
+  /** setProxyConfig 保存进行中（保存按钮转圈）*/
+  proxySaving: boolean
 
   // 会话
   sessions: SessionInfo[]
@@ -1073,6 +1090,15 @@ interface StoreState {
    * 后端验证（node spawn --version、cli 文件存在）失败不落盘，回 error（带 envStatus）。
    */
   saveEnvConfig: (nodePath?: string, cliPath?: string) => void
+  /** 拉取网络代理配置（设置页环境 tab 挂载时；与 ZCode 客户端同源 setting.json） */
+  loadProxyConfig: () => void
+  /**
+   * 保存网络代理三字段（''=清除该项）。写共享 setting.json——ZCode 客户端重启后
+   * 同样生效；插件侧 app-server 需重启吃到新 env（restartPending 响应驱动 UI 提示）。
+   */
+  saveProxyConfig: (httpProxy: string, noProxy: string, caCertPath: string) => void
+  /** 重启 app-server（用户在保存代理后主动触发，接受打断进行中的回合） */
+  restartAppServer: () => void
   /** 拉取当前会话的子代理列表（session/subagents RPC，权威状态）*/
   loadSubagents: () => void
   /** 打开子代理详情弹窗（key = Agent 工具 callID）*/
@@ -1167,6 +1193,8 @@ export const useStore = create<StoreState>((set, get) => ({
   envStatus: null,
   envSaving: false,
   pendingSettingsSection: null,
+  proxyConfig: null,
+  proxySaving: false,
 
   sessions: [],
   provisionalTitles: {},
@@ -2579,6 +2607,19 @@ export const useStore = create<StoreState>((set, get) => ({
     sendToJava({ op: 'envSave', nodePath, cliPath })
   },
 
+  loadProxyConfig: () => {
+    sendToJava({ op: 'getProxyConfig' })
+  },
+
+  saveProxyConfig: (httpProxy: string, noProxy: string, caCertPath: string) => {
+    set({ proxySaving: true })
+    sendToJava({ op: 'setProxyConfig', httpProxy, noProxy, caCertPath })
+  },
+
+  restartAppServer: () => {
+    sendToJava({ op: 'restartAppServer' })
+  },
+
   loadSubagents: () => {
     const sid = get().currentSessionId
     if (!sid) return
@@ -3782,6 +3823,35 @@ export function handleResponse(
       set({ envStatus: msg.status, envSaving: false })
       break
 
+    case 'proxyConfig':
+      // getProxyConfig 查询返回（进设置页环境 tab 拉取）
+      set({
+        proxyConfig: {
+          httpProxy: msg.httpProxy ?? '',
+          noProxy: msg.noProxy ?? '',
+          caCertPath: msg.caCertPath ?? '',
+          restartPending: !!msg.restartPending,
+        },
+      })
+      break
+
+    case 'proxyConfigSaved': {
+      // setProxyConfig 成功：更新回显 + 复位转圈；app-server 在跑则保留重启提示
+      const saved = {
+        httpProxy: msg.httpProxy ?? '',
+        noProxy: msg.noProxy ?? '',
+        caCertPath: msg.caCertPath ?? '',
+        restartPending: !!msg.restartPending,
+      }
+      set({ proxyConfig: saved, proxySaving: false })
+      break
+    }
+
+    case 'appServerRestarted':
+      // restartAppServer 完成：下次请求懒重建（新 env 生效），重启提示解除
+      if (get().proxyConfig) set({ proxyConfig: { ...get().proxyConfig!, restartPending: false } })
+      break
+
     case 'error': {
       // 建会话失败（Java 外层 catch 回 error）：复位懒创建标志与暂存消息（防卡死、防误重试）
       // -32004（Session is not active）追加人话提示：CLI 升级/重启后的新进程里会话
@@ -3823,6 +3893,7 @@ export function handleResponse(
         // 环境前置检查失败（EnvCheckException/envSave 验证失败）：附带 envStatus 刷新提醒条
         ...(msg.envStatus ? { envStatus: msg.envStatus } : {}),
         envSaving: false,
+        proxySaving: false,
         loadingMessages: false,
         streaming: false,
         waitingSince: null,
@@ -6054,7 +6125,7 @@ function startQuotaPolling(): void {
   if (quotaPollTimer) return
   quotaPollTimer = setInterval(() => {
     const st = useStore.getState()
-    if (st.currentModel?.providerId !== GLM_PLAN_PROVIDER) return
+    if (!isBigmodelProvider(st.currentModel?.providerId)) return
     if (st.quotaLoading) return // 上一次还在途（HTTP 最长 ~35s），跳过本轮
     st.loadQuota()
   }, QUOTA_POLL_INTERVAL)

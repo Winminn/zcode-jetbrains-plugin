@@ -43,7 +43,9 @@ class ZCodeProtocolClient private constructor(
     private val zcodePath: java.nio.file.Path,
     private val nodePath: String,
     /** 可空：config.json 无明文凭证（oauth 登录）时不注入 env，由 app-server 自身凭证链接管 */
-    private val credentials: com.zcode.ideaplugin.protocol.ZCodeCredentials?
+    private val credentials: com.zcode.ideaplugin.protocol.ZCodeCredentials?,
+    /** spawn 时注入的代理配置（null=未配置直连；排障查「代理注入了没」，日志在 ZCodeServiceImpl） */
+    val proxyConfig: ProxyConfig?
 ) : AutoCloseable {
 
     private val json = Json { ignoreUnknownKeys = true }
@@ -180,6 +182,12 @@ class ZCodeProtocolClient private constructor(
             if (env["ZCODE_APP_VERSION"].isNullOrBlank()) {
                 detectAppVersion(zcodePath, nodePath)?.let { env["ZCODE_APP_VERSION"] = it }
             }
+            // 代理：setting.json 配了就整套注入（对齐官方客户端 buildAgentRuntimeEnv，
+            // issue #12——插件 spawn 的 app-server 不走系统代理）。setting 是用户在
+            // 客户端/插件设置页的显式配置，覆盖继承 env 同名变量；未配置不注入，
+            // 高级用户自设的 ZCODE_HTTP_PROXY 等 env 原样透传（zcode.cjs 自行消费）
+            val proxyConfig = ProxyConfigStore.read().takeIf { !it.isEmpty }
+            proxyConfig?.toEnvMap()?.let { env.putAll(it) }
 
             val pb = ProcessBuilder(nodePath, zcodePath.toString(), "app-server")
             pb.environment().clear()
@@ -190,7 +198,10 @@ class ZCodeProtocolClient private constructor(
             val stdin = PrintWriter(process.outputStream.bufferedWriter(), true)
             val stdout = process.inputStream.bufferedReader()
 
-            val client = ZCodeProtocolClient(process, stdin, stdout, zcodePath, nodePath, credentials)
+            val client = ZCodeProtocolClient(process, stdin, stdout, zcodePath, nodePath, credentials, proxyConfig)
+            // 排障主线索（issue #12 用户实测三态：坏地址失败/清空直连/好地址成功——
+            // 没有这行日志时分不清「代理坏了」还是「没注入」）：代理地址 userinfo 脱敏
+            println("[ZCodeProxy] app-server spawn ${proxyConfig?.logSummary ?: "<no proxy, direct>"}")
             // ⚠️ 必须 drain stderr！Windows 管道缓冲约 4KB，node 写 stderr 是同步阻塞的。
             // 模型调用失败时 app-server 会向 stderr 打错误堆栈，一次就可能填满缓冲；
             // 无人读 → node 永久阻塞在写 stderr → 整个 app-server 事件循环停摆，
@@ -1084,6 +1095,17 @@ class ZCodeProtocolClient private constructor(
     }
 
     /**
+     * CLI 通道代理注入（与 app-server 主通道同源 setting.json，issue #12）：
+     * cliOneShot / sendViaCliResume 的 env 是 clear() 后的白名单，代理变量组
+     * 须显式补上，保证降级通道与主通道网络行为一致
+     */
+    private fun applyProxyEnv(pb: ProcessBuilder) {
+        val cfg = ProxyConfigStore.read().takeIf { !it.isEmpty }
+        cfg?.toEnvMap()?.let { pb.environment().putAll(it) }
+        println("[ZCodeProxy] CLI subprocess spawn ${cfg?.logSummary ?: "<no proxy, direct>"}")
+    }
+
+    /**
      * Fallback：用 CLI `zcode -p --resume <sid>` 模式发消息
      *
      * app-server 的 -32031（restoreWarning）在无法构造 runtimeModel 时清不掉
@@ -1108,6 +1130,7 @@ class ZCodeProtocolClient private constructor(
         val pb = ProcessBuilder(args)
         pb.environment().clear()
         pb.environment().putAll(credentials?.toEnvMap() ?: emptyMap())
+        applyProxyEnv(pb)
         pb.redirectErrorStream(false)
 
         val proc = pb.start()
@@ -1175,6 +1198,7 @@ class ZCodeProtocolClient private constructor(
         val pb = ProcessBuilder(args)
         pb.environment().clear()
         pb.environment().putAll(credentialsOverride?.toEnvMap() ?: credentials?.toEnvMap() ?: emptyMap())
+        applyProxyEnv(pb)
         pb.redirectErrorStream(false)
 
         val proc = pb.start()

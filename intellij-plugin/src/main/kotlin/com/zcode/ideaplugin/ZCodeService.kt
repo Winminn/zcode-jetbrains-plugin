@@ -33,6 +33,12 @@ interface ZCodeService {
     /** 客户端是否已启动 */
     fun isStarted(): Boolean
 
+    /**
+     * 代理保存后尚未重启过 app-server（issue #12 设置页「重启生效」提示判据）。
+     * 保存代理时置 true；新 client 拉起时清 false。实现见 ZCodeServiceImpl。
+     */
+    var proxyRestartPending: Boolean
+
     /** 关闭客户端 */
     fun shutdown()
 

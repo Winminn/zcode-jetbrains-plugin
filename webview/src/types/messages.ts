@@ -459,6 +459,12 @@ export type JavaRequest =  | { op: 'askUserPendingState' }
   | { op: 'checkEnv' }
   /** 保存环境路径配置：字段缺席=不改该项，空串=清除（回退自动探测）；后端验证通过才落盘 */
   | { op: 'envSave'; nodePath?: string; cliPath?: string }
+  /** 拉取网络代理配置（与 ZCode 客户端共享的 setting.json 三键） */
+  | { op: 'getProxyConfig' }
+  /** 保存网络代理三字段（空串=清除该项；写共享 setting.json，客户端重启后同样生效） */
+  | { op: 'setProxyConfig'; httpProxy: string; noProxy: string; caCertPath: string }
+  /** 重启 app-server 让新代理 env 生效（用户主动触发，接受打断进行中的回合） */
+  | { op: 'restartAppServer' }
   // ============ 定时消息（权威列表在 Java 侧 ZCodeScheduledMessageService）============
   /** 新建定时消息（fireAt 绝对 epoch ms；过早由 Java 钳到 +10s；模型可空=跟随会话）*/
   | { op: 'scheduledCreate'; sessionId: string; workspacePath?: string; text: string; fireAt: number; providerId?: string; modelId?: string }
@@ -941,6 +947,12 @@ export type JavaResponse =
   | { op: 'kvLoaded'; kv: Record<string, string> }
   /** 环境状态（checkEnv 查询 / envSave 保存成功后的重检结果 / IDE 广播同构体）*/
   | { op: 'envStatus'; status: EnvStatus }
+  /** 网络代理回显（getProxyConfig 响应；restartPending=app-server 在跑需重启生效）*/
+  | { op: 'proxyConfig'; httpProxy: string; noProxy: string; caCertPath: string; restartPending: boolean }
+  /** 网络代理保存成功（setProxyConfig 响应，载荷同 proxyConfig）*/
+  | { op: 'proxyConfigSaved'; httpProxy: string; noProxy: string; caCertPath: string; restartPending: boolean }
+  /** app-server 已重启（restartAppServer 响应；下次请求懒重建带新 env）*/
+  | { op: 'appServerRestarted' }
   | { op: 'ideTheme'; isDark: boolean }
   | { op: 'files'; files: string[] }
   | { op: 'commands'; commands: SlashCommand[] }

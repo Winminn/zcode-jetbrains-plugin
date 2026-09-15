@@ -6,6 +6,7 @@ import com.intellij.openapi.components.Service
 import com.intellij.openapi.components.service
 import com.intellij.openapi.project.Project
 import com.zcode.ideaplugin.protocol.Credentials
+import com.zcode.ideaplugin.protocol.ProxyConfig
 import com.zcode.ideaplugin.protocol.ZcGuiConfig
 import com.zcode.ideaplugin.protocol.ZCodeProtocolClient
 import com.zcode.ideaplugin.ui.ZCodeToolWindowPanel
@@ -130,6 +131,14 @@ class ZCodeServiceImpl(private val project: Project) : ZCodeService, com.intelli
     /** 会话驻留水位账本（与 app-server 进程同生命周期，换代即清，见 ResidentLedger）*/
     override val residentLedger = com.zcode.ideaplugin.ui.ResidentLedger()
 
+    /**
+     * 代理保存后尚未重启过 app-server（issue #12 设置页「重启生效」提示的权威判据）。
+     * 保存代理时置 true；新 client 拉起时清 false（新进程已带新 env）。不能用
+     * isStarted() 凑数——那只表示进程活着，恒真，会让提示常驻（首版实踩）。
+     */
+    @Volatile
+    override var proxyRestartPending: Boolean = false
+
     private val lock = ReentrantLock()
 
     /** 所有已注册面板（多标签页，每个标签一个）*/
@@ -247,6 +256,10 @@ class ZCodeServiceImpl(private val project: Project) : ZCodeService, com.intelli
                 credentials = env.credentials,
                 nodePath = env.nodePath,
             )
+            // 代理注入权威日志（issue #12 排障主入口，确定落 idea.log；userinfo 已脱敏）：
+            // 「消息发不通」时先查这行——有 proxy= 说明注入生效（问题在网络/代理本身），
+            // <no proxy, direct> 说明走直连（问题在配置没保存/没重启）
+            log.info("[proxy] app-server ${newClient.proxyConfig?.logSummary ?: ProxyConfig().logSummary}")
             // requestRuntimePreferences 应答：memoryEnabled / nativeSearchEnhancementsEnabled
             // 与 ZCode 客户端共用 ~/.zcode/v2/setting.json（设置页「工作区记忆」开关写的也是
             // 这份）。每次应答即时读文件——切换开关后新建会话立即生效，无需重启 app-server；
@@ -265,6 +278,8 @@ class ZCodeServiceImpl(private val project: Project) : ZCodeService, com.intelli
             client = newClient
             // 新 app-server 进程的驻留集合从零开始：账本与提醒状态一并重置
             residentLedger.invalidateAll()
+            // 新进程 spawn 已带上当时的代理 env：保存待重启的提示随之解除
+            proxyRestartPending = false
             // 协议就绪即注册反向请求 handler（幂等）。注册点放在这里而非仅面板初始化：
             // 面板初始化时环境未就绪会抛 EnvCheckException 跳过注册，若不在此补注册，
             // 用户配好环境后 handler 永远缺席（Mac 首启 PATH 探测失败即触发过）

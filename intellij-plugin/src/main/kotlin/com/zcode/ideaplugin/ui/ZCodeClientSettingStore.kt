@@ -78,12 +78,36 @@ object ZCodeClientSettingStore {
     fun writeMemoryEnabled(enabled: Boolean, home: String = System.getProperty("user.home")): Boolean =
         writeFields(home, "memoryEnabled" to JsonPrimitive(enabled))
 
-    /** 多字段写入（保留其余键；文件缺失写最小片段——客户端按 zod schema 读缺失键走默认值）*/
-    private fun writeFields(home: String, vararg fields: Pair<String, JsonPrimitive>): Boolean = synchronized(LOCK) {
+    /**
+     * 写代理三键（httpProxy / httpProxyNoProxy / httpProxyCaCertPath，与 ZCode 客户端
+     * 设置页同一份、同一 schema）。空串 = 清除该项（客户端 normalizeSettingsPatch 将
+     * 空串归一为 undefined，写侧等价操作是删键），故空值经 [removeFields] 走删除路径。
+     * 读侧（spawn env 注入）见 protocol-client ProxyConfigStore，两端同文件。
+     */
+    fun writeProxyConfig(httpProxy: String, noProxy: String, caCertPath: String, home: String = System.getProperty("user.home")): Boolean {
+        val fields = buildList {
+            if (httpProxy.isNotBlank()) add("httpProxy" to JsonPrimitive(httpProxy.trim()))
+            if (noProxy.isNotBlank()) add("httpProxyNoProxy" to JsonPrimitive(noProxy.trim()))
+            if (caCertPath.isNotBlank()) add("httpProxyCaCertPath" to JsonPrimitive(caCertPath.trim()))
+        }
+        val removals = buildList {
+            if (httpProxy.isBlank()) add("httpProxy")
+            if (noProxy.isBlank()) add("httpProxyNoProxy")
+            if (caCertPath.isBlank()) add("httpProxyCaCertPath")
+        }
+        return writeFields(home, *fields.toTypedArray(), removalKeys = removals)
+    }
+
+    /**
+     * 多字段写入（保留其余键；文件缺失写最小片段——客户端按 zod schema 读缺失键走默认值）。
+     * [removalKeys] 中的键从结果中删除（空值清除语义，见 [writeProxyConfig]）。
+     */
+    private fun writeFields(home: String, vararg fields: Pair<String, JsonPrimitive>, removalKeys: List<String> = emptyList()): Boolean = synchronized(LOCK) {
         val file = settingPath(home)
         val root = readRoot(home)
+        val fieldKeys = fields.map { it.first }
         val newRoot = buildJsonObject {
-            if (root != null) root.forEach { (k, v) -> if (k !in fields.map { it.first }) put(k, v) }
+            if (root != null) root.forEach { (k, v) -> if (k !in fieldKeys && k !in removalKeys) put(k, v) }
             fields.forEach { (k, v) -> put(k, v) }
         }
         try {

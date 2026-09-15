@@ -42,6 +42,7 @@ import { useStore, GLM_PLAN_PROVIDER } from '@/store/useStore'
 const SID = 'sess_hr_1'
 const GLM_MODEL = { modelId: 'glm-5.3', providerId: GLM_PLAN_PROVIDER }
 const OTHER_MODEL = { modelId: 'deepseek-v3', providerId: 'builtin:deepseek' }
+const GLM_APIKEY_MODEL = { modelId: 'glm-5.3', providerId: 'builtin:bigmodel' } // issue#8 自定义 Key 渠道
 
 /** 注入一条 usage 响应（模拟 Kotlin getUsage 回包）*/
 function pushUsage(opts: { hitRate?: number; used?: number }): void {
@@ -118,6 +119,12 @@ describe('GLM 额度 60s 定时刷新', () => {
     useStore.setState({ currentModel: OTHER_MODEL })
     vi.advanceTimersByTime(180_000)
     expect(sentRequests.filter((r) => r.op === 'getQuota')).toHaveLength(0)
+  })
+
+  it('bigmodel API Key 渠道（builtin:bigmodel）→ 也拉取（2026-09-15 放宽，monitor 按账号返回套餐）', () => {
+    useStore.setState({ currentModel: GLM_APIKEY_MODEL })
+    vi.advanceTimersByTime(60_000)
+    expect(sentRequests.filter((r) => r.op === 'getQuota')).toHaveLength(1)
   })
 
   it('模型未就绪（null）→ 不拉取，切到 GLM 后恢复', () => {

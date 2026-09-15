@@ -443,3 +443,36 @@
     line-height: 1.5;
   }
 }
+
+/* 保存后待重启提示：待办语义用警示琥珀而非错误红（保存成功不是出错） */
+.basic-settings__restart-note {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 8px 0 0;
+  padding: 6px 10px;
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--status-warning) 12%, var(--bg-primary));
+  color: var(--status-warning);
+  font-size: var(--fs-body);
+
+  .codicon {
+    font-size: 13px;
+    flex-shrink: 0;
+    line-height: 1.5;
+  }
+
+  .basic-settings__save-btn {
+    flex-shrink: 0;
+    margin-left: auto;
+  }
+}
+
+/* 网络代理分区：三行输入连排（path-row 本身无纵向 margin，原有场景每分区
+   仅一行用不到），行间留呼吸感 */
+.basic-settings__proxy-fields {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-bottom: 8px;
+}

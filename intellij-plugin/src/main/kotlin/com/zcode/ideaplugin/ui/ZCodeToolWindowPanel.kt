@@ -38,6 +38,8 @@ import com.zcode.ideaplugin.zCodeService
 import com.zcode.ideaplugin.protocol.Credentials
 import com.zcode.ideaplugin.protocol.EditTargetGoneException
 import com.zcode.ideaplugin.protocol.ImageArtifactMapper
+import com.zcode.ideaplugin.protocol.ProxyConfig
+import com.zcode.ideaplugin.protocol.ProxyConfigStore
 import com.zcode.ideaplugin.protocol.ZCodeProtocolClient
 import com.zcode.ideaplugin.protocol.ZCodeProtocolException
 import com.zcode.ideaplugin.protocol.SessionStat
@@ -850,6 +852,9 @@ if (!window.__ZCODE_LOG_HOOK__) {
                         "listMemoryFiles" -> handleListMemoryFiles(msg)
                         "createMemoryFile" -> handleCreateMemoryFile(msg)
                         "setMemoryEnabled" -> handleSetMemoryEnabled(msg)
+                        "getProxyConfig" -> handleGetProxyConfig()
+                        "setProxyConfig" -> handleSetProxyConfig(msg)
+                        "restartAppServer" -> handleRestartAppServer()
                         "browserConfig" -> handleBrowserConfig()
                         "clearBrowserData" -> handleClearBrowserData(msg)
                         "browserDataOverview" -> handleBrowserDataOverview()
@@ -2769,6 +2774,34 @@ if (!window.__ZCODE_LOG_HOOK__) {
     }
 
     /**
+     * 额度 monitor 三路 HTTP（quota/limit、model-usage、tool-usage）共用 client。
+     *
+     * 代理：这些请求由插件 Java 进程直接发出（不经 app-server，spawn env 注入对它
+     * 无效），须显式挂共享 setting.json 的代理（issue #12 用户实测：境外网络下不走
+     * 代理额度查不到）。尊重 noProxy 列表（后缀匹配，规则对齐 zcode.cjs）；未配置
+     * 代理返回直连 client，行为不变。
+     */
+    private fun monitorHttpClient(): java.net.http.HttpClient {
+        val builder = java.net.http.HttpClient.newBuilder()
+            .connectTimeout(java.time.Duration.ofSeconds(15))
+        val raw = ProxyConfig.normalizeProxyUrl(ProxyConfigStore.read().httpProxy) ?: return builder.build()
+        val u = runCatching { java.net.URI(raw) }.getOrNull() ?: return builder.build()
+        val noProxy = ProxyConfig.normalizeNoProxy(ProxyConfigStore.read().noProxy)
+            ?.split(",")?.map { it.trim().lowercase().trimStart('.', '*') }?.filter { it.isNotEmpty() }
+            ?: emptyList()
+        val addr = java.net.InetSocketAddress(u.host, if (u.port == -1) 80 else u.port)
+        builder.proxy(object : java.net.ProxySelector() {
+            override fun select(uri: java.net.URI?): List<java.net.Proxy> {
+                val host = uri?.host?.lowercase() ?: return listOf(java.net.Proxy.NO_PROXY)
+                if (noProxy.any { host == it || host.endsWith(".$it") }) return listOf(java.net.Proxy.NO_PROXY)
+                return listOf(java.net.Proxy(java.net.Proxy.Type.HTTP, addr))
+            }
+            override fun connectFailed(uri: java.net.URI?, sa: java.net.SocketAddress?, ioe: java.io.IOException?) {}
+        })
+        return builder.build()
+    }
+
+    /**
      * 通用：GET {baseDomain}/api/monitor/usage/{endpoint}?startTime=&endTime=
      * 透传响应 data 字段。startTime/endTime 格式 yyyy-MM-dd HH:mm:ss。
      */
@@ -2781,8 +2814,7 @@ if (!window.__ZCODE_LOG_HOOK__) {
                 append("?startTime=").append(java.net.URLEncoder.encode(startTime, Charsets.UTF_8))
                 append("&endTime=").append(java.net.URLEncoder.encode(endTime, Charsets.UTF_8))
             }
-            val client = java.net.http.HttpClient.newBuilder()
-                .connectTimeout(java.time.Duration.ofSeconds(15)).build()
+            val client = monitorHttpClient()
             val req = java.net.http.HttpRequest.newBuilder()
                 .uri(java.net.URI(url))
                 .timeout(java.time.Duration.ofSeconds(20))
@@ -2810,8 +2842,7 @@ if (!window.__ZCODE_LOG_HOOK__) {
         val (creds, err) = loadQuotaCredentials()
         if (creds == null) return usageErrorResponse("quota", err)
         return try {
-            val client = java.net.http.HttpClient.newBuilder()
-                .connectTimeout(java.time.Duration.ofSeconds(15)).build()
+            val client = monitorHttpClient()
             val req = java.net.http.HttpRequest.newBuilder()
                 .uri(java.net.URI("${creds.baseDomain}/api/monitor/usage/quota/limit"))
                 .timeout(java.time.Duration.ofSeconds(20))
@@ -4611,6 +4642,63 @@ if (!window.__ZCODE_LOG_HOOK__) {
         return buildJsonObject {
             put("op", "memoryEnabledChanged")
             put("enabled", enabled)
+        }
+    }
+
+    // ============ 网络代理设置（issue #12；与 ZCode 客户端同源共享）============
+
+    /**
+     * op=getProxyConfig — 代理三字段回显（读 ~/.zcode/v2/setting.json，与客户端设置页同源）。
+     * restartPending=保存过代理且当前 app-server 未重启过（ZCodeServiceImpl 标志位，
+     * 新进程拉起即清）——不能拿 isStarted() 凑数（进程活着恒真，提示会常驻，首版实踩）。
+     */
+    private fun handleGetProxyConfig(): JsonObject {
+        val cfg = ProxyConfigStore.read()
+        return buildJsonObject {
+            put("op", "proxyConfig")
+            put("httpProxy", cfg.httpProxy ?: "")
+            put("noProxy", cfg.noProxy ?: "")
+            put("caCertPath", cfg.caCertPath ?: "")
+            put("restartPending", project.zCodeService().proxyRestartPending && project.zCodeService().isStarted())
+        }
+    }
+
+    /**
+     * op=setProxyConfig — 保存代理三字段（空串=清除，客户端 normalizeSettingsPatch 同语义）。
+     * 写的是共享 setting.json：ZCode 客户端重启后同样生效（其设置页/spawn env 同源）。
+     * 不自动杀 app-server（活动回合可能被打断）——置待重启标志，前端提示用户主动重启。
+     */
+    private fun handleSetProxyConfig(msg: JsonObject): JsonObject {
+        val httpProxy = msg["httpProxy"]?.jsonPrimitive?.content ?: return errorResponse("缺少 httpProxy")
+        val noProxy = msg["noProxy"]?.jsonPrimitive?.content ?: return errorResponse("缺少 noProxy")
+        val caCertPath = msg["caCertPath"]?.jsonPrimitive?.content ?: return errorResponse("缺少 caCertPath")
+        if (!ZCodeClientSettingStore.writeProxyConfig(httpProxy, noProxy, caCertPath)) {
+            return errorResponse("写入 setting.json 失败")
+        }
+        val service = project.zCodeService()
+        service.proxyRestartPending = true
+        val effective = ProxyConfigStore.read()
+        log.info("Proxy config saved (shared with ZCode client): proxy=${LogRedactor.redact(effective.httpProxy ?: "<none>")}")
+        return buildJsonObject {
+            put("op", "proxyConfigSaved")
+            put("httpProxy", effective.httpProxy ?: "")
+            put("noProxy", effective.noProxy ?: "")
+            put("caCertPath", effective.caCertPath ?: "")
+            put("restartPending", service.isStarted())
+        }
+    }
+
+    /**
+     * op=restartAppServer — 重启 app-server 吃新配置（代理保存后生效动作）。
+     * shutdown 走 ZCodeService：handler 重挂/账本清零等换代簿记都在里面；下次任何
+     * getClient() 懒重建并带上新 env（拉起时清 proxyRestartPending）。用户主动
+     * 触发=接受打断进行中的回合。
+     */
+    private fun handleRestartAppServer(): JsonObject {
+        project.zCodeService().shutdown()
+        log.info("App-server restarted by user (proxy config apply)")
+        return buildJsonObject {
+            put("op", "appServerRestarted")
         }
     }
 

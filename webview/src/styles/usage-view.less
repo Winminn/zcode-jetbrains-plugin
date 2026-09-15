@@ -112,7 +112,9 @@
     flex-shrink: 0;
   }
 
-  // 套餐用量查询凭证提示（回退链落到非订阅渠道时 is-foreign 变警示色）
+  // 套餐用量查询凭证提示（非订阅渠道与订阅渠道仅措辞不同、同为中性灰——
+  // monitor API 按 Key 所属账号返回套餐，非订阅渠道查到的数据自洽，
+  // 此前"数据可能不符"+警示色是误伤，2026-09-15 用户实测定案）
   /* 查询凭证的脱敏 key（等宽字体，与渠道名同行） */
   &__cred-key {
     font-family: var(--font-mono, Consolas, monospace);
@@ -123,10 +125,6 @@
   &__cred-hint {
     font-size: var(--fs-hint);
     color: var(--text-muted);
-
-    &.is-foreign {
-      color: var(--status-warning);
-    }
   }
 
   &__icon-btn {

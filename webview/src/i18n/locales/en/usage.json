@@ -11,7 +11,7 @@
   "plan": {
     "tab": "GLM Plan Usage",
     "credHint": "Credential: {{name}}",
-    "credForeign": "Credential: {{name}} (not the subscription channel, data may not match)"
+    "credForeign": "Query credential: {{name}} (plan data is scoped to the account owning this key)"
   },
   "app": {
     "tab": "App Usage",

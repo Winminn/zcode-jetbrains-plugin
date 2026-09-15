@@ -11,7 +11,7 @@
   "plan": {
     "tab": "GLM プラン利用量",
     "credHint": "照会キー：{{name}}",
-    "credForeign": "照会キー：{{name}}（サブスクリプション以外のためデータが一致しない可能性があります）"
+    "credForeign": "照会 credentials: {{name}}（データはこのキーのアカウントのプランに準ずる）"
   },
   "app": {
     "tab": "アプリ利用量",

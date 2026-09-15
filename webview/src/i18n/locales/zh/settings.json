@@ -130,6 +130,22 @@
       "ok": "有效 · {{model}}",
       "hint": "凭证由 ZCode 客户端登录生成；账号（oauth）登录的凭证为加密存储，最新版客户端登录会把可用凭证写入 config.json。若此处提示无可用凭证，请升级客户端并重新登录",
       "degraded": "无可用凭证 · 待修复"
+    },
+    "proxy": {
+      "label": "网络代理",
+      "configured": "已配置",
+      "httpProxy": {
+        "placeholder": "代理地址，如 http://127.0.0.1:7890"
+      },
+      "noProxy": {
+        "placeholder": "不走代理的地址（可选），逗号分隔，如 localhost,127.0.0.1"
+      },
+      "caCert": {
+        "placeholder": "CA 证书路径（可选，企业代理场景）"
+      },
+      "restartHint": "已保存。当前会话服务重启后生效",
+      "restart": "立即重启",
+      "hint": "与 ZCode 客户端共用同一份配置：客户端重启后同样生效。留空 = 直连"
     }
   },
   "behavior": {

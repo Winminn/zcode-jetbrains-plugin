@@ -127,7 +127,10 @@ object ZCodeEnvChecker {
     const val KEY_CLI_PATH = "zcode.env.cliPath"
     const val MIN_NODE_MAJOR_VERSION = 18
 
-    private const val PROBE_TIMEOUT_SECONDS = 5L
+    // 15s：代理/TUN 环境（用户常态）下 zcode.cjs --version 冷启动实测 7s+（node 启动期
+    // 网络调用被代理拖慢），5s 会误判超时使版本徽章落空。探测均为展示用非阻断项，
+    // 放宽上限无副作用（2026-09-15 VPN 环境实测）
+    private const val PROBE_TIMEOUT_SECONDS = 15L
     private const val CACHE_TTL_MILLIS = 30_000L
 
     /** JS 脚本扩展名（zcode.cjs 的合法形态；自定义 wrapper 也是其一） */

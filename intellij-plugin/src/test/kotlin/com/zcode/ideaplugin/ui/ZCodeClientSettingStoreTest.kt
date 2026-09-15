@@ -97,4 +97,66 @@ class ZCodeClientSettingStoreTest {
         assertTrue(ZCodeClientSettingStore.writeMemoryEnabled(true, home.absolutePath))
         assertTrue(ZCodeClientSettingStore.readRuntimePrefs(home.absolutePath).memoryEnabled)
     }
+
+    // ============ 代理三键（issue #12，与客户端设置页同一 schema）============
+
+    @Test
+    fun `写代理三键并可经 protocol-client 读回（插件两端同文件闭环）`() {
+        assertTrue(
+            ZCodeClientSettingStore.writeProxyConfig(
+                httpProxy = "http://127.0.0.1:7890",
+                noProxy = "localhost,127.0.0.1",
+                caCertPath = "C:/corp/ca.pem",
+                home = home.absolutePath,
+            )
+        )
+        val cfg = com.zcode.ideaplugin.protocol.ProxyConfigStore.read(home.absolutePath)
+        assertEquals("http://127.0.0.1:7890", cfg.httpProxy)
+        assertEquals("localhost,127.0.0.1", cfg.noProxy)
+        assertEquals("C:/corp/ca.pem", cfg.caCertPath)
+    }
+
+    @Test
+    fun `写代理只改三键，其余键原样保留`() {
+        writeSetting(
+            """
+            {
+              "locale": "zh-CN",
+              "httpProxy": "http://old:1",
+              "memoryEnabled": true
+            }
+            """.trimIndent()
+        )
+        assertTrue(
+            ZCodeClientSettingStore.writeProxyConfig(
+                httpProxy = "http://127.0.0.1:7890",
+                noProxy = "",
+                caCertPath = "",
+                home = home.absolutePath,
+            )
+        )
+        val root = Json.parseToJsonElement(
+            ZCodeClientSettingStore.settingPath(home.absolutePath).readText(Charsets.UTF_8)
+        ).jsonObject
+        assertEquals("http://127.0.0.1:7890", root["httpProxy"]?.jsonPrimitive?.content)
+        assertEquals("zh-CN", root["locale"]?.jsonPrimitive?.content)
+        assertEquals("true", root["memoryEnabled"]?.jsonPrimitive?.content)
+        // 空串 = 清除：noProxy / caCert 键不存在（客户端 normalizeSettingsPatch 语义）
+        assertTrue(root["httpProxyNoProxy"] == null)
+        assertTrue(root["httpProxyCaCertPath"] == null)
+    }
+
+    @Test
+    fun `代理全清空删三键（回直连）`() {
+        writeSetting("""{"httpProxy": "http://old:1", "httpProxyNoProxy": "x", "httpProxyCaCertPath": "y"}""")
+        assertTrue(
+            ZCodeClientSettingStore.writeProxyConfig("", "", "", home = home.absolutePath)
+        )
+        val root = Json.parseToJsonElement(
+            ZCodeClientSettingStore.settingPath(home.absolutePath).readText(Charsets.UTF_8)
+        ).jsonObject
+        assertTrue(root["httpProxy"] == null)
+        assertTrue(root["httpProxyNoProxy"] == null)
+        assertTrue(root["httpProxyCaCertPath"] == null)
+    }
 }

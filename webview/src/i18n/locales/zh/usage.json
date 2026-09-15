@@ -11,7 +11,7 @@
   "plan": {
     "tab": "GLM 套餐用量",
     "credHint": "查询凭证：{{name}}",
-    "credForeign": "查询凭证：{{name}}（非订阅渠道，数据可能不符）"
+    "credForeign": "查询凭证：{{name}}（额度数据以该 Key 所属账号的套餐为准）"
   },
   "app": {
     "tab": "应用用量",

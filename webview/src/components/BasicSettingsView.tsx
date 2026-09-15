@@ -628,6 +628,9 @@ function EnvironmentSettings() {
         </small>
       </section>
 
+      {/* 网络代理（与 ZCode 客户端同源共享，issue #12） */}
+      <ProxySettings />
+
       {/* 凭证状态（只读：由 ZCode 客户端登录生成，无配置入口）。
           无明文凭证（oauth 登录）不再是错误：对话走 ZCode 客户端登录态，仅辅助功能受限 */}
       <section className="basic-settings__section">
@@ -678,5 +681,113 @@ function EnvironmentSettings() {
         </button>
       </section>
     </>
+  )
+}
+
+/* ============ 网络代理（issue #12；与 ZCode 客户端同源共享 setting.json）============ */
+
+function ProxySettings() {
+  const { t } = useTranslation()
+  const proxyConfig = useStore((s) => s.proxyConfig)
+  const proxySaving = useStore((s) => s.proxySaving)
+  const loadProxyConfig = useStore((s) => s.loadProxyConfig)
+  const saveProxyConfig = useStore((s) => s.saveProxyConfig)
+  const restartAppServer = useStore((s) => s.restartAppServer)
+  const [proxyInput, setProxyInput] = useState('')
+  const [noProxyInput, setNoProxyInput] = useState('')
+  const [caInput, setCaInput] = useState('')
+  /** 重启按钮转圈（appServerRestarted 响应 / 3s 超时解除） */
+  const [restartBusy, setRestartBusy] = useState(false)
+  /** 上次同步进输入框的值：仅输入框仍是上次同步值时才跟随刷新（不覆盖用户编辑） */
+  const lastSyncRef = useRef({ proxy: '', no: '', ca: '' })
+
+  // 挂载即拉取（设置页每次进入刷新——客户端侧可能已改）
+  useEffect(() => {
+    loadProxyConfig()
+  }, [loadProxyConfig])
+
+  useEffect(() => {
+    if (!proxyConfig) return
+    // 与 EnvironmentSettings 同款快照比较：先取旧 ref 再更新，防 updater 读到新值恒不成立
+    const last = lastSyncRef.current
+    lastSyncRef.current = { proxy: proxyConfig.httpProxy, no: proxyConfig.noProxy, ca: proxyConfig.caCertPath }
+    setProxyInput((cur) => (cur === last.proxy ? proxyConfig.httpProxy : cur))
+    setNoProxyInput((cur) => (cur === last.no ? proxyConfig.noProxy : cur))
+    setCaInput((cur) => (cur === last.ca ? proxyConfig.caCertPath : cur))
+  }, [proxyConfig])
+
+  const handleSave = () => {
+    saveProxyConfig(proxyInput.trim(), noProxyInput.trim(), caInput.trim())
+  }
+
+  const handleRestart = () => {
+    if (restartBusy) return
+    setRestartBusy(true)
+    restartAppServer()
+    setTimeout(() => setRestartBusy(false), 3000)
+  }
+
+  return (
+    <section className="basic-settings__section">
+      <div className="basic-settings__field-header">
+        <span className="codicon codicon-globe" />
+        <span className="basic-settings__field-label">{t('settings.env.proxy.label')}</span>
+        {proxyConfig && proxyConfig.httpProxy && (
+          <span className="basic-settings__version-badge is-ok" title={proxyConfig.httpProxy}>
+            {t('settings.env.proxy.configured')}
+          </span>
+        )}
+      </div>
+      <div className="basic-settings__proxy-fields">
+        <div className="basic-settings__path-row">
+          <input
+            type="text"
+            className="basic-settings__path-input"
+            value={proxyInput}
+            onChange={(e) => setProxyInput(e.target.value)}
+            placeholder={t('settings.env.proxy.httpProxy.placeholder')}
+            spellCheck={false}
+          />
+        </div>
+        <div className="basic-settings__path-row">
+          <input
+            type="text"
+            className="basic-settings__path-input"
+            value={noProxyInput}
+            onChange={(e) => setNoProxyInput(e.target.value)}
+            placeholder={t('settings.env.proxy.noProxy.placeholder')}
+            spellCheck={false}
+          />
+        </div>
+        <div className="basic-settings__path-row">
+          <input
+            type="text"
+            className="basic-settings__path-input"
+            value={caInput}
+            onChange={(e) => setCaInput(e.target.value)}
+            placeholder={t('settings.env.proxy.caCert.placeholder')}
+            spellCheck={false}
+          />
+          <button type="button" className="basic-settings__save-btn" onClick={handleSave} disabled={proxySaving}>
+            {proxySaving && <span className="codicon codicon-loading codicon-modifier-spin" />}
+            {t('settings.env.save')}
+          </button>
+        </div>
+      </div>
+      {proxyConfig?.restartPending && (
+        <div className="basic-settings__restart-note">
+          <span className="codicon codicon-info" />
+          <span>{t('settings.env.proxy.restartHint')}</span>
+          <button type="button" className="basic-settings__save-btn" onClick={handleRestart} disabled={restartBusy}>
+            {restartBusy && <span className="codicon codicon-loading codicon-modifier-spin" />}
+            {t('settings.env.proxy.restart')}
+          </button>
+        </div>
+      )}
+      <small className="basic-settings__hint">
+        <span className="codicon codicon-info" />
+        <span>{t('settings.env.proxy.hint')}</span>
+      </small>
+    </section>
   )
 }

@@ -130,6 +130,22 @@
       "ok": "유효 · {{model}}",
       "hint": "자격 증명은 ZCode 클라이언트 로그인으로 생성됩니다. 계정(OAuth) 로그인 시 암호화 저장되지만 최신 클라이언트는 로그인 시 사용 가능한 자격 증명을 config.json에 기록합니다. 여기에 사용 가능한 자격 증명이 없다고 표시되면 클라이언트를 업그레이드하고 다시 로그인하세요",
       "degraded": "자격 증명 없음 · 수정 필요"
+    },
+    "proxy": {
+      "label": "네트워크 프록시",
+      "configured": "설정됨",
+      "httpProxy": {
+        "placeholder": "프록시 URL, 예: http://127.0.0.1:7890"
+      },
+      "noProxy": {
+        "placeholder": "프록시 제외 목록(선택, 쉼표 구분, 예: localhost,127.0.0.1)"
+      },
+      "caCert": {
+        "placeholder": "CA 인증서 경로(선택, 사내 프록시용)"
+      },
+      "restartHint": "저장됨. 세션 서비스 재시작 후 적용됩니다",
+      "restart": "지금 재시작",
+      "hint": "ZCode 데스크톱 클라이언트와 설정 공유(클라이언트 재시작 후 적용). 비워 두면 직접 연결"
     }
   },
   "behavior": {
