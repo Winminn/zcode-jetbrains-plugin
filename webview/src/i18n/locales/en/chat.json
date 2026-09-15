@@ -42,6 +42,7 @@
     "fullTextAria": "Full user message dialog",
     "copy": "Copy",
     "copyCopied": "Copied",
+    "copyMarkdown": "Copy as Markdown",
     "edit": "Edit",
     "editCancel": "Cancel",
     "editRegenerate": "Regenerate",

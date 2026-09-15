@@ -50,6 +50,9 @@ internal fun pushRefs(project: com.intellij.openapi.project.Project, refs: List<
         buildJsonObject {
             put("op", "filesToInput")
             put("refs", JsonArray(refs.map { JsonPrimitive(it) }))
+            // 来源标记：右键菜单发的引用与正文有上下文关系，前端一律内联到光标处
+            // （仅附件按钮 picker 进顶部 chip 栏）
+            put("source", "menu")
         }
     )
 }

@@ -2938,9 +2938,11 @@ if (!window.__ZCODE_LOG_HOOK__) {
         val title = msg["title"]?.jsonPrimitive?.content ?: "Diff: ${filePath.substringAfterLast('/')}"
         com.intellij.openapi.application.invokeLater {
             try {
+                // 按文件名推断类型，否则 diff 页无语法高亮（全灰）
+                val fileType = FileTypeManager.getInstance().getFileTypeByFileName(filePath)
                 val factory = DiffContentFactory.getInstance()
-                val left: DiffContent = factory.create(project, oldContent)
-                val right: DiffContent = factory.create(project, newContent)
+                val left: DiffContent = factory.create(project, oldContent, fileType)
+                val right: DiffContent = factory.create(project, newContent, fileType)
                 val request = SimpleDiffRequest(
                     title,
                     left, right,
@@ -3338,10 +3340,12 @@ if (!window.__ZCODE_LOG_HOOK__) {
         // 目录尾加 /（与 SendFileToInputAction 一致，前端 FileRef 靠它判定目录图标）
         val refs = FileRefs.toRefs(picked, presentable = true)
         log.info("${refs.size} attachment(s) selected: $refs")
-        // 复用 filesToInput 推送链路（InputBox 已监听，自动加入 fileRefs chips）
+        // 复用 filesToInput 推送链路；source='picker' 让前端归入顶部附件栏
+        // （右键菜单 menu/拖拽 drag 都内联到光标处，只有附件按钮进顶部 chip 栏）
         pushToWebview(buildJsonObject {
             put("op", "filesToInput")
             put("refs", JsonArray(refs.map { JsonPrimitive(it) }))
+            put("source", "picker")
         })
         return buildJsonObject { put("op", "filesPicked"); put("count", refs.size) }
     }
@@ -4492,11 +4496,13 @@ if (!window.__ZCODE_LOG_HOOK__) {
             ?: return buildJsonObject { put("op", "files"); put("files", JsonArray(emptyList())) }
 
         val files = mutableListOf<String>()
+        val dirs = mutableListOf<String>()
         val ignoredDirs = setOf(
             "node_modules", ".git", "build", "dist", "out", ".gradle", ".idea", "target", "__pycache__",
             ".svn", ".hg", ".venv", "venv", "vendor", "Pods", ".terraform"
         )
         val maxFiles = 200
+        val maxDirs = 50 // 文件夹独立配额：防止被海量文件挤掉（issue #14：@ 引用文件夹）
 
         try {
             val baseVfs = LocalFileSystem.getInstance().findFileByPath(basePath)
@@ -4507,7 +4513,17 @@ if (!window.__ZCODE_LOG_HOOK__) {
                     ProjectFileIndex.getInstance(project).iterateContentUnderDirectory(
                         baseVfs,
                         { vf ->
-                            if (vf.isDirectory) return@iterateContentUnderDirectory true
+                            if (vf.isDirectory) {
+                                // 文件夹也进补全，尾 / 标记（FileRefs/前端 isDirectory 同判据）；
+                                // 目录恒继续遍历（不能因配额中断，否则下面文件全丢）
+                                val dirRel = vf.path.removePrefix(basePath).replace('\\', '/').trimStart('/')
+                                if (dirRel.isNotEmpty() && dirs.size < maxDirs &&
+                                    (query.isEmpty() || dirRel.lowercase().contains(query) || vf.name.lowercase().contains(query))
+                                ) {
+                                    dirs.add("$dirRel/")
+                                }
+                                return@iterateContentUnderDirectory true
+                            }
                             if (FileTypeManager.getInstance().getFileTypeByFile(vf).isBinary) {
                                 return@iterateContentUnderDirectory true
                             }
@@ -4529,14 +4545,17 @@ if (!window.__ZCODE_LOG_HOOK__) {
             log.warn("File scan failed: ${e.message}")
         }
 
+        // 文件夹优先（用户诉求），组内短路径优先（通常更相关）
+        dirs.sortBy { it.length }
+        files.sortBy { it.length }
+        val matched = dirs + files
         // @ 展开频率低（query 为空）打 info 供远程场景诊断；逐键过滤的请求走 debug
-        if (query.isEmpty()) log.info("[listFiles] base=$basePath matched=${files.size}")
-        else log.debug("[listFiles] base=$basePath matched=${files.size} query='$query'")
+        if (query.isEmpty()) log.info("[listFiles] base=$basePath matched=${matched.size}")
+        else log.debug("[listFiles] base=$basePath matched=${matched.size} query='$query'")
 
-        files.sortBy { it.length } // 短路径优先（通常更相关）
         return buildJsonObject {
             put("op", "files")
-            put("files", JsonArray(files.take(maxFiles).map { JsonPrimitive(it) }))
+            put("files", JsonArray(matched.take(maxFiles + maxDirs).map { JsonPrimitive(it) }))
         }
     }
 

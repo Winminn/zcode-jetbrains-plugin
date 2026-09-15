@@ -42,6 +42,7 @@
     "fullTextAria": "用户消息全文弹窗",
     "copy": "复制",
     "copyCopied": "已复制",
+    "copyMarkdown": "复制 Markdown",
     "edit": "编辑",
     "editCancel": "取消",
     "editRegenerate": "重新生成",

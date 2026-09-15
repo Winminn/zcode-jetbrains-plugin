@@ -42,6 +42,7 @@
     "fullTextAria": "ユーザーメッセージ全文ダイアログ",
     "copy": "コピー",
     "copyCopied": "コピーしました",
+    "copyMarkdown": "Markdownをコピー",
     "edit": "編集",
     "editCancel": "キャンセル",
     "editRegenerate": "再生成",

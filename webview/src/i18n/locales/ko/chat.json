@@ -42,6 +42,7 @@
     "fullTextAria": "사용자 메시지 전체 보기 대화상자",
     "copy": "복사",
     "copyCopied": "복사됨",
+    "copyMarkdown": "Markdown으로 복사",
     "edit": "편집",
     "editCancel": "취소",
     "editRegenerate": "다시 생성",

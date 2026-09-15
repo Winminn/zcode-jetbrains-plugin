@@ -734,6 +734,7 @@ function AssistantBubble({
         info={info}
         time={time}
         streaming={streaming}
+        copy={!streaming ? collectAssistantMarkdown(parts) : undefined}
         fork={forkable ? { busy: forkBusy, onClick: () => setConfirmFork(true) } : undefined}
       />
       {confirmFork && (
@@ -793,6 +794,18 @@ function collectUserText(parts: MessagePart[]): string {
 }
 
 /**
+ * assistant 回复的 markdown 源文收集（「复制 Markdown」用）：
+ * 各 text part 是独立段落，双换行连接防止相邻段落粘连；
+ * 只汇总正文文本，工具调用过程不混入
+ */
+function collectAssistantMarkdown(parts: MessagePart[]): string {
+  return parts
+    .filter((p): p is TextPart => p.type === 'text')
+    .map((p) => p.text)
+    .join('\n\n')
+}
+
+/**
  * assistant 消息底部：时间 + 轮次耗时 + token 信息
  *
  * 轮次耗时（对齐 cc-gui）：
@@ -804,15 +817,22 @@ function MessageFooter({
   info,
   time,
   streaming,
+  copy,
   fork,
 }: {
   info: ZCodeMessage['info']
   time: string
   streaming?: boolean
+  /** 复制 Markdown 按钮（整条回复 markdown 源文；undefined=不渲染——流式中/无文本）*/
+  copy?: string
   /** 分叉按钮（footer 行右侧，hover 显示；undefined=不渲染——流式中/乐观消息）*/
   fork?: { busy: boolean; onClick: () => void }
 }) {
   const { t } = useTranslation()
+  const { state: copyState, showResult: showCopyResult } = useCopyFeedback(1200)
+  const onCopyMarkdown = () => {
+    if (copy) void showCopyResult(() => copyText(copy))
+  }
   const tokens = info.tokens
   const model = info.modelID
 
@@ -852,6 +872,17 @@ function MessageFooter({
         </span>
       )}
       {info.cost ? <span className="msg__footer-cost">${info.cost.toFixed(4)}</span> : null}
+      {copy && (
+        <button
+          type="button"
+          className="msg__action-btn msg__footer-copy"
+          onClick={onCopyMarkdown}
+          title={copyState === 'ok' ? t('chat.message.copyCopied') : t('chat.message.copyMarkdown')}
+          aria-label={t('chat.message.copyMarkdown')}
+        >
+          <span className={`codicon ${copyState === 'ok' ? 'codicon-check msg__action-btn--ok' : 'codicon-copy'}`} />
+        </button>
+      )}
       {fork && (
         <button
           type="button"

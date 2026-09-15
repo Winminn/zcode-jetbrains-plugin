@@ -956,7 +956,11 @@ export type JavaResponse =
   | { op: 'ideTheme'; isDark: boolean }
   | { op: 'files'; files: string[] }
   | { op: 'commands'; commands: SlashCommand[] }
+  /** IDE 侧推送文件引用（drag=OS 拖拽/menu=右键菜单/picker=附件按钮）；
+   * 前端分流：仅 picker 进顶部附件栏，drag/menu 一律内联到光标处 */
   | { op: 'filesToInput'; refs: string[]; source?: 'drag' | 'menu' | 'picker' }
+  /** IDE 侧推送纯文本正文（控制台选中日志等，issue #14）：光标处插文本，非引用语义 */
+  | { op: 'textToInput'; text: string }
   | {
       op: 'models'
       models: ModelOption[]

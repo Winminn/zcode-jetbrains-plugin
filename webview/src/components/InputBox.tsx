@@ -4,7 +4,7 @@
  * - contenteditable div，多行，自动高度（4 行 ~ 240px）
  * - IME 安全的 Enter 发送（useKeyboard hook）
  * - 对话进行中仍可输入：Enter 入队（store sendMessage 分流），回合结束自动发送
- * - @文件引用（FileRef chip + 补全下拉）
+ * - @文件引用（内联 chip + 补全下拉，文件夹条目带 / 尾标）
  * - /斜杠命令技能选择（行首 / 触发，磁盘扫描 skill/command；下拉分组展示，命令组排在技能组前优先匹配）
  * - 输入历史导航（useInputHistory：空输入 ArrowUp 回溯、ArrowDown 前进）
  * - 历史前缀幽灵补全（findHistorySuggestion：输入匹配历史前缀显示灰色后缀，Tab 采纳/Esc 关闭）
@@ -13,9 +13,10 @@
  * - 引用 chips 区（技能+文件，对齐 cc-gui：MessageQueue 之下、ContextBar 之上，不贴输入框）
  *
  * 文件引用的两种形态（utils/inlineFileTags）：
- *   顶部 chip 栏：输入框为空时右键发送/@ 补全选择 → 引用与正文无位置关系
- *   内联 chip：输入框已有内容时右键发送插到光标后；手打/粘贴完整绝对路径
- *   （后跟空白符）自动转 chip——引用与正文有上下文关系，发送时序列化回 @路径
+ *   顶部 chip 栏：附件按钮选中（picker）→ 引用与正文无位置关系
+ *   内联 chip：@ 补全选中、右键菜单发送（menu）、OS 拖拽（drag）插到光标处；
+ *   手打/粘贴完整绝对路径（后跟空白符）自动转 chip——引用与正文有上下文关系，
+ *   发送时序列化回 @路径
  *
  * / 技能选中后加到 SkillRef chip 列表（笔图标+技能名，紫色调），
  * 发送时拼回 /技能名 前缀（由 ZCode CLI 解析）。
@@ -675,27 +676,14 @@ export function InputBox({ onSend, isStreaming = false, onStop, disabled = false
    *   以纯文本插入光标处（Chromium 把 \n 落地为 <br>，与 serializeEditor 对齐，
    *   且保留 undo 撤销栈），落地后扫描完整路径转内联 chip（末尾路径也算完成）
    */
-  const handlePaste = useCallback((e: React.ClipboardEvent) => {
-    // 图片优先（对齐 cc-gui：一旦有图即不处理文本，截图/网页复制图片的主路径）
-    const imageItems = Array.from(e.clipboardData.items).filter((it) =>
-      it.type.startsWith('image/'),
-    )
-    if (imageItems.length > 0) {
-      e.preventDefault()
-      for (const item of imageItems) {
-        const file = item.getAsFile()
-        if (file) addImageFile(file)
-      }
-      return
-    }
-    const pasted = e.clipboardData.getData('text/plain')
-    if (!pasted) {
-      // 无纯文本且无图片：JCEF 偶发不把剪贴板图片暴露给 clipboardData（IDE 场景），
-      // 走 Java 侧 AWT 剪贴板兜底（无图时返回空、无副作用）
-      sendToJava({ op: 'getClipboardImage' })
-      return
-    }
-    e.preventDefault()
+  /**
+   * 纯文本进输入框（粘贴与 IDE 推送共用）：
+   *   超阈值（≥PASTE_COLLAPSE_LINES 行或 ≥PASTE_COLLAPSE_CHARS 字符）→ 折叠进
+   *   pastedTexts（上方 chip，发送时拼到正文末尾），防长日志顶满输入框；
+   *   短文本 → 光标处插入，落地后触发完整路径/会话引用转 chip。
+   * 调用方须先确保编辑器聚焦（execCommand 依赖焦点，无焦点时静默失败）。
+   */
+  const insertPlainText = useCallback((pasted: string) => {
     const lines = pasted.split('\n').length
     if (lines >= PASTE_COLLAPSE_LINES || pasted.length >= PASTE_COLLAPSE_CHARS) {
       setPastedTexts((prev) => [
@@ -738,6 +726,30 @@ export function InputBox({ onSend, isStreaming = false, onStop, disabled = false
       setHasText(!!el.textContent?.trim())
     }, 0)
   }, [])
+
+  const handlePaste = useCallback((e: React.ClipboardEvent) => {
+    // 图片优先（对齐 cc-gui：一旦有图即不处理文本，截图/网页复制图片的主路径）
+    const imageItems = Array.from(e.clipboardData.items).filter((it) =>
+      it.type.startsWith('image/'),
+    )
+    if (imageItems.length > 0) {
+      e.preventDefault()
+      for (const item of imageItems) {
+        const file = item.getAsFile()
+        if (file) addImageFile(file)
+      }
+      return
+    }
+    const pasted = e.clipboardData.getData('text/plain')
+    if (!pasted) {
+      // 无纯文本且无图片：JCEF 偶发不把剪贴板图片暴露给 clipboardData（IDE 场景），
+      // 走 Java 侧 AWT 剪贴板兜底（无图时返回空、无副作用）
+      sendToJava({ op: 'getClipboardImage' })
+      return
+    }
+    e.preventDefault()
+    insertPlainText(pasted)
+  }, [insertPlainText])
 
   /** 内联 chip 的 ✕ 删除（编辑器内动态 DOM，事件委托；文件 chip 与命令 chip 共用）*/
   const handleEditorClick = useCallback((e: React.MouseEvent) => {
@@ -986,26 +998,16 @@ export function InputBox({ onSend, isStreaming = false, onStop, disabled = false
         // refs 形如 "@C:\abs\path" / "@C:\abs\path#L10-20"，存入时去掉 @ 前缀
         const clean = msg.refs.map((r) => (r.startsWith('@') ? r.slice(1) : r))
         const el = editorRef.current
-        // OS 拖拽（source='drag'）：走内联 chip——和"粘贴完整路径"同款视觉与
-        // 序列化逻辑，引用与正文的上下文顺序保留在文本流中。空输入框时 chip
-        // 插在首位，insertChipAtCursor 自动补空格并把光标移到 chip 后可继续打字。
-        // 其他来源（IDE 右键 / 附件按钮）保持原状：输入框已有内容时插内联；
-        // 空输入框时挂顶部 chip 栏。
-        const isDrag = msg.source === 'drag'
-        if (isDrag && el && clean.length > 0) {
+        // 仅附件按钮（picker）选中进顶部 chip 栏；其余来源（右键菜单 menu /
+        // OS 拖拽 drag）一律内联到光标处——引用与正文的上下文顺序保留在文本
+        // 流中，空输入框时 chip 插在首位，insertChipAtCursor 自动补空格并把
+        // 光标移到 chip 后可继续打字（issue #14③ 补充：右键发送不再进附件栏）
+        if (msg.source !== 'picker' && el && clean.length > 0) {
           for (const p of clean) insertChipAtCursor(el, p)
           setHasText(!!el.textContent?.trim())
           return
         }
-        // 输入框已有内容：引用与正文有上下文关系 → 内联插到当前光标后（chip 形态），
-        // 不再挂到顶部 chip 栏
-        if (clean.length > 0 && el && el.textContent?.trim()) {
-          insertChipAtCursor(el, clean[0])
-          for (const p of clean.slice(1)) insertChipAtCursor(el, p)
-          setHasText(true)
-          return
-        }
-        // 空输入框：维持顶部 chip 栏（现状），方便继续打字
+        // 附件按钮（picker）选中：挂顶部 chip 栏，方便继续打字
         if (clean.length > 0) {
           setFileRefs((prev) => [...prev, ...clean.filter((r) => !prev.includes(r))])
         }
@@ -1013,6 +1015,18 @@ export function InputBox({ onSend, isStreaming = false, onStop, disabled = false
         if (el) {
           el.focus()
           placeCursorEnd(el)
+        }
+      }
+      // IDE 侧推送纯文本正文（控制台选中日志等，issue #14）：走粘贴同款逻辑——
+      // 长文本折叠进 pastedTexts（防顶满输入框，发送时拼正文末尾），短文本光标处
+      // 插入。用户此刻焦点在控制台，先聚焦编辑器把光标落到末尾（execCommand
+      // 依赖焦点，无焦点时静默失败）
+      if (msg.op === 'textToInput' && msg.text.trim()) {
+        const el = editorRef.current
+        if (el) {
+          el.focus()
+          placeCursorEnd(el)
+          insertPlainText(msg.text)
         }
       }
     })
@@ -1230,7 +1244,7 @@ export function InputBox({ onSend, isStreaming = false, onStop, disabled = false
     return unsub
   }, [mentionQuery])
 
-  // ============ @ 补全选择（纯文件引用；子智能体入口在 / 下拉与左下角 AgentSelect）============
+  // ============ @ 补全选择（选中 → 光标处内联 chip；子智能体入口在 / 下拉与左下角 AgentSelect）============
 
   /** 从编辑器删除光标前的 @xxx 触发文本（Selection API 精确删除，
    * 不能 textContent 全量替换——会把已渲染的内联 chip 抹成纯文本）*/
@@ -1258,12 +1272,18 @@ export function InputBox({ onSend, isStreaming = false, onStop, disabled = false
       el.textContent = el.textContent?.replace(/@([^\s@]*)$/, '') ?? ''
     }
     setHasText(!!el.textContent?.trim())
-    placeCursorEnd(el)
+    // 光标保持在删除点：后续 insertChipAtCursor 依赖光标位置就地插 chip
   }
 
   function selectMention(file: string) {
-    setFileRefs((prev) => (prev.includes(file) ? prev : [...prev, file]))
     removeMentionTriggerText()
+    const el = editorRef.current
+    if (el) {
+      // @ 选中 → 光标处内联 chip（与手打完整路径同款形态）：引用与正文的位置关系
+      // 保留在文本流中，方便对着引用继续写说明（issue #14）；发送时序列化回 @路径
+      insertChipAtCursor(el, file)
+      setHasText(true)
+    }
     setMentionQuery(null)
     setMentionFiles([])
   }
@@ -1864,7 +1884,7 @@ export function InputBox({ onSend, isStreaming = false, onStop, disabled = false
                   selectMention(f)
                 }}
               >
-                <span className="codicon codicon-file input-box__mention-icon" />
+                <span className={`codicon ${f.endsWith('/') ? 'codicon-folder' : 'codicon-file'} input-box__mention-icon`} />
                 <span className="input-box__mention-path">{f}</span>
               </div>
             ))}
