@@ -32,6 +32,7 @@
     "dirLabel": "Memory directory",
     "dirFound": "{{count}} loaded",
     "dirNotFound": "Not found",
+    "orphanBadge": "Unreferenced",
     "dirMissHint": "Reading location derived from the current project path. If directories in the memories root end with a different 16-char hash, the memories were written under another path — open the root to compare",
     "revealDir": "Reveal folder",
     "revealRoot": "Open root",

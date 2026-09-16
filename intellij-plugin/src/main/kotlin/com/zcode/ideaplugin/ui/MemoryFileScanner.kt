@@ -13,6 +13,7 @@ import java.security.MessageDigest
  *   2. 自动记忆（auto，ZCode 自动生成，只读展示）
  *      ~/.zcode/cli/memories/projects/<前缀>-<hash16>/memory/
  *        MEMORY.md = 索引（每条记忆一行），其余 *.md = 单条事实
+ *      展示顺序跟索引走、标题取索引链接文本；未被索引引用的文件标 orphaned；
  *      hash16 = sha256(项目绝对路径小写、原生分隔符形态) 前 16 位 hex；前缀通常为
  *      项目目录名小写，但 CLI 会改写不安全字符（中文目录名 → project），定位须按
  *      哈希后缀匹配（详见 findMemoryDir；文档：zcode.z.ai/cn/docs/memory）
@@ -35,8 +36,10 @@ object MemoryFileScanner {
         val lastModified: Long? = null,
     /** 展示说明（历史字段：后端拼好的中文，前端已改按 scope/kind 走 i18n，不再直接渲染）*/
     val description: String,
-    /** auto 事实文件首个 # 标题（无则 null）——作为数据传给前端展示 */
+    /** auto 事实文件展示摘要：MEMORY.md 索引链接文本优先，frontmatter description / # 标题兜底 */
     val title: String? = null,
+    /** auto 事实文件未被 MEMORY.md 索引引用（前端标「找不到引用」，排在有引用条目之后）*/
+    val orphaned: Boolean = false,
 )
 
     /**
@@ -95,7 +98,11 @@ object MemoryFileScanner {
         }
     }
 
-    /** 自动记忆目录：MEMORY.md 索引排最前，事实文件按修改时间倒序 */
+    /**
+     * 自动记忆目录条目：MEMORY.md 索引排最前，事实文件按索引顺序跟随；
+     * 标题取索引行链接文本（如「三台主机 SSH 访问」），未被索引引用的文件标
+     * orphaned 排末尾（按修改时间倒序），摘要退回 frontmatter description。
+     */
     private fun scanAutoMemories(home: String, projectBasePath: String): List<MemoryFile> {
         val dir = findMemoryDir(home, projectBasePath) ?: return emptyList()
         val files = dir.listFiles { f -> f.isFile && f.extension.equals("md", ignoreCase = true) }
@@ -104,11 +111,51 @@ object MemoryFileScanner {
         val indexItems = index.map {
             inspect(it, "project", "auto", "记忆索引（每条记忆一行，指向同目录事实文件）")
         }
-        val factItems = facts.sortedByDescending { it.lastModified() }.map {
-            val title = firstHeading(it)
-            inspect(it, "project", "auto", title ?: "").copy(title = title)
+        val indexOrder = index.firstOrNull()?.let { parseMemoryIndex(it) } ?: emptyMap()
+        if (indexOrder.isEmpty()) {
+            // 无索引可对照：全部按修改时间倒序，orphan 概念不适用
+            return indexItems + facts.sortedByDescending { it.lastModified() }.map {
+                val title = factSummary(it)
+                inspect(it, "project", "auto", title ?: "").copy(title = title)
+            }
         }
-        return indexItems + factItems
+        // 有引用组严格按索引出现顺序（同毫秒文件的 lastModified 不可靠）；索引引用但文件缺失的自然跳过
+        val referenced = indexOrder.entries.mapNotNull { (nameLower, title) ->
+            facts.firstOrNull { it.name.lowercase() == nameLower }?.let { f ->
+                inspect(f, "project", "auto", title).copy(title = title)
+            }
+        }
+        val orphans = facts.filter { it.name.lowercase() !in indexOrder.keys }
+            .sortedByDescending { it.lastModified() }
+            .map { f ->
+                val title = factSummary(f)
+                inspect(f, "project", "auto", title ?: "").copy(title = title, orphaned = true)
+            }
+        return indexItems + referenced + orphans
+    }
+
+    /**
+     * 解析 MEMORY.md 索引：文件名小写 → 链接文本标题（保持索引出现顺序）。
+     * 行形如 `- [三台主机 SSH 访问](hosts-ssh-access.md) — 摘要…`；目标路径取末段
+     * 文件名（含 % 编码时先 URL 解码，+ 先转义防吞）。
+     */
+    private fun parseMemoryIndex(indexFile: File): Map<String, String> = try {
+        val lineRegex = Regex("""^\s*[-*+]\s+\[([^\]]+)\]\(([^)\s]+)\)""")
+        indexFile.readLines(Charsets.UTF_8).mapNotNull { line ->
+            lineRegex.find(line)?.let { m ->
+                var target = m.groupValues[2].substringAfterLast('/').substringAfterLast('\\')
+                if (target.contains('%')) {
+                    target = try {
+                        java.net.URLDecoder.decode(target.replace("+", "%2B"), Charsets.UTF_8)
+                    } catch (_: Exception) {
+                        target
+                    }
+                }
+                target.lowercase() to m.groupValues[1].trim()
+            }
+        }.toMap()
+    } catch (_: Exception) {
+        emptyMap()
     }
 
     /**
@@ -153,11 +200,29 @@ object MemoryFileScanner {
         return digest.joinToString("") { "%02x".format(it) }.take(16)
     }
 
-    /** 读文件首个「# 标题」行（自动记忆的事实文件都有标题行；返回纯标题不带前缀）*/
-    private fun firstHeading(f: File): String? = try {
-        f.readText(Charsets.UTF_8).lineSequence()
-            .firstOrNull { it.startsWith("# ") }
-            ?.removePrefix("# ")?.trim()?.take(80)
+    /**
+     * 提取事实记忆的展示摘要（截断 80 字符）。
+     * CLI 写的文件是 frontmatter 形态（--- + name/description），description 即该条
+     * 记忆的一句话摘要，优先取；Markdown 标题形态（# xxx）兜底。只扫前 20 行。
+     */
+    private fun factSummary(f: File): String? = try {
+        var desc: String? = null
+        var heading: String? = null
+        var inFrontmatter = false
+        for ((i, line) in f.readLines(Charsets.UTF_8).withIndex()) {
+            if (i > 20) break
+            if (i == 0 && line.trim() == "---") { inFrontmatter = true; continue }
+            if (inFrontmatter) {
+                if (line.trim() == "---") break
+                if (desc == null && line.startsWith("description:")) {
+                    desc = line.removePrefix("description:").trim().take(80).ifEmpty { null }
+                }
+            } else if (heading == null && line.startsWith("# ")) {
+                heading = line.removePrefix("# ").trim().take(80).ifEmpty { null }
+                break
+            }
+        }
+        desc ?: heading
     } catch (_: Exception) {
         null
     }

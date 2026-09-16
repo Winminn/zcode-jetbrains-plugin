@@ -286,6 +286,17 @@
     opacity: 0.85;
   }
 
+  /* 自动记忆条目（数量多）：紧凑两行 + 摘要单行省略，控整体高度 */
+  &.auto {
+    padding: 7px 12px;
+
+    .memory-item__desc {
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+  }
+
   &__icon {
     font-size: 18px;
     color: var(--accent-primary, #3574f0);
@@ -336,6 +347,13 @@
     border-radius: 4px;
     padding: 0 6px;
     line-height: 16px;
+  }
+
+  /* 「找不到引用」：未被 MEMORY.md 索引引用的事实文件 */
+  &__badge--orphan {
+    color: var(--status-warn-text, #c48a20);
+    border-color: currentColor;
+    opacity: 0.9;
   }
 
   &__desc {

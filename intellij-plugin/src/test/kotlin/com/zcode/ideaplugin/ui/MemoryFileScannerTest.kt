@@ -111,4 +111,80 @@ class MemoryFileScannerTest {
         val project = files.filter { it.scope == "project" && it.kind == "instructions" }
         assertEquals(1, project.size, "项目指令记忆固定 1 条")
     }
+
+    @Test
+    fun `事实摘要优先取frontmatter的description`() {
+        // CLI 真实形态：--- + name/description（# Memory Index 等标题行不是摘要）
+        val dir = makeMemoryDir("demo-app-0000000000000000")
+        File(dir, "fact-fm.md").writeText(
+            "---\nname: fact-fm\ndescription: 48 项目部署脚本八能力，含 setup token 首启初始化\n---\n\n正文内容\n",
+            Charsets.UTF_8,
+        )
+        val fact = MemoryFileScanner.list("C:/work/demo-app", tmp.absolutePath)
+            .first { it.name == "fact-fm.md" }
+        assertEquals("48 项目部署脚本八能力，含 setup token 首启初始化", fact.title, "应取 frontmatter description")
+    }
+
+    @Test
+    fun `事实摘要无frontmatter时退回标题行`() {
+        val dir = makeMemoryDir("demo-app-0000000000000000")
+        File(dir, "fact-h.md").writeText("# 纯标题形态记忆\n\n内容\n", Charsets.UTF_8)
+        val fact = MemoryFileScanner.list("C:/work/demo-app", tmp.absolutePath)
+            .first { it.name == "fact-h.md" }
+        assertEquals("纯标题形态记忆", fact.title, "应退回 # 标题行")
+    }
+
+    @Test
+    fun `超长description截断80字符`() {
+        val dir = makeMemoryDir("demo-app-0000000000000000")
+        val long = "长".repeat(200)
+        File(dir, "fact-long.md").writeText("---\ndescription: $long\n---\n", Charsets.UTF_8)
+        val fact = MemoryFileScanner.list("C:/work/demo-app", tmp.absolutePath)
+            .first { it.name == "fact-long.md" }
+        assertEquals(80, fact.title?.length, "应截断到 80")
+    }
+
+    @Test
+    fun `标题与顺序跟随MEMORY索引未引用文件标orphaned排末尾`() {
+        val dir = File(tmp, ".zcode/cli/memories/projects/demo-app-0000000000000000/memory")
+        dir.mkdirs()
+        File(dir, "MEMORY.md").writeText(
+            "# Memory Index\n\n" +
+                "- [甲项目部署](deploy-tool.md) — 部署摘要\n" +
+                "- [三台主机 SSH 访问](hosts-ssh-access.md) — ssh 摘要\n" +
+                "- [域名方案](domain-access-scheme.md)\n",
+            Charsets.UTF_8,
+        )
+        File(dir, "deploy-tool.md").writeText("---\ndescription: 部署描述\n---\n", Charsets.UTF_8)
+        File(dir, "hosts-ssh-access.md").writeText("---\ndescription: ssh 描述\n---\n", Charsets.UTF_8)
+        File(dir, "domain-access-scheme.md").writeText("---\ndescription: 域名描述\n---\n", Charsets.UTF_8)
+        // 未被索引引用：应标 orphaned 且排在最后
+        File(dir, "zz-orphan.md").writeText("---\ndescription: 孤儿描述\n---\n", Charsets.UTF_8)
+
+        val auto = MemoryFileScanner.list("C:/work/demo-app", tmp.absolutePath).filter { it.kind == "auto" }
+        val factNames = auto.dropWhile { it.name.equals("MEMORY.md", true) }.map { it.name }
+        assertEquals(
+            listOf("deploy-tool.md", "hosts-ssh-access.md", "domain-access-scheme.md", "zz-orphan.md"),
+            factNames,
+            "顺序应跟索引走、orphan 排末尾",
+        )
+        assertEquals("甲项目部署", auto.first { it.name == "deploy-tool.md" }.title, "标题应取索引链接文本")
+        val orphan = auto.first { it.name == "zz-orphan.md" }
+        assertTrue(orphan.orphaned, "未引用文件应标 orphaned")
+        assertEquals("孤儿描述", orphan.title, "orphan 摘要退回 frontmatter description")
+    }
+
+    @Test
+    fun `无MEMORY索引时回退时间倒序且不标orphaned`() {
+        val dir = File(tmp, ".zcode/cli/memories/projects/demo-app-0000000000000000/memory")
+        dir.mkdirs()
+        val a = File(dir, "a.md"); val b = File(dir, "b.md")
+        a.writeText("# A\n"); b.writeText("# B\n")
+        b.setLastModified(a.lastModified() + 60_000)
+
+        val auto = MemoryFileScanner.list("C:/work/demo-app", tmp.absolutePath).filter { it.kind == "auto" }
+        val factNames = auto.dropWhile { it.name.equals("MEMORY.md", true) }.map { it.name }
+        assertEquals(listOf("b.md", "a.md"), factNames, "无索引应按修改时间倒序")
+        assertTrue(auto.none { it.orphaned }, "无索引不适用 orphan 概念")
+    }
 }

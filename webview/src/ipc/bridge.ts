@@ -1802,10 +1802,11 @@ flowchart LR
             exists: true,
             sizeBytes: 1180,
             lastModified: Date.now() - 7200_000,
-            description: '自动记忆：用户偏好用 Ctrl+F 做会话内搜索',
-            title: '用户偏好用 Ctrl+F 做会话内搜索',
+            description: '用户偏好用 Ctrl+F 做会话内搜索',
+            title: '会话内搜索偏好',
           },
           {
+            // mock：未被 MEMORY.md 索引引用的孤儿条目（「找不到引用」徽标验收）
             name: 'no-heading-fact.md',
             scope: 'project',
             kind: 'auto',
@@ -1814,6 +1815,7 @@ flowchart LR
             sizeBytes: 640,
             lastModified: Date.now() - 10800_000,
             description: '',
+            orphaned: true,
           },
         ],
       }

@@ -32,6 +32,7 @@
     "dirLabel": "記憶目錄",
     "dirFound": "已讀取 {{count}} 條",
     "dirNotFound": "未找到",
+    "orphanBadge": "找不到引用",
     "dirMissHint": "按目前專案路徑推算的讀取位置。若記憶根目錄裡實際目錄的末尾 16 位雜湊與此不同，說明記憶寫入時用的路徑不是目前專案根，可開啟根目錄對比排查",
     "revealDir": "開啟目錄",
     "revealRoot": "開啟根目錄",

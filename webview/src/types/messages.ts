@@ -638,8 +638,10 @@ export interface MemoryFileInfo {
   lastModified?: number
   /** 展示说明（后端中文，仅兜底；正式渲染走前端 i18n）*/
   description?: string
-  /** auto 事实文件首个 # 标题（数据非文案，缺失走 factFallback）*/
+  /** auto 事实文件展示摘要：MEMORY.md 索引链接文本优先，frontmatter description / # 标题兜底 */
   title?: string
+  /** auto 事实文件未被 MEMORY.md 索引引用（前端标「找不到引用」，排在有引用条目之后）*/
+  orphaned?: boolean
 }
 
 /**

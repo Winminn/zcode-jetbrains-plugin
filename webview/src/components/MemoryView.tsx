@@ -60,6 +60,7 @@ function MemoryItem({ file }: { file: MemoryFileInfo }) {
       <div className="memory-item__body">
         <div className="memory-item__name-row">
           <span className="memory-item__name">{file.name}</span>
+          {file.orphaned ? <span className="memory-item__badge memory-item__badge--orphan">{t('memory.auto.orphanBadge')}</span> : null}
           {file.exists ? (
             <span className="memory-item__meta">
               {fmtSize(file.sizeBytes)} · {t('memory.item.modifiedAt', { time: fmtResetTime(file.lastModified) })}
@@ -69,9 +70,12 @@ function MemoryItem({ file }: { file: MemoryFileInfo }) {
           )}
         </div>
         <div className="memory-item__desc">{localizedDesc(t, file)}</div>
-        <div className="memory-item__path" title={file.path}>
-          {file.path}
-        </div>
+        {/* 自动记忆条目不显示路径行：目录位置已在「记忆目录」行给出，文件名即条目名——压两行高度 */}
+        {isAuto ? null : (
+          <div className="memory-item__path" title={file.path}>
+            {file.path}
+          </div>
+        )}
       </div>
       {file.exists ? (
         <button

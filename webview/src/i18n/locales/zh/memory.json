@@ -32,6 +32,7 @@
     "dirLabel": "记忆目录",
     "dirFound": "已读取 {{count}} 条",
     "dirNotFound": "未找到",
+    "orphanBadge": "找不到引用",
     "dirMissHint": "按当前项目路径推算的读取位置。若记忆根目录里实际目录的末尾 16 位哈希与此不同，说明记忆写入时用的路径不是当前项目根，可打开根目录对比排查",
     "revealDir": "打开目录",
     "revealRoot": "打开根目录",
