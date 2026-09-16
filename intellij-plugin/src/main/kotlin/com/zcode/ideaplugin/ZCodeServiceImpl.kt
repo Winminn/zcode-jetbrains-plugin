@@ -346,6 +346,17 @@ class ZCodeServiceImpl(private val project: Project) : ZCodeService, com.intelli
                 browserHandlerRegistered = true
                 log.info("[browser-use] host handlers registered (interaction/browserList + browserExecute)")
             }
+            // automation/* 宿主化：模型的 Cron* 工具经 app-server 反向请求落到插件，
+            // 任务存储/调度由 ZCodeScheduledMessageService 承载（与官方客户端的
+            // tasks-index.sqlite 互不共写，双端并行不会双重执行）
+            if (!automationHandlerRegistered) {
+                val scheduled = com.zcode.ideaplugin.ui.ZCodeScheduledMessageService.getInstance(project)
+                c.automationRequestHandler = { method, params ->
+                    scheduled.handleAutomationRequest(method, params)
+                }
+                automationHandlerRegistered = true
+                log.info("[automation] host handler registered (automation/create|update|list|delete|checkTaskBinding)")
+            }
         } catch (e: Exception) {
             log.warn("Protocol handler registration failed (will retry on next getClient): ${e.message}")
         }
@@ -366,6 +377,7 @@ class ZCodeServiceImpl(private val project: Project) : ZCodeService, com.intelli
             userInputHandlerRegistered = false
             permissionHandlerRegistered = false
             browserHandlerRegistered = false
+            automationHandlerRegistered = false
         }
     }
 
@@ -463,6 +475,10 @@ class ZCodeServiceImpl(private val project: Project) : ZCodeService, com.intelli
 
     @Volatile
     private var browserHandlerRegistered = false
+
+    // automation/* 宿主化注册标志（换代重置，与 browserHandlerRegistered 同纪律）
+    @Volatile
+    private var automationHandlerRegistered = false
 
     override fun ensureBrowserExecutor() {
         // 注册统一在 getClient() 启动成功后执行（registerProtocolHandlersLocked）

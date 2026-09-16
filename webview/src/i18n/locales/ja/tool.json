@@ -17,7 +17,11 @@
     "ExitPlanMode": "プランモード終了",
     "TaskStop": "タスク停止",
     "TaskOutput": "出力を表示",
-    "ReadSessionContext": "セッションコンテキスト取得"
+    "ReadSessionContext": "セッションコンテキスト取得",
+    "CronCreate": "定期タスク作成",
+    "CronUpdate": "定期タスク更新",
+    "CronList": "定期タスク一覧",
+    "CronDelete": "定期タスク削除"
   },
   "mcpToolName": "MCP·{{name}}",
   "editFileTitle": "ファイルを編集：{{name}}",
@@ -107,5 +111,14 @@
     "customAnswer": "カスタム回答",
     "close": "閉じる",
     "receipt": "システム応答"
+  },
+  "cron": {
+    "schedule": "実行時刻",
+    "afterMinutes": "{{count}}分後",
+    "at": "{{date}} {{time}}",
+    "once": "1回のみ実行",
+    "taskTitle": "タスクタイトル",
+    "listTitle": "定期タスク（{{count}}）",
+    "completed": "完了"
   }
 }

@@ -17,7 +17,11 @@
     "ExitPlanMode": "退出规划",
     "TaskStop": "停止任务",
     "TaskOutput": "查看输出",
-    "ReadSessionContext": "读取会话上下文"
+    "ReadSessionContext": "读取会话上下文",
+    "CronCreate": "创建定时任务",
+    "CronUpdate": "修改定时任务",
+    "CronList": "查看定时任务",
+    "CronDelete": "删除定时任务"
   },
   "mcpToolName": "MCP·{{name}}",
   "editFileTitle": "编辑文件：{{name}}",
@@ -107,5 +111,14 @@
     "customAnswer": "自定义答案",
     "close": "关闭",
     "receipt": "系统回执"
+  },
+  "cron": {
+    "schedule": "触发时间",
+    "afterMinutes": "{{count}} 分钟后",
+    "at": "{{date}} {{time}}",
+    "once": "仅执行一次",
+    "taskTitle": "任务标题",
+    "listTitle": "定时任务（{{count}}）",
+    "completed": "已完成"
   }
 }

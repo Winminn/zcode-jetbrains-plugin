@@ -22,6 +22,10 @@ import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.booleanOrNull
 import kotlinx.serialization.json.longOrNull
 import kotlinx.serialization.json.put
+import java.time.DateTimeException
+import java.time.Instant
+import java.time.ZoneId
+import java.time.ZonedDateTime
 import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
@@ -134,6 +138,7 @@ class ZCodeScheduledMessageService(private val project: Project) : Disposable {
                         // 执行模型（可空=跟随会话当前模型）；条件 put 防 null 重载歧义
                         it.providerId?.let { v -> put("providerId", v) }
                         it.modelId?.let { v -> put("modelId", v) }
+                        it.title?.let { v -> put("title", v) }
                     }
                 )
             }
@@ -158,6 +163,7 @@ class ZCodeScheduledMessageService(private val project: Project) : Disposable {
                         hold = o["hold"]?.jsonPrimitive?.booleanOrNull ?: false,
                         providerId = o["providerId"]?.jsonPrimitive?.contentOrNull,
                         modelId = o["modelId"]?.jsonPrimitive?.contentOrNull,
+                        title = o["title"]?.jsonPrimitive?.contentOrNull,
                     )
                 }
             } catch (_: Exception) {
@@ -194,10 +200,143 @@ class ZCodeScheduledMessageService(private val project: Project) : Disposable {
                 emptyList()
             }
         }
+
+        // ============ automation/* 宿主反向请求的纯映射（AI 的 Cron* 工具落点） ============
+
+        /** 官方一次性 cron 形状（app.asar zSe）：四个纯数字字段 + 星期 *，如 "0 9 30 7 *" */
+        private val PINNED_ONE_SHOT_CRON = Regex("""^(\d+)\s+(\d+)\s+(\d+)\s+(\d+)\s+\*$""")
+
+        /** 一次性任务「刚错过」窗口（官方 USe=60s）：窗口内视为立即执行 */
+        private const val RUN_NOW_WINDOW_MS = 60_000L
+
+        /** 第一期不支持的计划形状统一话术（模型可读，随 -32603 回给 app-server） */
+        const val UNSUPPORTED_SCHEDULE_MSG =
+            "插件当前版本仅支持一次性定时任务（相对延时或指定未来时刻），暂不支持周期性/多次运行任务"
+
+        /**
+         * 解析一次性 cron（"分 时 日 月 *"，本地时区）为触发时刻，过期语义对齐官方
+         * computeInitialAutomationNextRunAt：最近一次过去触发在宽限窗（30min=GRACE_MS）
+         * 内且下次触发在宽限窗外——错过不足 60s 立即执行（返回 now），否则抛过期错误；
+         * 其余取下次未来触发（年度翻转，覆盖「明年1月」类跨年目标）。
+         */
+        fun pinnedOneShotFireAt(cronExpr: String, now: Long): Long {
+            val m = PINNED_ONE_SHOT_CRON.find(cronExpr.trim())
+                ?: throw AutomationHostError(
+                    "cronExpr 形态暂不支持：仅支持 \"分 时 日 月 *\" 的绝对时刻一次性表达式（周期/区间/步进将在后续版本支持）",
+                )
+            val (minute, hour, dom, month) = m.destructured
+            val min = minute.toInt(); val hr = hour.toInt(); val day = dom.toInt(); val mon = month.toInt()
+            if (min !in 0..59 || hr !in 0..23 || day !in 1..31 || mon !in 1..12) {
+                throw AutomationHostError("cronExpr 时间字段超范围：分 0-59、时 0-23、日 1-31、月 1-12")
+            }
+            val zone = ZoneId.systemDefault()
+            val year = Instant.ofEpochMilli(now).atZone(zone).year
+            // 年度触发点取本年/前后一年三个候选（2/29 等非常规日期跳过无效年份）
+            val occurrences = (year - 1..year + 1).mapNotNull { y ->
+                try {
+                    ZonedDateTime.of(y, mon, day, hr, min, 0, 0, zone).toInstant().toEpochMilli()
+                } catch (_: DateTimeException) {
+                    null
+                }
+            }
+            val next = occurrences.filter { it >= now }.minOrNull()
+                ?: throw AutomationHostError("cronExpr 日期无效（如 2 月 30 日）或超出可调度范围")
+            val prev = occurrences.filter { it <= now }.maxOrNull()
+            val missedBy = prev?.let { if (now >= it && now - it <= GRACE_MS) now - it else null }
+            if (missedBy != null && (next - now) > GRACE_MS) {
+                if (missedBy < RUN_NOW_WINDOW_MS) return now
+                throw AutomationHostError(
+                    "一次性定时任务的目标时间（${formatLocal(prev)}）已过去；相对时间请使用 delayMinutes，绝对时间请确认未来时刻后重试",
+                )
+            }
+            return next
+        }
+
+        /** 一次性 cron 显示形态（与官方 buildRelativeDelaySchedule 一致）：fireAt → "分 时 日 月 *" */
+        fun oneShotCronFromFireAt(fireAt: Long): String {
+            val t = Instant.ofEpochMilli(fireAt).atZone(ZoneId.systemDefault())
+            return "${t.minute} ${t.hour} ${t.dayOfMonth} ${t.monthValue} *"
+        }
+
+        private fun formatLocal(epochMs: Long): String =
+            Instant.ofEpochMilli(epochMs).atZone(ZoneId.systemDefault())
+                .format(java.time.format.DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm"))
+
+        /** 标题缺省派生：提示词首行截 24 字（官方 CronCreate 必带 title，此为兜底） */
+        fun deriveTitle(text: String): String {
+            val firstLine = text.trim().lineSequence().firstOrNull() ?: ""
+            return if (firstLine.length <= 24) firstLine else firstLine.take(24) + "…"
+        }
+
+        /**
+         * automation/create 参数校验与触发时刻计算（第一期仅一次性）。
+         * 不合形状一律抛 [AutomationHostError]——message 即模型可见的工具错误。
+         */
+        fun automationCreateToSpec(params: JsonObject, now: Long): AutomationCreateSpec {
+            val prompt = params["prompt"]?.jsonPrimitive?.contentOrNull?.trim()
+            if (prompt.isNullOrEmpty()) throw AutomationHostError("缺少 prompt（定时任务要发送的提示词）")
+            val targetTaskId = params["targetTaskId"]?.jsonPrimitive?.contentOrNull?.trim()
+            if (targetTaskId.isNullOrEmpty()) {
+                throw AutomationHostError("缺少 targetTaskId（目标会话）：请在已有会话中创建定时任务")
+            }
+            val hasInterval = params["intervalUnit"] != null || params["interval"] != null
+            val recurring = params["recurring"]?.jsonPrimitive?.booleanOrNull ?: true
+            val maxRuns = params["maxRuns"]?.jsonPrimitive?.longOrNull
+            if (hasInterval || recurring || (maxRuns != null && maxRuns > 1)) {
+                throw AutomationHostError(UNSUPPORTED_SCHEDULE_MSG)
+            }
+            // CronCreate 的延时形态带占位 cron "* * * * *"，以 relativeDelayMinutes 为准
+            val delayMin = params["relativeDelayMinutes"]?.jsonPrimitive?.longOrNull
+            val fireAt = if (delayMin != null) {
+                if (delayMin < 1 || delayMin > 525_600) {
+                    throw AutomationHostError("relativeDelayMinutes 无效：须为 1~525600 的整数分钟")
+                }
+                now + delayMin * 60_000
+            } else {
+                val cronExpr = params["cronExpr"]?.jsonPrimitive?.contentOrNull
+                if (cronExpr.isNullOrBlank()) {
+                    throw AutomationHostError("缺少触发时间：relativeDelayMinutes 与 cronExpr 至少提供一项")
+                }
+                pinnedOneShotFireAt(cronExpr, now)
+            }
+            val title = params["title"]?.jsonPrimitive?.contentOrNull?.trim()?.takeIf { it.isNotEmpty() }
+                ?: deriveTitle(prompt)
+            return AutomationCreateSpec(prompt = prompt, targetTaskId = targetTaskId, fireAt = fireAt, title = title)
+        }
+
+        /**
+         * 待发 Item → automation/list|create|update 应答条目。字段集严格对齐 zcode.cjs
+         * 的 $je schema（strict，多余字段校验失败直接打断工具调用）：必填八项 +
+         * 可选 nextRunAt/targetTaskId；model/provider/mode/thoughtLevel 不回填——
+         * 插件执行侧本就跟随会话模型。
+         */
+        fun itemToAutomation(item: Item): JsonObject = buildJsonObject {
+            put("automationId", item.id)
+            put("title", item.title ?: deriveTitle(item.text))
+            put("cronExpr", oneShotCronFromFireAt(item.fireAt))
+            put("prompt", item.text)
+            put("enabled", true)
+            put("lifecycleStatus", "active")
+            put("nextRunAt", item.fireAt)
+            put("runCount", 0)
+            put("recurring", false)
+            if (item.sessionId.isNotBlank()) put("targetTaskId", item.sessionId)
+        }
     }
 
     /** /goal 命令解析结果：action ∈ set/pause/resume/clear/show；仅 set 带 objective */
     data class GoalCommand(val action: String, val objective: String?)
+
+    /** automation/create 校验后的落库参数（第一期仅一次性任务） */
+    data class AutomationCreateSpec(
+        val prompt: String,
+        val targetTaskId: String,
+        val fireAt: Long,
+        val title: String,
+    )
+
+    /** automation 反向请求的业务性拒绝（message 面向模型可读，随 -32603 回给 app-server） */
+    class AutomationHostError(message: String) : RuntimeException(message)
 
     /** 待发定时消息（FIRED/CANCELLED 即时移除不保留——发出后的消息本身就是记录） */
     data class Item(
@@ -212,6 +351,8 @@ class ZCodeScheduledMessageService(private val project: Project) : Disposable {
         /** 执行模型（可空=跟随会话当前模型）；执行时模型不在清单则默认兜底 */
         val providerId: String? = null,
         val modelId: String? = null,
+        /** 任务标题（AI 经 automation/create 创建时携带；用户手工建的可空=按提示词派生） */
+        val title: String? = null,
     )
 
     /**
@@ -264,6 +405,7 @@ class ZCodeScheduledMessageService(private val project: Project) : Disposable {
         fireAt: Long,
         providerId: String? = null,
         modelId: String? = null,
+        title: String? = null,
     ): Item? {
         val trimmed = text.trim()
         if (trimmed.isEmpty()) return null
@@ -277,6 +419,7 @@ class ZCodeScheduledMessageService(private val project: Project) : Disposable {
             createdAt = now,
             providerId = providerId?.takeIf { it.isNotBlank() },
             modelId = modelId?.takeIf { it.isNotBlank() },
+            title = title?.takeIf { it.isNotBlank() },
         )
         items.add(item)
         persistAndBroadcast()
@@ -287,7 +430,7 @@ class ZCodeScheduledMessageService(private val project: Project) : Disposable {
     fun cancel(id: String): Boolean = removeById(id, "cancel")
 
     /**
-     * op:scheduledReschedule——改时间（可同时改提示词）并解除挂起（重定时间=重新参与自动分派）。
+     * op:scheduledReschedule——改时间（可同时改提示词/标题）并解除挂起（重定时间=重新参与自动分派）。
      * updateModel=true 时一并更新执行模型（modelId/providerId 空串=清空改回跟随会话）。
      */
     fun reschedule(
@@ -297,11 +440,13 @@ class ZCodeScheduledMessageService(private val project: Project) : Disposable {
         providerId: String? = null,
         modelId: String? = null,
         updateModel: Boolean = false,
+        title: String? = null,
     ): Boolean {
         val idx = items.indexOfFirst { it.id == id }
         if (idx < 0) return false
         val old = items[idx]
         val newText = text?.trim().takeUnless { it.isNullOrEmpty() } ?: old.text
+        val newTitle = title?.trim().takeUnless { it.isNullOrEmpty() } ?: old.title
         items[idx] = if (updateModel) {
             old.copy(
                 text = newText,
@@ -309,9 +454,15 @@ class ZCodeScheduledMessageService(private val project: Project) : Disposable {
                 hold = false,
                 providerId = providerId?.takeIf { it.isNotBlank() },
                 modelId = modelId?.takeIf { it.isNotBlank() },
+                title = newTitle,
             )
         } else {
-            old.copy(text = newText, fireAt = maxOf(fireAt, System.currentTimeMillis() + 10_000), hold = false)
+            old.copy(
+                text = newText,
+                fireAt = maxOf(fireAt, System.currentTimeMillis() + 10_000),
+                hold = false,
+                title = newTitle,
+            )
         }
         expiredLogged.remove(id)
         // 重新定时=重新获得自动分派资格（含开标签一次的机会）
@@ -400,6 +551,76 @@ class ZCodeScheduledMessageService(private val project: Project) : Disposable {
             persistAndBroadcast()
             log.info("[scheduled] dropped all for session=$sessionId (fired=$removedFired)")
         }
+    }
+
+    // ============ automation/* 宿主反向请求（AI 的 Cron* 工具落点） ============
+
+    /**
+     * automation/create|update|list|delete|checkTaskBinding 统一入口。app-server 把模型的
+     * CronCreate/CronUpdate/CronList/CronDelete 工具调用中继成 stdio 反向请求落到宿主，
+     * 插件以既有待发列表为宿主任务存储（官方为 Electron 独立 sqlite，互不共写）。
+     * 业务拒绝抛 [AutomationHostError]，由协议客户端转 -32603（message=模型可读的错误）。
+     * 在反向请求线程调用（本地存储读写，勿在 EDT）。
+     */
+    fun handleAutomationRequest(method: String, params: JsonObject): JsonObject = when (method) {
+        "automation/create" -> handleAutomationCreate(params)
+        "automation/list" -> buildJsonObject {
+            put("automations", buildJsonArray {
+                // 用户手工建与 AI 建的待发项统一呈现（已发/过期历史不进 CronList，第一期从简）
+                items.sortedBy { it.fireAt }.forEach { add(itemToAutomation(it)) }
+            })
+        }
+        "automation/delete" -> {
+            val id = params.requiredString("automationId")
+            buildJsonObject { put("deleted", cancel(id)) }
+        }
+        "automation/update" -> handleAutomationUpdate(params)
+        "automation/checkTaskBinding" -> {
+            // 官方语义=目标会话已有绑定任务则禁止再建（CronCreate 前置校验）。
+            // 只看待发项：已发记录有 LRU 淘汰，拿它当绑定依据会不稳定
+            val target = params.requiredString("targetTaskId")
+            buildJsonObject { put("bound", items.any { it.sessionId == target }) }
+        }
+        else -> throw AutomationHostError("未实现的 automation 方法: $method")
+    }
+
+    private fun JsonObject.requiredString(key: String): String =
+        this[key]?.jsonPrimitive?.contentOrNull?.trim()?.takeIf { it.isNotEmpty() }
+            ?: throw AutomationHostError("缺少 $key 参数")
+
+    private fun handleAutomationCreate(params: JsonObject): JsonObject {
+        val spec = automationCreateToSpec(params, System.currentTimeMillis())
+        val item = create(
+            sessionId = spec.targetTaskId,
+            workspacePath = project.basePath ?: "",
+            text = spec.prompt,
+            fireAt = spec.fireAt,
+            title = spec.title,
+        ) ?: throw AutomationHostError("创建定时任务失败：提示词为空")
+        log.info("[automation] created via AI id=${item.id} session=${item.sessionId} fireAt=${item.fireAt}")
+        return buildJsonObject { put("automation", itemToAutomation(item)) }
+    }
+
+    private fun handleAutomationUpdate(params: JsonObject): JsonObject {
+        val id = params.requiredString("automationId")
+        val hasInterval = params["intervalUnit"] != null || params["interval"] != null
+        val recurring = params["recurring"]?.jsonPrimitive?.booleanOrNull
+        val maxRuns = params["maxRuns"]?.jsonPrimitive?.longOrNull
+        if (hasInterval || recurring == true || (maxRuns != null && maxRuns > 1)) {
+            throw AutomationHostError(UNSUPPORTED_SCHEDULE_MSG)
+        }
+        val old = items.firstOrNull { it.id == id }
+            ?: throw AutomationHostError("Scheduled task not found in the current workspace.")
+        val cronExpr = params["cronExpr"]?.jsonPrimitive?.contentOrNull
+        val newFireAt = if (cronExpr.isNullOrBlank()) old.fireAt
+        else pinnedOneShotFireAt(cronExpr, System.currentTimeMillis())
+        val prompt = params["prompt"]?.jsonPrimitive?.contentOrNull?.trim()?.takeIf { it.isNotEmpty() }
+        val title = params["title"]?.jsonPrimitive?.contentOrNull?.trim()?.takeIf { it.isNotEmpty() }
+        if (!reschedule(id = id, fireAt = newFireAt, text = prompt, title = title)) {
+            throw AutomationHostError("Scheduled task not found in the current workspace.")
+        }
+        log.info("[automation] updated via AI id=$id fireAt=${newFireAt}")
+        return buildJsonObject { put("automation", itemToAutomation(items.first { it.id == id })) }
     }
 
     // ============ 扫描与分派 ============

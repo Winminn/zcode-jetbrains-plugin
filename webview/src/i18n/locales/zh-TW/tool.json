@@ -17,7 +17,11 @@
     "ExitPlanMode": "退出規劃",
     "TaskStop": "停止任務",
     "TaskOutput": "檢視輸出",
-    "ReadSessionContext": "讀取會話上下文"
+    "ReadSessionContext": "讀取會話上下文",
+    "CronCreate": "建立定時任務",
+    "CronUpdate": "修改定時任務",
+    "CronList": "查看定時任務",
+    "CronDelete": "刪除定時任務"
   },
   "mcpToolName": "MCP·{{name}}",
   "editFileTitle": "編輯檔案：{{name}}",
@@ -107,5 +111,14 @@
     "customAnswer": "自訂答案",
     "close": "關閉",
     "receipt": "系統回執"
+  },
+  "cron": {
+    "schedule": "觸發時間",
+    "afterMinutes": "{{count}} 分鐘後",
+    "at": "{{date}} {{time}}",
+    "once": "僅執行一次",
+    "taskTitle": "任務標題",
+    "listTitle": "定時任務（{{count}}）",
+    "completed": "已完成"
   }
 }

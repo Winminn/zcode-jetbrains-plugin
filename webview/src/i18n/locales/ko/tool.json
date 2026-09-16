@@ -17,7 +17,11 @@
     "ExitPlanMode": "계획 모드 종료",
     "TaskStop": "작업 중지",
     "TaskOutput": "출력 보기",
-    "ReadSessionContext": "세션 컨텍스트 읽기"
+    "ReadSessionContext": "세션 컨텍스트 읽기",
+    "CronCreate": "예약 작업 생성",
+    "CronUpdate": "예약 작업 수정",
+    "CronList": "예약 작업 목록",
+    "CronDelete": "예약 작업 삭제"
   },
   "mcpToolName": "MCP·{{name}}",
   "editFileTitle": "파일 편집: {{name}}",
@@ -107,5 +111,14 @@
     "customAnswer": "직접 입력한 답변",
     "close": "닫기",
     "receipt": "시스템 응답"
+  },
+  "cron": {
+    "schedule": "실행 시각",
+    "afterMinutes": "{{count}}분 후",
+    "at": "{{date}} {{time}}",
+    "once": "1회만 실행",
+    "taskTitle": "작업 제목",
+    "listTitle": "예약 작업 ({{count}})",
+    "completed": "완료"
   }
 }

@@ -137,6 +137,16 @@ class ZCodeProtocolClient private constructor(
      */
     var browserExecuteHandler: ((params: JsonObject) -> JsonObject)? = null
 
+    /**
+     * 宿主自动化任务反向请求（automation/create|update|list|delete|checkTaskBinding）：
+     * 模型的 CronCreate/CronUpdate/CronList/CronDelete 工具经 app-server 中继落到宿主，
+     * 任务存储与调度全在宿主侧（官方 Electron 持 sqlite，本插件由
+     * ZCodeScheduledMessageService 承载）。method 为完整方法名，返回应答 result；
+     * 业务拒绝用异常抛出（message 模型可读，转 -32603 回给 app-server）。
+     * 在独立线程调用（本地存储读写+全量广播，禁止卡 reader）。
+     */
+    var automationRequestHandler: ((method: String, params: JsonObject) -> JsonObject)? = null
+
     // -32031 恢复用的 runtimeModel 构造器（默认读 config.json 的 enabled provider；测试可注入）
     @Volatile
     var runtimeModelFactory: () -> JsonObject? = { RuntimeModels.defaultRuntimeModel() }
@@ -475,6 +485,26 @@ class ZCodeProtocolClient private constructor(
                 }
             } else {
                 respondToServer(id, error = ProtocolError(ErrorCodes.METHOD_NOT_FOUND, "宿主未注册 browserExecuteHandler"))
+            }
+        }
+        // 宿主自动化任务（automation/*）：模型 Cron* 工具的宿主落点，与 browser-use 同族。
+        // 异步执行（存储读写+面板广播，禁止卡 reader 线程）；未注册时回 -32601 保持
+        // 旧版行为（模型侧工具报错，至少不空等）
+        else if (method == "automation/create" || method == "automation/update" || method == "automation/list" ||
+            method == "automation/delete" || method == "automation/checkTaskBinding"
+        ) {
+            val handler = automationRequestHandler
+            if (handler != null) {
+                reverseRequestExecutor.execute {
+                    try {
+                        respondToServer(id, handler(method, params))
+                    } catch (e: Exception) {
+                        println("[ZCodeProtocolClient] automation handler error ($method, ${e.javaClass.simpleName}): ${e.message}")
+                        respondToServer(id, error = ProtocolError(ErrorCodes.INTERNAL_ERROR, e.message ?: e.javaClass.simpleName))
+                    }
+                }
+            } else {
+                respondToServer(id, error = ProtocolError(ErrorCodes.METHOD_NOT_FOUND, "宿主未注册 automationRequestHandler"))
             }
         }
         // 其他未知反向请求：回 -32601 避免空等

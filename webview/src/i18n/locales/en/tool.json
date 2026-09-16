@@ -17,7 +17,11 @@
     "ExitPlanMode": "Exit Plan Mode",
     "TaskStop": "Stop Task",
     "TaskOutput": "View Output",
-    "ReadSessionContext": "Read session context"
+    "ReadSessionContext": "Read session context",
+    "CronCreate": "Create Scheduled Task",
+    "CronUpdate": "Update Scheduled Task",
+    "CronList": "List Scheduled Tasks",
+    "CronDelete": "Delete Scheduled Task"
   },
   "mcpToolName": "MCP·{{name}}",
   "editFileTitle": "Edit file: {{name}}",
@@ -107,5 +111,14 @@
     "customAnswer": "Custom answer",
     "close": "Close",
     "receipt": "System receipt"
+  },
+  "cron": {
+    "schedule": "Trigger time",
+    "afterMinutes": "in {{count}} min",
+    "at": "{{date}} {{time}}",
+    "once": "runs once",
+    "taskTitle": "Task title",
+    "listTitle": "Scheduled tasks ({{count}})",
+    "completed": "completed"
   }
 }

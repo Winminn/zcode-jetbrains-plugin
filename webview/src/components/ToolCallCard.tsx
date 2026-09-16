@@ -19,6 +19,7 @@ import type { ToolPart, AskUserQuestion } from '@/types/messages'
 import { relativeTime, formatToolDuration } from '@/utils/time'
 import { parsePartialToolInput, lineCount, tailLines } from '@/utils/partialToolInput'
 import { extractWebSources, extractDomain } from '@/utils/webSources'
+import { isCronTool, describeCronSchedule, parseCronToolOutput, describeAutomationTime } from '@/utils/cronTool'
 import { isBackgroundTaskOutput } from '@/utils/backgroundTask'
 import { toolErrorText } from '@/utils/parseStatus'
 import { extractAskQuestions, parseAskUserAnswers } from '@/utils/askUserAnswer'
@@ -52,6 +53,11 @@ function toolIcon(tool: string): string {
     EnterPlanMode: 'codicon-bookmark',
     ExitPlanMode: 'codicon-bookmark',
     TaskStop: 'codicon-close',
+    // 定时任务家族（automation 宿主化）：与输入框日历入口/定时卡片同图标体系
+    CronCreate: 'codicon-clockface',
+    CronUpdate: 'codicon-clockface',
+    CronList: 'codicon-clockface',
+    CronDelete: 'codicon-clockface',
     // #会话引用的上下文拉取（与输入框会话 chip 同图标）
     ReadSessionContext: 'codicon-comment-discussion',
   }
@@ -111,6 +117,14 @@ function inputSummary(tool: string, input?: Record<string, unknown>): string {
     case 'TaskOutput':
     case 'TaskStop':
       return String(input.task_id || '')
+    case 'CronCreate':
+      // title 官方约定保留用户的自然语言时间短语（「每20分钟喝水提醒」），直接可读
+      return String(input.title || '').slice(0, 60)
+    case 'CronUpdate':
+    case 'CronDelete':
+      return String(input.title || input.id || '')
+    case 'CronList':
+      return ''
     case 'ReadSessionContext':
       // #会话引用的上下文拉取：摘要显示检索意图（handoff 策略加前缀区分「接续交接」）
       return input.strategy === 'handoff'
@@ -160,7 +174,7 @@ function todoStatusLabel(status: string, t: TFunction): string {
 }
 
 export function ToolCallCard({ part }: Props) {
-  const { t } = useTranslation()
+  const { t, i18n } = useTranslation()
   const [expanded, setExpanded] = useState(false)
   const { tool, state } = part
   // 后台任务（缺陷Y 体验增强）：Bash run_in_background 的 result 解析出的任务，
@@ -293,6 +307,18 @@ export function ToolCallCard({ part }: Props) {
   //（来源链接列表 / 短预览），全文走头部 📖 弹窗（对齐 Skill/ExitPlanMode 家族模式）
   const isWebTool = tool === 'WebFetch' || tool === 'WebSearch'
   const webUrl = isWebTool && typeof input?.url === 'string' ? input.url : ''
+  // 定时任务家族（automation 宿主化）：input 友好展示（触发时刻/标题/提示词）替代裸 JSON；
+  // output 为 JSON 文本（message 一行 / automations 列表），解析失败（第一期拒绝周期任务
+  // 的错误文本/流式半截）回退原文展示
+  const isCron = isCronTool(tool)
+  const cronSchedule = useMemo(
+    () => (isCron ? describeCronSchedule(input ?? undefined, t, i18n.language) : null),
+    [isCron, input, t, i18n.language],
+  )
+  const cronParsed = useMemo(
+    () => (isCron && hasOutput ? parseCronToolOutput(state.output) : null),
+    [isCron, hasOutput, state.output],
+  )
   const webSources = useMemo(
     () => (isWebTool && state.output ? extractWebSources(state.output) : []),
     [isWebTool, state.output],
@@ -672,6 +698,67 @@ export function ToolCallCard({ part }: Props) {
               )}
             </>
           )}
+          {/* 定时任务家族（automation 宿主化）：触发时刻/标题/提示词友好展示替代裸 JSON；
+              输出解析 message 一行 / 任务列表，非 JSON 输出回退原文 */}
+          {isCron && input && (
+            <>
+              {cronSchedule && (
+                <div className="tool-card__section">
+                  <div className="tool-card__label">{t('tool.cron.schedule')}</div>
+                  <div className="tool-card__cron-schedule">
+                    <span className="codicon codicon-clockface" />
+                    <span className="tool-card__cron-schedule-text">{cronSchedule}</span>
+                    {input.recurring === false && (
+                      <span className="tool-card__cron-once">{t('tool.cron.once')}</span>
+                    )}
+                  </div>
+                </div>
+              )}
+              {typeof input.title === 'string' && input.title.trim() && (
+                <div className="tool-card__section">
+                  <div className="tool-card__label">{t('tool.cron.taskTitle')}</div>
+                  <pre className="tool-card__code tool-card__prompt">{input.title}</pre>
+                </div>
+              )}
+              {typeof input.prompt === 'string' && input.prompt.trim() && (
+                <div className="tool-card__section">
+                  <div className="tool-card__label">{t('tool.prompt')}</div>
+                  <pre className="tool-card__code tool-card__prompt">{input.prompt}</pre>
+                </div>
+              )}
+            </>
+          )}
+          {isCron && hasOutput && (
+            cronParsed?.automations ? (
+              <div className="tool-card__section">
+                <div className="tool-card__label">
+                  {t('tool.cron.listTitle', { count: cronParsed.automations.length })}
+                </div>
+                <ul className="cron-task-list">
+                  {cronParsed.automations.map((a, i) => (
+                    <li key={a.automationId || `${a.title}-${i}`} className="cron-task-item" title={a.prompt}>
+                      <span className="codicon codicon-clockface cron-task-item__icon" />
+                      <span className="cron-task-item__title">{a.title || a.automationId}</span>
+                      <span className="cron-task-item__time">{describeAutomationTime(a, t, i18n.language)}</span>
+                      {a.lifecycleStatus === 'completed' && (
+                        <span className="cron-task-item__tag">{t('tool.cron.completed')}</span>
+                      )}
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            ) : cronParsed?.message ? (
+              <div className="tool-card__section">
+                <div className="tool-card__label">{t('tool.output')}</div>
+                <pre className="tool-card__code tool-card__prompt">{cronParsed.message}</pre>
+              </div>
+            ) : (
+              <div className="tool-card__section">
+                <div className="tool-card__label">{t('tool.output')}</div>
+                <pre className="tool-card__code">{state.output}</pre>
+              </div>
+            )
+          )}
           {/* 任务列表（TodoWrite）：全量列表 + 增量标注（新增/状态变更），已移除单列一节 */}
           {isTodoTool && input && todoDiff && todoDiff.entries.length > 0 && (
             <div className="tool-card__section tool-card__section--todo">
@@ -745,8 +832,9 @@ export function ToolCallCard({ part }: Props) {
               技能文档走 📖 弹窗）；Agent 类输出（最终报告）同样只走头部弹窗按钮；
               ExitPlanMode 的 plan 全文走 📖 弹窗，展开区不渲染 input JSON；
               web 双工具走上方专用分支（input 友好展示 + 来源列表/短预览）；
+              定时任务家族走上方 cron 分支（触发时刻/标题/提示词 + message/任务列表）；
               TodoWrite 走上方任务列表分支（diff 标注），仅流式未解析时落到 rawInput 原文 */}
-          {tool !== 'Bash' && tool !== 'Write' && tool !== 'Edit' && tool !== 'Skill' && tool !== 'ExitPlanMode' && !isWebTool && !isTodoTool && (
+          {tool !== 'Bash' && tool !== 'Write' && tool !== 'Edit' && tool !== 'Skill' && tool !== 'ExitPlanMode' && !isWebTool && !isCron && !isTodoTool && (
             <>
               {state.input && Object.keys(state.input).length > 0 && (
                 <div className="tool-card__section">
