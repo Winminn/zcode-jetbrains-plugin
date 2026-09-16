@@ -50,18 +50,22 @@
     <actions>
         <!-- 右键发送文件/选中代码到输入框（对齐 cc-gui SendFilePathToInputAction / SendSelectionToTerminalAction）
              text/description 不走 XML %key%（2026.1 实测解析为占位符原文），由 action 类构造器
-             经 ZCodeBundle.message 取值（cc-gui 同款做法） -->
-        <action id="ZCode.SendFileToInput"
-                class="com.zcode.ideaplugin.action.SendFileToInputAction"
-                icon="com.zcode.ideaplugin.ZCodeIcons.ZcGui">
-            <add-to-group group-id="ProjectViewPopupMenu" anchor="first"/>
-            <add-to-group group-id="EditorTabPopupMenu" anchor="first"/>
-        </action>
+             经 ZCodeBundle.message 取值（cc-gui 同款做法）。
+             SendSelectionToInput 须声明在 SendFileToInput 之前（后者的 EditorPopupMenu
+             挂点按 relative-to-action 引用它，避免前向引用） -->
         <action id="ZCode.SendSelectionToInput"
                 class="com.zcode.ideaplugin.action.SendSelectionToInputAction"
                 icon="com.zcode.ideaplugin.ZCodeIcons.ZcGui">
             <add-to-group group-id="EditorPopupMenu" anchor="first"/>
             <keyboard-shortcut keymap="$default" first-keystroke="ctrl alt K"/>
+        </action>
+        <action id="ZCode.SendFileToInput"
+                class="com.zcode.ideaplugin.action.SendFileToInputAction"
+                icon="com.zcode.ideaplugin.ZCodeIcons.ZcGui">
+            <add-to-group group-id="ProjectViewPopupMenu" anchor="first"/>
+            <add-to-group group-id="EditorTabPopupMenu" anchor="first"/>
+            <!-- 编辑器右键发整文件（issue #15 用户诉求：打开的页面右键也想要） -->
+            <add-to-group group-id="EditorPopupMenu" anchor="after" relative-to-action="ZCode.SendSelectionToInput"/>
         </action>
         <!-- 控制台右键：选中日志文本发送到输入框（发纯文本正文，行号引用是编辑器场景专属） -->
         <action id="ZCode.SendConsoleTextToInput"
@@ -73,7 +77,7 @@
         <action id="ZCode.CopySelectionReference"
                 class="com.zcode.ideaplugin.action.CopySelectionReferenceAction"
                 icon="com.zcode.ideaplugin.ZCodeIcons.ZcGui">
-            <add-to-group group-id="EditorPopupMenu" anchor="after" relative-to-action="ZCode.SendSelectionToInput"/>
+            <add-to-group group-id="EditorPopupMenu" anchor="after" relative-to-action="ZCode.SendFileToInput"/>
         </action>
     </actions>
 </idea-plugin>

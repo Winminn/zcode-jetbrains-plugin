@@ -7,7 +7,7 @@
  * - Agent：tool === "Agent" | "Task" → state.input.description + state.status，
  *   —— 按 callID 去重，后面的状态覆盖前面的
  * - 文件改动：tool === "Edit" | "Write" | "MultiEdit" → 按文件路径聚合，
- *   —— old/new 行数差估算增删（ZCode 无 git 状态，统一 M）
+ *   —— 新旧块行数各自计数（与编辑组卡一致；ZCode 无 git 状态，统一 M）
  *
  * 纯函数、幂等，每次 messages 变化（全量拉取 / 流式增量）后重新解析。
  */
@@ -244,6 +244,9 @@ function normalizeRpcStatus(rpcStatus: string, prev?: string): string {
 
 /**
  * 从消息列表解析文件改动（Edit/Write/MultiEdit 按路径聚合增删行数）。
+ * 口径 = 改动行双侧计数（GitHub 式，与编辑组卡 FileToolGroupCard 一致）：
+ * additions = 新块行数、deletions = 旧块行数——替换了多少行就计多少，
+ * 不取净差值（净差会把同行数替换算成 +0/−0，改名类重构全部归零，缺陷BR/issue#15）。
  * 同时保留每次编辑的 old/new 内容（edits，底部文件栏弹前后对比用）。
  */
 export function parseFileChanges(messages: ZCodeMessage[]): FileChangeItem[] {
@@ -290,16 +293,14 @@ export function parseFileChanges(messages: ZCodeMessage[]): FileChangeItem[] {
             const rec = e as Record<string, unknown>
             const oldC = getOldContent(rec)
             const newC = getNewContent(rec)
-            const diff = lineCount(newC) - lineCount(oldC)
-            add(path, Math.max(0, diff), Math.max(0, -diff), { oldContent: oldC, newContent: newC })
+            add(path, lineCount(newC), lineCount(oldC), { oldContent: oldC, newContent: newC })
           }
         }
       } else {
-        // Edit = 替换 → 行数差
+        // Edit = 替换 → 新旧块各自计行
         const oldC = getOldContent(input)
         const newC = getNewContent(input)
-        const diff = lineCount(newC) - lineCount(oldC)
-        add(path, Math.max(0, diff), Math.max(0, -diff), { oldContent: oldC, newContent: newC })
+        add(path, lineCount(newC), lineCount(oldC), { oldContent: oldC, newContent: newC })
       }
     }
   }
