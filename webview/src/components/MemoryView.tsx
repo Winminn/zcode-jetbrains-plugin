@@ -259,13 +259,17 @@ export function MemoryView() {
   const memoryLoading = useStore((s) => s.memoryLoading)
   const memoryError = useStore((s) => s.memoryError)
   const loadMemoryFiles = useStore((s) => s.loadMemoryFiles)
+  const searchMemoryFiles = useStore((s) => s.searchMemoryFiles)
   const memorySearchResults = useStore((s) => s.memorySearchResults)
   const memorySearchActiveQuery = useStore((s) => s.memorySearchActiveQuery)
   const memorySearching = useStore((s) => s.memorySearching)
 
   useEffect(() => {
     loadMemoryFiles()
-  }, [loadMemoryFiles])
+    // 搜索框输入值是组件本地 state（切页卸载即清），store 里的搜索结果却持久——
+    // 挂载时清掉残留搜索态，避免「框空但列表仍是搜索结果」（空 query 不发请求）
+    searchMemoryFiles('')
+  }, [loadMemoryFiles, searchMemoryFiles])
 
   const globalFiles = memoryFiles?.filter((f) => f.scope === 'global') ?? []
   const projectFiles = memoryFiles?.filter((f) => f.scope === 'project' && f.kind === 'instructions') ?? []
