@@ -47,69 +47,61 @@
   &__cards {
     display: flex;
     flex-direction: column;
-    gap: 12px;
+    gap: 10px;
+    background: var(--bg-secondary);
+    border: 1px solid var(--border-primary);
+    border-radius: 8px;
+    padding: 10px 14px;
   }
 }
 
-/* 额度卡片（对齐 glm GlmUsagePanel buildLimitCard）*/
+/* 额度紧凑行：标题 → 进度条 → 百分比 → 重置时间（单容器内多行，压缩高度）*/
 .quota-card {
-  background: var(--bg-secondary);
-  border: 1px solid var(--border-primary);
-  border-radius: 8px;
-  padding: 12px 14px;
-
-  &__head {
-    display: flex;
-    align-items: baseline;
-    justify-content: space-between;
-    margin-bottom: 10px;
-  }
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
 
   &__title {
-    font-size: 13px;
+    font-size: 12px;
     font-weight: 600;
     color: var(--text-primary);
-  }
-
-  &__pct {
-    font-size: 18px;
-    font-weight: 700;
-    color: var(--text-primary);
-    font-variant-numeric: tabular-nums;
+    flex-shrink: 0;
+    min-width: 100px; // 中文最长标题 8 字，让三条进度条左缘对齐
   }
 
   &__bar {
-    height: 8px;
+    flex: 1;
+    min-width: 60px;
+    height: 6px;
     background: var(--bg-tertiary);
-    border-radius: 4px;
+    border-radius: 3px;
     overflow: hidden;
-    margin-bottom: 10px;
   }
 
   &__bar-fill {
     height: 100%;
-    border-radius: 4px;
+    border-radius: 3px;
     background: linear-gradient(90deg, #ff7c1e, #ff3b41);
     transition: width 0.3s ease;
   }
 
-  &__foot {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 8px;
-  }
-
-  &__detail {
-    font-size: 12px;
-    color: var(--text-secondary);
+  &__pct {
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--text-primary);
     font-variant-numeric: tabular-nums;
+    width: 36px;
+    text-align: right;
+    flex-shrink: 0;
   }
 
   &__reset {
     font-size: 11px;
     color: var(--text-muted);
     flex-shrink: 0;
+    min-width: 92px; // 「重置 MM-dd HH:mm」宽度，各行右缘对齐
+    text-align: right;
   }
 }
 
