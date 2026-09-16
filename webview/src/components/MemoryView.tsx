@@ -8,6 +8,7 @@
  *
  * 数据：listMemoryFiles（Kotlin 端 MemoryFileScanner，指令记忆缺失项也返回）
  * 交互：存在 → openFile（IDEA 编辑器打开）；指令记忆缺失 → createMemoryFile（写模板后自动打开）
+ *       自动记忆目录行 → revealInFileManager（系统文件管理器定位；未命中时打开记忆根目录对比）
  */
 
 import { useEffect } from 'react'
@@ -125,6 +126,52 @@ function MemoryToggle() {
   )
 }
 
+/**
+ * 记忆目录行（自动记忆区块）：显示插件实际读取的目录位置。
+ * 未命中时展示按当前项目路径推算的期望目录（排查入口：与记忆根目录实际内容对比，
+ * 目录名末尾 16 位哈希不一致 = CLI 写入时的路径不是当前项目根）。
+ */
+function MemoryDirRow() {
+  const { t } = useTranslation()
+  const memoryDir = useStore((s) => s.memoryDir)
+  const memoryFiles = useStore((s) => s.memoryFiles)
+  if (!memoryDir) return null
+  const found = memoryDir.dir != null
+  const autoCount = memoryFiles?.filter((f) => f.kind === 'auto').length ?? 0
+  const displayPath = memoryDir.dir ?? memoryDir.expectedDir
+  const revealPath = memoryDir.dir ?? memoryDir.projectsRoot
+
+  return (
+    <div className={cx('memory-dir-row', !found && 'missing')}>
+      <span className="codicon codicon-folder memory-dir-row__icon" />
+      <div className="memory-dir-row__body">
+        <div className="memory-dir-row__name-row">
+          <span className="memory-dir-row__label">{t('memory.auto.dirLabel')}</span>
+          {found ? (
+            <span className="memory-dir-row__meta">
+              {t('memory.auto.dirFound', { count: autoCount })}
+            </span>
+          ) : (
+            <span className="memory-dir-row__badge">{t('memory.auto.dirNotFound')}</span>
+          )}
+        </div>
+        {!found ? <div className="memory-dir-row__desc">{t('memory.auto.dirMissHint')}</div> : null}
+        <div className="memory-dir-row__path" title={displayPath}>
+          {displayPath}
+        </div>
+      </div>
+      <button
+        className="memory-dir-row__btn"
+        onClick={() => sendToJava({ op: 'revealInFileManager', path: revealPath })}
+        title={found ? t('memory.auto.revealDirTitle') : t('memory.auto.revealRootTitle')}
+      >
+        <span className="codicon codicon-folder-opened" />
+        {found ? t('memory.auto.revealDir') : t('memory.auto.revealRoot')}
+      </button>
+    </div>
+  )
+}
+
 export function MemoryView() {
   const { t } = useTranslation()
   const memoryFiles = useStore((s) => s.memoryFiles)
@@ -181,6 +228,7 @@ export function MemoryView() {
           <span className="memory-view__hint">{t('memory.auto.hint')}</span>
         </div>
         <MemoryToggle />
+        <MemoryDirRow />
         {autoFiles.length > 0 ? (
           autoFiles.map((f) => <MemoryItem key={f.path} file={f} />)
         ) : (

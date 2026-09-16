@@ -16,7 +16,7 @@ import { create } from 'zustand'
 import { onMessage, onStreamEvent, onStreamBatch, sendToJava, initBridge, isInJcef, getWorkspacePath, getInitialSessionId } from '@/ipc/bridge'
 import { parseGoalCommand } from '@/utils/goalCommand'
 import { extractTitleExcerpt } from '@/utils/titleExcerpt'
-import type { JavaResponse, SessionInfo, ZCodeMessage, StreamEvent, ModelOption, ModelManageProvider, TodoItem, AgentItem, FileChangeItem, QuotaData, ModelUsageData, ToolUsageData, UsageRange, AppUsageData, AppUsageRange, ContextBreakdownItem, ThoughtLevelInfo, SubagentActivity, SubagentInfo, ToolUpdatedPayload, MemoryFileInfo, SkillInfo, McpServerInfo, McpToolsState, McpLogEntry, EnvStatus, BrowserClearedSite, BrowserDataOverview, AgentDef, AgentDefInput, ImageAttachmentInput, GoalState, AutoArchiveRecord, ToolPart, SlashCommand, MessagePart } from '@/types/messages'
+import type { JavaResponse, SessionInfo, ZCodeMessage, StreamEvent, ModelOption, ModelManageProvider, TodoItem, AgentItem, FileChangeItem, QuotaData, ModelUsageData, ToolUsageData, UsageRange, AppUsageData, AppUsageRange, ContextBreakdownItem, ThoughtLevelInfo, SubagentActivity, SubagentInfo, ToolUpdatedPayload, MemoryFileInfo, MemoryDirInfo, SkillInfo, McpServerInfo, McpToolsState, McpLogEntry, EnvStatus, BrowserClearedSite, BrowserDataOverview, AgentDef, AgentDefInput, ImageAttachmentInput, GoalState, AutoArchiveRecord, ToolPart, SlashCommand, MessagePart } from '@/types/messages'
 import { applyStreamEvent, isSubagentToolEvent, applySubagentToolEvent, markActivityOutcome, finalizeActivitiesFromNotifications, asSubagentLifecycle, asGoalTargetPayload, looksLikeQuotaError, asSteerDrainedInputs, appendSteerUserMessages } from '@/utils/streamReducer'
 import type { TurnErrorInfo, SubagentLifecyclePayload } from '@/utils/streamReducer'
 import i18n from '@/i18n/config'
@@ -794,6 +794,8 @@ interface StoreState {
 
   // 记忆文件（设置视图「记忆」条目，Kotlin 端固定清单扫描）
   memoryFiles: MemoryFileInfo[] | null
+  /** 自动记忆目录定位（null=未加载/无打开项目；排查「有记忆但读取不到」）*/
+  memoryDir: MemoryDirInfo | null
   memoryLoading: boolean
   /** 正在创建的记忆文件路径（条目按钮 loading 用）*/
   memoryCreatingPath: string | null
@@ -1305,6 +1307,7 @@ export const useStore = create<StoreState>((set, get) => ({
   quotaFetchedAt: 0,
   usageProvider: null,
   memoryFiles: null,
+  memoryDir: null,
   memoryLoading: false,
   memoryCreatingPath: null,
   memoryError: null,
@@ -4509,7 +4512,7 @@ export function handleResponse(
       break
 
     case 'memoryFiles':
-      set({ memoryFiles: msg.files, memoryEnabled: msg.memoryEnabled, memoryLoading: false, memoryError: null })
+      set({ memoryFiles: msg.files, memoryDir: msg.memoryDir ?? null, memoryEnabled: msg.memoryEnabled, memoryLoading: false, memoryError: null })
       break
 
     case 'memoryEnabledChanged':

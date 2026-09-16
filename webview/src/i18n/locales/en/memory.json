@@ -28,6 +28,14 @@
     "switchOffHint": "Click to turn on (applies to new sessions)",
     "indexDesc": "Memory index (one line per memory, pointing to fact files in the same directory)",
     "factFallback": "Facts automatically distilled from completed conversations",
-    "empty": "No auto memories yet — turn on the toggle above and finish a few conversations; distilled facts will appear here"
+    "empty": "No auto memories yet — turn on the toggle above and finish a few conversations; distilled facts will appear here",
+    "dirLabel": "Memory directory",
+    "dirFound": "{{count}} loaded",
+    "dirNotFound": "Not found",
+    "dirMissHint": "Reading location derived from the current project path. If directories in the memories root end with a different 16-char hash, the memories were written under another path — open the root to compare",
+    "revealDir": "Reveal folder",
+    "revealRoot": "Open root",
+    "revealDirTitle": "Reveal this folder in the system file manager",
+    "revealRootTitle": "Open the memories root in the system file manager (compare project directory names)"
   }
 }

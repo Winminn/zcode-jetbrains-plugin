@@ -850,6 +850,7 @@ if (!window.__ZCODE_LOG_HOOK__) {
                         "listFiles" -> handleListFiles(msg)
                         "listCommands" -> handleListCommands(msg)
                         "listMemoryFiles" -> handleListMemoryFiles(msg)
+                        "revealInFileManager" -> handleRevealInFileManager(msg)
                         "createMemoryFile" -> handleCreateMemoryFile(msg)
                         "setMemoryEnabled" -> handleSetMemoryEnabled(msg)
                         "getProxyConfig" -> handleGetProxyConfig()
@@ -4601,6 +4602,15 @@ if (!window.__ZCODE_LOG_HOOK__) {
             put("op", "memoryFiles")
             put("memoryEnabled", ZCodeClientSettingStore.readRuntimePrefs().memoryEnabled)
             put("memorySettingPath", ZCodeClientSettingStore.settingPath().absolutePath)
+            // 自动记忆目录定位（设置页展示路径 + 排查「有记忆但读取不到」：哈希后缀匹配，
+            // 未命中时前端展示期望路径供与记忆根目录实际内容对比）
+            MemoryFileScanner.locate(project.basePath)?.let { d ->
+                put("memoryDir", buildJsonObject {
+                    put("projectsRoot", d.projectsRoot)
+                    put("expectedDir", d.expectedDir)
+                    d.dir?.let { put("dir", it) }
+                })
+            }
             put("files", JsonArray(files.map { f ->
                 buildJsonObject {
                     put("name", f.name)
@@ -4643,6 +4653,42 @@ if (!window.__ZCODE_LOG_HOOK__) {
         return buildJsonObject {
             put("op", "memoryFileCreated")
             put("path", path)
+        }
+    }
+
+    /**
+     * op=revealInFileManager — 在系统文件管理器中定位显示文件/目录（记忆目录排查入口）。
+     *
+     * browseFileDirectory 在资源管理器中定位并选中目标（平台不支持返回 false），
+     * 退化路径：目标是目录则直接打开，是文件则打开所在目录。
+     */
+    private fun handleRevealInFileManager(msg: JsonObject): JsonObject {
+        val path = msg["path"]?.jsonPrimitive?.content
+            ?: return errorResponse("缺少 path")
+        com.intellij.openapi.application.invokeLater {
+            val f = java.io.File(path)
+            if (!f.exists()) {
+                log.warn("Reveal in file manager failed: not found $path")
+                return@invokeLater
+            }
+            try {
+                val desktop = java.awt.Desktop.getDesktop()
+                // browseFileDirectory 定位选中目标（平台不支持/失败抛异常），退化：目录直接打开
+                if (desktop.isSupported(java.awt.Desktop.Action.BROWSE_FILE_DIR)) {
+                    try {
+                        desktop.browseFileDirectory(f)
+                    } catch (_: Exception) {
+                        (if (f.isDirectory) f else f.parentFile)?.let { desktop.open(it) }
+                    }
+                } else {
+                    (if (f.isDirectory) f else f.parentFile)?.let { desktop.open(it) }
+                }
+            } catch (e: Exception) {
+                log.warn("Reveal in file manager failed: $path (${e.message})")
+            }
+        }
+        return buildJsonObject {
+            put("op", "revealedInFileManager")
         }
     }
 

@@ -1754,11 +1754,17 @@ flowchart LR
         ],
       }
     case 'listMemoryFiles':
-      // mock：全局存在 + 项目未创建 + 两条自动记忆（验收三种形态的条目）
+      // mock：全局存在 + 项目未创建 + 两条自动记忆（验收三种形态的条目）；
+      // memoryDir 命中形态（未命中形态：dir 置 null，前端显示期望路径 + 打开根目录）
       return {
         op: 'memoryFiles',
         memoryEnabled: true,
         memorySettingPath: 'C:\\Users\\mock\\.zcode\\v2\\setting.json',
+        memoryDir: {
+          projectsRoot: 'C:\\Users\\mock\\.zcode\\cli\\memories\\projects',
+          expectedDir: 'C:\\Users\\mock\\.zcode\\cli\\memories\\projects\\mock-abc123\\memory',
+          dir: 'C:\\Users\\mock\\.zcode\\cli\\memories\\projects\\mock-abc123\\memory',
+        },
         files: [
           {
             name: 'AGENTS.md',
@@ -1813,6 +1819,8 @@ flowchart LR
       }
     case 'createMemoryFile':
       return { op: 'memoryFileCreated', path: req.path }
+    case 'revealInFileManager':
+      return { op: 'revealedInFileManager' }
     case 'setMemoryEnabled':
       return { op: 'memoryEnabledChanged', enabled: req.enabled }
     case 'listSkills':

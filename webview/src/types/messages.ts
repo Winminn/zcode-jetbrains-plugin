@@ -413,6 +413,8 @@ export type JavaRequest =  | { op: 'askUserPendingState' }
   | { op: 'refreshFile'; filePath: string }
   | { op: 'listMemoryFiles' }
   | { op: 'createMemoryFile'; path: string }
+  /** 在系统文件管理器中定位显示文件/目录（记忆目录排查入口）*/
+  | { op: 'revealInFileManager'; path: string }
   /** 切换「工作区记忆」开关（写 ~/.zcode/v2/setting.json，与 ZCode 客户端共用）*/
   | { op: 'setMemoryEnabled'; enabled: boolean }
   /** 浏览器设置快照（控制开关/插件安装态）*/
@@ -638,6 +640,19 @@ export interface MemoryFileInfo {
   description?: string
   /** auto 事实文件首个 # 标题（数据非文案，缺失走 factFallback）*/
   title?: string
+}
+
+/**
+ * 自动记忆目录定位（设置页展示 + 排查「有记忆但读取不到」）
+ * 命中判定按目录名末尾 16 位哈希（前缀 CLI 可能改写，如中文目录名 → project）。
+ */
+export interface MemoryDirInfo {
+  /** 记忆根目录（所有项目共用）*/
+  projectsRoot: string
+  /** 按当前项目路径推算的期望目录（前缀仅参考）*/
+  expectedDir: string
+  /** 实际命中的记忆目录；null/缺省 = 该路径下 CLI 未建过记忆 */
+  dir?: string | null
 }
 
 /**
@@ -1002,9 +1017,10 @@ export type JavaResponse =
   | { op: 'fileOpened' }
   | { op: 'diffShown' }
   | { op: 'fileRefreshed' }
-  | { op: 'memoryFiles'; files: MemoryFileInfo[]; memoryEnabled: boolean; memorySettingPath: string }
+  | { op: 'memoryFiles'; files: MemoryFileInfo[]; memoryEnabled: boolean; memorySettingPath: string; memoryDir?: MemoryDirInfo | null }
   | { op: 'memoryEnabledChanged'; enabled: boolean }
   | { op: 'memoryFileCreated'; path: string }
+  | { op: 'revealedInFileManager' }
   /** 浏览器设置快照（op=browserConfig 的响应）*/
   | { op: 'browserConfig'; browserControlEnabled: boolean; pluginInstalled: boolean }
   /** op=clearBrowserData 的响应（sites=已清站点数据明细；httpCache/cookies 全局项）*/

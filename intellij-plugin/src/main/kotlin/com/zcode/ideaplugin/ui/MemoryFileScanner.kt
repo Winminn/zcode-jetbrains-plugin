@@ -11,10 +11,11 @@ import java.security.MessageDigest
  *      - 全局   ~/.zcode/AGENTS.md   所有项目的会话读取
  *      - 项目根 AGENTS.md            仅当前项目的会话读取
  *   2. 自动记忆（auto，ZCode 自动生成，只读展示）
- *      ~/.zcode/cli/memories/projects/<项目目录名小写>-<hash16>/memory/
+ *      ~/.zcode/cli/memories/projects/<前缀>-<hash16>/memory/
  *        MEMORY.md = 索引（每条记忆一行），其余 *.md = 单条事实
- *      hash16 = sha256(项目绝对路径小写、原生分隔符形态) 前 16 位 hex（实测反推，
- *      详见 findMemoryDir；文档：zcode.z.ai/cn/docs/memory）
+ *      hash16 = sha256(项目绝对路径小写、原生分隔符形态) 前 16 位 hex；前缀通常为
+ *      项目目录名小写，但 CLI 会改写不安全字符（中文目录名 → project），定位须按
+ *      哈希后缀匹配（详见 findMemoryDir；文档：zcode.z.ai/cn/docs/memory）
  */
 object MemoryFileScanner {
 
@@ -38,9 +39,38 @@ object MemoryFileScanner {
     val title: String? = null,
 )
 
-    /** 指令记忆固定清单 + 自动记忆目录扫描 */
-    fun list(projectBasePath: String?): List<MemoryFile> {
-        val home = System.getProperty("user.home") ?: return emptyList()
+    /**
+     * 自动记忆目录定位结果（设置页展示，排查「有记忆但读取不到」用）
+     *
+     * @param expectedDir 按当前项目路径推算的期望目录（前缀取目录名小写，仅参考——
+     *   CLI 会改写非 ASCII 等目录名前缀，权威判据是末尾 16 位哈希）
+     */
+    data class MemoryDirInfo(
+        /** 记忆根目录（所有项目共用）：~/.zcode/cli/memories/projects */
+        val projectsRoot: String,
+        /** 期望目录（哈希主形态=原生分隔符小写路径）*/
+        val expectedDir: String,
+        /** 实际命中的记忆目录；null = 该项目路径下 CLI 未建过记忆 */
+        val dir: String?,
+    )
+
+    /** 目录定位（与 list() 的自动记忆扫描同源），无打开项目时返回 null；homeDir 注入供测试 */
+    fun locate(projectBasePath: String?, homeDir: String? = null): MemoryDirInfo? {
+        val home = homeDir ?: System.getProperty("user.home") ?: return null
+        if (projectBasePath.isNullOrBlank()) return null
+        val projectsRoot = File(home, ".zcode/cli/memories/projects")
+        val projectName = File(projectBasePath).name.lowercase()
+        val primaryKey = memoryKey(projectBasePath.replace('/', File.separatorChar))
+        return MemoryDirInfo(
+            projectsRoot = projectsRoot.absolutePath,
+            expectedDir = File(projectsRoot, "$projectName-$primaryKey/memory").absolutePath,
+            dir = findMemoryDir(home, projectBasePath)?.absolutePath,
+        )
+    }
+
+    /** 指令记忆固定清单 + 自动记忆目录扫描；homeDir 注入供测试 */
+    fun list(projectBasePath: String?, homeDir: String? = null): List<MemoryFile> {
+        val home = homeDir ?: System.getProperty("user.home") ?: return emptyList()
         val result = mutableListOf<MemoryFile>()
 
         result.add(inspect(File(home, ".zcode/AGENTS.md"), "global", "instructions", "所有项目的 ZCode 会话自动读取"))
@@ -84,32 +114,37 @@ object MemoryFileScanner {
     /**
      * 定位自动记忆目录。
      *
-     * 目录名 = <项目目录名小写>-<hash16>，如 zcode-idea-plugin-e0a18fbbbd5c65a8；
-     * hash16 = sha256(小写路径) 前 16 位 hex。ZCode CLI 用原生分隔符（Windows 反斜杠）
-     * 形态的路径做哈希，而 IDE 的 project.basePath 是 VFS 正斜杠形态——两种形态都算一遍。
-     * 匹配不到再退回项目目录名前缀兜底（目录名前缀即项目目录名小写），取第一个有
-     * memory 子目录的命中。
+     * 目录名 = <前缀>-<hash16>，hash16 = sha256(原生分隔符形态的路径小写) 前 16 位 hex
+     * （实测反推，如 zcode-idea-plugin-e0a18fbbbd5c65a8）。前缀通常取项目目录名小写，
+     * 但 CLI 会改写不安全字符——中文目录名整个替换成 project（实锤：新平台访问环境
+     * → project-7b2bd5221263438c），因此目录名前缀不可依赖，改为哈希后缀匹配：
+     * hash16 由完整路径决定，撞车概率 2^-64，以 -<hash16> 结尾即命中。
+     * IDE 的 project.basePath 是 VFS 正斜杠形态，与 CLI 哈希原料（Windows 反斜杠）
+     * 两种形态都算。最后保留目录名前缀兜底（哈希规则变化时的最后手段）。
      */
     private fun findMemoryDir(home: String, projectBasePath: String): File? {
         val projectsRoot = File(home, ".zcode/cli/memories/projects")
         if (!projectsRoot.isDirectory) return null
+        val candidates = projectsRoot.listFiles { f -> f.isDirectory }?.toList() ?: return null
 
-        val projectName = File(projectBasePath).name.lowercase()
-        val pathVariants = linkedSetOf(
-            projectBasePath,
-            projectBasePath.replace('/', File.separatorChar),
-            projectBasePath.replace('\\', '/'),
-        )
-        for (v in pathVariants) {
-            val dir = File(projectsRoot, "$projectName-${memoryKey(v)}/memory")
-            if (dir.isDirectory) return dir
+        for (key in pathVariants(projectBasePath).map { memoryKey(it) }) {
+            val hit = candidates.firstOrNull { it.name == key || it.name.endsWith("-$key") } ?: continue
+            val memory = File(hit, "memory")
+            if (memory.isDirectory) return memory
         }
 
-        val candidates = projectsRoot.listFiles { f ->
-            f.isDirectory && f.name.lowercase().startsWith("$projectName-")
-        }?.toList() ?: return null
-        return candidates.map { File(it, "memory") }.firstOrNull { it.isDirectory }
+        val projectName = File(projectBasePath).name.lowercase()
+        return candidates.filter { it.name.lowercase().startsWith("$projectName-") }
+            .map { File(it, "memory") }
+            .firstOrNull { it.isDirectory }
     }
+
+    /** basePath 的各分隔符形态（正斜杠 VFS 原样 / 原生分隔符 / 反斜杠转正斜杠），去重 */
+    private fun pathVariants(projectBasePath: String): List<String> = linkedSetOf(
+        projectBasePath,
+        projectBasePath.replace('/', File.separatorChar),
+        projectBasePath.replace('\\', '/'),
+    ).toList()
 
     /** 项目路径 → 记忆目录 key：sha256(小写路径) 前 16 位 hex */
     private fun memoryKey(projectBasePath: String): String {
