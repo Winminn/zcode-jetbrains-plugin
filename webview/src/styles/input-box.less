@@ -247,6 +247,19 @@
       max-height: 80vh;
       object-fit: contain;
       border-radius: 4px;
+      /* 缩放/平移走 transform：不参与布局，overflow 出 content 盒属预期 */
+      will-change: transform;
+      touch-action: none;
+      user-select: none;
+
+      /* 放大后可拖拽平移；panning 由 pointer 捕获期间置位 */
+      &.is-zoomable {
+        cursor: grab;
+      }
+
+      &.is-panning {
+        cursor: grabbing;
+      }
     }
 
     .image-preview-meta {
@@ -308,6 +321,67 @@
 
     &--next {
       right: 16px;
+    }
+  }
+
+  // 缩放工具条：贴底部居中悬浮（position+z-index 压过被放大的图片）
+  .image-preview-toolbar {
+    position: absolute;
+    bottom: 20px;
+    left: 50%;
+    transform: translateX(-50%);
+    display: flex;
+    align-items: center;
+    gap: 2px;
+    padding: 3px 6px;
+    border-radius: 14px;
+    background: rgba(0, 0, 0, 0.55);
+    z-index: 1;
+
+    .image-preview-zoom-btn {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      width: 26px;
+      height: 26px;
+      border: none;
+      border-radius: 50%;
+      background: transparent;
+      color: #fff;
+      font-size: 16px;
+      cursor: pointer;
+      opacity: 0.85;
+      transition: background 0.15s ease, opacity 0.15s ease;
+
+      &:hover:not(:disabled) {
+        background: rgba(255, 255, 255, 0.15);
+        opacity: 1;
+      }
+
+      &:disabled {
+        opacity: 0.25;
+        cursor: default;
+      }
+    }
+
+    // 百分比即复位按钮：点击回到 1x fit
+    .image-preview-zoom-level {
+      min-width: 48px;
+      height: 26px;
+      border: none;
+      border-radius: 13px;
+      background: transparent;
+      color: #fff;
+      font-size: 12px;
+      font-variant-numeric: tabular-nums;
+      cursor: pointer;
+      opacity: 0.9;
+      transition: background 0.15s ease, opacity 0.15s ease;
+
+      &:hover {
+        background: rgba(255, 255, 255, 0.15);
+        opacity: 1;
+      }
     }
   }
 }
