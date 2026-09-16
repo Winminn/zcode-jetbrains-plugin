@@ -187,4 +187,46 @@ class MemoryFileScannerTest {
         assertEquals(listOf("b.md", "a.md"), factNames, "无索引应按修改时间倒序")
         assertTrue(auto.none { it.orphaned }, "无索引不适用 orphan 概念")
     }
+
+    @Test
+    fun `全文搜索单词命中计数与片段`() {
+        val dir = File(tmp, ".zcode/cli/memories/projects/demo-app-0000000000000000/memory")
+        dir.mkdirs()
+        File(dir, "deploy.md").writeText(
+            "---\ndescription: 部署脚本说明\n---\n\n${"前缀上下文。"}deploy 用法：deploy.py 一键部署，重复 deploy 三次。\n",
+            Charsets.UTF_8,
+        )
+        File(dir, "other.md").writeText("# 无关内容\n", Charsets.UTF_8)
+
+        val hits = MemoryFileScanner.search("C:/work/demo-app", "deploy", tmp.absolutePath)
+        assertEquals(1, hits.size, "仅 deploy.md 命中")
+        assertEquals(3, hits[0].matchCount, "deploy 出现 3 次（正文），description 未含")
+        assertTrue(hits[0].snippet.contains("deploy"), "片段应含关键词")
+        assertTrue(hits[0].name == "deploy.md")
+    }
+
+    @Test
+    fun `全文搜索多词AND与大小写不敏感`() {
+        val dir = File(tmp, ".zcode/cli/memories/projects/demo-app-0000000000000000/memory")
+        dir.mkdirs()
+        File(dir, "both.md").writeText("SSH 访问 190 与 191 的 Deploy 流程\n", Charsets.UTF_8)
+        File(dir, "only-one.md").writeText("SSH 单独出现\n", Charsets.UTF_8)
+
+        assertEquals(1, MemoryFileScanner.search("C:/work/demo-app", "ssh deploy", tmp.absolutePath).size, "两词齐备才命中")
+        val hit = MemoryFileScanner.search("C:/work/demo-app", "SSH DEPLOY", tmp.absolutePath)
+        assertEquals(listOf("both.md"), hit.map { it.name }, "大小写不敏感")
+        assertEquals(2, hit[0].matchCount, "ssh/deploy 各 1 次")
+    }
+
+    @Test
+    fun `空query返回空且MEMORY索引参与搜索`() {
+        val dir = File(tmp, ".zcode/cli/memories/projects/demo-app-0000000000000000/memory")
+        dir.mkdirs()
+        File(dir, "MEMORY.md").writeText("# Memory Index\n\n- [部署](deploy.md) — 部署摘要\n", Charsets.UTF_8)
+        File(dir, "deploy.md").writeText("正文\n", Charsets.UTF_8)
+
+        assertTrue(MemoryFileScanner.search("C:/work/demo-app", "   ", tmp.absolutePath).isEmpty(), "空白 query 空结果")
+        val hits = MemoryFileScanner.search("C:/work/demo-app", "部署摘要", tmp.absolutePath)
+        assertEquals(listOf("MEMORY.md"), hits.map { it.name }, "索引文件本身参与全文检索")
+    }
 }

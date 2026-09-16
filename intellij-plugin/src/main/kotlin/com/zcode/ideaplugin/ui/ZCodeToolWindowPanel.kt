@@ -850,6 +850,7 @@ if (!window.__ZCODE_LOG_HOOK__) {
                         "listFiles" -> handleListFiles(msg)
                         "listCommands" -> handleListCommands(msg)
                         "listMemoryFiles" -> handleListMemoryFiles(msg)
+                        "searchMemoryFiles" -> handleSearchMemoryFiles(msg)
                         "revealInFileManager" -> handleRevealInFileManager(msg)
                         "createMemoryFile" -> handleCreateMemoryFile(msg)
                         "setMemoryEnabled" -> handleSetMemoryEnabled(msg)
@@ -2905,30 +2906,61 @@ if (!window.__ZCODE_LOG_HOOK__) {
         return queryUsageEndpoint(creds, "tool-usage", startTime, endTime, "toolUsage")
     }
 
-    /** op=openFile — 在 IDEA 编辑器打开文件（支持行号定位）*/
+    /**
+     * op=openFile — 在 IDEA 编辑器打开文件（支持行号定位）
+     *
+     * findText 可选：打开后在编辑器 Find 栏填充该关键词（EditorSearchSession，
+     * live preview 高亮全部命中）；会话启动失败退化为定位并选中首个命中。
+     */
     private fun handleOpenFile(msg: JsonObject): JsonObject {
         val filePath = msg["filePath"]?.jsonPrimitive?.content
             ?: return errorResponse("缺少 filePath")
         val line = msg["line"]?.jsonPrimitive?.content?.toIntOrNull()
+        val findText = msg["findText"]?.jsonPrimitive?.content
         com.intellij.openapi.application.invokeLater {
             val vfile = LocalFileSystem.getInstance().findFileByPath(filePath)
             if (vfile != null) {
-                val editor = FileEditorManager.getInstance(project).openFile(vfile, true)
+                FileEditorManager.getInstance(project).openFile(vfile, true)
+                val editor = FileEditorManager.getInstance(project).selectedTextEditor
                 // 行号定位（caret 移到指定行）
-                if (line != null && line > 0) {
-                    val selected = FileEditorManager.getInstance(project).selectedTextEditor
-                    if (selected != null) {
-                        val offset = selected.document.getLineStartOffset(
-                            minOf(line - 1, selected.document.lineCount - 1)
-                        )
-                        selected.caretModel.moveToOffset(offset)
-                    }
+                if (editor != null && line != null && line > 0) {
+                    val offset = editor.document.getLineStartOffset(
+                        minOf(line - 1, editor.document.lineCount - 1)
+                    )
+                    editor.caretModel.moveToOffset(offset)
+                }
+                if (editor != null && !findText.isNullOrBlank()) {
+                    openEditorSearch(editor, findText)
                 }
             } else {
                 log.warn("Open file failed: file not found $filePath")
             }
         }
         return buildJsonObject { put("op", "fileOpened") }
+    }
+
+    /**
+     * 编辑器内查找：Find 栏填充关键词并触发 live preview 高亮（EditorSearchSession，
+     * 平台 API 已核验 2024.1 app-client.jar）。plain text 模式（关闭正则），
+     * 大小写敏感跟随用户既有查找设置；会话启动失败退化为定位并选中首个命中。
+     */
+    private fun openEditorSearch(editor: com.intellij.openapi.editor.Editor, findText: String) {
+        try {
+            val findManager = com.intellij.find.FindManager.getInstance(project)
+            val model = findManager.findInFileModel.clone() as com.intellij.find.FindModel
+            model.stringToFind = findText
+            model.isRegularExpressions = false
+            com.intellij.find.EditorSearchSession.start(editor, model, project)
+        } catch (e: Exception) {
+            log.warn("Editor search session failed, fallback to caret locate: ${e.message}")
+            val text = editor.document.text
+            val idx = text.indexOf(findText, ignoreCase = true)
+            if (idx >= 0) {
+                editor.caretModel.moveToOffset(idx)
+                editor.selectionModel.setSelection(idx, idx + findText.length)
+                editor.scrollingModel.scrollToCaret(com.intellij.openapi.editor.ScrollType.CENTER)
+            }
+        }
     }
 
     /** op=showDiff — 弹出 IDEA 原生 diff 窗口（old vs new）*/
@@ -4654,6 +4686,27 @@ if (!window.__ZCODE_LOG_HOOK__) {
         return buildJsonObject {
             put("op", "memoryFileCreated")
             put("path", path)
+        }
+    }
+
+    /**
+     * op=searchMemoryFiles — 自动记忆目录全文检索（设置页记忆搜索框，前端防抖）
+     * 空格分词 AND、大小写不敏感、命中计数排序；空 query 返回空表（前端退出搜索态）。
+     */
+    private fun handleSearchMemoryFiles(msg: JsonObject): JsonObject {
+        val query = msg["query"]?.jsonPrimitive?.content ?: ""
+        val hits = MemoryFileScanner.search(project.basePath, query)
+        return buildJsonObject {
+            put("op", "memorySearchResults")
+            put("query", query)
+            put("results", JsonArray(hits.map { h ->
+                buildJsonObject {
+                    put("path", h.path)
+                    put("name", h.name)
+                    put("matchCount", h.matchCount)
+                    put("snippet", h.snippet)
+                }
+            }))
         }
     }
 

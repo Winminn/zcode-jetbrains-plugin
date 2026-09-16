@@ -1821,6 +1821,16 @@ flowchart LR
       }
     case 'createMemoryFile':
       return { op: 'memoryFileCreated', path: req.path }
+    case 'searchMemoryFiles':
+      // mock：两条命中（片段 + 命中数），验搜索态条目形态
+      return {
+        op: 'memorySearchResults',
+        query: req.query,
+        results: [
+          { path: 'C:\\Users\\mock\\.zcode\\cli\\memories\\projects\\mock-abc123\\memory\\deploy-tool.md', name: 'deploy-tool.md', matchCount: 6, snippet: '…48 项目产物根目录的 deploy.py 一键部署脚本——management/keepalived/sql/nginx/Portainer stacks/Nacos…' },
+          { path: 'C:\\Users\\mock\\.zcode\\cli\\memories\\projects\\mock-abc123\\memory\\MEMORY.md', name: 'MEMORY.md', matchCount: 1, snippet: '…- [部署工具](deploy-tool.md) — deploy.py 一键部署，含 setup token 首启初始化…' },
+        ],
+      }
     case 'revealInFileManager':
       return { op: 'revealedInFileManager' }
     case 'setMemoryEnabled':

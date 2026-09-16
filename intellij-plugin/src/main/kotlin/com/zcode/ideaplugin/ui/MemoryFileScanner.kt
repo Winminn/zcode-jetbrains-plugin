@@ -71,6 +71,62 @@ object MemoryFileScanner {
         )
     }
 
+    /**
+     * 自动记忆全文搜索单条命中（搜索态由前端切换列表形态）
+     *
+     * @param matchCount 全部关键词的命中总次数（排序依据，命中多排前）
+     * @param snippet 首个关键词首次命中处的上下文片段（前后各 48 字符，换行折叠为空格）
+     */
+    data class MemorySearchHit(
+        val path: String,
+        val name: String,
+        val matchCount: Int,
+        val snippet: String,
+    )
+
+    /**
+     * 自动记忆目录全文检索（含 MEMORY.md 索引本身）。
+     * 空格分词 AND 匹配（每个词都出现才命中），大小写不敏感；单文件 ≤ 数十 KB 直接读全文。
+     * 返回按命中次数降序；无命中/无目录返回空表。
+     */
+    fun search(projectBasePath: String?, query: String, homeDir: String? = null): List<MemorySearchHit> {
+        val terms = query.trim().split(Regex("\\s+")).filter { it.isNotBlank() }
+        if (terms.isEmpty() || projectBasePath.isNullOrBlank()) return emptyList()
+        val home = homeDir ?: System.getProperty("user.home") ?: return emptyList()
+        val dir = findMemoryDir(home, projectBasePath) ?: return emptyList()
+        val files = dir.listFiles { f -> f.isFile && f.extension.equals("md", ignoreCase = true) }
+            ?: return emptyList()
+
+        val hits = mutableListOf<MemorySearchHit>()
+        for (f in files) {
+            val text = try { f.readText(Charsets.UTF_8) } catch (_: Exception) { continue }
+            val lower = text.lowercase()
+            val lowerTerms = terms.map { it.lowercase() }
+            if (lowerTerms.any { it !in lower }) continue
+
+            var matchCount = 0
+            var firstPos = -1
+            for (t in lowerTerms) {
+                var idx = 0
+                while (true) {
+                    idx = lower.indexOf(t, idx)
+                    if (idx < 0) break
+                    if (firstPos < 0) firstPos = idx
+                    matchCount++
+                    idx += t.length
+                }
+            }
+            val termLen = terms.first().length
+            val start = maxOf(0, firstPos - 48)
+            val end = minOf(text.length, firstPos + termLen + 48)
+            val snippet = (if (start > 0) "…" else "") +
+                text.substring(start, end).replace(Regex("\\s+"), " ") +
+                (if (end < text.length) "…" else "")
+            hits.add(MemorySearchHit(f.absolutePath, f.name, matchCount, snippet))
+        }
+        return hits.sortedByDescending { it.matchCount }
+    }
+
     /** 指令记忆固定清单 + 自动记忆目录扫描；homeDir 注入供测试 */
     fun list(projectBasePath: String?, homeDir: String? = null): List<MemoryFile> {
         val home = homeDir ?: System.getProperty("user.home") ?: return emptyList()

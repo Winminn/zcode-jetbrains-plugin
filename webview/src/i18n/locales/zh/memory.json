@@ -19,6 +19,13 @@
     "hint": "仅当前项目的 ZCode 会话自动读取",
     "empty": "未检测到打开的项目"
   },
+  "search": {
+    "placeholder": "全文搜索记忆内容…",
+    "clear": "清除",
+    "searching": "搜索中…",
+    "noMatch": "无匹配记忆",
+    "hitCount": "{{count}} 处"
+  },
   "auto": {
     "title": "ZCode 自动记忆",
     "hint": "从已完成对话中自动提炼，后续会话自动带入（开关与 ZCode 客户端共用）",

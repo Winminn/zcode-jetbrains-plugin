@@ -11,12 +11,12 @@
  *       自动记忆目录行 → revealInFileManager（系统文件管理器定位；未命中时打开记忆根目录对比）
  */
 
-import { useEffect } from 'react'
+import { useEffect, useRef, useState, type ReactNode } from 'react'
 import { useTranslation } from 'react-i18next'
 import type { TFunction } from 'i18next'
 import { useStore } from '@/store/useStore'
 import { sendToJava } from '@/ipc/bridge'
-import type { MemoryFileInfo } from '@/types/messages'
+import type { MemoryFileInfo, MemorySearchHitInfo } from '@/types/messages'
 import { fmtResetTime } from '@/utils/format'
 import '../styles/memory-view.less'
 
@@ -39,6 +39,83 @@ function localizedDesc(t: TFunction, file: MemoryFileInfo): string {
       : (file.title || t('memory.auto.factFallback'))
   }
   return file.scope === 'global' ? t('memory.global.hint') : t('memory.project.hint')
+}
+
+/** 命中片段高亮：按空格分词逐词包裹 <mark>（split 捕获组即命中词原文，大小写不敏感判断）*/
+function highlightSnippet(snippet: string, query: string): ReactNode[] {
+  const terms = query.trim().split(/\s+/).filter(Boolean)
+  if (terms.length === 0) return [snippet]
+  const escaped = terms.map((t) => t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'))
+  const regex = new RegExp(`(${escaped.join('|')})`, 'gi')
+  return snippet.split(regex).map((part, i) =>
+    terms.some((t) => part.toLowerCase() === t.toLowerCase())
+      ? <mark key={i} className="memory-search-hit__mark">{part}</mark>
+      : part,
+  )
+}
+
+/** 全文搜索命中条目（搜索态替换原列表）：文件名 + 命中数徽标 + 片段高亮 */
+function SearchHitItem({ hit, query }: { hit: MemorySearchHitInfo; query: string }) {
+  const { t } = useTranslation()
+  return (
+    <div className="memory-item auto memory-search-hit">
+      <span className="codicon codicon-search memory-item__icon" />
+      <div className="memory-item__body">
+        <div className="memory-item__name-row">
+          <span className="memory-item__name">{hit.name}</span>
+          <span className="memory-item__badge memory-item__badge--count">
+            {t('memory.search.hitCount', { count: hit.matchCount })}
+          </span>
+        </div>
+        <div className="memory-item__desc memory-search-hit__snippet" title={hit.snippet}>
+          {highlightSnippet(hit.snippet, query)}
+        </div>
+      </div>
+      <button
+        className="memory-item__btn"
+        onClick={() => sendToJava({ op: 'openFile', filePath: hit.path, findText: query })}
+        title={t('memory.item.openTitle')}
+      >
+        <span className="codicon codicon-go-to-file" />
+        {t('memory.item.open')}
+      </button>
+    </div>
+  )
+}
+
+/** 自动记忆全文搜索框（300ms 防抖；空 query 退出搜索态恢复原列表）*/
+function MemorySearchBox() {
+  const { t } = useTranslation()
+  const [value, setValue] = useState('')
+  const searchMemoryFiles = useStore((s) => s.searchMemoryFiles)
+  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  useEffect(() => () => {
+    if (timerRef.current) clearTimeout(timerRef.current)
+  }, [])
+
+  const onChange = (v: string) => {
+    setValue(v)
+    if (timerRef.current) clearTimeout(timerRef.current)
+    timerRef.current = setTimeout(() => searchMemoryFiles(v), 300)
+  }
+
+  return (
+    <div className="memory-search">
+      <span className="codicon codicon-search memory-search__icon" />
+      <input
+        className="memory-search__input"
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        placeholder={t('memory.search.placeholder')}
+      />
+      {value ? (
+        <button className="memory-search__clear" onClick={() => onChange('')} title={t('memory.search.clear')}>
+          <span className="codicon codicon-close" />
+        </button>
+      ) : null}
+    </div>
+  )
 }
 
 /** 单条记忆文件条目 */
@@ -182,6 +259,9 @@ export function MemoryView() {
   const memoryLoading = useStore((s) => s.memoryLoading)
   const memoryError = useStore((s) => s.memoryError)
   const loadMemoryFiles = useStore((s) => s.loadMemoryFiles)
+  const memorySearchResults = useStore((s) => s.memorySearchResults)
+  const memorySearchActiveQuery = useStore((s) => s.memorySearchActiveQuery)
+  const memorySearching = useStore((s) => s.memorySearching)
 
   useEffect(() => {
     loadMemoryFiles()
@@ -190,6 +270,7 @@ export function MemoryView() {
   const globalFiles = memoryFiles?.filter((f) => f.scope === 'global') ?? []
   const projectFiles = memoryFiles?.filter((f) => f.scope === 'project' && f.kind === 'instructions') ?? []
   const autoFiles = memoryFiles?.filter((f) => f.kind === 'auto') ?? []
+  const searching = memorySearchResults != null
 
   return (
     <div className="memory-view">
@@ -233,7 +314,16 @@ export function MemoryView() {
         </div>
         <MemoryToggle />
         <MemoryDirRow />
-        {autoFiles.length > 0 ? (
+        <MemorySearchBox />
+        {searching ? (
+          memorySearchResults.length > 0 ? (
+            memorySearchResults.map((h) => <SearchHitItem key={h.path} hit={h} query={memorySearchActiveQuery} />)
+          ) : (
+            <div className="memory-view__loading">
+              {memorySearching ? t('memory.search.searching') : t('memory.search.noMatch')}
+            </div>
+          )
+        ) : autoFiles.length > 0 ? (
           autoFiles.map((f) => <MemoryItem key={f.path} file={f} />)
         ) : (
           <div className="memory-view__loading">{t('memory.auto.empty')}</div>

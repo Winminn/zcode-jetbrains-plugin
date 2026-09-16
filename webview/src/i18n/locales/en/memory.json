@@ -19,6 +19,13 @@
     "hint": "Automatically read only by ZCode sessions in the current project",
     "empty": "No open project detected"
   },
+  "search": {
+    "placeholder": "Full-text search memory contents…",
+    "clear": "Clear",
+    "searching": "Searching…",
+    "noMatch": "No matching memories",
+    "hitCount": "{{count}} hits"
+  },
   "auto": {
     "title": "ZCode auto memory",
     "hint": "Automatically distilled from completed conversations and injected into later sessions (toggle shared with the ZCode client)",

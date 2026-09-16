@@ -19,6 +19,13 @@
     "hint": "僅當前專案的 ZCode 會話自動讀取",
     "empty": "未檢測到開啟的專案"
   },
+  "search": {
+    "placeholder": "全文搜尋記憶內容…",
+    "clear": "清除",
+    "searching": "搜尋中…",
+    "noMatch": "無匹配記憶",
+    "hitCount": "{{count}} 處"
+  },
   "auto": {
     "title": "ZCode 自動記憶",
     "hint": "從已完成對話中自動提煉，後續會話自動帶入（開關與 ZCode 客戶端共用）",

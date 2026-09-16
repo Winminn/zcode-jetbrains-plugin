@@ -16,7 +16,7 @@ import { create } from 'zustand'
 import { onMessage, onStreamEvent, onStreamBatch, sendToJava, initBridge, isInJcef, getWorkspacePath, getInitialSessionId } from '@/ipc/bridge'
 import { parseGoalCommand } from '@/utils/goalCommand'
 import { extractTitleExcerpt } from '@/utils/titleExcerpt'
-import type { JavaResponse, SessionInfo, ZCodeMessage, StreamEvent, ModelOption, ModelManageProvider, TodoItem, AgentItem, FileChangeItem, QuotaData, ModelUsageData, ToolUsageData, UsageRange, AppUsageData, AppUsageRange, ContextBreakdownItem, ThoughtLevelInfo, SubagentActivity, SubagentInfo, ToolUpdatedPayload, MemoryFileInfo, MemoryDirInfo, SkillInfo, McpServerInfo, McpToolsState, McpLogEntry, EnvStatus, BrowserClearedSite, BrowserDataOverview, AgentDef, AgentDefInput, ImageAttachmentInput, GoalState, AutoArchiveRecord, ToolPart, SlashCommand, MessagePart } from '@/types/messages'
+import type { JavaResponse, SessionInfo, ZCodeMessage, StreamEvent, ModelOption, ModelManageProvider, TodoItem, AgentItem, FileChangeItem, QuotaData, ModelUsageData, ToolUsageData, UsageRange, AppUsageData, AppUsageRange, ContextBreakdownItem, ThoughtLevelInfo, SubagentActivity, SubagentInfo, ToolUpdatedPayload, MemoryFileInfo, MemoryDirInfo, MemorySearchHitInfo, SkillInfo, McpServerInfo, McpToolsState, McpLogEntry, EnvStatus, BrowserClearedSite, BrowserDataOverview, AgentDef, AgentDefInput, ImageAttachmentInput, GoalState, AutoArchiveRecord, ToolPart, SlashCommand, MessagePart } from '@/types/messages'
 import { applyStreamEvent, isSubagentToolEvent, applySubagentToolEvent, markActivityOutcome, finalizeActivitiesFromNotifications, asSubagentLifecycle, asGoalTargetPayload, looksLikeQuotaError, asSteerDrainedInputs, appendSteerUserMessages } from '@/utils/streamReducer'
 import type { TurnErrorInfo, SubagentLifecyclePayload } from '@/utils/streamReducer'
 import i18n from '@/i18n/config'
@@ -796,6 +796,10 @@ interface StoreState {
   memoryFiles: MemoryFileInfo[] | null
   /** 自动记忆目录定位（null=未加载/无打开项目；排查「有记忆但读取不到」）*/
   memoryDir: MemoryDirInfo | null
+  /** 自动记忆全文搜索：null=非搜索态；activeQuery 用于对齐丢弃乱序应答 */
+  memorySearchResults: MemorySearchHitInfo[] | null
+  memorySearchActiveQuery: string
+  memorySearching: boolean
   memoryLoading: boolean
   /** 正在创建的记忆文件路径（条目按钮 loading 用）*/
   memoryCreatingPath: string | null
@@ -1033,6 +1037,8 @@ interface StoreState {
   loadQuota: () => void
   /** 拉取记忆文件清单（设置视图「记忆」条目）*/
   loadMemoryFiles: () => void
+  /** 自动记忆全文搜索（调用方防抖；空 query 退出搜索态）*/
+  searchMemoryFiles: (query: string) => void
   /** 创建缺失的记忆文件（写默认模板，Kotlin 侧自动用编辑器打开）*/
   createMemoryFile: (path: string) => void
   /** 切换「工作区记忆」开关（新会话生效）*/
@@ -1308,6 +1314,9 @@ export const useStore = create<StoreState>((set, get) => ({
   usageProvider: null,
   memoryFiles: null,
   memoryDir: null,
+  memorySearchResults: null,
+  memorySearchActiveQuery: '',
+  memorySearching: false,
   memoryLoading: false,
   memoryCreatingPath: null,
   memoryError: null,
@@ -2395,6 +2404,17 @@ export const useStore = create<StoreState>((set, get) => ({
   loadMemoryFiles: () => {
     set({ memoryLoading: true, memoryError: null })
     sendToJava({ op: 'listMemoryFiles' })
+  },
+
+  searchMemoryFiles: (query) => {
+    const q = query.trim()
+    if (!q) {
+      // 空 query 直接退出搜索态，不发请求
+      set({ memorySearchResults: null, memorySearchActiveQuery: '', memorySearching: false })
+      return
+    }
+    set({ memorySearching: true, memorySearchActiveQuery: q })
+    sendToJava({ op: 'searchMemoryFiles', query: q })
   },
 
   createMemoryFile: (path) => {
@@ -4513,6 +4533,13 @@ export function handleResponse(
 
     case 'memoryFiles':
       set({ memoryFiles: msg.files, memoryDir: msg.memoryDir ?? null, memoryEnabled: msg.memoryEnabled, memoryLoading: false, memoryError: null })
+      break
+
+    case 'memorySearchResults':
+      // 对齐丢弃乱序应答：只接受与当前发起 query 一致的响应
+      if (msg.query === get().memorySearchActiveQuery) {
+        set({ memorySearchResults: msg.results, memorySearching: false })
+      }
       break
 
     case 'memoryEnabledChanged':

@@ -271,6 +271,74 @@
   }
 }
 
+/* 自动记忆全文搜索框（目录行与列表之间）*/
+.memory-search {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 10px;
+  border: 1px solid var(--border-primary);
+  border-radius: 8px;
+  background: var(--bg-secondary);
+
+  &:focus-within {
+    border-color: var(--accent-primary, #3574f0);
+  }
+
+  &__icon {
+    font-size: 14px;
+    color: var(--text-tertiary);
+    flex-shrink: 0;
+  }
+
+  &__input {
+    flex: 1;
+    min-width: 0;
+    background: transparent;
+    border: none;
+    outline: none;
+    color: var(--text-primary);
+    font-size: var(--fs-body);
+
+    &::placeholder {
+      color: var(--text-tertiary);
+    }
+  }
+
+  &__clear {
+    background: transparent;
+    border: none;
+    color: var(--text-tertiary);
+    cursor: pointer;
+    display: inline-flex;
+    padding: 2px;
+    font-size: 12px;
+
+    &:hover {
+      color: var(--text-primary);
+    }
+  }
+}
+
+/* 搜索命中条目 */
+.memory-search-hit__snippet {
+  color: var(--text-muted);
+}
+
+.memory-search-hit__mark,
+mark.memory-search-hit__mark {
+  background: var(--accent-yellow-bg, rgba(224, 164, 40, 0.28));
+  color: var(--text-primary);
+  border-radius: 2px;
+  padding: 0 1px;
+}
+
+.memory-item__badge--count {
+  color: var(--accent-primary, #3574f0);
+  border-color: currentColor;
+  font-variant-numeric: tabular-nums;
+}
+
 /* 单条记忆文件 */
 .memory-item {
   display: flex;

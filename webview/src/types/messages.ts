@@ -408,10 +408,13 @@ export type JavaRequest =  | { op: 'askUserPendingState' }
   | { op: 'getAppUsage'; range: AppUsageRange }
   | { op: 'getModelUsage'; startTime: string; endTime: string }
   | { op: 'getToolUsage'; startTime: string; endTime: string }
-  | { op: 'openFile'; filePath: string; line?: number }
+  /** 打开文件；findText 可选——在编辑器 Find 栏填充该关键词并高亮全部命中 */
+  | { op: 'openFile'; filePath: string; line?: number; findText?: string }
   | { op: 'showDiff'; filePath: string; oldContent: string; newContent: string; title?: string }
   | { op: 'refreshFile'; filePath: string }
   | { op: 'listMemoryFiles' }
+  /** 自动记忆目录全文检索（空格分词 AND；空 query 返回空表=退出搜索态）*/
+  | { op: 'searchMemoryFiles'; query: string }
   | { op: 'createMemoryFile'; path: string }
   /** 在系统文件管理器中定位显示文件/目录（记忆目录排查入口）*/
   | { op: 'revealInFileManager'; path: string }
@@ -642,6 +645,18 @@ export interface MemoryFileInfo {
   title?: string
   /** auto 事实文件未被 MEMORY.md 索引引用（前端标「找不到引用」，排在有引用条目之后）*/
   orphaned?: boolean
+}
+
+/**
+ * 自动记忆全文搜索单条命中（设置页记忆搜索框，Kotlin 端全文匹配）
+ */
+export interface MemorySearchHitInfo {
+  path: string
+  name: string
+  /** 全部关键词命中总次数（排序依据）*/
+  matchCount: number
+  /** 首个命中处上下文片段（前后各 48 字符，换行已折叠）*/
+  snippet: string
 }
 
 /**
@@ -1023,6 +1038,8 @@ export type JavaResponse =
   | { op: 'memoryEnabledChanged'; enabled: boolean }
   | { op: 'memoryFileCreated'; path: string }
   | { op: 'revealedInFileManager' }
+  /** op=searchMemoryFiles 的响应（query 回带：前端对齐丢弃乱序应答）*/
+  | { op: 'memorySearchResults'; query: string; results: MemorySearchHitInfo[] }
   /** 浏览器设置快照（op=browserConfig 的响应）*/
   | { op: 'browserConfig'; browserControlEnabled: boolean; pluginInstalled: boolean }
   /** op=clearBrowserData 的响应（sites=已清站点数据明细；httpCache/cookies 全局项）*/

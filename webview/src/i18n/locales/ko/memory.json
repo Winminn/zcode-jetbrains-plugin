@@ -19,6 +19,13 @@
     "hint": "현재 프로젝트의 ZCode 세션에서만 자동으로 읽음",
     "empty": "열려 있는 프로젝트가 감지되지 않음"
   },
+  "search": {
+    "placeholder": "메모리 내용 전문 검색…",
+    "clear": "지우기",
+    "searching": "검색 중…",
+    "noMatch": "일치하는 메모리 없음",
+    "hitCount": "{{count}}곳"
+  },
   "auto": {
     "title": "ZCode 자동 메모리",
     "hint": "완료된 대화에서 자동으로 추출되어 이후 세션에 자동으로 반영됩니다(스위치는 ZCode 클라이언트와 공유)",
