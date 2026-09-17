@@ -586,29 +586,36 @@ class ZCodeProtocolClient private constructor(
         // v4/telemetry/event：回合级遥测（含 turn.terminal 终态）。v2 渠道模型引用非法时
         // （如 reasoningLevel 缺失），turn 在 model_creation 阶段静默 failed——该失败只走
         // 此通道（session/event 流无 turn.failed 帧），不映射则 UI 表现"一直没响应"。
-        // kind=turn.terminal + status=failed → 合成标准 turn.failed 会话事件（payload.error
-        // 取 errorCode/errorMessage），复用 panel/前端既有失败链路（标签状态机 + 错误提示）
+        // 全终态映射：status=failed → turn.failed（payload.error 取 errorCode/errorMessage，
+        // 复用既有失败链路）；其余终态（completed/aborted/…）→ turn.completed——快速失败/
+        // 中止的回合可能只有 telemetry 终态而无 v4 帧对，漏映射会让前端 streaming 永不复位
+        // （输入框/润色等按 streaming 禁用的入口全部卡死，2026-09-17 润色弹窗不开实锤）
         else if (method == "v4/telemetry/event") {
             val kind = params["kind"]?.jsonPrimitive?.jsonStringOrNull
-            if (kind == "turn.terminal" && params["status"]?.jsonPrimitive?.jsonStringOrNull == "failed") {
+            if (kind == "turn.terminal") {
+                val status = params["status"]?.jsonPrimitive?.jsonStringOrNull
                 val sid = params["sessionId"]?.jsonPrimitive?.jsonStringOrNull ?: return
+                val failed = status == "failed"
                 val event = SessionEvent(
-                    type = "turn.failed",
+                    type = if (failed) "turn.failed" else "turn.completed",
                     seq = params["eventSeq"]?.jsonPrimitive?.longOrNull ?: 0L,
                     sessionId = sid,
                     timestamp = params["occurredAt"]?.jsonPrimitive?.longOrNull ?: System.currentTimeMillis(),
                     traceId = null,
                     turnId = params["turnId"]?.jsonPrimitive?.jsonStringOrNull,
                     deliveryKind = null,
-                    payload = buildJsonObject {
+                    payload = if (failed) buildJsonObject {
                         put("error", buildJsonObject {
                             put("type", params["errorCode"]?.jsonPrimitive?.contentOrNull ?: "turn_failed")
                             put("message", params["errorMessage"]?.jsonPrimitive?.contentOrNull
                                 ?: "回合失败（v2 模型请求被拒）")
                         })
                         params["turnPhase"]?.jsonPrimitive?.contentOrNull?.let { put("turnPhase", it) }
+                    } else buildJsonObject {
+                        put("viaTelemetry", true)
                     }
                 )
+                ProtocolLog.debug("[ZCodeProtocolClient] turn.terminal status=$status → ${event.type} (sid=${sid.take(20)})")
                 eventListeners[sid]?.forEach { it(event) }
                 globalListeners.forEach { it(event) }
             }

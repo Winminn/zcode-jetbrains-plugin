@@ -472,11 +472,17 @@
     color: var(--status-success);
   }
 
-  /* footer 操作按钮（复制 Markdown/分叉）：对齐操作区礼仪 hover 显示；
-     各自带推尾 margin——仅其一也靠右，两个并存时前者贴后者左侧 */
+  /* footer 操作按钮组（复制 Markdown/分叉）：推尾 margin 只挂容器一处（双 auto 会均分
+     剩余空间把两钮撑开），组内固定小间距；对齐操作区礼仪 hover 显示 */
+  &__footer-actions {
+    display: inline-flex;
+    align-items: center;
+    gap: 2px;
+    margin-left: auto;
+  }
+
   &__footer-fork,
   &__footer-copy {
-    margin-left: auto;
     opacity: 0;
     transition: opacity 0.15s;
     pointer-events: none; /* 隐藏期间不可点 */

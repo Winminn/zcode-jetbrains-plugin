@@ -187,6 +187,41 @@ class ProviderConfigWriterV2Test {
     }
 
     @Test
+    fun `模型能力位落 inputFormat 且非托管键合并保留`() {
+        // 旧条目带手写/客户端写入的非托管键（supportsText/supportsAudio/supportsNativeWebSearch），
+        // 插件编辑（contextWindow + 三能力位）不得洗掉
+        val dir = Files.createTempDirectory("provider-writer-v2-test")
+        val p = dir.resolve("provider_config.json")
+        Files.write(p, """
+            {"schemaVersion":1,"config":{"providerOrder":["bigmodel-api"],
+              "providerConfigRules":{"providerRules":[
+                {"providerId":"bigmodel-api","templateId":"bigmodel-api","providerName":"BigModel Coding Plan",
+                 "config":{"group":"standard-personal","access":{"type":"zhipu-coding-plan-api-key","apiKey":"k"},
+                           "personalModelIds":["GLM-5.3-Flash"],"modelOrder":["GLM-5.3-Flash"]}}]},
+              "modelConfigRules":{"providerModelRules":[
+                {"modelId":"GLM-5.3-Flash","providerId":"bigmodel-api",
+                 "config":{"properties":{"contextWindow":200000,
+                   "inputFormat":{"supportsText":true,"supportsAudio":true,"supportsImage":false},
+                   "supportsNativeWebSearch":true}}}],
+              "manualProviderModelRules":[]}}}
+        """.trimIndent().toByteArray())
+        val err = ProviderConfigWriterV2.updateProvider(p, "bigmodel-api", ProviderConfigWriter.UpdateFields(
+            name = null, kind = null, baseURL = null, apiKey = null,
+            models = listOf(ProviderConfigWriter.ModelDraft("GLM-5.3-Flash", context = 1000000, supportsImages = true)),
+            enabled = null))
+        assertEquals(null, err)
+        val props = modelRulesOf(p)[0]["config"]!!.jsonObject["properties"]!!.jsonObject
+        assertEquals(1000000L, props["contextWindow"]!!.jsonPrimitive.content.toLong())
+        val input = props["inputFormat"]!!.jsonObject
+        assertEquals("true", input["supportsImage"]!!.jsonPrimitive.content, "勾选图片 → supportsImage:true")
+        assertEquals("false", input["supportsVideo"]!!.jsonPrimitive.content)
+        assertEquals("false", input["supportsPdf"]!!.jsonPrimitive.content)
+        assertEquals("true", input["supportsText"]!!.jsonPrimitive.content, "非托管键保留")
+        assertEquals("true", input["supportsAudio"]!!.jsonPrimitive.content, "非托管键保留")
+        assertEquals("true", props["supportsNativeWebSearch"]!!.jsonPrimitive.content, "properties 非托管键保留")
+    }
+
+    @Test
     fun `updateProvider SSO 渠道补 access 与 api 节`() {
         // 无 access/api 的 SSO 型渠道（zai-api 实拍形态），编辑后节点被补齐
         val dir = Files.createTempDirectory("provider-writer-v2-test")

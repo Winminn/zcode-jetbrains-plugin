@@ -27,7 +27,9 @@ import java.nio.file.StandardCopyOption
  *   不存在），启停写该字段即生效。
  * - providerId 由客户端按 name slug 化生成（冲突加 -N，hSo/mSo 逆向），本写入器同款，
  *   保证插件建的渠道与客户端建的形态一致、客户端 UI 可正常读改。
- * - 模型级 contextWindow 存 modelConfigRules.providerModelRules（读侧 newCliContextWindows）。
+ * - 模型级 contextWindow 与输入能力位（inputFormat.supportsImage/Video/Pdf）存
+ *   modelConfigRules.providerModelRules（读侧 newCliContextWindows）；插件只托管
+ *   这四键，旧条目其余键合并保留。
  *
  * 写回纪律同 [ProviderConfigWriter]：进程内单锁串行、滚动备份 .bak.1~.bak.5、tmp + 原子
  * 替换、失败回滚；根节点其余键（schemaVersion/providerOrder/manualProviderModelRules…）
@@ -208,7 +210,13 @@ object ProviderConfigWriterV2 {
         }
     }
 
-    /** 模型级 contextWindow rules（providerModelRules 条目；读侧 newCliContextWindows 同源）*/
+    /**
+     * 模型级 rules（providerModelRules 条目；读侧 newCliContextWindows 同源）。
+     * 能力位落 properties.inputFormat（2026-09-17 zcode.cjs 逆向：providerModelRules
+     * config schema JJn 的 inputFormat = 完整五键形状 partial 化 strict，接受
+     * supportsImage/supportsVideo/supportsPdf 子集；registry 构建模型时对命中条目
+     * .overlay(o.config)，模板渠道模型同样生效——图片/视频/PDF 附件校验即读此值）。
+     */
     private fun modelsOf(
         models: List<ProviderConfigWriter.ModelDraft>,
         providerId: String,
@@ -217,9 +225,52 @@ object ProviderConfigWriterV2 {
             put("modelId", m.modelId.trim())
             put("providerId", providerId)
             put("config", buildJsonObject {
-                put("properties", buildJsonObject { put("contextWindow", m.context) })
+                put("properties", buildJsonObject {
+                    put("contextWindow", m.context)
+                    put("inputFormat", buildJsonObject {
+                        put("supportsImage", m.supportsImages)
+                        put("supportsVideo", m.supportsVideo)
+                        put("supportsPdf", m.supportsPdf)
+                    })
+                })
             })
         }
+    }
+
+    /** 插件托管的 properties 键（其余键合并时从旧条目原样保留） */
+    private val MANAGED_PROPS = setOf("contextWindow", "inputFormat")
+    /** 插件托管的 inputFormat 键（supportsText/supportsAudio 等不托管，保留旧值） */
+    private val MANAGED_INPUT = setOf("supportsImage", "supportsVideo", "supportsPdf")
+
+    /**
+     * 新条目合并旧条目中插件不托管的键：properties 层保留 inputFormat 之外的自定义键
+     * （如 supportsJsonSchemaOutput），inputFormat 层保留三能力位之外的键
+     * （如 supportsText/supportsAudio——手写或客户端写入的不被插件编辑洗掉）。
+     */
+    private fun mergeUnmanaged(newRule: JsonObject, oldRule: JsonObject?): JsonObject {
+        val oldProps = oldRule?.get("config")?.jsonObject?.get("properties")?.jsonObject ?: return newRule
+        val newCfg = newRule["config"]?.jsonObject ?: return newRule
+        val newProps = newCfg["properties"]?.jsonObject ?: return newRule
+        val mergedProps = LinkedHashMap<String, JsonElement>()
+        newProps.forEach { (k, v) -> mergedProps[k] = v }
+        oldProps.forEach { (k, v) -> if (k !in MANAGED_PROPS && k !in mergedProps) mergedProps[k] = v }
+        val oldInput = oldProps["inputFormat"]?.jsonObject
+        val mergedRule: JsonObject
+        if (oldInput != null) {
+            val newInput = mergedProps["inputFormat"]?.jsonObject ?: JsonObject(emptyMap())
+            val mergedInput = LinkedHashMap<String, JsonElement>()
+            newInput.forEach { (k, v) -> mergedInput[k] = v }
+            oldInput.forEach { (k, v) -> if (k !in MANAGED_INPUT && k !in mergedInput) mergedInput[k] = v }
+            mergedProps["inputFormat"] = JsonObject(mergedInput)
+        }
+        mergedRule = buildJsonObject {
+            newRule.forEach { (k, v) -> if (k != "config") put(k, v) }
+            put("config", buildJsonObject {
+                newCfg.forEach { (k, v) -> if (k != "properties") put(k, v) }
+                put("properties", JsonObject(mergedProps))
+            })
+        }
+        return mergedRule
     }
 
     // ============ 读改写骨架 ============
@@ -257,7 +308,11 @@ object ProviderConfigWriterV2 {
         val newModelRules = if (models == null || targetProviderId == null) {
             oldModelRules
         } else {
-            oldModelRules.filterNot { it.str("providerId") == targetProviderId } + models
+            val oldByModel = oldModelRules
+                .filter { it.str("providerId") == targetProviderId }
+                .associateBy { it.str("modelId") }
+            oldModelRules.filterNot { it.str("providerId") == targetProviderId } +
+                models.map { m -> mergeUnmanaged(m, oldByModel[m.str("modelId")]) }
         }
         return buildJsonObject {
             root.forEach { (k, v) -> if (k != "config") put(k, v) }

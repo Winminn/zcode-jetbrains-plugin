@@ -2582,7 +2582,48 @@ if (!window.__ZCODE_LOG_HOOK__) {
     }
 
     /** provider_config.json 的 per-model contextWindow（modelConfigRules.providerModelRules） */
-    private fun newCliContextWindows(): Map<Pair<String, String>, Long> {
+    private fun newCliContextWindows(): Map<Pair<String, String>, Long> =
+        newCliModelRules().mapNotNull { (k, v) -> v.contextWindow?.let { k to it } }.toMap()
+
+    /** v2 启用渠道的模型清单（providerId to 模型 ids；modelOrder 优先 personalModelIds 兜底） */
+    private fun newCliEnabledProviderModels(): List<Pair<String, List<String>>> =
+        readNewCliProviderRules().filter { it["enabled"]?.jsonPrimitive?.contentOrNull != "false" }.mapNotNull { rule ->
+            val pid = rule["providerId"]?.jsonPrimitive?.contentOrNull ?: return@mapNotNull null
+            val cfg = rule["config"]?.jsonObject
+            val mids = (cfg?.get("modelOrder")?.jsonArray ?: cfg?.get("personalModelIds")?.jsonArray)
+                ?.mapNotNull { (it as? JsonPrimitive)?.contentOrNull?.takeIf { m -> m.isNotBlank() } }
+                ?.distinct() ?: return@mapNotNull null
+            pid to mids
+        }
+
+    /** (pid, mid) 是否为 v2 启用渠道的已登记模型（generateText/标题生成透传前的校验） */
+    private fun newCliValidModel(pid: String?, mid: String?): Boolean =
+        pid != null && mid != null && newCliEnabledProviderModels().any { it.first == pid && mid in it.second }
+
+    /**
+     * v2 模型解析兜底链：kv 当前会话模型 → 首个启用渠道的首模型。透传模型失效
+     * （历史专用配置是 v1 形态渠道 id 如 builtin:bigmodel-coding-plan、渠道已删）时
+     * 依次回退；全空返回 null（调用方放弃该通道或报无可用模型）。
+     */
+    private fun newCliFallbackModel(): Pair<String, String>? {
+        currentSessionModelRef()?.let { (pid, mid) ->
+            if (newCliValidModel(pid, mid)) return pid to mid
+        }
+        return newCliEnabledProviderModels().firstOrNull()?.let { (pid, mids) ->
+            mids.firstOrNull()?.let { pid to it }
+        }
+    }
+
+    /** providerModelRules 条目的模型级覆盖（contextWindow + 输入能力位，编辑弹窗回填同源） */
+    private class NewCliModelRule(
+        val contextWindow: Long?,
+        val supportsImages: Boolean,
+        val supportsVideo: Boolean,
+        val supportsPdf: Boolean,
+    )
+
+    /** provider_config.json 的 per-model rules（inputFormat 三键 sparse：缺省即 false） */
+    private fun newCliModelRules(): Map<Pair<String, String>, NewCliModelRule> {
         val path = Credentials.personalProviderConfigPath()
         if (!java.nio.file.Files.isRegularFile(path)) return emptyMap()
         return try {
@@ -2592,9 +2633,14 @@ if (!window.__ZCODE_LOG_HOOK__) {
                 val o = el as? JsonObject ?: return@mapNotNull null
                 val pid = o["providerId"]?.jsonPrimitive?.contentOrNull ?: return@mapNotNull null
                 val mid = o["modelId"]?.jsonPrimitive?.contentOrNull ?: return@mapNotNull null
-                val ctx = o["config"]?.jsonObject?.get("properties")?.jsonObject?.get("contextWindow")
-                    ?.jsonPrimitive?.contentOrNull?.toLongOrNull() ?: return@mapNotNull null
-                (pid to mid) to ctx
+                val props = o["config"]?.jsonObject?.get("properties")?.jsonObject
+                val input = props?.get("inputFormat")?.jsonObject
+                NewCliModelRule(
+                    contextWindow = props?.get("contextWindow")?.jsonPrimitive?.contentOrNull?.toLongOrNull(),
+                    supportsImages = input?.get("supportsImage")?.jsonPrimitive?.contentOrNull == "true",
+                    supportsVideo = input?.get("supportsVideo")?.jsonPrimitive?.contentOrNull == "true",
+                    supportsPdf = input?.get("supportsPdf")?.jsonPrimitive?.contentOrNull == "true",
+                ).let { (pid to mid) to it }
             }.toMap()
         } catch (e: Exception) {
             emptyMap()
@@ -2639,7 +2685,7 @@ if (!window.__ZCODE_LOG_HOOK__) {
      */
     private fun modelManageListNewCli(): JsonObject {
         val path = Credentials.personalProviderConfigPath()
-        val ctx = newCliContextWindows()
+        val rules = newCliModelRules()
         val zcodePath = try { com.zcode.ideaplugin.protocol.ZCodeLocator.detect() } catch (e: Exception) { null }
         val providerArr = JsonArray(readNewCliProviderRules().mapNotNull { rule ->
             val pid = rule["providerId"]?.jsonPrimitive?.contentOrNull ?: return@mapNotNull null
@@ -2669,10 +2715,16 @@ if (!window.__ZCODE_LOG_HOOK__) {
                     put("activeKeyValue", it)
                 }
                 put("models", JsonArray(mids.map { mid ->
+                    val rule = rules[pid to mid]
                     buildJsonObject {
                         put("modelId", mid)
                         put("modelName", mid)
-                        ctx[pid to mid]?.let { put("contextWindow", it) }
+                        rule?.contextWindow?.let { put("contextWindow", it) }
+                        // 输入能力位（providerModelRules inputFormat，编辑弹窗三选回填 +
+                        // 设置页视觉徽章）；sparse 语义：缺省即 false
+                        if (rule?.supportsImages == true) put("supportsImages", true)
+                        if (rule?.supportsVideo == true) put("supportsVideo", true)
+                        if (rule?.supportsPdf == true) put("supportsPdf", true)
                     }
                 }))
             }
@@ -5438,14 +5490,25 @@ if (!window.__ZCODE_LOG_HOOK__) {
      */
     private fun enhanceViaGenerateText(providerId: String?, modelId: String?, text: String): Pair<String, String>? {
         val workspacePath = project.basePath ?: return null
-        // 新版 CLI：前端透传的模型引用（provider_config.json 渠道）直接可用，registry
-        // 侧解析；config.json 守卫与 upsert 自愈（方法已删）均跳过，无透传则放弃本通道
+        // 新版 CLI：透传模型须是 provider_config.json 启用渠道的已登记模型（历史专用
+        // 配置可能是 v1 形态渠道 id 如 builtin:bigmodel-coding-plan，v2 registry 不认，
+        // 直接 generateText 必败）——失效回退 kv 当前模型 → 首个启用渠道；都没有才
+        // 放弃本通道降级 CLI（CLI 自读 v2 配置）。config.json 守卫与 upsert 自愈均跳过
         if (cliGeneration == com.zcode.ideaplugin.protocol.ProtocolGeneration.NEW) {
-            val pid = providerId?.takeIf { it.isNotBlank() } ?: return null
-            val mid = modelId?.takeIf { it.isNotBlank() } ?: return null
+            var pid = providerId?.takeIf { it.isNotBlank() }
+            var mid = modelId?.takeIf { it.isNotBlank() }
+            if (!newCliValidModel(pid, mid)) {
+                log.info("enhancePrompt: model ${pid}/${mid} not in provider_config.json, falling back")
+                val fb = newCliFallbackModel()
+                if (fb == null) return null
+                pid = fb.first
+                mid = fb.second
+            }
+            val effPid = pid ?: return null
+            val effMid = mid ?: return null
             val timeoutMs = (45_000L + text.length / 400L * 1_000L).coerceAtMost(120_000L)
             return try {
-                callGenerateText(project.zCodeService().getClient(), workspacePath, pid, mid, text, timeoutMs)
+                callGenerateText(project.zCodeService().getClient(), workspacePath, effPid, effMid, text, timeoutMs)
             } catch (e: Exception) {
                 log.info("enhancePrompt: generateText unavailable on new cli (${e.message?.take(120)}), falling back to CLI")
                 null
@@ -5611,21 +5674,37 @@ if (!window.__ZCODE_LOG_HOOK__) {
             }
         }
         try {
-            // 模型解析：前端透传（会话当前模型）优先；config.json 构造不出 runtimeModel
-            // （provider 已删/订阅过期）时回退默认 provider（与润色通道同构）
+            // 模型解析：前端透传（会话当前模型）优先。v1 按 config.json 构造校验、失效回退
+            // 默认 provider；v2（config.json 不存在）同口径会误判合法模型失效——报
+            // "无可用模型（config.json 默认 provider 缺失）"（2026-09-17 装机实锤），
+            // 改按 provider_config.json 校验 + kv 当前模型/首个启用渠道兜底
             var pid = msg["providerId"]?.jsonPrimitive?.contentOrNull?.takeIf { it.isNotBlank() }
             var mid = msg["modelId"]?.jsonPrimitive?.contentOrNull?.takeIf { it.isNotBlank() }
-            if (pid == null || mid == null ||
-                com.zcode.ideaplugin.protocol.RuntimeModels.buildRuntimeModel(pid, mid) == null
-            ) {
-                if (pid != null) {
-                    log.info("sessionTitleRegen: session model $pid/$mid unavailable in config.json, falling back to default")
+            if (cliGeneration == com.zcode.ideaplugin.protocol.ProtocolGeneration.NEW) {
+                if (!newCliValidModel(pid, mid)) {
+                    if (pid != null) {
+                        log.info("sessionTitleRegen: model $pid/$mid not in provider_config.json, falling back")
+                    }
+                    val fb = newCliFallbackModel()
+                    pid = fb?.first
+                    mid = fb?.second
                 }
-                val fallbackModel = com.zcode.ideaplugin.protocol.RuntimeModels.defaultRuntimeModel()
-                    ?.get("model")?.jsonObject
-                pid = fallbackModel?.get("providerId")?.jsonPrimitive?.contentOrNull
-                    ?: return titleRegenError(sessionId ?: "", "无可用模型（config.json 默认 provider 缺失）")
-                mid = fallbackModel.get("modelId")?.jsonPrimitive?.contentOrNull ?: ""
+                if (pid == null || mid == null) {
+                    return titleRegenError(sessionId ?: "", "无可用模型（provider_config.json 无启用渠道）")
+                }
+            } else {
+                if (pid == null || mid == null ||
+                    com.zcode.ideaplugin.protocol.RuntimeModels.buildRuntimeModel(pid, mid) == null
+                ) {
+                    if (pid != null) {
+                        log.info("sessionTitleRegen: session model $pid/$mid unavailable in config.json, falling back to default")
+                    }
+                    val fallbackModel = com.zcode.ideaplugin.protocol.RuntimeModels.defaultRuntimeModel()
+                        ?.get("model")?.jsonObject
+                    pid = fallbackModel?.get("providerId")?.jsonPrimitive?.contentOrNull
+                        ?: return titleRegenError(sessionId ?: "", "无可用模型（config.json 默认 provider 缺失）")
+                    mid = fallbackModel.get("modelId")?.jsonPrimitive?.contentOrNull ?: ""
+                }
             }
             val raw = titleViaGenerateText(pid, mid, excerpt)
                 ?: titleViaCliOneShot(pid, mid, excerpt)
@@ -5675,6 +5754,9 @@ if (!window.__ZCODE_LOG_HOOK__) {
                     timeoutMs = 45_000L,
                 )
             } catch (e: com.zcode.ideaplugin.protocol.ZCodeProtocolException) {
+                // v2 无 workspace 目录/补注册语义（upsertModelProvider 方法已删）：
+                // 失败直接放弃本通道降级 CLI（CLI 自读 v2 配置，默认渠道可用）
+                if (cliGeneration == com.zcode.ideaplugin.protocol.ProtocolGeneration.NEW) throw e
                 if (e.code != -32603 || !e.message.orEmpty().contains("not configured", ignoreCase = true)) throw e
                 log.info("sessionTitleRegen: provider $providerId not in workspace catalog, upserting and retrying")
                 val providerDef = com.zcode.ideaplugin.protocol.RuntimeModels

@@ -873,28 +873,34 @@ function MessageFooter({
         </span>
       )}
       {info.cost ? <span className="msg__footer-cost">${info.cost.toFixed(4)}</span> : null}
-      {copy && (
-        <button
-          type="button"
-          className="msg__action-btn msg__footer-copy"
-          onClick={onCopyMarkdown}
-          title={copyState === 'ok' ? t('chat.message.copyCopied') : t('chat.message.copyMarkdown')}
-          aria-label={t('chat.message.copyMarkdown')}
-        >
-          <span className={`codicon ${copyState === 'ok' ? 'codicon-check msg__action-btn--ok' : 'codicon-copy'}`} />
-        </button>
-      )}
-      {fork && (
-        <button
-          type="button"
-          className="msg__action-btn msg__footer-fork"
-          onClick={fork.onClick}
-          disabled={fork.busy}
-          title={t('chat.message.fork')}
-          aria-label={t('chat.message.fork')}
-        >
-          <span className="codicon codicon-git-branch" />
-        </button>
+      {(copy || fork) && (
+        // 操作按钮组容器：推尾（margin-left:auto）只挂容器一处——挂在两个按钮上会
+        // 均分剩余空间，复制/分叉被撑开到中间和最右（窄屏换行后同样松散）
+        <span className="msg__footer-actions">
+          {copy && (
+            <button
+              type="button"
+              className="msg__action-btn msg__footer-copy"
+              onClick={onCopyMarkdown}
+              title={copyState === 'ok' ? t('chat.message.copyCopied') : t('chat.message.copyMarkdown')}
+              aria-label={t('chat.message.copyMarkdown')}
+            >
+              <span className={`codicon ${copyState === 'ok' ? 'codicon-check msg__action-btn--ok' : 'codicon-copy'}`} />
+            </button>
+          )}
+          {fork && (
+            <button
+              type="button"
+              className="msg__action-btn msg__footer-fork"
+              onClick={fork.onClick}
+              disabled={fork.busy}
+              title={t('chat.message.fork')}
+              aria-label={t('chat.message.fork')}
+            >
+              <span className="codicon codicon-git-branch" />
+            </button>
+          )}
+        </span>
       )}
     </div>
   )
