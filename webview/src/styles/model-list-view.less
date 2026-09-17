@@ -20,12 +20,17 @@
     border-radius: 3px;
   }
 
-  /* 工具栏：hint + 搜索 + 刷新 + 新增 */
+  /* 工具栏两行：第一行提示文案，第二行搜索+刷新+新增（挤一行会换行错乱）*/
   &__toolbar {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+
+  &__toolbar-row {
     display: flex;
     align-items: center;
     gap: 10px;
-    flex-wrap: wrap;
   }
 
   &__hint {
@@ -44,7 +49,7 @@
   &__search {
     flex: 1;
     min-width: 140px;
-    max-width: 240px;
+    max-width: 360px;
     display: flex;
     align-items: center;
     gap: 6px;
@@ -125,6 +130,30 @@
 
     &:hover {
       background: var(--accent-primary-hover, #026ec1);
+    }
+  }
+
+  /* 路径条内的「打开所在位置」按钮（资源管理器定位）*/
+  &__config-action {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 22px;
+    height: 22px;
+    border: none;
+    border-radius: 6px;
+    background: transparent;
+    color: var(--text-tertiary);
+    cursor: pointer;
+    flex-shrink: 0;
+    transition: color 0.15s, background 0.15s;
+
+    .codicon {
+      font-size: 14px;
+    }
+    &:hover {
+      color: var(--accent-primary, #007fd4);
+      background: var(--bg-hover);
     }
   }
 
@@ -741,5 +770,269 @@
     font-size: var(--fs-hint);
     color: var(--text-primary);
     word-break: break-all;
+  }
+}
+
+/* ============ 自定义渠道 CRUD（2026-09-16）============ */
+
+.model-list-view {
+  /* 卡片头部行内编辑/删除渠道入口（仅自定义渠道渲染）*/
+  &__provider-actions {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    flex-shrink: 0;
+  }
+
+  &__provider-action {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 20px;
+    height: 20px;
+    border: none;
+    border-radius: 5px;
+    background: transparent;
+    color: var(--text-tertiary);
+    cursor: pointer;
+    transition: color 0.15s, background 0.15s;
+
+    .codicon {
+      font-size: 12px;
+    }
+    &:hover {
+      color: var(--text-primary);
+      background: var(--bg-hover);
+    }
+    &--danger:hover {
+      color: var(--status-error, #f48771);
+    }
+  }
+}
+
+/* 渠道编辑弹窗（modal-overlay/modal-content/modal-actions 全局壳 + 本域表单体）*/
+.provider-editor {
+  width: min(680px, calc(100vw - 48px));
+  max-height: calc(100vh - 96px);
+  display: flex;
+  flex-direction: column;
+
+  &__body {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    overflow-y: auto;
+    min-height: 0;
+    padding-right: 4px;
+  }
+
+  &__field {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    min-width: 0;
+
+    input,
+    select {
+      border: 1px solid var(--border-primary);
+      border-radius: 6px;
+      padding: 5px 8px;
+      font-size: var(--fs-body);
+      color: var(--text-primary);
+      background: var(--bg-secondary);
+      outline: none;
+
+      &:focus {
+        border-color: var(--accent-primary, #007fd4);
+      }
+    }
+  }
+
+  &__label {
+    font-size: var(--fs-hint);
+    color: var(--text-secondary);
+  }
+
+  &__key-row {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    min-width: 0;
+
+    input {
+      flex: 1;
+      min-width: 0;
+    }
+  }
+
+  &__icon-btn {
+    flex-shrink: 0;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 26px;
+    height: 26px;
+    border: none;
+    border-radius: 6px;
+    background: transparent;
+    color: var(--text-tertiary);
+    cursor: pointer;
+
+    &:hover:not(:disabled) {
+      color: var(--text-primary);
+      background: var(--bg-hover);
+    }
+    &:disabled {
+      opacity: 0.4;
+      cursor: default;
+    }
+  }
+
+  &__models-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-top: 4px;
+  }
+
+  &__add-row {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    border: 1px dashed var(--border-primary);
+    border-radius: 6px;
+    padding: 3px 10px;
+    font-size: var(--fs-hint);
+    color: var(--text-secondary);
+    background: transparent;
+    cursor: pointer;
+
+    &:hover {
+      color: var(--accent-primary, #007fd4);
+      border-color: var(--accent-primary, #007fd4);
+    }
+  }
+
+  &__models {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+
+  /* 单个模型配置 panel（两行：上行 ID/上下文/最大输出，下行输入类型 + 删除）*/
+  &__model-panel {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    border: 1px solid var(--border-primary);
+    border-radius: 8px;
+    padding: 10px;
+    background: var(--bg-secondary);
+  }
+
+  &__model-grid {
+    display: flex;
+    gap: 8px;
+
+    .provider-editor__field--grow {
+      flex: 1;
+      min-width: 0;
+    }
+    .provider-editor__field--num {
+      width: 96px;
+      flex: none;
+    }
+
+    input {
+      width: 100%;
+      min-width: 0;
+      box-sizing: border-box;
+    }
+  }
+
+  &__model-types {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    flex-wrap: wrap;
+
+    .provider-editor__types-spacer {
+      flex: 1;
+    }
+  }
+
+  input:not([type='checkbox']) {
+    border: 1px solid var(--border-primary);
+    border-radius: 6px;
+    padding: 4px 7px;
+    font-size: var(--fs-hint);
+    color: var(--text-primary);
+    background: var(--bg-secondary);
+    outline: none;
+    font-family: var(--font-mono, Consolas, monospace);
+
+    &:focus {
+      border-color: var(--accent-primary, #007fd4);
+    }
+  }
+
+  &__check {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    font-size: var(--fs-hint);
+    color: var(--text-secondary);
+    cursor: pointer;
+    white-space: nowrap;
+
+    input {
+      cursor: pointer;
+      margin: 0;
+    }
+
+    /* 锁定项（输出类型恒为文本，对齐客户端 🔒 语义）*/
+    &.is-locked {
+      gap: 5px;
+      font-size: var(--fs-hint);
+      color: var(--text-tertiary);
+
+      input {
+        cursor: default;
+      }
+      .codicon {
+        font-size: 11px;
+        color: var(--text-tertiary);
+      }
+    }
+  }
+
+  /* 输出类型行（模型列表下方，对齐客户端「输出类型」分区）*/
+  &__out-row {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 2px 0;
+  }
+
+  &__hint {
+    margin: 0;
+    font-size: var(--fs-hint);
+    color: var(--text-tertiary);
+  }
+
+  &__error {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: var(--fs-body);
+    color: var(--status-error, #f48771);
+    border: 1px solid var(--status-error, #f48771);
+    border-radius: 8px;
+    padding: 6px 10px;
+    background: rgba(244, 135, 113, 0.08);
+
+    .codicon {
+      flex-shrink: 0;
+    }
   }
 }

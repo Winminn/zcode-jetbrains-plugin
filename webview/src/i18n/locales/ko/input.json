@@ -9,7 +9,9 @@
     "selectModel": "모델 선택",
     "provider": "공급자: ",
     "model": "모델: ",
-    "contextWindow": "컨텍스트 창: "
+    "contextWindow": "컨텍스트 창: ",
+    "refresh": "새로 고침",
+    "manage": "관리"
   },
   "mode": {
     "title": "권한 모드",

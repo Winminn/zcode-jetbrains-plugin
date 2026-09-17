@@ -10,7 +10,8 @@
     "provider": "供应商：",
     "model": "模型：",
     "contextWindow": "上下文窗口：",
-    "refresh": "刷新模型列表"
+    "refresh": "刷新模型",
+    "manage": "前往管理"
   },
   "mode": {
     "title": "权限模式",

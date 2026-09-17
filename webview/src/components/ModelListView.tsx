@@ -4,19 +4,21 @@
  * 数据：modelManageList（Kotlin 端读 config.json——路径走 Credentials.defaultConfigPath()
  *       跟随 dataBaseDir 迁移；apiKey 缺失的无效 provider 过滤；内置渠道只返回生效的）
  * 交互：内置渠道只读展示（启停以 ZCode 客户端配置为准，插件不代写 config——客户端
- *       与插件两个写者互相覆盖易出状态错乱）；第三方 provider 行内启用/禁用切换
- *       （modelToggleProvider 备份+原子写回 config.json，成功后输入框下拉经
- *       loadModels 同步刷新）；「新增模型」与行内「删除」点击后弹 ConfirmDialog
- *       引导前往 Zcode 配置（含「打开配置文件」快捷入口）。
+ *       与插件两个写者互相覆盖易出状态错乱）；自定义渠道 CRUD 全在插件内完成——
+ *       ProviderEditorDialog 添加/编辑（写 config.json provider 注册表，与客户端共用）、
+ *       行内启用/禁用切换、渠道删除、模型行删除（均经 modelProviderSaved/modelToggled
+ *       回包刷新，成功后输入框下拉经 loadModels 同步刷新）。
  */
 
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { useStore } from '@/store/useStore'
 import { sendToJava } from '@/ipc/bridge'
 import { ConfirmDialog } from './ConfirmDialog'
 import { PlanBadge } from './PlanBadge'
-import type { ModelManageModel, ModelManageProvider } from '@/types/messages'
+import { ProviderEditorDialog } from './ProviderEditorDialog'
+import type { EditorModelRow } from './ProviderEditorDialog'
+import type { ModelManageModel, ModelManageProvider, ProviderSaveDraft } from '@/types/messages'
 import '../styles/model-list-view.less'
 
 const cx = (...c: (string | false | null | undefined)[]) => c.filter(Boolean).join(' ')
@@ -31,17 +33,27 @@ function formatTokens(n: number): string {
   return `${n}`
 }
 
-/** 待提示的动作（add=工具栏新增、delete=行内删除、key=自定义渠道 key），null=对话框关闭 */
+/** 待确认的动作（deleteModel=自定义渠道模型行删除、removeProvider=渠道删除、key=内置渠道 key），null=关闭 */
 type PendingAction =
-  | { kind: 'add' }
-  | { kind: 'delete'; providerName: string; modelName: string }
+  | { kind: 'deleteModel'; provider: ModelManageProvider; model: ModelManageModel }
+  | { kind: 'removeProvider'; provider: ModelManageProvider }
+  | { kind: 'lastModel'; provider: ModelManageProvider; model: ModelManageModel }
   | { kind: 'key'; providerId: string; providerName: string }
 
 /** 自定义 key 输入值（PendingAction.kind=key 期间的受控状态；空=清除） */
 type KeyDraft = { value: string; configured: boolean }
 
-/** 单个模型行：名称 + ID + 上下文/输出徽章 + 删除（提示前往 Zcode 配置）*/
-function ModelRow({ model, onDelete }: { model: ModelManageModel; onDelete: () => void }) {
+/** 单个模型行：名称 + ID + 上下文/输出徽章 + 删除（onDelete 缺省不渲染——内置渠道只读）*/
+function ModelRow({
+  model,
+  onDelete,
+  deleteBlockedTitle,
+}: {
+  model: ModelManageModel
+  onDelete?: () => void
+  /** 非空 = 渠道最后一个模型：按钮可点但点击转弹窗提醒（deleteBlockedTitle 作按钮 title）*/
+  deleteBlockedTitle?: string
+}) {
   const { t } = useTranslation()
   return (
     <div className="model-list-view__model">
@@ -67,13 +79,15 @@ function ModelRow({ model, onDelete }: { model: ModelManageModel; onDelete: () =
           {t('models.outputBadge', { size: formatTokens(model.maxOutput) })}
         </span>
       )}
-      <button
-        className="model-list-view__model-delete"
-        onClick={onDelete}
-        title={t('models.deleteTitle')}
-      >
-        <span className="codicon codicon-trash" />
-      </button>
+      {onDelete && (
+        <button
+          className="model-list-view__model-delete"
+          onClick={onDelete}
+          title={deleteBlockedTitle ?? t('models.deleteTitle')}
+        >
+          <span className="codicon codicon-trash" />
+        </button>
+      )}
     </div>
   )
 }
@@ -81,18 +95,27 @@ function ModelRow({ model, onDelete }: { model: ModelManageModel; onDelete: () =
 /**
  * provider 分组卡片：头部（选择控件/名称/套餐徽章/ID/状态徽章/baseURL/计数）+ 模型行列表。
  * builtin=true（内置渠道）：只读展示当前生效的渠道（状态徽章），启停以 ZCode 客户端
- * 配置为准，插件不代写；否则（自定义供应商）：行内 toggle 开关，独立启停。
+ * 配置为准，插件不代写；否则（自定义供应商）：行内 toggle 开关独立启停 + 编辑/删除
+ * 渠道入口（插件内完成 CRUD，写 config.json 与客户端共用注册表）。
  */
 function ProviderCard({
   provider,
   builtin = false,
   onDeleteModel,
+  onBlockedModelDelete,
   onEditKey,
+  onEditProvider,
+  onDeleteProvider,
 }: {
   provider: ModelManageProvider
   builtin?: boolean
-  onDeleteModel: (provider: ModelManageProvider, model: ModelManageModel) => void
+  /** 模型行删除入口（缺省不渲染删除按钮——内置渠道只读，模型以客户端配置为准）*/
+  onDeleteModel?: (provider: ModelManageProvider, model: ModelManageModel) => void
+  /** 渠道最后一个模型的删除点击（转弹窗提醒，不触发真删）*/
+  onBlockedModelDelete?: (provider: ModelManageProvider, model: ModelManageModel) => void
   onEditKey?: (provider: ModelManageProvider) => void
+  onEditProvider?: (provider: ModelManageProvider) => void
+  onDeleteProvider?: (provider: ModelManageProvider) => void
 }) {
   const { t } = useTranslation()
   const modelTogglingId = useStore((s) => s.modelTogglingId)
@@ -175,6 +198,24 @@ function ProviderCard({
           <span className="model-list-view__provider-count">
             {t('models.modelsCount', { count: provider.models.length })}
           </span>
+          {!builtin && (
+            <span className="model-list-view__provider-actions">
+              <button
+                className="model-list-view__provider-action"
+                onClick={() => onEditProvider?.(provider)}
+                title={t('models.editor.titleEdit')}
+              >
+                <span className="codicon codicon-edit" />
+              </button>
+              <button
+                className="model-list-view__provider-action model-list-view__provider-action--danger"
+                onClick={() => onDeleteProvider?.(provider)}
+                title={t('models.removeProviderTitle')}
+              >
+                <span className="codicon codicon-trash" />
+              </button>
+            </span>
+          )}
         </div>
         <div className="model-list-view__provider-meta">
           <span className="model-list-view__provider-id" title={provider.providerId}>
@@ -237,7 +278,19 @@ function ProviderCard({
             <ModelRow
               key={m.modelId}
               model={m}
-              onDelete={() => onDeleteModel(provider, m)}
+              onDelete={
+                onDeleteModel
+                  ? () => {
+                      // 最后一个模型不可单删：转弹窗提醒（2026-09-17 用户反馈 disabled 按钮无
+                      // 悬停无反馈像坏了，改为可点+弹窗说明）
+                      if (provider.models.length <= 1) onBlockedModelDelete?.(provider, m)
+                      else onDeleteModel(provider, m)
+                    }
+                  : undefined
+              }
+              deleteBlockedTitle={
+                onDeleteModel && provider.models.length <= 1 ? t('models.lastModelTitle') : undefined
+              }
             />
           ))}
         </div>
@@ -248,6 +301,32 @@ function ProviderCard({
   )
 }
 
+/** 新建/回填缺失时的默认上下文窗口（2026-09-17：主流模型普遍 1M，取代原 128K 默认）*/
+const DEFAULT_CONTEXT = 1000000
+
+/** ModelManageProvider → 编辑弹窗行（modelName 与 modelId 相同时不回填 label）*/
+function providerToRows(p: ModelManageProvider): EditorModelRow[] {
+  return p.models.map((m) => ({
+    modelId: m.modelId,
+    context: (m.contextWindow ?? DEFAULT_CONTEXT).toLocaleString('en-US'),
+    output: m.maxOutput != null ? m.maxOutput.toLocaleString('en-US') : '',
+    images: !!m.supportsImages,
+    video: !!m.supportsVideo,
+    pdf: !!m.supportsPdf,
+  }))
+}
+
+/** ModelManageProvider → 编辑弹窗回填初始值（apiKey 取 config 源明文；oauth/覆盖源不回填）*/
+function providerToInitial(p: ModelManageProvider) {
+  return {
+    name: p.providerName,
+    kind: (p.kind === 'openai-compatible' ? 'openai-compatible' : 'anthropic') as 'anthropic' | 'openai-compatible',
+    baseURL: p.baseURL ?? '',
+    apiKey: p.activeKeySource === 'config' ? (p.activeKeyValue ?? '') : '',
+    models: providerToRows(p),
+  }
+}
+
 export function ModelListView() {
   const { t } = useTranslation()
   const providers = useStore((s) => s.modelProviders)
@@ -255,9 +334,16 @@ export function ModelListView() {
   const error = useStore((s) => s.modelManageError)
   const configPath = useStore((s) => s.modelConfigPath)
   const loadModelManage = useStore((s) => s.loadModelManage)
+  const providerSaving = useStore((s) => s.providerSaving)
+  const providerSaveError = useStore((s) => s.providerSaveError)
+  const addModelProvider = useStore((s) => s.addModelProvider)
+  const updateModelProvider = useStore((s) => s.updateModelProvider)
+  const removeModelProvider = useStore((s) => s.removeModelProvider)
 
   const [query, setQuery] = useState('')
   const [pendingAction, setPendingAction] = useState<PendingAction | null>(null)
+  /** 编辑弹窗目标：'add'=新增、provider=编辑、null=关闭 */
+  const [editorTarget, setEditorTarget] = useState<'add' | ModelManageProvider | null>(null)
   const setProviderKey = useStore((s) => s.setProviderKey)
   // 自定义 key 对话框的受控草稿（configured=当前已配置，供"清除"语义提示）
   const [keyDraft, setKeyDraft] = useState<KeyDraft>({ value: '', configured: false })
@@ -267,6 +353,13 @@ export function ModelListView() {
   useEffect(() => {
     loadModelManage()
   }, [loadModelManage])
+
+  // 保存成功（saving true→false 且无错误）自动关闭编辑弹窗；失败留在弹窗内提示
+  const prevSavingRef = useRef(false)
+  useEffect(() => {
+    if (prevSavingRef.current && !providerSaving && !providerSaveError) setEditorTarget(null)
+    prevSavingRef.current = providerSaving
+  }, [providerSaving, providerSaveError])
 
   // 搜索过滤：provider 名/ID 直接命中保留整组；否则按模型名/ID 过滤组内条目
   const visible = useMemo(() => {
@@ -293,11 +386,57 @@ export function ModelListView() {
   }
 
   const handleDeleteModel = (provider: ModelManageProvider, model: ModelManageModel) => {
-    setPendingAction({
-      kind: 'delete',
-      providerName: provider.providerName,
-      modelName: model.modelName,
+    setPendingAction({ kind: 'deleteModel', provider, model })
+  }
+
+  const handleEditProvider = (provider: ModelManageProvider) => {
+    // 打开即清残留错误（弹窗关闭期间的后台失败文案不带入新会话的弹窗）
+    if (providerSaveError) useStore.setState({ providerSaveError: null })
+    setEditorTarget(provider)
+  }
+
+  const handleDeleteProvider = (provider: ModelManageProvider) => {
+    setPendingAction({ kind: 'removeProvider', provider })
+  }
+
+  // 最后一个模型的删除点击：弹窗说明（不触发真删，Kotlin 端 min-1 拒绝仅兜底）
+  const handleBlockedModelDelete = (provider: ModelManageProvider, model: ModelManageModel) => {
+    setPendingAction({ kind: 'lastModel', provider, model })
+  }
+
+  // 模型行删除 = 整表替换减一行（apiKey null=不变；name/baseURL/kind 传现值等价不变）
+  const commitDeleteModel = () => {
+    if (pendingAction?.kind !== 'deleteModel') return
+    const { provider, model } = pendingAction
+    const remaining = provider.models
+      .filter((m) => m.modelId !== model.modelId)
+      .map((m) => ({
+        modelId: m.modelId,
+        context: m.contextWindow ?? DEFAULT_CONTEXT,
+        output: m.maxOutput,
+        images: m.supportsImages || undefined,
+        video: m.supportsVideo || undefined,
+        pdf: m.supportsPdf || undefined,
+      }))
+    updateModelProvider(provider.providerId, {
+      name: provider.providerName,
+      kind: provider.kind === 'openai-compatible' ? 'openai-compatible' : 'anthropic',
+      baseURL: provider.baseURL ?? '',
+      apiKey: null,
+      models: remaining,
     })
+    setPendingAction(null)
+  }
+
+  const commitRemoveProvider = () => {
+    if (pendingAction?.kind !== 'removeProvider') return
+    removeModelProvider(pendingAction.provider.providerId)
+    setPendingAction(null)
+  }
+
+  const commitEditor = (draft: ProviderSaveDraft) => {
+    if (editorTarget && editorTarget !== 'add') updateModelProvider(editorTarget.providerId, draft)
+    else addModelProvider(draft)
   }
 
   const openKeyEditor = (provider: ModelManageProvider) => {
@@ -324,10 +463,13 @@ export function ModelListView() {
   return (
     <div className="model-list-view">
       <div className="model-list-view__toolbar">
-        <span className="model-list-view__hint">
-          <span className="codicon codicon-info" />
-          {t('models.toolbarHint')}
-        </span>
+        <div className="model-list-view__toolbar-row">
+          <span className="model-list-view__hint">
+            <span className="codicon codicon-info" />
+            {t('models.toolbarHint')}
+          </span>
+        </div>
+        <div className="model-list-view__toolbar-row">
         <div className="model-list-view__search">
           <span className="codicon codicon-search" />
           <input
@@ -354,10 +496,17 @@ export function ModelListView() {
         >
           <span className={cx('codicon', loading ? 'codicon-loading spin' : 'codicon-refresh')} />
         </button>
-        <button className="model-list-view__add" onClick={() => setPendingAction({ kind: 'add' })}>
+        <button
+          className="model-list-view__add"
+          onClick={() => {
+            if (providerSaveError) useStore.setState({ providerSaveError: null })
+            setEditorTarget('add')
+          }}
+        >
           <span className="codicon codicon-add" />
           {t('models.add')}
         </button>
+        </div>
       </div>
 
       {configPath && (
@@ -370,6 +519,17 @@ export function ModelListView() {
           <span className="model-list-view__config-label">{t('models.configPathLabel')}</span>
           <span className="model-list-view__config-value">{configPath}</span>
           <span className="codicon codicon-go-to-file" />
+          <button
+            className="model-list-view__config-action"
+            onClick={(e) => {
+              // 阻断路径条整体的「编辑器打开」，只做资源管理器定位
+              e.stopPropagation()
+              sendToJava({ op: 'revealInFileManager', path: configPath })
+            }}
+            title={t('models.configPathRevealTitle')}
+          >
+            <span className="codicon codicon-folder" />
+          </button>
         </div>
       )}
 
@@ -401,12 +561,11 @@ export function ModelListView() {
                 key={p.providerId}
                 provider={p}
                 builtin
-                onDeleteModel={handleDeleteModel}
                 onEditKey={openKeyEditor}
               />
             ))}
 
-          {/* 自定义供应商区：独立启停 */}
+          {/* 自定义供应商区：插件内增删改 + 独立启停 */}
           {visible.some((p) => !p.providerId.startsWith('builtin:')) && (
             <div className="model-list-view__section">
               <span className="model-list-view__section-title">{t('models.section.custom')}</span>
@@ -415,7 +574,14 @@ export function ModelListView() {
           {visible
             .filter((p) => !p.providerId.startsWith('builtin:'))
             .map((p) => (
-              <ProviderCard key={p.providerId} provider={p} onDeleteModel={handleDeleteModel} />
+              <ProviderCard
+                key={p.providerId}
+                provider={p}
+                onDeleteModel={handleDeleteModel}
+                onBlockedModelDelete={handleBlockedModelDelete}
+                onEditProvider={handleEditProvider}
+                onDeleteProvider={handleDeleteProvider}
+              />
             ))}
         </div>
       )}
@@ -471,30 +637,66 @@ export function ModelListView() {
         />
       )}
 
-      {pendingAction && pendingAction.kind !== 'key' && (
+      {/* 最后一个模型删除点击：纯提示弹窗（不提供删除动作）*/}
+      {pendingAction?.kind === 'lastModel' && (
         <ConfirmDialog
-          title={
-            pendingAction.kind === 'add'
-              ? t('models.dialog.addTitle')
-              : t('models.dialog.deleteTitle')
-          }
-          message={
-            <div className="model-list-view__dialog-body">
-              <p>
-                {pendingAction.kind === 'add'
-                  ? t('models.dialog.addBody')
-                  : t('models.dialog.deleteBody', {
-                      name: pendingAction.modelName,
-                      provider: pendingAction.providerName,
-                    })}
-              </p>
-              {configPath && <code className="model-list-view__dialog-path">{configPath}</code>}
-            </div>
-          }
-          confirmText={t('models.dialog.openConfig')}
-          cancelText={t('models.dialog.dismiss')}
-          onConfirm={openConfig}
+          title={t('models.lastModelTitle')}
+          message={t('models.lastModelBody', {
+            name: pendingAction.model.modelName,
+            provider: pendingAction.provider.providerName,
+          })}
+          confirmText={t('models.dialog.dismiss')}
+          cancelable={false}
+          onConfirm={() => setPendingAction(null)}
           onCancel={() => setPendingAction(null)}
+        />
+      )}
+
+      {/* 自定义渠道：模型行删除确认（danger，整表替换减一行）*/}
+      {pendingAction?.kind === 'deleteModel' && (
+        <ConfirmDialog
+          title={t('models.dialog.deleteTitle')}
+          message={t('models.dialog.deleteModelBody', {
+            name: pendingAction.model.modelName,
+            provider: pendingAction.provider.providerName,
+          })}
+          confirmText={t('models.dialog.deleteConfirm')}
+          cancelText={t('models.dialog.dismiss')}
+          danger
+          onConfirm={commitDeleteModel}
+          onCancel={() => setPendingAction(null)}
+        />
+      )}
+
+      {/* 自定义渠道删除确认（danger，含全部模型）*/}
+      {pendingAction?.kind === 'removeProvider' && (
+        <ConfirmDialog
+          title={t('models.dialog.removeProviderTitle')}
+          message={t('models.dialog.removeProviderBody', {
+            provider: pendingAction.provider.providerName,
+            count: pendingAction.provider.models.length,
+          })}
+          confirmText={t('models.dialog.deleteConfirm')}
+          cancelText={t('models.dialog.dismiss')}
+          danger
+          onConfirm={commitRemoveProvider}
+          onCancel={() => setPendingAction(null)}
+        />
+      )}
+
+      {/* 添加 / 编辑自定义渠道（保存成功自动关闭，失败弹窗内提示）*/}
+      {editorTarget && (
+        <ProviderEditorDialog
+          mode={editorTarget === 'add' ? 'add' : 'edit'}
+          initial={editorTarget === 'add' ? null : providerToInitial(editorTarget)}
+          saving={providerSaving}
+          error={providerSaveError}
+          onConfirm={commitEditor}
+          onCancel={() => {
+            setEditorTarget(null)
+            // 弹窗关闭即清残留错误，避免下次打开闪现上次的失败文案
+            if (providerSaveError) useStore.setState({ providerSaveError: null })
+          }}
         />
       )}
     </div>

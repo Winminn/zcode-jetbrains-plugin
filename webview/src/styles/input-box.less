@@ -732,23 +732,30 @@
   line-height: 1.6;
 }
 
-/* 下拉底部刷新行：Zcode 客户端改了模型配置后无需切设置页即可拉新。
-   sticky 吸底：下拉是 300px 滚动容器，不吸底时模型多会把入口滚出视口 */
-.selector-dropdown-refresh {
+/* 下拉底部双入口：左=刷新模型列表（客户端改完配置无需切设置页即可拉新），右=跳设置页
+   模型管理。sticky 吸底：下拉是 300px 滚动容器，不吸底时模型多会把入口滚出视口 */
+.selector-dropdown-footer {
   position: sticky;
   bottom: 0;
   display: flex;
-  align-items: center;
-  gap: 6px;
-  padding: 4px 7px;
   margin-top: 2px;
   border-top: 1px solid var(--dropdown-border, #454545);
+  border-radius: 0 0 3px 3px;
+  background: var(--dropdown-bg, #252526);
+  user-select: none;
+}
+
+.selector-dropdown-refresh,
+.selector-dropdown-manage {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  padding: 4px 7px;
   font-size: 11px;
   color: var(--text-muted);
   cursor: pointer;
-  border-radius: 0 0 3px 3px;
-  user-select: none;
-  background: var(--dropdown-bg, #252526);
 
   .codicon {
     font-size: 12px;
@@ -759,14 +766,18 @@
     background: var(--dropdown-hover, #2a2d2e);
     color: var(--text-primary);
   }
+}
 
-  &.is-refreshing {
-    cursor: default;
-    pointer-events: none; /* 刷新中禁点（含 hover 冒泡），转圈即视觉反馈 */
+.selector-dropdown-manage {
+  border-left: 1px solid var(--dropdown-border, #454545);
+}
 
-    .codicon {
-      animation: selector-refresh-spin 0.9s linear infinite;
-    }
+.selector-dropdown-refresh.is-refreshing {
+  cursor: default;
+  pointer-events: none; /* 刷新中禁点（含 hover 冒泡），转圈即视觉反馈 */
+
+  .codicon {
+    animation: selector-refresh-spin 0.9s linear infinite;
   }
 }
 

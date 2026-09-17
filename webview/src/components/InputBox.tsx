@@ -1808,6 +1808,7 @@ export function InputBox({ onSend, isStreaming = false, onStop, disabled = false
                 currentModel={currentModel ?? null}
                 onSelect={onModelSelect}
                 disabled={disabled}
+                onManageModels={onOpenModelSettings}
               />
             )}
             <ThoughtLevelSelect />

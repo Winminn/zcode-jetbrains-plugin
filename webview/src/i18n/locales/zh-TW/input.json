@@ -9,7 +9,9 @@
     "selectModel": "請選擇模型",
     "provider": "供應商：",
     "model": "模型：",
-    "contextWindow": "上下文視窗："
+    "contextWindow": "上下文視窗：",
+    "refresh": "刷新模型",
+    "manage": "前往管理"
   },
   "mode": {
     "title": "許可權模式",

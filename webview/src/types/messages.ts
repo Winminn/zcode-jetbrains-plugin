@@ -394,6 +394,12 @@ export type JavaRequest =  | { op: 'askUserPendingState' }
   | { op: 'modelToggleProvider'; providerId: string; enabled: boolean }
   /** 设置/清除内置渠道自定义 apiKey 覆盖（apiKey 空串=清除），写 ~/.zcgui/config.json 并触发注册表推送 */
   | { op: 'modelSetProviderKey'; providerId: string; apiKey: string }
+  /** 添加自定义模型渠道（写 config.json provider 注册表，UUID 作 providerId）*/
+  | { op: 'modelAddProvider'; draft: ProviderSaveDraft }
+  /** 编辑自定义渠道（字段缺省=不变；apiKey null=不变 空串=清除；models 传了整表替换）*/
+  | { op: 'modelUpdateProvider'; providerId: string; draft: ProviderSaveDraft }
+  /** 删除自定义渠道（含其全部模型）*/
+  | { op: 'modelRemoveProvider'; providerId: string }
   | { op: 'setModel'; sessionId: string; modelId: string; providerId: string }
   /** 撤销回合中挂起的延迟切换（用户在等待期重新选回生效模型）*/
   | { op: 'cancelModelSwitch'; sessionId: string }
@@ -535,11 +541,33 @@ export interface ModelManageModel {
   maxOutput?: number
   /** 视觉能力位（modalities.input 含 image），展示「视觉」徽章 */
   supportsImages?: boolean
+  /** 输入类型位（modalities.input 含 video/pdf），编辑弹窗回填 */
+  supportsVideo?: boolean
+  supportsPdf?: boolean
+}
+
+/** 自定义渠道编辑弹窗的模型行草稿（context 必填：autocompact 阈值依赖 limit.context）*/
+export interface ProviderModelDraft {
+  modelId: string
+  context: number
+  output?: number
+  /** 输入类型位（modalities.input 追加 image/video/pdf；文本恒选不传）*/
+  images?: boolean
+  video?: boolean
+  pdf?: boolean
+}
+
+/** 自定义渠道保存草稿（add/update 共用；apiKey 三态见 modelUpdateProvider 注释）*/
+export interface ProviderSaveDraft {
+  name: string
+  kind: 'anthropic' | 'openai-compatible'
+  baseURL: string
+  apiKey: string | null
+  models: ProviderModelDraft[]
 }
 
 /** 模型管理 provider 分组（与聊天 listModels 的差异：不去重、含 disabled、保留无 baseURL 项）*/
-export interface ModelManageProvider {
-  providerId: string
+export interface ModelManageProvider {  providerId: string
   providerName: string
   /** 内置套餐类型（两个内置套餐显示名相同，靠 providerId 区分）：personal=个人、trial=体验、team=客户端选中的团队套餐 */
   plan?: 'personal' | 'trial' | 'team'
@@ -561,6 +589,8 @@ export interface ModelManageProvider {
   /** 个人选中配了覆盖（客户端 key 未使用）→ 卡片提醒 */
   overrideOnPersonal?: boolean
   baseURL?: string
+  /** 协议形态（config.json kind：anthropic / openai-compatible…），编辑弹窗回填 */
+  kind?: string
   enabled: boolean
   models: ModelManageModel[]
 }
@@ -1005,6 +1035,8 @@ export type JavaResponse =
   /** 切换回包：changes 含全部实际变更（启用内置套餐时其余内置套餐联动禁用，互斥）*/
   | { op: 'modelToggled'; changes: { providerId: string; enabled: boolean }[] }
   | { op: 'modelSetProviderKey'; ok: boolean; providerId: string; cleared: boolean }
+  /** 自定义渠道增/改/删回包：ok=false 时 error 在编辑弹窗内提示（不进全局错误条）*/
+  | { op: 'modelProviderSaved'; ok: boolean; action: 'add' | 'update' | 'remove'; providerId: string; error?: string }
   | { op: 'modelSet'; sessionId: string; modelId: string; providerId: string }
   /** 回合中切换挂起（缺陷AC）：Java 挂起目标模型等回合结束补发，前端回滚选中态并提示 */
   | { op: 'modelSetPending'; sessionId: string; modelId: string; providerId: string }

@@ -10,7 +10,8 @@
     "provider": "Provider: ",
     "model": "Model: ",
     "contextWindow": "Context window: ",
-    "refresh": "Refresh model list"
+    "refresh": "Refresh",
+    "manage": "Manage"
   },
   "mode": {
     "title": "Permission mode",

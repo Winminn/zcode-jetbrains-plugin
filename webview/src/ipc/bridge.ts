@@ -47,6 +47,8 @@ declare global {
     onEnvStatusChanged?: (status: EnvStatus) => void
     /** Java 推送模型 provider 启用/禁用变更的回调（modelToggleProvider 写回后广播多标签同步）*/
     onModelsChanged?: (changes: { providerId: string; enabled: boolean }[]) => void
+    /** Java 推送渠道结构变更（增/改/删）的回调（modelProviderSaved 写回后广播，多标签全量重拉模型管理页）*/
+    onModelManageChanged?: () => void
   }
 }
 
@@ -952,6 +954,49 @@ function mockResponse(req: JavaRequest): JavaResponse | null {
         if (p.providerId === req.providerId) p.customKey = !!req.apiKey
       })
       return { op: 'modelSetProviderKey', ok: true, providerId: req.providerId, cleared: !req.apiKey }
+    }
+    case 'modelAddProvider': {
+      // mock：与生产同口径——UUID 作 providerId 写入注册表（内存模拟 config.json）
+      const id = `mock-${Math.random().toString(36).slice(2, 10)}`
+      mockModelProviders().push({
+        providerId: id,
+        providerName: req.draft.name,
+        baseURL: req.draft.baseURL,
+        enabled: true,
+        models: req.draft.models.map((m) => ({
+          modelId: m.modelId,
+          modelName: m.modelId,
+          contextWindow: m.context,
+          maxOutput: m.output,
+          supportsImages: m.images || undefined,
+          supportsVideo: m.video || undefined,
+          supportsPdf: m.pdf || undefined,
+        })),
+      })
+      return { op: 'modelProviderSaved', ok: true, action: 'add', providerId: id }
+    }
+    case 'modelUpdateProvider': {
+      // mock：与生产同口径——builtin 拒绝；字段缺省不变、apiKey null=不变 空串=清除、models 整表替换
+      const p = mockModelProviders().find((x) => x.providerId === req.providerId)
+      if (!p) return { op: 'modelProviderSaved', ok: false, action: 'update', providerId: req.providerId, error: `渠道不存在: ${req.providerId}` }
+      p.providerName = req.draft.name || p.providerName
+      p.baseURL = req.draft.baseURL || p.baseURL
+      p.models = req.draft.models.map((m) => ({
+        modelId: m.modelId,
+        modelName: m.modelId,
+        contextWindow: m.context,
+        maxOutput: m.output,
+        supportsImages: m.images || undefined,
+        supportsVideo: m.video || undefined,
+        supportsPdf: m.pdf || undefined,
+      }))
+      return { op: 'modelProviderSaved', ok: true, action: 'update', providerId: req.providerId }
+    }
+    case 'modelRemoveProvider': {
+      const idx = mockModelProviders().findIndex((x) => x.providerId === req.providerId)
+      if (idx < 0) return { op: 'modelProviderSaved', ok: false, action: 'remove', providerId: req.providerId, error: `渠道不存在: ${req.providerId}` }
+      mockModelProviders().splice(idx, 1)
+      return { op: 'modelProviderSaved', ok: true, action: 'remove', providerId: req.providerId }
     }
     case 'modelManageList':
       // 模拟设置页「模型管理」结构（与生产同口径：内置渠道只返回生效的，第三方含

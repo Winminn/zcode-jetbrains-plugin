@@ -259,14 +259,6 @@ class ZCodeToolWindowPanel(
         /** openExternal 的目标（设置页开源支持区块，前端复制展示用同地址字面量）*/
         const val GITHUB_REPO_URL = "https://github.com/csuftt/zcode-jetbrains-plugin"
 
-        /**
-         * config.json 读-改-写全程互斥锁（多标签各持独立 Panel 实例，op 处理并发跑在
-         * 各自的池线程上）：锁住「读文件→内存改→原子替换」整段，防两个标签同时切换
-         * provider 时后写覆盖前写。与 ZCode 官方客户端的跨进程并发无法加锁，靠
-         * tmp+原子替换把窗口压到毫秒级、且只改 provider.<id>.enabled 单字段兜底。
-         */
-        val CONFIG_WRITE_LOCK = Any()
-
         /** 外观配置（Application 级，跨项目共享，存取见 ZCodeAppearanceStore）：
          *  localStorage 在生产模式下按 origin 隔离——内置 server 每次重启端口随机，
          *  origin 变化导致配置丢失，因此主题/字号/自定义颜色以 IDE 侧持久化为权威源，
@@ -894,6 +886,9 @@ if (!window.__ZCODE_LOG_HOOK__) {
                         "listModels" -> handleListModels(msg)
                         "modelManageList" -> handleModelManageList(msg)
                         "modelToggleProvider" -> handleModelToggleProvider(msg)
+                        "modelAddProvider" -> handleModelAddProvider(msg)
+                        "modelUpdateProvider" -> handleModelUpdateProvider(msg)
+                        "modelRemoveProvider" -> handleModelRemoveProvider(msg)
                         "modelSetProviderKey" -> handleModelSetProviderKey(msg)
                         "setModel" -> handleSetModel(msg)
                         "cancelModelSwitch" -> handleCancelModelSwitch(msg)
@@ -2481,13 +2476,16 @@ if (!window.__ZCODE_LOG_HOOK__) {
                 val modelObj = modelEl.jsonObject
                 val modelName = modelObj["name"]?.jsonPrimitive?.contentOrNull ?: modelId
                 val limit = modelObj["limit"]?.jsonObject
-                // modalities.input 能力位（与 handleListModels 同口径）：设置页展示「视觉」徽章
+                // modalities.input 能力位（与 handleListModels 同口径）：设置页展示「视觉」徽章；
+                // pdf/video 位供编辑弹窗回填输入类型（客户端同款三选，文本恒选不传）
                 val inputKinds = (modelObj["modalities"]?.jsonObject?.get("input") as? JsonArray)
                     ?.mapNotNull { (it as? JsonPrimitive)?.contentOrNull } ?: emptyList()
                 buildJsonObject {
                     put("modelId", modelId)
                     put("modelName", modelName)
                     if ("image" in inputKinds) put("supportsImages", true)
+                    if ("video" in inputKinds) put("supportsVideo", true)
+                    if ("pdf" in inputKinds) put("supportsPdf", true)
                     limit?.get("context")?.jsonPrimitive?.contentOrNull?.toLongOrNull()?.let { put("contextWindow", it) }
                     limit?.get("output")?.jsonPrimitive?.contentOrNull?.toLongOrNull()?.let { put("maxOutput", it) }
                 }
@@ -2522,6 +2520,7 @@ if (!window.__ZCODE_LOG_HOOK__) {
                     if (!resolution.viaSelected && resolution.selectedGated) put("viaReason", "captchaGated")
                 }
                 put("enabled", enabled)
+                pv["kind"]?.jsonPrimitive?.contentOrNull?.let { put("kind", it) }
                 baseURL?.let { put("baseURL", it) }
                 put("models", models)
             }
@@ -2567,9 +2566,8 @@ if (!window.__ZCODE_LOG_HOOK__) {
      * 客户端配置为准（客户端同一时间仅一个生效），插件代写 config 与客户端内存态
      * 互相覆盖极易出状态错乱（0.2.6 实测反馈），改为只读展示，切换请求直接拒绝。
      *
-     * 写回策略（config.json 是含凭证的关键文件，比 cli/config.json 更谨慎）：
-     * 仅改 provider.<id>.enabled 字段，其余节点 LinkedHashMap 保序原样保留；
-     * 写前备份 .bak，tmp + Files.move 原子替换，失败时从备份回滚。
+     * 写回走 [ProviderConfigWriter.update] 公用通道（锁+备份+原子替换+保序），
+     * 仅改 provider.<id>.enabled 字段，其余节点原样保留。
      * 回包 changes 携带全部实际变更项，前端按数组刷新。
      * 禁用后 CLI 下次发现生效；进行中的会话不受影响。
      */
@@ -2577,81 +2575,162 @@ if (!window.__ZCODE_LOG_HOOK__) {
         val providerId = msg["providerId"]?.jsonPrimitive?.contentOrNull
             ?: return errorResponse("缺少 providerId")
         if (providerId.startsWith("builtin:")) {
-            return errorResponse("内置渠道以 ZCode 客户端配置为准，请在客户端切换后回来刷新")
+            return errorResponse("内置渠道以 Zcode 客户端配置为准，请在客户端切换后回来刷新")
         }
         val enabled = msg["enabled"]?.jsonPrimitive?.contentOrNull?.toBooleanStrictOrNull()
             ?: return errorResponse("缺少 enabled")
 
-        val configPath = Credentials.defaultConfigPath()
-        if (!java.nio.file.Files.isRegularFile(configPath)) {
-            return errorResponse("config.json not found: $configPath")
-        }
-        return synchronized(CONFIG_WRITE_LOCK) {
-            val file = configPath.toFile()
-            val root = try {
-                json.parseToJsonElement(file.readText(Charsets.UTF_8)).jsonObject
-            } catch (e: Exception) {
-                log.warn("Failed to parse config.json: ${e.message}")
-                return@synchronized errorResponse("解析 config.json 失败")
-            }
-            val providersObj = root["provider"]?.let { runCatching { it.jsonObject }.getOrNull() }
-            if (providersObj == null || providersObj[providerId] == null) {
-                return@synchronized errorResponse("provider 不存在: $providerId")
-            }
-
-            // 变更集：目标 provider 的 enabled 字段（内置互斥已随 builtin 只读化移除）
-            data class Change(val id: String, val newEnabled: Boolean)
-            val changes = mutableListOf(Change(providerId, enabled))
-
-            // 仅替换各目标 provider 的 enabled 字段，其余内容（含顺序）原样保留
-            val newProviders = JsonObject(LinkedHashMap<String, kotlinx.serialization.json.JsonElement>(providersObj.size).apply {
-                providersObj.forEach { (k, v) ->
-                    val change = changes.find { it.id == k }
-                    put(k, if (change != null) buildJsonObject {
+        val err = com.zcode.ideaplugin.protocol.ProviderConfigWriter.update(Credentials.defaultConfigPath()) { providers ->
+            if (providers[providerId] == null) throw IllegalStateException("provider 不存在: $providerId")
+            JsonObject(LinkedHashMap<String, kotlinx.serialization.json.JsonElement>(providers.size).apply {
+                providers.forEach { (k, v) ->
+                    put(k, if (k == providerId) buildJsonObject {
                         v.jsonObject.forEach { (pk, pv) -> if (pk != "enabled") put(pk, pv) }
-                        put("enabled", change.newEnabled)
+                        put("enabled", enabled)
                     } else v)
                 }
             })
-            val newRoot = buildJsonObject {
-                root.forEach { (k, v) -> put(k, if (k == "provider") newProviders else v) }
-            }
+        }
+        if (err != null) {
+            log.warn("modelToggleProvider failed: $err")
+            return errorResponse(err)
+        }
+        log.info("modelToggleProvider: $providerId=$enabled written back")
+        // 凭证可用性随 enabled 变化：失效环境检测缓存，30s TTL 内的自动路径不再报旧状态
+        com.zcode.ideaplugin.env.ZCodeEnvChecker.invalidate()
+        val changesJson = JsonArray(listOf(buildJsonObject {
+            put("providerId", providerId)
+            put("enabled", enabled)
+        }))
+        // 多标签同步：发起标签由下方 modelToggled 应答合并，其余已开标签靠
+        // window.onModelsChanged 广播就地合并 + 重拉下拉（同 broadcastAppearance 模式）
+        broadcastModelChanges(changesJson.toString())
+        return buildJsonObject {
+            put("op", "modelToggled")
+            put("changes", changesJson)
+        }
+    }
 
-            val pretty = Json { prettyPrint = true }
-            val bak = java.nio.file.Path.of(file.parentFile.absolutePath, file.name + ".bak")
-            try {
-                // 备份 → 写 tmp → 原子替换；替换失败从备份恢复
-                java.nio.file.Files.copy(configPath, bak, java.nio.file.StandardCopyOption.REPLACE_EXISTING)
-                val tmp = java.nio.file.Path.of(file.parentFile.absolutePath, file.name + ".tmp")
-                tmp.toFile().writeText(pretty.encodeToString(JsonObject.serializer(), newRoot), Charsets.UTF_8)
+    // ============ 自定义模型渠道 CRUD（2026-09-16，design-research/自定义模型渠道CRUD实现方案）============
+
+    /** 内置渠道统一拒绝文案（CRUD 三 op 与 toggle 共用口径）*/
+    private fun builtinReject(): String = "内置渠道以 Zcode 客户端配置为准，插件不修改"
+
+    /** CRUD 回包（ok=false 时 error 随行，前端在编辑弹窗内提示，不进全局错误条）*/
+    private fun providerSaved(ok: Boolean, action: String, providerId: String, error: String? = null): JsonObject =
+        buildJsonObject {
+            put("op", "modelProviderSaved")
+            put("ok", ok)
+            put("action", action)
+            put("providerId", providerId)
+            error?.let { put("error", it) }
+        }
+
+    /** 渠道结构变更（增/改/删）成功后的收尾：环境缓存失效 + 多标签全量刷新模型管理页 */
+    private fun afterProviderStructureChange(action: String, providerId: String) {
+        com.zcode.ideaplugin.env.ZCodeEnvChecker.invalidate()
+        SwingUtilities.invokeLater {
+            activePanels.forEach { panel ->
                 try {
-                    java.nio.file.Files.move(tmp, configPath, java.nio.file.StandardCopyOption.REPLACE_EXISTING)
+                    if (panel.disposed || !panel::jbCefBrowser.isInitialized) return@forEach
+                    panel.jbCefBrowser.cefBrowser.executeJavaScript(
+                        "window.onModelManageChanged && window.onModelManageChanged();",
+                        "zcode-model-manage-sync", 0
+                    )
                 } catch (e: Exception) {
-                    java.nio.file.Files.move(bak, configPath, java.nio.file.StandardCopyOption.REPLACE_EXISTING)
-                    throw e
+                    log.warn("Model manage sync push failed (tab sessionId=${panel.currentSessionId}): ${e.message}")
                 }
-                val changeDesc = changes.joinToString(", ") { c -> c.id + "=" + c.newEnabled }
-                log.info("modelToggleProvider: $changeDesc written back to $configPath")
-                // 凭证可用性随 enabled 变化：失效环境检测缓存，30s TTL 内的自动路径不再报旧状态
-                com.zcode.ideaplugin.env.ZCodeEnvChecker.invalidate()
-            } catch (e: Exception) {
-                log.warn("Failed to write back config.json: ${e.message}")
-                return@synchronized errorResponse("写回失败: ${e.message}")
-            }
-            val changesJson = JsonArray(changes.map { c ->
-                buildJsonObject {
-                    put("providerId", c.id)
-                    put("enabled", c.newEnabled)
-                }
-            })
-            // 多标签同步：发起标签由下方 modelToggled 应答合并，其余已开标签靠
-            // window.onModelsChanged 广播就地合并 + 重拉下拉（同 broadcastAppearance 模式）
-            broadcastModelChanges(changesJson.toString())
-            buildJsonObject {
-                put("op", "modelToggled")
-                put("changes", changesJson)
             }
         }
+        log.info("modelProvider $action ok: $providerId")
+    }
+
+    /**
+     * op=modelAddProvider — 添加自定义模型渠道，写 config.json provider 注册表
+     * （与 Zcode 客户端共用注册表，客户端可见可编辑）。providerId 生成 UUID（客户端
+     * 同款形态：source=custom，与内置 builtin: 前缀天然隔离）。apiKey 必填（config
+     * 端无 key 的渠道会被模型管理页的可用性过滤隐藏，加了看不见）。
+     */
+    private fun handleModelAddProvider(msg: JsonObject): JsonObject {
+        val draft = com.zcode.ideaplugin.protocol.ProviderConfigWriter.addDraftFromMessage(msg)
+        if (draft.apiKey.isNullOrBlank()) return providerSaved(false, "add", "", "apiKey 不能为空")
+        com.zcode.ideaplugin.protocol.ProviderConfigWriter.validateDraft(draft)?.let {
+            return providerSaved(false, "add", "", it)
+        }
+        val providerId = java.util.UUID.randomUUID().toString()
+        val err = com.zcode.ideaplugin.protocol.ProviderConfigWriter.update(Credentials.defaultConfigPath()) { providers ->
+            JsonObject(LinkedHashMap<String, kotlinx.serialization.json.JsonElement>(providers).apply {
+                put(providerId, com.zcode.ideaplugin.protocol.ProviderConfigWriter.buildProviderNode(draft))
+            })
+        }
+        if (err != null) {
+            log.warn("modelAddProvider failed: $err")
+            return providerSaved(false, "add", providerId, err)
+        }
+        afterProviderStructureChange("add", providerId)
+        return providerSaved(true, "add", providerId)
+    }
+
+    /**
+     * op=modelUpdateProvider — 编辑自定义渠道（就地合并，providerId 不变，客户端
+     * 同名渠道原地更新）。字段语义（经 ProviderConfigWriter.updateFieldsFromMessage
+     * 解包 draft）：name/kind/baseURL/enabled 缺省=不变；apiKey 三态（缺省=不变、
+     * 空串=清除、非空=新值）；models 传数组=整表替换、缺省=不变。builtin: 一律拒绝。
+     */
+    private fun handleModelUpdateProvider(msg: JsonObject): JsonObject {
+        val providerId = msg["providerId"]?.jsonPrimitive?.contentOrNull
+            ?: return providerSaved(false, "update", "", "缺少 providerId")
+        if (providerId.startsWith("builtin:")) return providerSaved(false, "update", providerId, builtinReject())
+        val f = com.zcode.ideaplugin.protocol.ProviderConfigWriter.updateFieldsFromMessage(msg)
+        val models = f.models
+        if (models != null && models.isEmpty()) return providerSaved(false, "update", providerId, "至少配置一个模型")
+        if (models != null) {
+            com.zcode.ideaplugin.protocol.ProviderConfigWriter.validateDraft(
+                com.zcode.ideaplugin.protocol.ProviderConfigWriter.ProviderDraft(
+                    name = f.name ?: "x", kind = f.kind ?: "anthropic", baseURL = f.baseURL ?: "https://x",
+                    apiKey = "x", models = models,
+                )
+            )?.let { return providerSaved(false, "update", providerId, it) }
+        }
+        val err = com.zcode.ideaplugin.protocol.ProviderConfigWriter.update(Credentials.defaultConfigPath()) { providers ->
+            val existing = providers[providerId]?.jsonObject
+                ?: throw IllegalStateException("渠道不存在: $providerId")
+            if (providerId.startsWith("builtin:")) throw IllegalStateException(builtinReject())
+            JsonObject(LinkedHashMap<String, kotlinx.serialization.json.JsonElement>(providers).apply {
+                put(providerId, com.zcode.ideaplugin.protocol.ProviderConfigWriter.mergeProviderNode(
+                    existing, f.name, f.kind, f.baseURL, f.apiKey, f.models, f.enabled,
+                ))
+            })
+        }
+        if (err != null) {
+            log.warn("modelUpdateProvider failed: $err")
+            return providerSaved(false, "update", providerId, err)
+        }
+        afterProviderStructureChange("update", providerId)
+        return providerSaved(true, "update", providerId)
+    }
+
+    /**
+     * op=modelRemoveProvider — 删除自定义渠道（含其全部模型）。builtin: 前缀拒绝。
+     * currentModel/润色模型指向被删渠道时由前端既有「不在 models 清单」失效判定兜底。
+     */
+    private fun handleModelRemoveProvider(msg: JsonObject): JsonObject {
+        val providerId = msg["providerId"]?.jsonPrimitive?.contentOrNull
+            ?: return providerSaved(false, "remove", "", "缺少 providerId")
+        if (providerId.startsWith("builtin:")) return providerSaved(false, "remove", providerId, builtinReject())
+        val err = com.zcode.ideaplugin.protocol.ProviderConfigWriter.update(Credentials.defaultConfigPath()) { providers ->
+            if (providers[providerId] == null) throw IllegalStateException("渠道不存在: $providerId")
+            if (providerId.startsWith("builtin:")) throw IllegalStateException(builtinReject())
+            JsonObject(LinkedHashMap<String, kotlinx.serialization.json.JsonElement>(providers).apply {
+                remove(providerId)
+            })
+        }
+        if (err != null) {
+            log.warn("modelRemoveProvider failed: $err")
+            return providerSaved(false, "remove", providerId, err)
+        }
+        afterProviderStructureChange("remove", providerId)
+        return providerSaved(true, "remove", providerId)
     }
 
     /** 模型 provider 启用/禁用变更广播到所有已开标签（modelToggleProvider 写回后调用）*/

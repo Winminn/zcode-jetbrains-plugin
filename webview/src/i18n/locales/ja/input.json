@@ -9,7 +9,9 @@
     "selectModel": "モデルを選択",
     "provider": "プロバイダー：",
     "model": "モデル：",
-    "contextWindow": "コンテキストウィンドウ："
+    "contextWindow": "コンテキストウィンドウ：",
+    "refresh": "更新",
+    "manage": "管理"
   },
   "mode": {
     "title": "権限モード",

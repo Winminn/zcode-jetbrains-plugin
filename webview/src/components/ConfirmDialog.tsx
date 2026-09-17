@@ -21,6 +21,8 @@ interface Props {
   extraText?: string
   /** 危险操作（确认按钮红色）*/
   danger?: boolean
+  /** 纯提示模式：不渲染取消按钮（信息提醒弹窗，确认即关闭）*/
+  cancelable?: boolean
   onConfirm: () => void
   onExtra?: () => void
   onCancel: () => void
@@ -33,20 +35,23 @@ export function ConfirmDialog({
   cancelText,
   extraText,
   danger = false,
+  cancelable = true,
   onConfirm,
   onExtra,
   onCancel,
 }: Props) {
   const { t } = useTranslation()
   return (
-    <div className="modal-overlay" onClick={onCancel} role="presentation">
+    <div className="modal-overlay" onClick={cancelable ? onCancel : onConfirm} role="presentation">
       <div className="modal-content" onClick={(e) => e.stopPropagation()}>
         <h3>{title}</h3>
         <p>{message}</p>
         <div className="modal-actions">
-          <button className="modal-btn modal-btn-cancel" onClick={onCancel}>
-            {cancelText ?? t('common.confirm.cancel')}
-          </button>
+          {cancelable && (
+            <button className="modal-btn modal-btn-cancel" onClick={onCancel}>
+              {cancelText ?? t('common.confirm.cancel')}
+            </button>
+          )}
           {extraText && onExtra && (
             <button className="modal-btn modal-btn-cancel" onClick={onExtra}>
               {extraText}

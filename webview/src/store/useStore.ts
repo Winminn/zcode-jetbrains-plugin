@@ -16,7 +16,7 @@ import { create } from 'zustand'
 import { onMessage, onStreamEvent, onStreamBatch, sendToJava, initBridge, isInJcef, getWorkspacePath, getInitialSessionId } from '@/ipc/bridge'
 import { parseGoalCommand } from '@/utils/goalCommand'
 import { extractTitleExcerpt } from '@/utils/titleExcerpt'
-import type { JavaResponse, SessionInfo, ZCodeMessage, StreamEvent, ModelOption, ModelManageProvider, TodoItem, AgentItem, FileChangeItem, QuotaData, ModelUsageData, ToolUsageData, UsageRange, AppUsageData, AppUsageRange, ContextBreakdownItem, ThoughtLevelInfo, SubagentActivity, SubagentInfo, ToolUpdatedPayload, MemoryFileInfo, MemoryDirInfo, MemorySearchHitInfo, SkillInfo, McpServerInfo, McpToolsState, McpLogEntry, EnvStatus, BrowserClearedSite, BrowserDataOverview, AgentDef, AgentDefInput, ImageAttachmentInput, GoalState, AutoArchiveRecord, ToolPart, SlashCommand, MessagePart } from '@/types/messages'
+import type { JavaResponse, SessionInfo, ZCodeMessage, StreamEvent, ModelOption, ModelManageProvider, ProviderSaveDraft, TodoItem, AgentItem, FileChangeItem, QuotaData, ModelUsageData, ToolUsageData, UsageRange, AppUsageData, AppUsageRange, ContextBreakdownItem, ThoughtLevelInfo, SubagentActivity, SubagentInfo, ToolUpdatedPayload, MemoryFileInfo, MemoryDirInfo, MemorySearchHitInfo, SkillInfo, McpServerInfo, McpToolsState, McpLogEntry, EnvStatus, BrowserClearedSite, BrowserDataOverview, AgentDef, AgentDefInput, ImageAttachmentInput, GoalState, AutoArchiveRecord, ToolPart, SlashCommand, MessagePart } from '@/types/messages'
 import { applyStreamEvent, isSubagentToolEvent, applySubagentToolEvent, markActivityOutcome, finalizeActivitiesFromNotifications, asSubagentLifecycle, asGoalTargetPayload, looksLikeQuotaError, asSteerDrainedInputs, appendSteerUserMessages } from '@/utils/streamReducer'
 import type { TurnErrorInfo, SubagentLifecyclePayload } from '@/utils/streamReducer'
 import i18n from '@/i18n/config'
@@ -883,6 +883,10 @@ interface StoreState {
   modelConfigPath: string | null
   /** 正在切换启用状态的 providerId（开关 loading + 防重复点击）*/
   modelTogglingId: string | null
+  /** 渠道编辑弹窗保存中（防重复提交，保存按钮 loading）*/
+  providerSaving: boolean
+  /** 渠道增/改/删失败文案（弹窗内提示；成功时清除）*/
+  providerSaveError: string | null
   mcpLogsLoading: boolean
 
   // 用量明细曲线（model-usage / tool-usage）
@@ -1087,6 +1091,12 @@ interface StoreState {
   setProviderKey: (providerId: string, apiKey: string) => void
   /** 切换 provider 启用/禁用（写 config.json enabled 字段，回包 modelToggled）*/
   toggleModelProvider: (providerId: string, enabled: boolean) => void
+  /** 添加自定义模型渠道（写 config.json provider 注册表，UUID 作 providerId）*/
+  addModelProvider: (draft: ProviderSaveDraft) => void
+  /** 编辑自定义渠道（apiKey null=不变 空串=清除；models 整表替换），providerId 不变 */
+  updateModelProvider: (providerId: string, draft: ProviderSaveDraft) => void
+  /** 删除自定义渠道（含其全部模型）*/
+  removeModelProvider: (providerId: string) => void
   /** 设置用量明细时间范围并重拉 model/tool 曲线 */
   setUsageRange: (range: UsageRange) => void
   /** 设置自定义日期范围并重拉 */
@@ -1357,6 +1367,8 @@ export const useStore = create<StoreState>((set, get) => ({
   modelManageError: null,
   modelConfigPath: null,
   modelTogglingId: null,
+  providerSaving: false,
+  providerSaveError: null,
   modelUsage: null,
   toolUsage: null,
   usageRange: '7d',
@@ -1402,6 +1414,11 @@ export const useStore = create<StoreState>((set, get) => ({
         )
         if (providers) set({ modelProviders: providers })
         get().loadModels()
+      }
+      // IDE 广播：其他标签增/改/删渠道后多标签同步（Panel afterProviderStructureChange）。
+      // 结构变更无法就地合并（新增/删除条目），统一全量重拉模型管理页
+      window.onModelManageChanged = () => {
+        get().loadModelManage()
       }
     }
 
@@ -2601,6 +2618,24 @@ export const useStore = create<StoreState>((set, get) => ({
     if (get().modelTogglingId) return
     set({ modelTogglingId: providerId, modelManageError: null })
     sendToJava({ op: 'modelToggleProvider', providerId, enabled })
+  },
+
+  addModelProvider: (draft) => {
+    if (get().providerSaving) return
+    set({ providerSaving: true, providerSaveError: null })
+    sendToJava({ op: 'modelAddProvider', draft })
+  },
+
+  updateModelProvider: (providerId, draft) => {
+    if (get().providerSaving) return
+    set({ providerSaving: true, providerSaveError: null })
+    sendToJava({ op: 'modelUpdateProvider', providerId, draft })
+  },
+
+  removeModelProvider: (providerId) => {
+    if (get().providerSaving) return
+    set({ providerSaving: true, providerSaveError: null })
+    sendToJava({ op: 'modelRemoveProvider', providerId })
   },
 
   setUsageRange: (range) => {
@@ -4685,6 +4720,18 @@ export function handleResponse(
       )
       set({ modelProviders: providers ?? null, modelTogglingId: null })
       get().loadModels()
+      break
+    }
+
+    case 'modelProviderSaved': {
+      // 自定义渠道增/改/删回包：失败文案留在弹窗内（providerSaveError），成功清态并
+      // 全量重拉（modelManage 应答自带 loadModels 联动，输入框下拉同步刷新）
+      if (!msg.ok) {
+        set({ providerSaving: false, providerSaveError: msg.error ?? '保存失败' })
+        break
+      }
+      set({ providerSaving: false, providerSaveError: null })
+      get().loadModelManage()
       break
     }
 

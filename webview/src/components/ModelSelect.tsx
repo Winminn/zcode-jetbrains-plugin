@@ -24,9 +24,11 @@ interface Props {
   onSelect: (modelId: string, providerId: string) => void
   /** 无会话时禁用 */
   disabled?: boolean
+  /** 跳设置页「模型」管理（App 层切视图 + 定位 tab，同 AgentSelect 管理入口）*/
+  onManageModels?: () => void
 }
 
-export function ModelSelect({ currentModel, onSelect, disabled = false }: Props) {
+export function ModelSelect({ currentModel, onSelect, disabled = false, onManageModels }: Props) {
   const { t } = useTranslation()
   const models = useStore((s) => s.models)
   const messages = useStore((s) => s.messages)
@@ -206,15 +208,30 @@ export function ModelSelect({ currentModel, onSelect, disabled = false }: Props)
             </div>
           ))}
 
-          {/* 手动刷新：用户在 Zcode 客户端改了模型配置后无需切设置页即可拉新 */}
-          <div
-            className={`selector-dropdown-refresh ${modelsRefreshing ? 'is-refreshing' : ''}`}
-            onClick={() => {
-              if (!modelsRefreshing) refreshModels()
-            }}
-          >
-            <span className="codicon codicon-refresh" />
-            <span>{t('input.model.refresh')}</span>
+          {/* 底部双入口（sticky 吸底，模型多时不滚出视口）：左=手动刷新（客户端改完
+              配置无需切设置页即可拉新），右=跳设置页模型管理（增删改自定义渠道） */}
+          <div className="selector-dropdown-footer">
+            <div
+              className={`selector-dropdown-refresh ${modelsRefreshing ? 'is-refreshing' : ''}`}
+              onClick={() => {
+                if (!modelsRefreshing) refreshModels()
+              }}
+            >
+              <span className="codicon codicon-refresh" />
+              <span>{t('input.model.refresh')}</span>
+            </div>
+            {onManageModels && (
+              <div
+                className="selector-dropdown-manage"
+                onClick={() => {
+                  setOpen(false)
+                  onManageModels()
+                }}
+              >
+                <span className="codicon codicon-settings-gear" />
+                <span>{t('input.model.manage')}</span>
+              </div>
+            )}
           </div>
         </div>
       )}
