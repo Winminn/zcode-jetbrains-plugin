@@ -3585,9 +3585,37 @@ export function handleResponse(
 
     case 'editAccepted': {
       // v4 编辑受理（diag-edit-v4 实测）：服务端已 abort 旧回合 + rewind + 用新
-      // 文本/附件重发，后续编排全由事件流驱动——rewind.triggered 截断（ack 应答
+      // 文本/附件重发，v1 编排全由事件流驱动——rewind.triggered 截断（ack 应答
       // 可能晚于事件到达，不在此处理状态）、新 turn 流式、turnEnded 收尾。
-      // 附件 ref 临时文件由 Java 侧惰性清理，此处无收尾动作
+      // v2（newCli）例外（diag-v2-edit-rewind 实测）：rewind.triggered 与新回合
+      // turn.started 已整体撤出 legacy 流（回退编排在服务端 v4 帧内进行，插件临时
+      // 订阅窗口外不可见），等事件确认必然误报「回退未生效」——ack disposition=
+      // rewind 即「服务端确定截断重发」的权威确认，就地应用与 rewind.triggered
+      // 同一截断核心（截断到目标轮 + 补插编辑气泡 + staged 落 kv）并标记 rewound；
+      // 后续流式（归约器按协议 id 自建壳、local_u_ 气泡自动改名）与 turnEnded
+      // 收尾链路零改动。blocked=服务端守卫拒绝（未执行），明确提示。
+      const replay = get().editReplay
+      if (msg.disposition === 'blocked') {
+        cancelEditAckTimeout()
+        if (replay?.via === 'v4' && !replay.rewound) {
+          set({ editReplay: null, lastError: editRejectText(msg.reason, msg.message) })
+        }
+        break
+      }
+      if (msg.newCli === true && msg.disposition === 'rewind'
+          && replay?.via === 'v4' && !replay.rewound && !replay.stopping) {
+        cancelEditAckTimeout()
+        const sid = get().currentSessionId
+        if (sid) {
+          const st = get()
+          const r = applyRewindTriggeredCore(st.messages, st.streamingMessageId, replay.targetMsgId, replay, sid)
+          set({
+            messages: r.messages,
+            streamingMessageId: r.streamingMessageId,
+            ...(r.matched ? { editReplay: { ...replay, rewound: true } } : {}),
+          })
+        }
+      }
       break
     }
 

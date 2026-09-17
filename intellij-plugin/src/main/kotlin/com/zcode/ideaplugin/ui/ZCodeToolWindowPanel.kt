@@ -1842,13 +1842,19 @@ if (!window.__ZCODE_LOG_HOOK__) {
             val client = project.zCodeService().getClient()
             val result = client.editUserQueryViaV4(sessionId, messageId, newText, refs)
             log.info("Edit user query accepted: $sessionId msg=$messageId")
+            val resObj = result["result"]?.jsonObject
+            val disposition = resObj?.get("disposition")?.jsonPrimitive?.content ?: "rewind"
             buildJsonObject {
                 put("op", "editAccepted")
                 put("sessionId", sessionId)
-                put(
-                    "disposition",
-                    result["result"]?.jsonObject?.get("disposition")?.jsonPrimitive?.content ?: "rewind",
-                )
+                put("disposition", disposition)
+                // v2 代际标记：rewind.triggered 已撤出 legacy 流（diag-v2-edit-rewind 实测），
+                // 前端据此在 ack 阶段就地乐观截断，不等事件确认
+                put("newCli", cliGeneration == com.zcode.ideaplugin.protocol.ProtocolGeneration.NEW)
+                if (disposition == "blocked") {
+                    resObj?.get("reasonCode")?.jsonPrimitive?.contentOrNull?.let { put("reason", it) }
+                    resObj?.get("message")?.jsonPrimitive?.contentOrNull?.let { put("message", it) }
+                }
             }
         } catch (e: ZCodeProtocolException) {
             if (e.code == -32601) {

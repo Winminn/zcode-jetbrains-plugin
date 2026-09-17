@@ -933,8 +933,10 @@ export type JavaResponse =
   | { op: 'sessionForked'; forkedSessionId: string; parentSessionId?: string }
   /** 老 CLI 无 v4 面（-32601）：隐藏分叉入口（不做 legacy 回退——该路径带文件恢复副作用）*/
   | { op: 'forkUnsupported' }
-  /** editUserQuery 应答：v4 编辑受理（后续编排全由事件流驱动，ack 可能晚于事件到达）*/
-  | { op: 'editAccepted'; sessionId: string; disposition?: string }
+  /** editUserQuery 应答：v4 编辑受理（后续编排全由事件流驱动，ack 可能晚于事件到达）。
+   *  newCli=v2 代（rewind.triggered 已撤出 legacy 流，前端据 ack 就地乐观截断）；
+   *  disposition=blocked 时附 reason/message（服务端守卫拒绝）*/
+  | { op: 'editAccepted'; sessionId: string; disposition?: string; newCli?: boolean; reason?: string; message?: string }
   /** 老 CLI 无 v4 edit 面（-32601，无 reason）：前端记忆全局不可用，空闲时回退 legacy 编排。
    *  reason=targetGone（2026-09-12 三轮反馈）：行流里找不到目标行（会话级行流缺失/
    *  乐观 id 过期）——不记忆全局不可用，仅本次降级（带图目标不得回退，legacy 丢图） */
