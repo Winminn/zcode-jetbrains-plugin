@@ -2,13 +2,22 @@ package com.zcode.ideaplugin.env
 
 import com.intellij.ide.util.PropertiesComponent
 import com.zcode.ideaplugin.protocol.Credentials
+import com.zcode.ideaplugin.protocol.ProtocolGeneration
+import com.zcode.ideaplugin.protocol.ProtocolGenerations
 import com.zcode.ideaplugin.protocol.ZCodeCredentials
 import com.zcode.ideaplugin.protocol.ZCodeLocator
+import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.contentOrNull
+import kotlinx.serialization.json.jsonArray
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
+import java.nio.file.Files
 import java.nio.file.Path
 import java.util.concurrent.TimeUnit
+import kotlin.io.path.readText
 
 /**
  * 运行环境三件套检测（Node.js / zcode.cjs / 凭证 config.json）
@@ -59,16 +68,18 @@ data class CliStatus(
     val arg: String? = null,
     /** 形如 "0.16.5"（spawn `node <cli> --version`）；探测失败/未探测 null（展示用，不影响 allOk）*/
     val version: String? = null,
+    /** 协议代际标签（"v1"=内置渠道体系 / "v2"=自定义供应商体系）；cli 未找到时 null */
+    val generation: String? = null,
 )
 
 data class CredentialStatus(
     val ok: Boolean,
-    /** 生效 provider 的首个 model（展示用）*/
+    /** 生效 provider 的首个 model（v1）/ 可用渠道摘要（v2，展示用）*/
     val model: String?,
     val error: String?,
-    /** 实际读取的 config.json 路径（随 dataBaseDir 重定向，展示用）*/
+    /** 实际读取的凭证文件路径：v1 = config.json、v2 = provider_config.json（均随 dataBaseDir 重定向）*/
     val path: String? = null,
-    /** 机器可读错误码（前端 i18n）：credsMissing/credsInvalid */
+    /** 机器可读错误码（前端 i18n）：credsMissing/credsInvalid/credsProviderMissing/credsProviderEmpty */
     val code: String? = null,
 )
 
@@ -207,10 +218,11 @@ object ZCodeEnvChecker {
             return cached!!
         }
         val nodeStatus = detectNode(configuredNodePath())
+        val cliStatus = detectCli(configuredCliPath(), nodeStatus)
         val status = EnvStatus(
             node = nodeStatus,
-            cli = detectCli(configuredCliPath(), nodeStatus),
-            credentials = detectCredentials(),
+            cli = cliStatus,
+            credentials = detectCredentials(cliStatus),
             browserHost = null,
         )
         // 环境三件套有硬伤时宿主不评判（app-server 未起是正常状态，免噪音）；
@@ -292,7 +304,11 @@ object ZCodeEnvChecker {
         if (configured != null) {
             val file = Path.of(configured).toFile()
             return if (file.isFile) {
-                CliStatus(true, configured, true, null, version = probeCliVersion(node, configured))
+                CliStatus(
+                    true, configured, true, null,
+                    version = probeCliVersion(node, configured),
+                    generation = generationLabelOf(configured),
+                )
             } else {
                 CliStatus(true, null, false, "zcode.cjs 不存在：$configured", code = "cliFileNotFound", arg = configured)
             }
@@ -300,10 +316,21 @@ object ZCodeEnvChecker {
         // ZCodeLocator.detect() 按 os 选标准安装路径并校验存在性，异常消息即失败原因
         return try {
             val p = ZCodeLocator.detect()
-            CliStatus(false, p.toString(), true, null, version = probeCliVersion(node, p.toString()))
+            CliStatus(
+                false, p.toString(), true, null,
+                version = probeCliVersion(node, p.toString()),
+                generation = generationLabelOf(p.toString()),
+            )
         } catch (e: Exception) {
             CliStatus(false, null, false, e.message ?: "ZCode CLI 未找到", code = "cliNotFound")
         }
+    }
+
+    /** 判代（zcode.cjs 标记主判 + 配置兜底，fail-soft 恒有结果）；cli 路径异常时 null 不展示 */
+    private fun generationLabelOf(cliPath: String): String? = try {
+        ProtocolGenerations.detect(Path.of(cliPath)).label
+    } catch (_: Exception) {
+        null
     }
 
     /**
@@ -329,7 +356,15 @@ object ZCodeEnvChecker {
         }
     }
 
-    private fun detectCredentials(): CredentialStatus {
+    /**
+     * 凭证检测按代分流：v2（自定义供应商体系）走 provider_config.json——新版 config.json
+     * 已废弃（用户报"配置文件不存在"误报即此），凭证健康 = 客户端渠道配置可用。
+     * v1 维持 config.json 明文凭证口径（原逻辑）。
+     */
+    private fun detectCredentials(cli: CliStatus): CredentialStatus {
+        if (cli.generation == ProtocolGeneration.NEW.label) {
+            return detectCredentialsProviderConfig()
+        }
         val configPath = Credentials.defaultConfigPath().toString()
         return try {
             val c = Credentials.load()
@@ -342,6 +377,64 @@ object ZCodeEnvChecker {
                 code = if (e is IllegalArgumentException) "credsMissing" else "credsInvalid",
             )
         }
+    }
+
+    /**
+     * v2 凭证检测（只读展示，判据 = 客户端渠道配置健康度）：
+     * - provider_config.json 缺失 = 客户端未建过渠道（未登录/未配置）→ credsProviderMissing
+     * - 渠道可用 = access.apiKey 非空（API Key 型，明文存于此文件）；SSO 型渠道凭证
+     *   加密存于 credentials.json 插件不可判，以 credentials.json 存在非空为整体登录态兜底
+     * - 全部渠道均无凭证且无登录态 → credsProviderEmpty；解析失败 → credsInvalid
+     */
+    internal fun detectCredentialsProviderConfig(
+        providerConfigPath: Path = Credentials.personalProviderConfigPath(),
+    ): CredentialStatus {
+        return try {
+            if (!Files.isRegularFile(providerConfigPath)) {
+                return CredentialStatus(
+                    ok = false, model = null, error = "自定义供应商配置不存在",
+                    path = providerConfigPath.toString(), code = "credsProviderMissing",
+                )
+            }
+            val rules = Json.parseToJsonElement(providerConfigPath.readText())
+                .jsonObject["config"]?.jsonObject?.get("providerConfigRules")?.jsonObject
+                ?.get("providerRules")?.jsonArray
+            // enabled 缺省视为启用（与模型管理页 newCli 口径一致）
+            val usable = rules.orEmpty().mapNotNull { el ->
+                val o = el as? JsonObject ?: return@mapNotNull null
+                if (o["enabled"]?.jsonPrimitive?.contentOrNull == "false") return@mapNotNull null
+                val key = o["config"]?.jsonObject?.get("access")?.jsonObject?.get("apiKey")
+                    ?.jsonPrimitive?.contentOrNull
+                if (key.isNullOrBlank()) return@mapNotNull null
+                o["providerName"]?.jsonPrimitive?.contentOrNull
+                    ?: o["providerId"]?.jsonPrimitive?.contentOrNull ?: "未命名渠道"
+            }
+            if (usable.isNotEmpty()) {
+                val summary = if (usable.size == 1) usable[0] else "${usable[0]} 等 ${usable.size} 个渠道"
+                CredentialStatus(ok = true, model = summary, error = null, path = providerConfigPath.toString())
+            } else if (hasAnyCredentialEntry(providerConfigPath)) {
+                // 无 API Key 型渠道但有账号登录态（纯 SSO 使用）：客户端凭证链可用
+                CredentialStatus(ok = true, model = "账号登录态", error = null, path = providerConfigPath.toString())
+            } else {
+                CredentialStatus(
+                    ok = false, model = null, error = "渠道均未配置凭证",
+                    path = providerConfigPath.toString(), code = "credsProviderEmpty",
+                )
+            }
+        } catch (e: Exception) {
+            CredentialStatus(
+                ok = false, model = null, error = "自定义供应商配置读取失败：${e.message?.take(100)}",
+                path = providerConfigPath.toString(), code = "credsInvalid",
+            )
+        }
+    }
+
+    /** credentials.json（与 provider_config.json 同目录）存在且非空 = 客户端账号登录态在 */
+    private fun hasAnyCredentialEntry(providerConfigPath: Path): Boolean = try {
+        val credFile = providerConfigPath.resolveSibling("credentials.json")
+        Files.isRegularFile(credFile) && Files.size(credFile) > 2
+    } catch (_: Exception) {
+        false
     }
 
     /**
@@ -585,6 +678,7 @@ object ZCodeEnvChecker {
             putStringOrNull("path", s.cli.path)
             put("found", s.cli.found)
             putStringOrNull("version", s.cli.version)
+            putStringOrNull("generation", s.cli.generation)
             putStringOrNull("error", s.cli.error)
             putStringOrNull("code", s.cli.code)
             putStringOrNull("arg", s.cli.arg)

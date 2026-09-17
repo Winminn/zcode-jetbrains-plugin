@@ -123,12 +123,23 @@
       "label": "ZCode CLI 路径",
       "placeholder": "留空自动检测标准安装位置",
       "hint": "zcode.cjs 文件路径（非标准位置安装时填写）。保存时验证文件存在；清空并保存恢复自动检测",
-      "found": "已找到"
+      "found": "已找到",
+      "generation": {
+        "v1": {
+          "label": "内置渠道体系",
+          "hint": "渠道体系 v1：模型渠道来自客户端登录（config.json），可在插件内管理 API Key"
+        },
+        "v2": {
+          "label": "自定义供应商体系",
+          "hint": "渠道体系 v2：模型渠道由客户端「自定义供应商」管理（provider_config.json），插件只读展示；官方内置渠道已全部改为单点登录"
+        }
+      }
     },
     "credentials": {
       "label": "凭证状态",
       "ok": "有效 · {{model}}",
       "hint": "凭证由 ZCode 客户端登录生成；账号（oauth）登录的凭证为加密存储，最新版客户端登录会把可用凭证写入 config.json。若此处提示无可用凭证，请升级客户端并重新登录",
+      "hintV2": "新版客户端的模型凭证由「自定义供应商」渠道管理：API Key 型渠道明文存于 provider_config.json，账号登录凭证加密存于 credentials.json，插件只读展示。若此处提示无可用凭证，请在客户端 设置 → 自定义供应商 添加渠道",
       "degraded": "无可用凭证 · 待修复"
     },
     "proxy": {

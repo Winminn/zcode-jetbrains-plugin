@@ -45,7 +45,9 @@ class ZCodeProtocolClient private constructor(
     /** 可空：config.json 无明文凭证（oauth 登录）时不注入 env，由 app-server 自身凭证链接管 */
     private val credentials: com.zcode.ideaplugin.protocol.ZCodeCredentials?,
     /** spawn 时注入的代理配置（null=未配置直连；排障查「代理注入了没」，日志在 ZCodeServiceImpl） */
-    val proxyConfig: ProxyConfig?
+    val proxyConfig: ProxyConfig?,
+    /** CLI 协议代际（start() 判定注入；模型相关方法的参数形态按代分支，见 ProtocolGenerations） */
+    val generation: ProtocolGeneration = ProtocolGeneration.OLD,
 ) : AutoCloseable {
 
     private val json = Json { ignoreUnknownKeys = true }
@@ -151,6 +153,22 @@ class ZCodeProtocolClient private constructor(
     @Volatile
     var runtimeModelFactory: () -> JsonObject? = { RuntimeModels.defaultRuntimeModel() }
 
+    // ============ 模型参数按代际分支（2026-09-17 定稿，替代试错降级）============
+    // 新版 CLI（zod strict）移除 runtimeModel：setModel 收模型引用 + options.reasoningLevel
+    // （有 reasoning 定义的模型必填，值集见 BuiltinModelCatalog）、send 收 modelSelection。
+    // 代际由 start() 判定（zcode.cjs 内容标记，权威无试错）；OLD 链路保持原样零改动。
+
+    /** NEW 代 setModel 的 model 对象（引用 + reasoningLevel 默认档）；OLD 为无 options 引用 */
+    private fun modelRefJson(modelId: String, providerId: String): JsonObject = buildJsonObject {
+        put("modelId", modelId)
+        put("providerId", providerId)
+        if (generation == ProtocolGeneration.NEW) {
+            BuiltinModelCatalog.defaultReasoningLevel(modelId, zcodePath)?.let {
+                put("options", buildJsonObject { put("reasoningLevel", it) })
+            }
+        }
+    }
+
     /**
      * 后端模型 API 错误回调（stderr 的 APICallError dump 解析结果，见 BackendErrorDetector）。
      * 场景：429 配额超限等被 app-server 按可重试分类持续退避，turn 终止帧迟迟不发，
@@ -208,7 +226,10 @@ class ZCodeProtocolClient private constructor(
             val stdin = PrintWriter(process.outputStream.bufferedWriter(), true)
             val stdout = process.inputStream.bufferedReader()
 
-            val client = ZCodeProtocolClient(process, stdin, stdout, zcodePath, nodePath, credentials, proxyConfig)
+            // 代际判定在 spawn 侧（zcode.cjs 标记主判）：进程已在跑，文件即权威
+            val generation = ProtocolGenerations.detect(zcodePath)
+            println("[ZCodeProtocolClient] CLI generation = $generation (zcode.cjs=${zcodePath.fileName})")
+            val client = ZCodeProtocolClient(process, stdin, stdout, zcodePath, nodePath, credentials, proxyConfig, generation)
             // 排障主线索（issue #12 用户实测三态：坏地址失败/清空直连/好地址成功——
             // 没有这行日志时分不清「代理坏了」还是「没注入」）：代理地址 userinfo 脱敏
             println("[ZCodeProxy] app-server spawn ${proxyConfig?.logSummary ?: "<no proxy, direct>"}")
@@ -562,6 +583,36 @@ class ZCodeProtocolClient private constructor(
             eventListeners[sid]?.forEach { it(event) }
             globalListeners.forEach { it(event) }
         }
+        // v4/telemetry/event：回合级遥测（含 turn.terminal 终态）。v2 渠道模型引用非法时
+        // （如 reasoningLevel 缺失），turn 在 model_creation 阶段静默 failed——该失败只走
+        // 此通道（session/event 流无 turn.failed 帧），不映射则 UI 表现"一直没响应"。
+        // kind=turn.terminal + status=failed → 合成标准 turn.failed 会话事件（payload.error
+        // 取 errorCode/errorMessage），复用 panel/前端既有失败链路（标签状态机 + 错误提示）
+        else if (method == "v4/telemetry/event") {
+            val kind = params["kind"]?.jsonPrimitive?.jsonStringOrNull
+            if (kind == "turn.terminal" && params["status"]?.jsonPrimitive?.jsonStringOrNull == "failed") {
+                val sid = params["sessionId"]?.jsonPrimitive?.jsonStringOrNull ?: return
+                val event = SessionEvent(
+                    type = "turn.failed",
+                    seq = params["eventSeq"]?.jsonPrimitive?.longOrNull ?: 0L,
+                    sessionId = sid,
+                    timestamp = params["occurredAt"]?.jsonPrimitive?.longOrNull ?: System.currentTimeMillis(),
+                    traceId = null,
+                    turnId = params["turnId"]?.jsonPrimitive?.jsonStringOrNull,
+                    deliveryKind = null,
+                    payload = buildJsonObject {
+                        put("error", buildJsonObject {
+                            put("type", params["errorCode"]?.jsonPrimitive?.contentOrNull ?: "turn_failed")
+                            put("message", params["errorMessage"]?.jsonPrimitive?.contentOrNull
+                                ?: "回合失败（v2 模型请求被拒）")
+                        })
+                        params["turnPhase"]?.jsonPrimitive?.contentOrNull?.let { put("turnPhase", it) }
+                    }
+                )
+                eventListeners[sid]?.forEach { it(event) }
+                globalListeners.forEach { it(event) }
+            }
+        }
         // v4/conversation/frame：v4 订阅会话的增量帧（子会话实时流根治通道）。
         // topic=conversation/<sessionId>；只对主动 v4 订阅过的会话映射，防与 legacy 流双写
         else if (method == "v4/conversation/frame") {
@@ -601,7 +652,6 @@ class ZCodeProtocolClient private constructor(
             }
             for (ev in events) dispatchSessionEvent(ev)
         }
-        // v4/telemetry/event 等暂不处理
     }
 
     /** 会话事件统一分发：per-session 监听器 + 全局监听器（session/event 与 v4 映射共用出口） */
@@ -1045,16 +1095,37 @@ class ZCodeProtocolClient private constructor(
         modelId: String? = null,
         attachments: List<AttachmentInput>? = null,
     ): JsonObject {
+        // 模型字段按代分支（代际由 start() 判定，无试错）：
+        // - OLD：runtimeModel（协议原生形态，对齐官方客户端按回合携带模型）——首条消息即
+        //   注册 provider 并让本回合直接跑在目标模型上。setModel 与新建会话首回合在服务端
+        //   赛跑会撞 -32603 Unsupported（08-29 定时触发实测：新会话 runtime 未注册任何
+        //   provider，available 只有内置目录），send 携带则无此竞态。构造失败（provider 不在
+        //   config.json）省略字段走服务端默认，与原行为一致
+        // - NEW：modelSelection 模型引用（渠道须已在 providerRegistry = provider_config.json
+        //   用户自建渠道；strict schema 拒收 runtimeModel）
+        val sentRuntimeModel = if (providerId != null && modelId != null && generation == ProtocolGeneration.OLD) {
+            RuntimeModels.buildRuntimeModel(providerId, modelId)
+        } else {
+            null
+        }
         val params = buildJsonObject {
             put("sessionId", sessionId)
             put("content", content)
-            // 带 runtimeModel 的 send（协议原生形态，对齐官方客户端按回合携带模型）：
-            // 首条消息即注册 provider 并让本回合直接跑在目标模型上。setModel 与新建会话
-            // 首回合在服务端赛跑会撞 -32603 Unsupported（08-29 定时触发实测：新会话
-            // runtime 未注册任何 provider，available 只有内置目录），send 携带则无此竞态。
-            // 构造失败（provider 不在 config.json）省略字段走服务端默认，与原行为一致
             if (providerId != null && modelId != null) {
-                RuntimeModels.buildRuntimeModel(providerId, modelId)?.let { put("runtimeModel", it) }
+                if (generation == ProtocolGeneration.NEW) {
+                    // reasoningLevel 必填（diag-v2-send-silent-fail.py 实证：缺了 send RPC 仍
+                    // 返回成功，但 turn 在 model_creation 阶段立即 failed——错误只走
+                    // v4/telemetry 事件不进 session/event 流，UI 表现为"一直没有响应"）
+                    put("modelSelection", buildJsonObject {
+                        put("providerId", providerId)
+                        put("modelId", modelId)
+                        BuiltinModelCatalog.defaultReasoningLevel(modelId, zcodePath)?.let {
+                            put("options", buildJsonObject { put("reasoningLevel", it) })
+                        }
+                    })
+                } else if (sentRuntimeModel != null) {
+                    put("runtimeModel", sentRuntimeModel)
+                }
             }
             if (!attachments.isNullOrEmpty()) {
                 put("attachments", buildAttachmentsJson(attachments))
@@ -1066,17 +1137,18 @@ class ZCodeProtocolClient private constructor(
             // -32031 = restoreWarning：resume 时会话模型不可用被标记，send 直接拒绝。
             // 实测普通 setModel 清不掉该标记（即便切到有效模型），唯一可靠清除方式 =
             // 本请求携带 runtimeModel（zcode.cjs 应用模型时置 restoreWarning=void 0），
-            // 故用带 runtimeModel 的 send 原地重试，成功后走正常流式。
+            // 故用带模型的 send 原地重试，成功后走正常流式。
+            // NEW 代清除机制未知：best effort 带模型引用，失败仍落 CLI 兜底
             if (errCode == -32031) {
-                println("[ZCodeProtocolClient] send hit -32031 (restoreWarning), retrying with runtimeModel")
-                // 优先用用户当前选择的 provider 构造 runtimeModel（跟随前端 currentModel），
-                // 避免恢复链路用默认 provider 把会话静默切到个人套餐；构造失败回退默认 factory
-                val runtimeModel = if (providerId != null && modelId != null) {
+                println("[ZCodeProtocolClient] send hit -32031 (restoreWarning), retrying with model")
+                // 优先用用户当前选择的 provider 构造（跟随前端 currentModel），避免恢复链路
+                // 用默认 provider 把会话静默切到个人套餐；构造失败回退默认 factory
+                val runtimeModel = if (providerId != null && modelId != null && generation == ProtocolGeneration.OLD) {
                     RuntimeModels.buildRuntimeModel(providerId, modelId) ?: runtimeModelFactory()
                 } else {
                     runtimeModelFactory()
                 }
-                if (runtimeModel != null) {
+                if (generation == ProtocolGeneration.OLD && runtimeModel != null) {
                     val retryParams = buildJsonObject {
                         put("sessionId", sessionId)
                         put("content", content)
@@ -1093,6 +1165,27 @@ class ZCodeProtocolClient private constructor(
                         return r["result"]?.jsonObject ?: JsonObject(emptyMap())
                     }
                     println("[ZCodeProtocolClient] runtimeModel retry still rejected: ${LogRedactor.redact(r["error"].toString())}")
+                } else if (generation == ProtocolGeneration.NEW && providerId != null && modelId != null) {
+                    println("[ZCodeProtocolClient] -32031 retry with modelSelection (NEW cli)")
+                    val retryParams = buildJsonObject {
+                        put("sessionId", sessionId)
+                        put("content", content)
+                        put("modelSelection", buildJsonObject {
+                            put("providerId", providerId)
+                            put("modelId", modelId)
+                            BuiltinModelCatalog.defaultReasoningLevel(modelId, zcodePath)?.let {
+                                put("options", buildJsonObject { put("reasoningLevel", it) })
+                            }
+                        })
+                        if (!attachments.isNullOrEmpty()) {
+                            put("attachments", buildAttachmentsJson(attachments))
+                        }
+                    }
+                    r = request("session/send", retryParams, timeoutMs)
+                    if (r["error"] == null) {
+                        return r["result"]?.jsonObject ?: JsonObject(emptyMap())
+                    }
+                    println("[ZCodeProtocolClient] modelSelection retry still rejected: ${LogRedactor.redact(r["error"].toString())}")
                 } else {
                     println("[ZCodeProtocolClient] cannot build runtimeModel (no enabled anthropic provider in config.json)")
                 }
@@ -1269,11 +1362,13 @@ class ZCodeProtocolClient private constructor(
      * input 仅本方法的消息（实测 30 token vs CLI 通道 14858），无进程冷启动；
      * 不产生会话记录（session/list 前后不变），workspace 同会话时复用 warm app。
      *
-     * 前置条件：modelRef 指向的 provider 须已在 workspace 目录注册（会话 setModel
-     * runtimeModel 时顺带注册）；未注册时报 -32603 "Model provider is not configured"，
-     * 可调 [upsertModelProvider] 补注册后重试。
+     * 前置条件（按代）：OLD——modelRef 指向的 provider 须已在 workspace 目录注册
+     * （setModel runtimeModel 时顺带注册），未注册报 -32603 可 upsert 自愈；
+     * NEW——selection 指向的模型须已在 providerRegistry（provider_config.json 用户
+     * 自建渠道；upsert 方法已删，无自愈）。请求字段按代 modelRef/selection，
+     * 响应 NEW 为 {text, selection{...}}、OLD 为 {text, modelRef{...}}（调用方双读）。
      *
-     * @return result：{text, modelRef{providerId,modelId}, finishReason?, usage?}
+     * @return result：{text, selection|modelRef{providerId,modelId}, finishReason?, usage?}
      */
     fun generateText(
         workspacePath: String,
@@ -1290,7 +1385,9 @@ class ZCodeProtocolClient private constructor(
                 put("workspacePath", nativePath)
                 put("workspaceKey", nativePath)
             })
-            put("modelRef", buildJsonObject {
+            // 模型字段按代分支：OLD=modelRef / NEW=selection（2026-09-17 schema 实挖改名）
+            val key = if (generation == ProtocolGeneration.NEW) "selection" else "modelRef"
+            put(key, buildJsonObject {
                 put("providerId", providerId)
                 put("modelId", modelId)
             })
@@ -2276,23 +2373,19 @@ class ZCodeProtocolClient private constructor(
      * ⚠️ 实测（2026-08-14）普通 setModel 即便切到有效模型也**清不掉 -32031 的
      * restoreWarning**——清除该标记须用携带 runtimeModel 的 send/compact（见 send）。
      *
-     * @param runtimeModel 可选的完整运行时模型配置（provider 定义 + model）：
-     *   服务端收到后会把 provider 注册进 workspace providers 再切换，
-     *   从而绕过"可选模型"校验（普通 setModel 只能切 main/lite/available 里的模型）。
+     * @param runtimeModel 仅 OLD 代生效：服务端收到后把 provider 注册进 workspace
+     *   providers 再切换，绕过"可选模型"校验。NEW 代忽略（strict schema 拒收该字段，
+     *   模型须已在 providerRegistry——即 provider_config.json 的用户自建渠道）。
      */
     fun setModel(sessionId: String, modelId: String, providerId: String, runtimeModel: JsonObject? = null, timeoutMs: Long = 6000) {
-        // setModel 的参数 schema 要求 model 是对象 {modelId, providerId}，不是 modelId 字符串
+        // setModel 的参数 schema 要求 model 是对象 {modelId, providerId}，不是 modelId 字符串。
+        // setModel 幂等（同 session 设同模型语义等价），初始化并发拥堵易超时 → 走重试
         val params = buildJsonObject {
             put("sessionId", sessionId)
-            put("model", buildJsonObject {
-                put("modelId", modelId)
-                put("providerId", providerId)
-            })
-            runtimeModel?.let { put("runtimeModel", it) }
+            put("model", modelRefJson(modelId, providerId))
+            if (generation == ProtocolGeneration.OLD) runtimeModel?.let { put("runtimeModel", it) }
         }
-        // setModel 幂等（同 session 设同模型语义等价），初始化并发拥堵易超时 → 走重试
-        val r = requestWithRetry("session/setModel", params, timeoutMs, maxAttempts = 3, backoffMs = longArrayOf(300, 800))
-        requireOk(r)
+        requireOk(requestWithRetry("session/setModel", params, timeoutMs, maxAttempts = 3, backoffMs = longArrayOf(300, 800)))
     }
 
     /** session/setRuntimeModelConfig — 设置运行时模型配置（更完整的模型切换）*/

@@ -602,6 +602,14 @@ function EnvironmentSettings() {
               {envStatus.cli.version ?? t('settings.env.cli.found')}
             </span>
           )}
+          {envStatus?.cli.generation && (
+            <span
+              className="basic-settings__version-badge is-generation"
+              title={t(`settings.env.cli.generation.${envStatus.cli.generation}.hint`)}
+            >
+              {t(`settings.env.cli.generation.${envStatus.cli.generation}.label`)}
+            </span>
+          )}
         </div>
         <div className="basic-settings__path-row">
           <input
@@ -631,8 +639,9 @@ function EnvironmentSettings() {
       {/* 网络代理（与 ZCode 客户端同源共享，issue #12） */}
       <ProxySettings />
 
-      {/* 凭证状态（只读：由 ZCode 客户端登录生成，无配置入口）。
-          无明文凭证（oauth 登录）不再是错误：对话走 ZCode 客户端登录态，仅辅助功能受限 */}
+      {/* 凭证状态（只读，无配置入口）：v1 = config.json 明文凭证（客户端登录生成）；
+          v2 = provider_config.json 渠道健康度（自定义供应商管理，插件只读）。
+          无凭证不再是错误：对话走客户端凭证链，仅辅助功能受限 */}
       <section className="basic-settings__section">
         <div className="basic-settings__field-header">
           <span className="codicon codicon-key" />
@@ -669,7 +678,11 @@ function EnvironmentSettings() {
         )}
         <small className="basic-settings__hint">
           <span className="codicon codicon-info" />
-          <span>{t('settings.env.credentials.hint')}</span>
+          <span>
+            {envStatus?.cli.generation === 'v2'
+              ? t('settings.env.credentials.hintV2')
+              : t('settings.env.credentials.hint')}
+          </span>
         </small>
       </section>
 

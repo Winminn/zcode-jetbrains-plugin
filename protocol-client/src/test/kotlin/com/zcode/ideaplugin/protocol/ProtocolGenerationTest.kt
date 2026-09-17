@@ -1,0 +1,148 @@
+package com.zcode.ideaplugin.protocol
+
+import java.nio.file.Files
+import java.nio.file.Path
+import kotlin.test.Test
+import kotlin.test.assertEquals
+import kotlin.test.assertNull
+import kotlin.test.assertTrue
+import org.junit.jupiter.api.io.TempDir
+
+/**
+ * ProtocolGenerations 判代与 BuiltinModelCatalog 解析单测（2026-09-17 双代适配）。
+ * 全部基于临时目录构造文件，不依赖本机真实 ~/.zcode。
+ */
+class ProtocolGenerationTest {
+
+    @TempDir
+    lateinit var home: Path
+
+    private fun v2(): Path = home.resolve(".zcode/v2").also { Files.createDirectories(it) }
+
+    // ============ detectByConfig（setting.json 键形态 + provider_config 存在性兜底） ============
+
+    @Test
+    fun `setting 含 providerFamilyConnectionSelections 判 NEW`() {
+        v2().resolve("setting.json").toFile().writeText("""{"providerFamilyConnectionSelections":{"bigmodel":{"kind":"individual-coding-plan"}}}""")
+        assertEquals(ProtocolGeneration.NEW, ProtocolGenerations.detectByConfig(home.toString()))
+    }
+
+    @Test
+    fun `setting 含 modelProviderFamilySelectedKeys 判 OLD`() {
+        v2().resolve("setting.json").toFile().writeText("""{"modelProviderFamilySelectedKeys":{"bigmodel":"coding-plan:builtin:bigmodel-coding-plan"},"modelProviderFamilyModes":{}}""")
+        assertEquals(ProtocolGeneration.OLD, ProtocolGenerations.detectByConfig(home.toString()))
+    }
+
+    @Test
+    fun `setting 缺失且 provider_config 存在判 NEW`() {
+        v2().resolve("provider_config.json").toFile().writeText("""{"schemaVersion":1}""")
+        assertEquals(ProtocolGeneration.NEW, ProtocolGenerations.detectByConfig(home.toString()))
+    }
+
+    @Test
+    fun `两者皆无判 OLD`() {
+        v2()
+        assertEquals(ProtocolGeneration.OLD, ProtocolGenerations.detectByConfig(home.toString()))
+    }
+
+    // ============ detect（zcode.cjs 内容标记主判 + mtime 缓存失效） ============
+
+    @Test
+    fun `zcode_cjs 含新版标记判 NEW`() {
+        val cjs = home.resolve("zcode.cjs")
+        cjs.toFile().writeText("x".repeat(100) + "ZCODE_PERSONAL_PROVIDER_CONFIG_FILE" + "y".repeat(100))
+        assertEquals(ProtocolGeneration.NEW, ProtocolGenerations.detect(cjs, home.toString()))
+    }
+
+    @Test
+    fun `zcode_cjs 无标记判 OLD`() {
+        val cjs = home.resolve("zcode.cjs")
+        cjs.toFile().writeText("console.log('old cli')")
+        assertEquals(ProtocolGeneration.OLD, ProtocolGenerations.detect(cjs, home.toString()))
+    }
+
+    @Test
+    fun `标记跨读块边界仍命中（大文件滑动窗口）`() {
+        val cjs = home.resolve("zcode.cjs")
+        // 64K 填充 + 标记居中 + 尾部填充，覆盖 containsMarker 的跨块保留逻辑
+        cjs.toFile().writeText("a".repeat(70_000) + "ZCODE_PERSONAL_PROVIDER_CONFIG_FILE" + "b".repeat(70_000))
+        assertEquals(ProtocolGeneration.NEW, ProtocolGenerations.detect(cjs, home.toString()))
+    }
+
+    @Test
+    fun `zcode_cjs 不可读落配置兜底`() {
+        val missing = home.resolve("nope.cjs")
+        v2().resolve("setting.json").toFile().writeText("""{"modelProviderFamilySelectedKeys":{}}""")
+        assertEquals(ProtocolGeneration.OLD, ProtocolGenerations.detect(missing, home.toString()))
+    }
+
+    @Test
+    fun `mtime 变化缓存失效重判（升级回滚场景）`() {
+        val cjs = home.resolve("zcode.cjs")
+        cjs.toFile().writeText("old content")
+        assertEquals(ProtocolGeneration.OLD, ProtocolGenerations.detect(cjs, home.toString()))
+        // 改写文件（mtime 推进）→ 重判 NEW；Windows mtime 粒度下强制 sleep 保证时间推进
+        Thread.sleep(20)
+        cjs.toFile().writeText("ZCODE_PERSONAL_PROVIDER_CONFIG_FILE")
+        assertEquals(ProtocolGeneration.NEW, ProtocolGenerations.detect(cjs, home.toString()))
+    }
+
+    // ============ BuiltinModelCatalog（modelRules 正则链 + 默认档选择） ============
+
+    private fun writeCatalog(rules: String) {
+        v2().resolve("runtime/provider/win/1.0/endpoint-x").let { Files.createDirectories(it) }
+        v2().resolve("runtime/provider/win/1.0/endpoint-x/zcode-builtin.json").toFile()
+            .writeText("""{"schemaVersion":1,"revision":28,"config":{"modelConfigRules":{"modelRules":[$rules]}}}""")
+    }
+
+    @Test
+    fun `规则链后命中覆盖前命中且无 optionSpecs 保留前值`() {
+        writeCatalog(
+            """{"modelMatch":".*","config":{"optionSpecs":{"reasoningLevel":{"values":["disabled","enabled"]}}}},
+                {"modelMatch":".*glm-5\\.3(?:-flash)?(?:[.\\-:/\\[].*)?","config":{"optionSpecs":{"reasoningLevel":{"values":["low","high","max"]}}}},
+                {"modelMatch":".*glm-5\\.3-flash(?:[.\\-:/\\[].*)?","config":{"optionSpecs":{"maxOutputTokens":{"max":128000}}}}"""
+        )
+        assertEquals(listOf("low", "high", "max"), BuiltinModelCatalog.reasoningValues("GLM-5.3", null, home.toString()))
+        assertEquals(listOf("low", "high", "max"), BuiltinModelCatalog.reasoningValues("GLM-5.3-Flash", null, home.toString()))
+        // 无专属规则模型落泛化 .* 规则
+        assertEquals(listOf("disabled", "enabled"), BuiltinModelCatalog.reasoningValues("deepseek-v4", null, home.toString()))
+    }
+
+    @Test
+    fun `默认档按 max-high-enabled 优先`() {
+        writeCatalog(
+            """{"modelMatch":".*","config":{"optionSpecs":{"reasoningLevel":{"values":["disabled","enabled"]}}}}"""
+        )
+        assertEquals("enabled", BuiltinModelCatalog.defaultReasoningLevel("any-model", null, home.toString()))
+        writeCatalog(
+            """{"modelMatch":".*glm.*","config":{"optionSpecs":{"reasoningLevel":{"values":["low","high","max"]}}}}"""
+        )
+        assertEquals("max", BuiltinModelCatalog.defaultReasoningLevel("GLM-5.3", null, home.toString()))
+    }
+
+    @Test
+    fun `目录缺失 fail-soft 返回 null`() {
+        v2()
+        assertNull(BuiltinModelCatalog.reasoningValues("GLM-5.3", null, home.toString()))
+        assertNull(BuiltinModelCatalog.defaultReasoningLevel("GLM-5.3", null, home.toString()))
+    }
+
+    @Test
+    fun `坏正则规则跳过不炸`() {
+        writeCatalog(
+            """{"modelMatch":"([invalid","config":{"optionSpecs":{"reasoningLevel":{"values":["max"]}}}},
+                {"modelMatch":".*","config":{"optionSpecs":{"reasoningLevel":{"values":["enabled"]}}}}"""
+        )
+        assertEquals("enabled", BuiltinModelCatalog.defaultReasoningLevel("x", null, home.toString()))
+    }
+
+    @Test
+    fun `真实样式目录冒烟（存在才跑）`() {
+        val real = Path.of(System.getProperty("user.home"), ".zcode", "v2", "runtime", "provider")
+        if (!Files.isDirectory(real)) return
+        val values = BuiltinModelCatalog.reasoningValues("GLM-5.3", null)
+        if (values != null) {
+            assertTrue(values.contains("max"), "GLM-5.3 应含 max 档: $values")
+        }
+    }
+}

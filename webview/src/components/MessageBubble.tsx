@@ -834,7 +834,8 @@ function MessageFooter({
     if (copy) void showCopyResult(() => copyText(copy))
   }
   const tokens = info.tokens
-  const model = info.modelID
+  // v1 大写 D（modelID）；v2 服务端改小写驼峰（modelId，db 实测字段重命名）——双读兼容
+  const model = info.modelID ?? info.modelId
 
   const now = useTick(!!streaming)
   const lastElapsedRef = useRef<number | null>(null)

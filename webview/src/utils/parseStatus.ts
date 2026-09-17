@@ -146,7 +146,8 @@ export function transcriptModel(messages: ZCodeMessage[] | undefined): string | 
   if (!messages) return undefined
   let model: string | undefined
   for (const m of messages) {
-    if (m.info.role === 'assistant' && m.info.modelID) model = m.info.modelID
+    // v1 modelID / v2 modelId（服务端字段重命名，db 实测）
+    if (m.info.role === 'assistant') model = m.info.modelID ?? m.info.modelId ?? model
   }
   return model
 }

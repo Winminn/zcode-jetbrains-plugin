@@ -1,5 +1,7 @@
 {
   "toolbarHint": "内置渠道以 Zcode 客户端为准；自定义渠道可在插件内增删改",
+  "genBadgeV2": "自定义供应商体系",
+  "genBadgeV2Hint": "渠道体系 v2：模型渠道 = 客户端「自定义供应商」（provider_config.json），与客户端共用同一配置、插件内增删改即时生效；官方内置渠道已全部改为单点登录",
   "add": "新增渠道",
   "refreshTitle": "重新读取配置文件",
   "searchPlaceholder": "搜索模型 / 供应商",
@@ -28,8 +30,11 @@
   "section": {
     "builtin": "内置渠道",
     "builtinHint": "以 ZCode 客户端配置为准，同一时间仅一个生效，切换请前往客户端；体验套餐需人机验证，插件无法使用，已从列表剔除",
-    "custom": "自定义供应商"
+    "custom": "自定义供应商",
+    "reorderHint": "用箭头调整顺序（与客户端同步）"
   },
+  "moveUp": "上移",
+  "moveDown": "下移",
   "builtinReadonlyHint": "内置渠道当前生效中（启停请在 ZCode 客户端操作）",
   "providerDisabled": "已禁用",
   "providerNoModels": "该供应商未配置模型",

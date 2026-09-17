@@ -1,5 +1,7 @@
 {
   "toolbarHint": "Built-in channels follow the Zcode client; custom channels can be managed here",
+  "genBadgeV2": "Custom provider system",
+  "genBadgeV2Hint": "Channel system v2: model channels are the client's custom providers (provider_config.json), shared with the client and editable in the plugin with instant effect; official built-in channels are all SSO-only now",
   "add": "Add Channel",
   "refreshTitle": "Reload config file",
   "searchPlaceholder": "Search models / providers",
@@ -28,8 +30,11 @@
   "section": {
     "builtin": "Built-in Channels",
     "builtinHint": "Follows the ZCode client config; only one is active at a time — switch in the client. The trial plan requires human verification (CAPTCHA) and cannot be used in this plugin, so it is excluded",
-    "custom": "Custom Providers"
+    "custom": "Custom Providers",
+    "reorderHint": "Use arrows to reorder (synced with the client)"
   },
+  "moveUp": "Move up",
+  "moveDown": "Move down",
   "builtinReadonlyHint": "Built-in channel active (enable/disable in the ZCode client)",
   "providerDisabled": "Disabled",
   "providerNoModels": "No models configured for this provider",

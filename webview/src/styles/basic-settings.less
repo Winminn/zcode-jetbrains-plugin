@@ -424,6 +424,12 @@
     background: color-mix(in srgb, var(--status-error) 18%, transparent);
     color: var(--status-error);
   }
+
+  /* 判代标识徽章：架构信息而非健康状态，用 accent 中性色调 */
+  &.is-generation {
+    background: color-mix(in srgb, var(--accent-primary) 16%, transparent);
+    color: var(--accent-primary);
+  }
 }
 
 .basic-settings__version-warning {

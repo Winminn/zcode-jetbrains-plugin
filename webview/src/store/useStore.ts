@@ -881,10 +881,14 @@ interface StoreState {
   modelManageError: string | null
   /** 实际读取的 config.json 路径（随 dataBaseDir 重定向，展示/打开用）*/
   modelConfigPath: string | null
+  /** v2 渠道体系（provider_config.json：自定义供应商，插件内可增删改；判代徽章与文案切换用）*/
+  modelManageNewCli: boolean
   /** 正在切换启用状态的 providerId（开关 loading + 防重复点击）*/
   modelTogglingId: string | null
   /** 渠道编辑弹窗保存中（防重复提交，保存按钮 loading）*/
   providerSaving: boolean
+  /** 渠道排序写回中（拖拽落位 → providerOrder 保存期间禁再次拖拽）*/
+  modelProvidersReordering: boolean
   /** 渠道增/改/删失败文案（弹窗内提示；成功时清除）*/
   providerSaveError: string | null
   mcpLogsLoading: boolean
@@ -1097,6 +1101,8 @@ interface StoreState {
   updateModelProvider: (providerId: string, draft: ProviderSaveDraft) => void
   /** 删除自定义渠道（含其全部模型）*/
   removeModelProvider: (providerId: string) => void
+  /** 渠道排序（v2 专属 op）：providerIds = 拖拽后的完整顺序 */
+  reorderModelProviders: (providerIds: string[]) => void
   /** 设置用量明细时间范围并重拉 model/tool 曲线 */
   setUsageRange: (range: UsageRange) => void
   /** 设置自定义日期范围并重拉 */
@@ -1366,9 +1372,11 @@ export const useStore = create<StoreState>((set, get) => ({
   modelManageLoading: false,
   modelManageError: null,
   modelConfigPath: null,
+  modelManageNewCli: false,
   modelTogglingId: null,
   providerSaving: false,
   providerSaveError: null,
+  modelProvidersReordering: false,
   modelUsage: null,
   toolUsage: null,
   usageRange: '7d',
@@ -2638,6 +2646,12 @@ export const useStore = create<StoreState>((set, get) => ({
     sendToJava({ op: 'modelRemoveProvider', providerId })
   },
 
+  /** 渠道排序（v2）：拖拽落位后传完整顺序，写 providerOrder（客户端展示序同源） */
+  reorderModelProviders: (providerIds) => {
+    set({ modelProvidersReordering: true })
+    sendToJava({ op: 'modelReorderProviders', providerIds })
+  },
+
   setUsageRange: (range) => {
     set({ usageRange: range })
     get().loadUsageData()
@@ -2950,9 +2964,10 @@ function loadBreakdownCache(sessionId: string, used: number): ContextBreakdownIt
 function inferCurrentModel(messages: ZCodeMessage[], models: ModelOption[]): { modelId: string; providerId: string } | null {
   for (let i = messages.length - 1; i >= 0; i--) {
     const info = messages[i].info
-    const modelId = info.modelID ?? info.model?.modelID
+    // v1 大写 modelID/providerID、user 嵌套 model；v2 小写驼峰 modelId/providerId
+    const modelId = info.modelID ?? info.modelId ?? info.model?.modelID
     if (modelId) {
-      const providerId = info.providerID ?? info.model?.providerID ?? models.find((m) => m.modelId === modelId)?.providerId
+      const providerId = info.providerID ?? info.providerId ?? info.model?.providerID ?? models.find((m) => m.modelId === modelId)?.providerId
       return providerId ? { modelId, providerId } : null
     }
   }
@@ -4706,6 +4721,7 @@ export function handleResponse(
         modelManageLoading: false,
         modelManageError: msg.error ?? null,
         modelConfigPath: msg.configPath ?? null,
+        modelManageNewCli: msg.newCli === true,
       })
       // 设置页模型清单到达 → 输入框下拉同步（用户诉求：管理页刷新/切换后下拉跟着变，
       // 不再只在启动时拉一次）。走 listModels 保持口径与 case 'models' 既有逻辑复用
@@ -4734,6 +4750,12 @@ export function handleResponse(
       get().loadModelManage()
       break
     }
+
+    case 'modelProvidersReordered':
+      // 排序写回成功（providerOrder 落盘）：本地按新序重排 + 重拉刷新（带 loadModels 联动）
+      set({ modelProvidersReordering: false })
+      get().loadModelManage()
+      break
 
     case 'mcpServerTools': {
       const prevTools = get().mcpToolsByServer
@@ -4804,7 +4826,11 @@ function applyStateUpdated(
 ) {
   const payload = event.payload as {
     reason?: string
-    patch?: { mode?: { current?: string }; thoughtLevel?: ThoughtLevelInfo }
+    patch?: {
+      mode?: { current?: string }
+      thoughtLevel?: ThoughtLevelInfo
+      model?: { current?: { providerId?: string; modelId?: string } }
+    }
   }
   const patch = payload.patch
   if (patch) {
@@ -4815,10 +4841,24 @@ function applyStateUpdated(
       if (patch.mode.current !== 'plan') p.prePlanMode = null
     }
     if (patch.thoughtLevel) p.thoughtLevel = patch.thoughtLevel
+    // v2 会话实际模型缓存（缺陷BW）：v2 的 session/messages assistant info 不带
+    // modelID/providerID（v1 带，直连实测），回合 footer 无从显示——state 推送的
+    // model.current 是权威源（含 reasoningLevel，展示取 providerId/modelId），按
+    // 会话缓存供快照落地时回填。模型可能不含 providerId（纯 modelId 形态），逐字段取
+    const cur = patch.model?.current
+    if (cur?.modelId) {
+      const sid = useStore.getState().currentSessionId
+      if (sid) {
+        sessionRuntimeModels = { ...sessionRuntimeModels, [sid]: { modelId: cur.modelId, providerId: cur.providerId ?? '' } }
+      }
+    }
     if (Object.keys(p).length > 0) set(p)
   }
   console.log(`[store] state.updated(${payload.reason ?? '?'}): 模式/级别已按服务端同步`)
 }
+
+/** 每会话最近已知实际模型（v2：session/messages 不带 modelID 时的 footer 回填源）*/
+let sessionRuntimeModels: Record<string, { modelId: string; providerId: string }> = {}
 
 /**
  * 缺陷E修复：回合中的模式推断。
@@ -6084,6 +6124,18 @@ function applyMessagesSnapshot(
   // 改写语义、快照自行截断且新消息复用同 id——无判别落 kv 会把新轮删光=空白主屏）
   const sid = get().currentSessionId
   if (sid) commitStagedRewindCuts(sid, msg.messages)
+  // v2 模型名回填（缺陷BW）：v2 assistant info 的 modelId/providerId 若连这个都没有
+  //（老包 v2 会话，字段重命名前落库），用 state.updated 缓存的会话实际模型补末条连续
+  // 缺失的 assistant 消息（任一形态有值都不动——db 字段重命名后快照自带）
+  const rtModel = sid ? sessionRuntimeModels[sid] : undefined
+  if (rtModel) {
+    for (let i = msg.messages.length - 1; i >= 0; i--) {
+      const m = msg.messages[i]
+      if (m.info.role !== 'assistant') break
+      if (m.info.modelID || m.info.modelId) break
+      msg.messages[i] = { ...m, info: { ...m.info, modelID: rtModel.modelId, providerID: rtModel.providerId || m.info.providerID } }
+    }
+  }
   const visibleMessages = applyRewindCuts(
     mergeTurnMessages(
       stripLeadingModelChangeMarkers(

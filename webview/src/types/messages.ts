@@ -196,9 +196,12 @@ export interface MessageInfo {
   scheduledFireAt?: number
   // user 消息用嵌套 model
   model?: { providerID: string; modelID: string }
-  // assistant 消息用扁平字段
+  // assistant 消息用扁平字段（v1 大写 D）；v2 服务端改小写驼峰 modelId/providerId
+  //（2026-09-17 db.sqlite 实测：值都在，仅字段名变了），双命名兼容读取
   modelID?: string
   providerID?: string
+  modelId?: string
+  providerId?: string
   mode?: string // build | edit | plan | yolo
   tokens?: TokenBreakdown
   cost?: number
@@ -400,6 +403,7 @@ export type JavaRequest =  | { op: 'askUserPendingState' }
   | { op: 'modelUpdateProvider'; providerId: string; draft: ProviderSaveDraft }
   /** 删除自定义渠道（含其全部模型）*/
   | { op: 'modelRemoveProvider'; providerId: string }
+  | { op: 'modelReorderProviders'; providerIds: string[] }
   | { op: 'setModel'; sessionId: string; modelId: string; providerId: string }
   /** 撤销回合中挂起的延迟切换（用户在等待期重新选回生效模型）*/
   | { op: 'cancelModelSwitch'; sessionId: string }
@@ -874,6 +878,8 @@ export interface EnvCliStatus {
   found: boolean
   /** 形如 "0.16.5"（spawn `node <cli> --version`）；探测失败缺省 */
   version?: string
+  /** 协议代际标签："v1" = 内置渠道体系（config.json）/ "v2" = 自定义供应商体系（provider_config.json）；判代失败缺省 */
+  generation?: string
   error?: string
   code?: string
   arg?: string
@@ -881,12 +887,12 @@ export interface EnvCliStatus {
 
 export interface EnvCredentialStatus {
   ok: boolean
-  /** 生效 provider 的首个 model（展示用）*/
+  /** 生效 provider 的首个 model（v1）/ 可用渠道摘要（v2）*/
   model?: string
   error?: string
-  /** 实际读取的 config.json 路径（随 dataBaseDir 重定向）*/
+  /** 实际读取的凭证文件路径：v1 = config.json、v2 = provider_config.json（随 dataBaseDir 重定向）*/
   path?: string
-  /** 机器可读错误码（credsMissing/credsInvalid）*/
+  /** 机器可读错误码（credsMissing/credsInvalid/credsProviderMissing/credsProviderEmpty）*/
   code?: string
 }
 
@@ -1031,12 +1037,13 @@ export type JavaResponse =
       /** 客户端选中团队套餐但未配覆盖（实际按个人 key 计费）→ 输入框黄色提醒 */
       teamPlanNoOverride?: boolean
     }
-  | { op: 'modelManage'; configPath?: string; providers: ModelManageProvider[]; error?: string }
+  | { op: 'modelManage'; configPath?: string; providers: ModelManageProvider[]; error?: string; newCli?: boolean }
   /** 切换回包：changes 含全部实际变更（启用内置套餐时其余内置套餐联动禁用，互斥）*/
   | { op: 'modelToggled'; changes: { providerId: string; enabled: boolean }[] }
   | { op: 'modelSetProviderKey'; ok: boolean; providerId: string; cleared: boolean }
   /** 自定义渠道增/改/删回包：ok=false 时 error 在编辑弹窗内提示（不进全局错误条）*/
   | { op: 'modelProviderSaved'; ok: boolean; action: 'add' | 'update' | 'remove'; providerId: string; error?: string }
+  | { op: 'modelProvidersReordered'; ok: boolean }
   | { op: 'modelSet'; sessionId: string; modelId: string; providerId: string }
   /** 回合中切换挂起（缺陷AC）：Java 挂起目标模型等回合结束补发，前端回滚选中态并提示 */
   | { op: 'modelSetPending'; sessionId: string; modelId: string; providerId: string }

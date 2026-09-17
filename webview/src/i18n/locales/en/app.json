@@ -100,7 +100,9 @@
     "cliFileNotFound": "zcode.cjs does not exist: {{arg}}",
     "cliNotFound": "zcode.cjs not found in standard install locations. Please install the ZCode client first",
     "credsMissing": "config file does not exist: {{arg}} (upgrade the ZCode client to the latest version and log in again, or add an API-key provider, then recheck)",
-    "credsInvalid": "no usable credential in config file: {{arg}} (account-login credentials are stored encrypted; upgrade the ZCode client to the latest version and log in again, or add an API-key provider, then recheck)"
+    "credsInvalid": "no usable credential in config file: {{arg}} (account-login credentials are stored encrypted; upgrade the ZCode client to the latest version and log in again, or add an API-key provider, then recheck)",
+    "credsProviderMissing": "custom provider config does not exist: {{arg}} (add a channel in the ZCode client via Settings → Custom Providers, then recheck)",
+    "credsProviderEmpty": "no custom provider channel has credentials: {{arg}} (complete the channel API key in the client, or log in with an account, then recheck)"
   },
   "permissionApproval": {
     "title": "Permission Approval",

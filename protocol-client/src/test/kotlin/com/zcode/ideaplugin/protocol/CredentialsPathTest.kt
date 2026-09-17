@@ -3,6 +3,7 @@ package com.zcode.ideaplugin.protocol
 import java.nio.file.Files
 import kotlin.io.path.isRegularFile
 import kotlin.test.AfterTest
+import org.junit.jupiter.api.Assumptions.assumeTrue
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
@@ -96,8 +97,10 @@ class CredentialsPathTest {
 
     @Test
     fun `defaultConfigPath 真机解析到存在的文件`() {
-        // 前置：本机已登录 ZCode（与 EnvChecker 真机测试同风格）
+        // 前置：本机已登录 ZCode（与 EnvChecker 真机测试同风格）。
+        // 新版客户端本机 config.json 已废弃（渠道迁 provider_config.json）→ 跳过
         val p = Credentials.defaultConfigPath()
+        assumeTrue(p.isRegularFile(), "新版 CLI 本机（config.json 废弃），跳过真机断言: $p")
         assertTrue(p.isRegularFile(), "应解析到存在的 config.json: $p（跟随 dataBaseDir 或默认位置）")
     }
 

@@ -106,6 +106,10 @@ function ProviderCard({
   onEditKey,
   onEditProvider,
   onDeleteProvider,
+  onMove,
+  moveDisabled = false,
+  isFirst = false,
+  isLast = false,
 }: {
   provider: ModelManageProvider
   builtin?: boolean
@@ -116,6 +120,12 @@ function ProviderCard({
   onEditKey?: (provider: ModelManageProvider) => void
   onEditProvider?: (provider: ModelManageProvider) => void
   onDeleteProvider?: (provider: ModelManageProvider) => void
+  /** 上移/下移排序（v2 专属：target 传 '__up__'/'__down__' 表示与相邻渠道交换，写 providerOrder）；缺省不渲染箭头 */
+  onMove?: (source: string, target: string) => void
+  /** 排序写回中（防连点）*/
+  moveDisabled?: boolean
+  isFirst?: boolean
+  isLast?: boolean
 }) {
   const { t } = useTranslation()
   const modelTogglingId = useStore((s) => s.modelTogglingId)
@@ -200,6 +210,26 @@ function ProviderCard({
           </span>
           {!builtin && (
             <span className="model-list-view__provider-actions">
+              {onMove && !isFirst && (
+                <button
+                  className="model-list-view__provider-action"
+                  disabled={moveDisabled}
+                  onClick={() => onMove(provider.providerId, '__up__')}
+                  title={t('models.moveUp')}
+                >
+                  <span className="codicon codicon-arrow-up" />
+                </button>
+              )}
+              {onMove && !isLast && (
+                <button
+                  className="model-list-view__provider-action"
+                  disabled={moveDisabled}
+                  onClick={() => onMove(provider.providerId, '__down__')}
+                  title={t('models.moveDown')}
+                >
+                  <span className="codicon codicon-arrow-down" />
+                </button>
+              )}
               <button
                 className="model-list-view__provider-action"
                 onClick={() => onEditProvider?.(provider)}
@@ -333,12 +363,15 @@ export function ModelListView() {
   const loading = useStore((s) => s.modelManageLoading)
   const error = useStore((s) => s.modelManageError)
   const configPath = useStore((s) => s.modelConfigPath)
+  const newCli = useStore((s) => s.modelManageNewCli)
   const loadModelManage = useStore((s) => s.loadModelManage)
   const providerSaving = useStore((s) => s.providerSaving)
   const providerSaveError = useStore((s) => s.providerSaveError)
   const addModelProvider = useStore((s) => s.addModelProvider)
   const updateModelProvider = useStore((s) => s.updateModelProvider)
   const removeModelProvider = useStore((s) => s.removeModelProvider)
+  const reorderModelProviders = useStore((s) => s.reorderModelProviders)
+  const modelProvidersReordering = useStore((s) => s.modelProvidersReordering)
 
   const [query, setQuery] = useState('')
   const [pendingAction, setPendingAction] = useState<PendingAction | null>(null)
@@ -439,6 +472,17 @@ export function ModelListView() {
     else addModelProvider(draft)
   }
 
+  // 上移/下移排序：与相邻渠道交换后传完整顺序（v2 写 providerOrder）。
+  // target 用 '__up__'/'__down__' 语义方向（箭头按钮在首/尾隐藏，越界天然不触发）
+  const commitReorder = (source: string, dir: string) => {
+    const list = (providers ?? []).map((p) => p.providerId)
+    const from = list.indexOf(source)
+    const to = dir === '__up__' ? from - 1 : dir === '__down__' ? from + 1 : -1
+    if (from < 0 || to < 0 || to >= list.length) return
+    list.splice(to, 0, list.splice(from, 1)[0])
+    reorderModelProviders(list)
+  }
+
   const openKeyEditor = (provider: ModelManageProvider) => {
     // 已存覆盖回填明文（本地手填值）；无覆盖开空表单
     setKeyDraft({ value: provider.customKeyValue ?? '', configured: !!provider.customKey })
@@ -468,6 +512,11 @@ export function ModelListView() {
             <span className="codicon codicon-info" />
             {t('models.toolbarHint')}
           </span>
+          {newCli && (
+            <span className="model-list-view__gen-badge" title={t('models.genBadgeV2Hint')}>
+              {t('models.genBadgeV2')}
+            </span>
+          )}
         </div>
         <div className="model-list-view__toolbar-row">
         <div className="model-list-view__search">
@@ -565,15 +614,19 @@ export function ModelListView() {
               />
             ))}
 
-          {/* 自定义供应商区：插件内增删改 + 独立启停 */}
+          {/* 自定义供应商区：插件内增删改 + 独立启停 + 上移/下移排序（v2 写 providerOrder）。
+              拖拽方案废弃（缺陷BX）：draggable 挂整卡与卡内 toggle/按钮点击冲突，按下即灰 */}
           {visible.some((p) => !p.providerId.startsWith('builtin:')) && (
             <div className="model-list-view__section">
               <span className="model-list-view__section-title">{t('models.section.custom')}</span>
+              {newCli && (
+                <span className="model-list-view__section-hint">{t('models.section.reorderHint')}</span>
+              )}
             </div>
           )}
           {visible
             .filter((p) => !p.providerId.startsWith('builtin:'))
-            .map((p) => (
+            .map((p, idx, arr) => (
               <ProviderCard
                 key={p.providerId}
                 provider={p}
@@ -581,6 +634,10 @@ export function ModelListView() {
                 onBlockedModelDelete={handleBlockedModelDelete}
                 onEditProvider={handleEditProvider}
                 onDeleteProvider={handleDeleteProvider}
+                onMove={newCli ? commitReorder : undefined}
+                moveDisabled={modelProvidersReordering}
+                isFirst={idx === 0}
+                isLast={idx === arr.length - 1}
               />
             ))}
         </div>

@@ -262,6 +262,18 @@ fun builtinResolution(configPath: Path = defaultConfigPath()): BuiltinResolution
      */
     fun defaultConfigPath(): Path = configPathFor(System.getProperty("user.home"))
 
+    /**
+     * 新版 CLI 个人渠道文件（provider_config.json，registry 个人渠道源）。
+     * 老版客户端不生成此文件（不存在即老版或新版未启动过）；dataBaseDir 重定向
+     * 口径同 [configPathFor]。模型列表 NEW 代数据源（2026-09-17 双代适配）。
+     */
+    fun personalProviderConfigPath(): Path {
+        val home = System.getProperty("user.home") ?: return Path.of(".zcode", "v2", "provider_config.json")
+        val legacy = Path.of(home, ".zcode", "v2", "provider_config.json")
+        val redirected = readDataBaseDir(home)?.let { Path.of(it, ".zcode", "v2", "provider_config.json") }
+        return if (redirected?.isRegularFile() == true) redirected else legacy
+    }
+
     /** 同 [defaultConfigPath]，home 参数化便于单测（真实 home 无法在测试内替换） */
     internal fun configPathFor(home: String): Path {
         val legacy = Path.of(home, ".zcode", "v2", "config.json")

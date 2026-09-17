@@ -250,8 +250,19 @@ class ZCodeEnvCheckerTest {
         assertTrue(s.cli.found, "本机应有标准位置 ZCode: ${s.cli.error}")
         assertTrue(!s.cli.version.isNullOrBlank() && Regex("""\d+\.\d+\.\d+""").matches(s.cli.version!!),
             "CLI 版本应探测成功且形如 N.N.N: ${s.cli.version}")
-        assertTrue(s.credentials.ok, "本机应已登录 ZCode: ${s.credentials.error}")
-        assertTrue(s.allOk)
+        // 判代标识恒有值（fail-soft 总有结果），且取值合法
+        assertTrue(s.cli.generation in listOf("v1", "v2"), "generation 应为 v1/v2: ${s.cli.generation}")
+        if (s.cli.generation == "v2") {
+            // 新版客户端：config.json 废弃，凭证检测走 provider_config.json（本机已建渠道应有效）
+            println("✅ 判代 = v2（自定义供应商体系），凭证 = ${s.credentials.model} (${s.credentials.path})")
+            assertTrue(s.credentials.ok, "v2 本机凭证应有效: ${s.credentials.error}")
+            assertTrue(s.credentials.path!!.endsWith("provider_config.json"), "v2 凭证路径应为 provider_config.json")
+        } else if (java.nio.file.Files.isRegularFile(com.zcode.ideaplugin.protocol.Credentials.defaultConfigPath())) {
+            assertTrue(s.credentials.ok, "本机应已登录 ZCode: ${s.credentials.error}")
+            assertTrue(s.allOk)
+        } else {
+            println("✅ v1 本机（config.json 缺失）：凭证项跳过，allOk=${s.allOk}")
+        }
     }
 
     @Test
@@ -271,17 +282,135 @@ class ZCodeEnvCheckerTest {
         assertTrue(ex.message!!.contains("ZCode CLI"), "异常消息应指向 CLI 问题: ${ex.message}")
     }
 
+    // ============ v2 凭证检测（provider_config.json，双代适配 2026-09-17） ============
+
+    /** 造一份临时 provider_config.json（rules 为渠道 JSON 数组原文），闭包结束自动清理 */
+    private fun withProviderConfig(rules: String, credentialsJson: String? = null, block: (java.nio.file.Path) -> Unit) {
+        val dir = java.nio.file.Files.createTempDirectory("envcheck-v2")
+        try {
+            dir.resolve("provider_config.json").toFile()
+                .writeText("""{"schemaVersion":1,"config":{"providerConfigRules":{"providerRules":[$rules]}}}""")
+            credentialsJson?.let { dir.resolve("credentials.json").toFile().writeText(it) }
+            block(dir.resolve("provider_config.json"))
+        } finally {
+            dir.toFile().deleteRecursively()
+        }
+    }
+
+    private fun providerRule(
+        id: String, name: String, apiKey: String?, enabled: Boolean? = null,
+    ): String = buildString {
+        append("""{"providerId":"$id","templateId":"t","providerName":"$name"""")
+        enabled?.let { append(""","enabled":$it""") }
+        if (apiKey != null) {
+            append(""","config":{"group":"standard-personal","access":{"type":"api-key","apiKey":"$apiKey"},"personalModelIds":[]}""")
+        } else {
+            append(""","config":{"group":"standard-personal","personalModelIds":[]}""")
+        }
+        append("}")
+    }
+
+    @Test
+    fun `v2 凭证检测 配置缺失`() {
+        val dir = java.nio.file.Files.createTempDirectory("envcheck-v2")
+        try {
+            val s = ZCodeEnvChecker.detectCredentialsProviderConfig(dir.resolve("provider_config.json"))
+            assertFalse(s.ok)
+            assertEquals("credsProviderMissing", s.code)
+            assertTrue(s.path!!.endsWith("provider_config.json"))
+        } finally {
+            dir.toFile().deleteRecursively()
+        }
+    }
+
+    @Test
+    fun `v2 凭证检测 单渠道有 key 即有效`() {
+        withProviderConfig(providerRule("bigmodel-api", "BigModel Coding Plan", "sk-test")) { p ->
+            val s = ZCodeEnvChecker.detectCredentialsProviderConfig(p)
+            assertTrue(s.ok, s.error)
+            assertEquals("BigModel Coding Plan", s.model)
+            assertEquals(null, s.code)
+            assertTrue(s.path!!.endsWith("provider_config.json"))
+        }
+    }
+
+    @Test
+    fun `v2 凭证检测 多渠道摘要 等 N 个`() {
+        withProviderConfig(
+            providerRule("bigmodel-api", "BigModel", "sk-1") + "," +
+                providerRule("deepseek", "DeepSeek", "sk-2") + "," +
+                providerRule("zai-api", "Z.ai", null),
+        ) { p ->
+            val s = ZCodeEnvChecker.detectCredentialsProviderConfig(p)
+            assertTrue(s.ok, s.error)
+            assertEquals("BigModel 等 2 个渠道", s.model)
+        }
+    }
+
+    @Test
+    fun `v2 凭证检测 纯 SSO 渠道靠登录态兜底`() {
+        // 无 API key 渠道 + credentials.json 在（账号登录态）= 客户端凭证链可用
+        withProviderConfig(
+            providerRule("zai-api", "Z.ai", null),
+            credentialsJson = """{"oauth:bigmodel:access_token":"enc:v1:xx"}""",
+        ) { p ->
+            assertTrue(ZCodeEnvChecker.detectCredentialsProviderConfig(p).ok)
+        }
+
+        // 无 key 也无登录态 → 待修复
+        withProviderConfig(providerRule("zai-api", "Z.ai", null)) { p ->
+            val s = ZCodeEnvChecker.detectCredentialsProviderConfig(p)
+            assertFalse(s.ok)
+            assertEquals("credsProviderEmpty", s.code)
+        }
+    }
+
+    @Test
+    fun `v2 凭证检测 显式禁用渠道不计入`() {
+        withProviderConfig(
+            providerRule("deepseek", "DeepSeek", "sk-1", enabled = false) + "," +
+                providerRule("bigmodel-api", "BigModel", "sk-2", enabled = true),
+        ) { p ->
+            val s = ZCodeEnvChecker.detectCredentialsProviderConfig(p)
+            assertEquals("BigModel", s.model, "禁用渠道应跳过，摘要只含启用渠道")
+        }
+    }
+
+    @Test
+    fun `v2 凭证检测 空 key 与空白 key 不算可用`() {
+        withProviderConfig(providerRule("deepseek", "DeepSeek", "")) { p ->
+            val s = ZCodeEnvChecker.detectCredentialsProviderConfig(p)
+            assertFalse(s.ok)
+            assertEquals("credsProviderEmpty", s.code)
+        }
+    }
+
+    @Test
+    fun `v2 凭证检测 坏 JSON 走 credsInvalid`() {
+        val dir = java.nio.file.Files.createTempDirectory("envcheck-v2")
+        try {
+            val config = dir.resolve("provider_config.json").toFile()
+            config.writeText("{not-json")
+            val s = ZCodeEnvChecker.detectCredentialsProviderConfig(config.toPath())
+            assertFalse(s.ok)
+            assertEquals("credsInvalid", s.code)
+        } finally {
+            dir.toFile().deleteRecursively()
+        }
+    }
+
     // ============ JSON 契约 ============
 
     @Test
     fun `statusJson 字段结构与前端契约对齐`() {
-        val cli = okCli().copy(version = "0.16.5")
+        val cli = okCli().copy(version = "0.16.5", generation = "v2")
         val json = ZCodeEnvChecker.statusJson(EnvStatus(okNode(), cli, okCred()))
         val node = json["node"]!!.jsonObject
         assertEquals("/usr/bin/node", node["path"]!!.jsonPrimitive.content)
         assertEquals("v20.11.1", node["version"]!!.jsonPrimitive.content)
         assertEquals(18, node["minVersion"]!!.jsonPrimitive.content.toInt())
         assertEquals("0.16.5", json["cli"]!!.jsonObject["version"]!!.jsonPrimitive.content)
+        assertEquals("v2", json["cli"]!!.jsonObject["generation"]!!.jsonPrimitive.content)
         val cred = json["credentials"]!!.jsonObject
         assertEquals("glm-4.7", cred["model"]!!.jsonPrimitive.content)
         assertEquals(true, json["allOk"]!!.jsonPrimitive.content.toBoolean())

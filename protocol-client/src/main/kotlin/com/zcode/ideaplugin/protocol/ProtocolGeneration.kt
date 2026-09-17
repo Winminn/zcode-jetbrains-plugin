@@ -1,0 +1,237 @@
+package com.zcode.ideaplugin.protocol
+
+import java.nio.file.Files
+import java.nio.file.Path
+import java.nio.file.StandardOpenOption
+import java.util.concurrent.ConcurrentHashMap
+import kotlin.io.path.readText
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.contentOrNull
+import kotlinx.serialization.json.jsonArray
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
+
+/**
+ * CLI 协议代际（2026-09-17 换代适配定稿，方案全文见
+ * docs/internal/design-research/新CLI版本判别与双代适配-2026-09-17.md）：
+ *
+ * - OLD：老版 CLI——config.json 渠道 + runtimeModel 逐请求注册（插件现状链路）
+ * - NEW：灰度 3.12.3+——strict schema（runtimeModel 移除，setModel/send 走模型引用）+
+ *   providerRegistry（个人渠道源 = v2/provider_config.json，官方渠道全 SSO 插件不可达）
+ *
+ * 两代 --version 同号（0.16.5），不能用版本号判；主判据 = zcode.cjs 内容标记
+ * （插件 spawn 的就是这份文件，协议行为完全由它决定）。
+ */
+enum class ProtocolGeneration {
+    OLD, NEW;
+
+    /**
+     * 对外机器可读标签（环境检测徽章等 UI 展示）：体系序数而非"新/旧"——
+     * v1 = 内置渠道体系（config.json），v2 = 自定义供应商体系（provider_config.json）。
+     */
+    val label: String get() = if (this == NEW) "v2" else "v1"
+}
+
+object ProtocolGenerations {
+
+    /** 新版架构标记串：provider_config 个人渠道解析链的 env 变量名（zcode.cjs 实挖） */
+    private val NEW_MARKER = "ZCODE_PERSONAL_PROVIDER_CONFIG_FILE".toByteArray(Charsets.US_ASCII)
+
+    /** zcode.cjs → 代际，按 (mtime, size) 缓存；CLI 升级/回滚换文件自动失效重判 */
+    private val cache = ConcurrentHashMap<Path, Pair<Pair<Long, Long>, ProtocolGeneration>>()
+
+    fun detect(zcodePath: Path, home: String = System.getProperty("user.home") ?: "."): ProtocolGeneration {
+        try {
+            if (Files.isRegularFile(zcodePath)) {
+                val attrs = Files.readAttributes(zcodePath, java.nio.file.attribute.BasicFileAttributes::class.java)
+                val key = attrs.lastModifiedTime().toMillis() to attrs.size()
+                cache[zcodePath]?.let { (k, g) -> if (k == key) return g }
+                val gen = if (containsMarker(zcodePath)) ProtocolGeneration.NEW else ProtocolGeneration.OLD
+                cache[zcodePath] = key to gen
+                return gen
+            }
+        } catch (_: Exception) {
+            // 读不了 .cjs（探测路径异常等）落入配置文件兜底
+        }
+        return detectByConfig(home)
+    }
+
+    /** zcode.cjs 流式搜标记（11MB 文件按 64K 窗口滑动，防标记跨块） */
+    private fun containsMarker(path: Path): Boolean {
+        Files.newByteChannel(path, StandardOpenOption.READ).use { ch ->
+            val win = Math.max(NEW_MARKER.size * 2, 64 * 1024)
+            val buf = java.nio.ByteBuffer.allocate(win + NEW_MARKER.size)
+            while (ch.read(buf) != -1) {
+                buf.flip()
+                if (indexOf(buf, NEW_MARKER)) return true
+                // 留尾部（标记可能跨读块），其余丢弃
+                val keep = Math.min(buf.limit(), NEW_MARKER.size - 1)
+                val tail = ByteArray(keep)
+                System.arraycopy(buf.array(), buf.limit() - keep, tail, 0, keep)
+                buf.clear()
+                buf.put(tail)
+            }
+        }
+        return false
+    }
+
+    private fun indexOf(buf: java.nio.ByteBuffer, marker: ByteArray): Boolean {
+        val limit = buf.limit() - marker.size
+        outer@ for (i in 0..limit) {
+            for (j in marker.indices) {
+                if (buf.get(i + j) != marker[j]) continue@outer
+            }
+            return true
+        }
+        return false
+    }
+
+    /**
+     * 配置文件兜底判代（zcode.cjs 不可读时）：
+     * 1. setting.json 键形态——`providerFamilyConnectionSelections` 在 = NEW（老客户端不写该键），
+     *    `modelProviderFamilySelectedKeys` 在 = OLD。反映"最后实际运行的客户端"（回滚即翻回）。
+     * 2. 键形态不可判（缺失/损坏）→ provider_config.json 存在 = NEW（新版启动即建空模板，
+     *    老版永不生成；回滚残留是已知假阳性，故仅作最后兜底）。
+     */
+    internal fun detectByConfig(home: String): ProtocolGeneration {
+        val setting = Path.of(home, ".zcode", "v2", "setting.json")
+        try {
+            if (Files.isRegularFile(setting)) {
+                val root = Json.parseToJsonElement(setting.readText()).jsonObject
+                if (root.containsKey("providerFamilyConnectionSelections")) return ProtocolGeneration.NEW
+                if (root.containsKey("modelProviderFamilySelectedKeys")) return ProtocolGeneration.OLD
+            }
+        } catch (_: Exception) {
+            // 写一半的瞬间等，落入存在性兜底
+        }
+        return if (Files.exists(Path.of(home, ".zcode", "v2", "provider_config.json"))) {
+            ProtocolGeneration.NEW
+        } else {
+            ProtocolGeneration.OLD
+        }
+    }
+}
+
+/**
+ * 内置模型目录（zcode-builtin.json）只读解析。
+ *
+ * 新版 setModel 的 options.reasoningLevel 对有 reasoning 定义的模型必填（缺了报
+ * "Reasoning level is required"），取值必须在该模型的合法值集合内（带了不支持的值报
+ * "Reasoning effort ... is not supported"）。权威源 = 目录 modelRules 的 modelMatch
+ * 正则链（按序命中、后者覆盖前者；泛化 `.*` 规则恒兜底，故任意模型都有值集）。
+ *
+ * 目录候选（按序取首个存在）：v2/runtime 缓存（客户端定期刷新，最新）→ 安装目录
+ * resources/config/provider → AppData/config/provider（缺陷BT 兜底拷贝）。全部
+ * fail-soft：读不到返回 null（调用方省略 reasoningLevel，由服务端裁决）。
+ */
+object BuiltinModelCatalog {
+
+    private val json = Json { ignoreUnknownKeys = true }
+
+    /** 目录文件 → 解析结果，按 (path, mtime) 缓存 */
+    private val cache = ConcurrentHashMap<Path, Pair<Long, List<Rule>>>()
+
+    private class Rule(val match: Regex, val reasoningValues: List<String>?)
+
+    fun defaultReasoningLevel(modelId: String, zcodePath: Path?, home: String = System.getProperty("user.home") ?: "."): String? {
+        val values = reasoningValues(modelId, zcodePath, home) ?: return null
+        // 默认档对齐插件思考档默认（max）：max > high > enabled > 其余首值
+        return values.firstOrNull { it == "max" }
+            ?: values.firstOrNull { it == "high" }
+            ?: values.firstOrNull { it == "enabled" }
+            ?: values.first()
+    }
+
+    /** modelId 的 reasoningLevel 合法值（modelRules 正则链合并，后者覆盖前者）；无目录/无命中 null */
+    fun reasoningValues(modelId: String, zcodePath: Path?, home: String = System.getProperty("user.home") ?: "."): List<String>? {
+        val rules = loadRules(zcodePath, home) ?: return null
+        var values: List<String>? = null
+        for (r in rules) {
+            // 规则大小写混杂（GLM-5.2 大写、glm-5 小写），modelId 双形态各试一次
+            if (!r.match.matches(modelId) && !r.match.matches(modelId.lowercase())) continue
+            r.reasoningValues?.let { values = it }
+        }
+        return values
+    }
+
+    /**
+     * 供应商模板的 api 节（type/baseUrl），编辑回填用：provider_config.json 的 rule 带
+     * templateId 时 api/baseUrl 由模板 overlay 提供（rule 自身可不落 api 节），模型管理页
+     * 展示与编辑弹窗回填需解析到实际生效值。无目录/无该模板 null（调用方回退 rule 自身）。
+     */
+    fun templateApi(templateId: String, zcodePath: Path?, home: String = System.getProperty("user.home") ?: "."): Pair<String, String>? {
+        val file = catalogFile(zcodePath, home) ?: return null
+        return try {
+            val root = Json.parseToJsonElement(file.readText()).jsonObject
+            (root["config"]?.jsonObject?.get("providerConfigRules")?.jsonObject?.get("templateRules")?.jsonArray)
+                ?.asSequence()?.mapNotNull { el ->
+                    val o = el as? JsonObject ?: return@mapNotNull null
+                    if (o["templateId"]?.jsonPrimitive?.contentOrNull != templateId) return@mapNotNull null
+                    val api = o["config"]?.jsonObject?.get("api")?.jsonObject ?: return@mapNotNull null
+                    val type = api["type"]?.jsonPrimitive?.contentOrNull ?: return@mapNotNull null
+                    val baseUrl = api["baseUrl"]?.jsonPrimitive?.contentOrNull ?: return@mapNotNull null
+                    type to baseUrl
+                }?.firstOrNull()
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+    private fun loadRules(zcodePath: Path?, home: String): List<Rule>? {
+        val file = catalogFile(zcodePath, home) ?: return null
+        try {
+            val mtime = Files.getLastModifiedTime(file).toMillis()
+            cache[file]?.let { (t, rules) -> if (t == mtime) return rules }
+            val root = Json.parseToJsonElement(file.readText()).jsonObject
+            val rules = (root["config"]?.jsonObject?.get("modelConfigRules")?.jsonObject?.get("modelRules")?.jsonArray
+                ?: return null).mapNotNull { el ->
+                    val o = el as? JsonObject ?: return@mapNotNull null
+                    val match = o["modelMatch"]?.jsonPrimitive?.content?.let { runCatching { Regex(it) }.getOrNull() }
+                        ?: return@mapNotNull null
+                    val values = o["config"]?.jsonObject?.get("optionSpecs")?.jsonObject
+                        ?.get("reasoningLevel")?.jsonObject?.get("values")?.jsonArray
+                        ?.mapNotNull { (it as? kotlinx.serialization.json.JsonPrimitive)?.content }
+                    Rule(match, values?.takeIf { it.isNotEmpty() })
+                }
+            cache[file] = mtime to rules
+            return rules
+        } catch (_: Exception) {
+            return null
+        }
+    }
+
+    private fun catalogFile(zcodePath: Path?, home: String): Path? {
+        // ① v2/runtime 缓存（多 endpoint 目录取 mtime 最新）
+        try {
+            val runtimeRoot = Path.of(home, ".zcode", "v2", "runtime", "provider")
+            if (Files.isDirectory(runtimeRoot)) {
+                var newest: Path? = null
+                var newestMtime = -1L
+                Files.walk(runtimeRoot, 6).use { stream ->
+                    stream.filter {
+                        it.fileName.toString() == "zcode-builtin.json" && Files.isRegularFile(it)
+                    }.forEach {
+                        val t = runCatching { Files.getLastModifiedTime(it).toMillis() }.getOrDefault(0L)
+                        if (t > newestMtime) {
+                            newestMtime = t
+                            newest = it
+                        }
+                    }
+                }
+                if (newestMtime >= 0) newest?.let { return it }
+            }
+        } catch (_: Exception) {
+        }
+        // ② 安装目录 resources/config/provider（zcode.cjs 同级布局）
+        try {
+            zcodePath?.resolve("../config/provider/zcode-builtin.json")?.normalize()?.let {
+                if (Files.isRegularFile(it)) return it
+            }
+        } catch (_: Exception) {
+        }
+        // ③ AppData/config/provider（缺陷BT 兜底拷贝）
+        val fallback = Path.of(home, "AppData", "config", "provider", "zcode-builtin.json")
+        return fallback.takeIf { Files.isRegularFile(it) }
+    }
+}

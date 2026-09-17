@@ -428,11 +428,16 @@ class ZCodeToolWindowPanel(
         // 这两个调用内部会 getClient() 启动协议客户端，触发 ZCodeEnvChecker 环境检查；
         // CLI 未安装/未配置时抛 EnvCheckException——必须捕获，否则 ToolWindow 创建失败
         // 导致整个 IDE 主界面不渲染。捕获后 webview 正常加载，前端通过 checkEnv 渲染环境提醒。
+        // IOException 同样必须拦（2026-09-17 实锤：CLI 升级挪走 provider 配置 → app-server
+        // 启动即退出 → getClient 抛 IOException 穿透 → Cannot init toolwindow → 标签恢复
+        // 断在 selectionChanged listener 注册之前，懒加载占位永远等不到切换激活）
         try {
             project.zCodeService().ensureUserInputHandler()
             project.zCodeService().ensureBrowserExecutor()
         } catch (e: com.zcode.ideaplugin.env.EnvCheckException) {
             log.warn("[initJcef] ZCode CLI unavailable, protocol handlers not registered (frontend will show env reminder): ${e.message}")
+        } catch (e: java.io.IOException) {
+            log.warn("[initJcef] app-server failed to start, protocol handlers not registered (frontend will show env reminder): ${e.message}")
         }
 
         // 开启 JCEF 外部链接（开发期）
@@ -889,6 +894,7 @@ if (!window.__ZCODE_LOG_HOOK__) {
                         "modelAddProvider" -> handleModelAddProvider(msg)
                         "modelUpdateProvider" -> handleModelUpdateProvider(msg)
                         "modelRemoveProvider" -> handleModelRemoveProvider(msg)
+                        "modelReorderProviders" -> handleModelReorderProviders(msg)
                         "modelSetProviderKey" -> handleModelSetProviderKey(msg)
                         "setModel" -> handleSetModel(msg)
                         "cancelModelSwitch" -> handleCancelModelSwitch(msg)
@@ -2329,6 +2335,11 @@ if (!window.__ZCODE_LOG_HOOK__) {
 
     /** op=listModels — 读取 config.json 的 provider 注册表，返回可切换的模型列表 */
     private fun handleListModels(msg: JsonObject): JsonObject {
+        // 新版 CLI：config.json 已废弃，模型 = 用户在官方客户端自建的自定义供应商
+        //（provider_config.json 的 providerRules，官方渠道全 SSO 插件不可达——只读）
+        if (cliGeneration == com.zcode.ideaplugin.protocol.ProtocolGeneration.NEW) {
+            return listModelsNewCli()
+        }
         // 路径跟随 dataBaseDir 迁移（setting.json 重定向后旧位置是冻结快照），与环境检测同一来源
         val configFile = Credentials.defaultConfigPath().toFile()
         if (!configFile.exists()) {
@@ -2432,6 +2443,11 @@ if (!window.__ZCODE_LOG_HOOK__) {
      * 路径同样走 Credentials.defaultConfigPath() 跟随 dataBaseDir 迁移。
      */
     private fun handleModelManageList(msg: JsonObject): JsonObject {
+        // 新版 CLI：只读展示 provider_config.json（用户在客户端建的自定义供应商），
+        // CRUD 与 key 覆盖均已停用（见路由层守卫），configPath 指向真实数据源
+        if (cliGeneration == com.zcode.ideaplugin.protocol.ProtocolGeneration.NEW) {
+            return modelManageListNewCli()
+        }
         val configPath = Credentials.defaultConfigPath()
         fun emptyResult() = buildJsonObject {
             put("op", "modelManage")
@@ -2534,6 +2550,142 @@ if (!window.__ZCODE_LOG_HOOK__) {
         }
     }
 
+    // ============ 新版 CLI 模型列表（provider_config.json 只读，2026-09-17 双代适配） ============
+
+    /** CLI 代际（zcode.cjs 内容标记判定，mtime 缓存——升级/回滚换文件自动失效重判） */
+    private val cliGeneration: com.zcode.ideaplugin.protocol.ProtocolGeneration
+        get() = com.zcode.ideaplugin.protocol.ProtocolGenerations.detect(
+            com.zcode.ideaplugin.protocol.ZCodeLocator.detect()
+        )
+
+    /** provider_config.json 的 providerRules（用户在客户端建的自定义供应商）；空/损坏返回空表 */
+    private fun readNewCliProviderRules(): List<JsonObject> {
+        val path = Credentials.personalProviderConfigPath()
+        if (!java.nio.file.Files.isRegularFile(path)) return emptyList()
+        return try {
+            val root = json.parseToJsonElement(path.toFile().readText()).jsonObject
+            val rules = root["config"]?.jsonObject?.get("providerConfigRules")?.jsonObject?.get("providerRules")?.jsonArray
+                ?.mapNotNull { it as? JsonObject } ?: emptyList()
+            if (rules.isEmpty()) return rules
+            // 客户端展示序 = providerOrder（权威，客户端 UI 拖拽写这里）；文件 rule 序只是
+            // 追加序。按 order 稳定重排，order 缺失/多余的渠道保持相对次序排尾部
+            val orderIdx = root["config"]?.jsonObject?.get("providerOrder")?.jsonArray
+                ?.mapNotNull { (it as? JsonPrimitive)?.contentOrNull }?.withIndex()
+                ?.associate { (i, id) -> id to i } ?: return rules
+            rules.sortedBy { rule ->
+                orderIdx[rule["providerId"]?.jsonPrimitive?.contentOrNull] ?: Int.MAX_VALUE
+            }
+        } catch (e: Exception) {
+            log.warn("Failed to parse provider_config.json: ${e.message}")
+            emptyList()
+        }
+    }
+
+    /** provider_config.json 的 per-model contextWindow（modelConfigRules.providerModelRules） */
+    private fun newCliContextWindows(): Map<Pair<String, String>, Long> {
+        val path = Credentials.personalProviderConfigPath()
+        if (!java.nio.file.Files.isRegularFile(path)) return emptyMap()
+        return try {
+            val root = json.parseToJsonElement(path.toFile().readText()).jsonObject
+            (root["config"]?.jsonObject?.get("modelConfigRules")?.jsonObject?.get("providerModelRules")?.jsonArray
+                ?: return emptyMap()).mapNotNull { el ->
+                val o = el as? JsonObject ?: return@mapNotNull null
+                val pid = o["providerId"]?.jsonPrimitive?.contentOrNull ?: return@mapNotNull null
+                val mid = o["modelId"]?.jsonPrimitive?.contentOrNull ?: return@mapNotNull null
+                val ctx = o["config"]?.jsonObject?.get("properties")?.jsonObject?.get("contextWindow")
+                    ?.jsonPrimitive?.contentOrNull?.toLongOrNull() ?: return@mapNotNull null
+                (pid to mid) to ctx
+            }.toMap()
+        } catch (e: Exception) {
+            emptyMap()
+        }
+    }
+
+    /** 新版：模型清单（providerRules 展平；模型 = modelOrder/personalModelIds，显示名即 id） */
+    private fun listModelsNewCli(): JsonObject {
+        val ctx = newCliContextWindows()
+        val models = JsonArray(readNewCliProviderRules().flatMap { rule ->
+            // disabled 渠道 registry 整体排除（实验 B），下拉同步过滤防选中即 -32031
+            if (rule["enabled"]?.jsonPrimitive?.contentOrNull == "false") return@flatMap emptyList()
+            val pid = rule["providerId"]?.jsonPrimitive?.contentOrNull ?: return@flatMap emptyList()
+            val pname = rule["providerName"]?.jsonPrimitive?.contentOrNull ?: pid
+            val cfg = rule["config"]?.jsonObject
+            val mids = (cfg?.get("modelOrder")?.jsonArray ?: cfg?.get("personalModelIds")?.jsonArray)
+                ?.mapNotNull { (it as? JsonPrimitive)?.contentOrNull?.takeIf { m -> m.isNotBlank() } }
+                ?.distinct() ?: return@flatMap emptyList()
+            mids.map { mid ->
+                buildJsonObject {
+                    put("providerId", pid)
+                    put("providerName", pname)
+                    put("modelId", mid)
+                    put("modelName", mid)
+                    ctx[pid to mid]?.let { put("contextWindow", it) }
+                }
+            }
+        })
+        log.info("listModels(new cli) returned ${models.size} model(s) from provider_config.json")
+        return buildJsonObject {
+            put("op", "models")
+            put("models", models)
+            put("newCli", true)
+        }
+    }
+
+    /**
+     * 新版：模型管理清单（provider_config.json 渠道；增删改/启停经 ProviderConfigWriterV2
+     * 落同一文件，展示与编辑回填同源）。baseURL/kind 回填：rule.api 优先，无 api 节时按
+     * templateId 查内置模板表（模板 overlay 语义）；apiKey 明文即 access.apiKey（v2 该
+     * 字段明文存储），走 activeKey 展示链（编辑弹窗"不变"语义下旧 key 可见）。
+     */
+    private fun modelManageListNewCli(): JsonObject {
+        val path = Credentials.personalProviderConfigPath()
+        val ctx = newCliContextWindows()
+        val zcodePath = try { com.zcode.ideaplugin.protocol.ZCodeLocator.detect() } catch (e: Exception) { null }
+        val providerArr = JsonArray(readNewCliProviderRules().mapNotNull { rule ->
+            val pid = rule["providerId"]?.jsonPrimitive?.contentOrNull ?: return@mapNotNull null
+            val cfg = rule["config"]?.jsonObject
+            val mids = (cfg?.get("modelOrder")?.jsonArray ?: cfg?.get("personalModelIds")?.jsonArray)
+                ?.mapNotNull { (it as? JsonPrimitive)?.contentOrNull?.takeIf { m -> m.isNotBlank() } }
+                ?.distinct() ?: emptyList()
+            val ruleApi = cfg?.get("api")?.jsonObject
+            val templateApi = rule["templateId"]?.jsonPrimitive?.contentOrNull
+                ?.let { com.zcode.ideaplugin.protocol.BuiltinModelCatalog.templateApi(it, zcodePath) }
+            val baseURL = (ruleApi?.get("baseUrl")?.jsonPrimitive?.contentOrNull ?: templateApi?.second)
+                ?.takeIf { it.isNotBlank() }
+            val kind = com.zcode.ideaplugin.protocol.ProviderConfigWriterV2.kindOfApiType(
+                ruleApi?.get("type")?.jsonPrimitive?.contentOrNull ?: templateApi?.first
+            )
+            val apiKey = cfg?.get("access")?.jsonObject?.get("apiKey")?.jsonPrimitive?.contentOrNull
+                ?.takeIf { it.isNotBlank() }
+            buildJsonObject {
+                put("providerId", pid)
+                put("providerName", rule["providerName"]?.jsonPrimitive?.contentOrNull ?: pid)
+                put("enabled", rule["enabled"]?.jsonPrimitive?.contentOrNull?.toBoolean() ?: true)
+                kind?.let { put("kind", it) }
+                baseURL?.let { put("baseURL", it) }
+                apiKey?.let {
+                    put("activeKeySource", "config")
+                    put("activeKeyMasked", maskKey(it))
+                    put("activeKeyValue", it)
+                }
+                put("models", JsonArray(mids.map { mid ->
+                    buildJsonObject {
+                        put("modelId", mid)
+                        put("modelName", mid)
+                        ctx[pid to mid]?.let { put("contextWindow", it) }
+                    }
+                }))
+            }
+        })
+        log.info("modelManageList(new cli) returned ${providerArr.size} provider(s) from provider_config.json")
+        return buildJsonObject {
+            put("op", "modelManage")
+            put("configPath", path.toString())
+            put("providers", providerArr)
+            put("newCli", true)
+        }
+    }
+
     /**
      * op=modelSetProviderKey — 设置/清除内置渠道的自定义 apiKey 覆盖（issue #8 终案）。
      *
@@ -2543,6 +2695,9 @@ if (!window.__ZCODE_LOG_HOOK__) {
      * 渠道本体（baseURL/模型清单/上下文）仍以客户端 config.json 为准自动跟随。
      */
     private fun handleModelSetProviderKey(msg: JsonObject): JsonObject {
+        if (cliGeneration == com.zcode.ideaplugin.protocol.ProtocolGeneration.NEW) {
+            return errorResponse("新版无内置渠道自定义 key：请在渠道编辑弹窗直接修改 API Key")
+        }
         val providerId = msg["providerId"]?.jsonPrimitive?.contentOrNull
             ?: return errorResponse("缺少 providerId")
         if (!providerId.startsWith("builtin:")) {
@@ -2574,11 +2729,32 @@ if (!window.__ZCODE_LOG_HOOK__) {
     private fun handleModelToggleProvider(msg: JsonObject): JsonObject {
         val providerId = msg["providerId"]?.jsonPrimitive?.contentOrNull
             ?: return errorResponse("缺少 providerId")
+        val enabled = msg["enabled"]?.jsonPrimitive?.contentOrNull?.toBooleanStrictOrNull()
+            ?: return errorResponse("缺少 enabled")
+
+        // v2：provider_config.json 的 rule.enabled（运行中 app-server watch 热加载生效）
+        if (cliGeneration == com.zcode.ideaplugin.protocol.ProtocolGeneration.NEW) {
+            val err = com.zcode.ideaplugin.protocol.ProviderConfigWriterV2
+                .toggleProvider(Credentials.personalProviderConfigPath(), providerId, enabled)
+            if (err != null) {
+                log.warn("modelToggleProvider(v2) failed: $err")
+                return errorResponse(err)
+            }
+            log.info("modelToggleProvider(v2): $providerId=$enabled written back")
+            com.zcode.ideaplugin.env.ZCodeEnvChecker.invalidate()
+            val changesJson = JsonArray(listOf(buildJsonObject {
+                put("providerId", providerId)
+                put("enabled", enabled)
+            }))
+            broadcastModelChanges(changesJson.toString())
+            return buildJsonObject {
+                put("op", "modelToggled")
+                put("changes", changesJson)
+            }
+        }
         if (providerId.startsWith("builtin:")) {
             return errorResponse("内置渠道以 Zcode 客户端配置为准，请在客户端切换后回来刷新")
         }
-        val enabled = msg["enabled"]?.jsonPrimitive?.contentOrNull?.toBooleanStrictOrNull()
-            ?: return errorResponse("缺少 enabled")
 
         val err = com.zcode.ideaplugin.protocol.ProviderConfigWriter.update(Credentials.defaultConfigPath()) { providers ->
             if (providers[providerId] == null) throw IllegalStateException("provider 不存在: $providerId")
@@ -2657,6 +2833,17 @@ if (!window.__ZCODE_LOG_HOOK__) {
         com.zcode.ideaplugin.protocol.ProviderConfigWriter.validateDraft(draft)?.let {
             return providerSaved(false, "add", "", it)
         }
+        // v2：写 provider_config.json（providerId 客户端同款 name slug 化，无 templateId 自定义形态）
+        if (cliGeneration == com.zcode.ideaplugin.protocol.ProtocolGeneration.NEW) {
+            val (err, providerId) = com.zcode.ideaplugin.protocol.ProviderConfigWriterV2
+                .addProvider(Credentials.personalProviderConfigPath(), draft)
+            if (err != null) {
+                log.warn("modelAddProvider(v2) failed: $err")
+                return providerSaved(false, "add", providerId, err)
+            }
+            afterProviderStructureChange("add(v2)", providerId)
+            return providerSaved(true, "add", providerId)
+        }
         val providerId = java.util.UUID.randomUUID().toString()
         val err = com.zcode.ideaplugin.protocol.ProviderConfigWriter.update(Credentials.defaultConfigPath()) { providers ->
             JsonObject(LinkedHashMap<String, kotlinx.serialization.json.JsonElement>(providers).apply {
@@ -2692,6 +2879,17 @@ if (!window.__ZCODE_LOG_HOOK__) {
                 )
             )?.let { return providerSaved(false, "update", providerId, it) }
         }
+        // v2：写 provider_config.json（kind/baseURL 落 api 节；models 三处同步）
+        if (cliGeneration == com.zcode.ideaplugin.protocol.ProtocolGeneration.NEW) {
+            val err = com.zcode.ideaplugin.protocol.ProviderConfigWriterV2
+                .updateProvider(Credentials.personalProviderConfigPath(), providerId, f)
+            if (err != null) {
+                log.warn("modelUpdateProvider(v2) failed: $err")
+                return providerSaved(false, "update", providerId, err)
+            }
+            afterProviderStructureChange("update(v2)", providerId)
+            return providerSaved(true, "update", providerId)
+        }
         val err = com.zcode.ideaplugin.protocol.ProviderConfigWriter.update(Credentials.defaultConfigPath()) { providers ->
             val existing = providers[providerId]?.jsonObject
                 ?: throw IllegalStateException("渠道不存在: $providerId")
@@ -2718,6 +2916,17 @@ if (!window.__ZCODE_LOG_HOOK__) {
         val providerId = msg["providerId"]?.jsonPrimitive?.contentOrNull
             ?: return providerSaved(false, "remove", "", "缺少 providerId")
         if (providerId.startsWith("builtin:")) return providerSaved(false, "remove", providerId, builtinReject())
+        // v2：provider_config.json 三处同步清理（rule + providerOrder + providerModelRules）
+        if (cliGeneration == com.zcode.ideaplugin.protocol.ProtocolGeneration.NEW) {
+            val err = com.zcode.ideaplugin.protocol.ProviderConfigWriterV2
+                .removeProvider(Credentials.personalProviderConfigPath(), providerId)
+            if (err != null) {
+                log.warn("modelRemoveProvider(v2) failed: $err")
+                return providerSaved(false, "remove", providerId, err)
+            }
+            afterProviderStructureChange("remove(v2)", providerId)
+            return providerSaved(true, "remove", providerId)
+        }
         val err = com.zcode.ideaplugin.protocol.ProviderConfigWriter.update(Credentials.defaultConfigPath()) { providers ->
             if (providers[providerId] == null) throw IllegalStateException("渠道不存在: $providerId")
             if (providerId.startsWith("builtin:")) throw IllegalStateException(builtinReject())
@@ -2731,6 +2940,32 @@ if (!window.__ZCODE_LOG_HOOK__) {
         }
         afterProviderStructureChange("remove", providerId)
         return providerSaved(true, "remove", providerId)
+    }
+
+    /**
+     * op=modelReorderProviders — 渠道排序落 providerOrder（v2 专属：客户端拖拽同款语义，
+     * rules 本体不动）。ids = 拖拽后的完整渠道顺序；v1 走 config.json 注册表本身有序，无此 op。
+     */
+    private fun handleModelReorderProviders(msg: JsonObject): JsonObject {
+        if (cliGeneration != com.zcode.ideaplugin.protocol.ProtocolGeneration.NEW) {
+            return errorResponse("排序仅新版渠道体系支持")
+        }
+        val ids = (msg["providerIds"] as? JsonArray)
+            ?.mapNotNull { (it as? JsonPrimitive)?.contentOrNull }?.filter { it.isNotBlank() }
+            ?: return errorResponse("缺少 providerIds")
+        if (ids.size != ids.distinct().size) return errorResponse("providerIds 有重复")
+        val err = com.zcode.ideaplugin.protocol.ProviderConfigWriterV2
+            .reorderProviders(Credentials.personalProviderConfigPath(), ids)
+        if (err != null) {
+            log.warn("modelReorderProviders failed: $err")
+            return errorResponse(err)
+        }
+        log.info("modelReorderProviders: ${ids.size} provider(s) reordered")
+        com.zcode.ideaplugin.env.ZCodeEnvChecker.invalidate()
+        return buildJsonObject {
+            put("op", "modelProvidersReordered")
+            put("ok", true)
+        }
     }
 
     /** 模型 provider 启用/禁用变更广播到所有已开标签（modelToggleProvider 写回后调用）*/
@@ -2773,9 +3008,44 @@ if (!window.__ZCODE_LOG_HOOK__) {
      * 激活渠道的「计费 Key」优先（issue #8：zcgui 覆盖 > config 明文，与 RuntimeModels
      * 构造同源——查到的额度就是实际扣费那个 key 的）；激活渠道 oauth 态（无明文无覆盖）
      * 不出凭证，维持回退链（首个有 key 的启用渠道，前端提示口径）。
+     * v2 渠道体系（config.json 废弃）换轨：读 provider_config.json 的 bigmodel 系
+     * coding-plan 渠道（key 在 access.apiKey 明文；baseUrl = rule.api 或内置模板表），
+     * 缺失时回退 config.json 链（v1 本机仍走这里）。
      * @return Pair(凭证?, 错误信息) —— 凭证非空即成功
      */
+    /**
+     * v2 额度凭证（provider_config.json 换轨，NEW 代优先走此链，失败回退 config.json 链）：
+     * 选型按渠道优先级——bigmodel 系 coding-plan 渠道（access.type 含 zhipu-coding-plan
+     * 或 templateId=bigmodel-api，key = coding plan 计费 key，monitor 端点同源）；其余
+     * 渠道的 key 不是 GLM plan 凭证不适用。baseUrl：rule.api 缺失时按 templateId 查内置
+     * 模板表（bigmodel-api → https://open.bigmodel.cn/api/anthropic）。
+     * @return null = 本链无凭证（调用方回退 v1 链）
+     */
+    private fun loadQuotaCredentialsV2(): Pair<QuotaCredentials?, String>? {
+        val zcodePath = try { com.zcode.ideaplugin.protocol.ZCodeLocator.detect() } catch (e: Exception) { null }
+        for (rule in readNewCliProviderRules()) {
+            val cfg = rule["config"]?.jsonObject ?: continue
+            val access = cfg["access"]?.jsonObject ?: continue
+            val isPlan = access["type"]?.jsonPrimitive?.contentOrNull?.contains("coding-plan") == true ||
+                rule["templateId"]?.jsonPrimitive?.contentOrNull == "bigmodel-api"
+            if (!isPlan) continue
+            val key = access["apiKey"]?.jsonPrimitive?.contentOrNull?.takeIf { it.isNotBlank() } ?: continue
+            val baseUrl = cfg["api"]?.jsonObject?.get("baseUrl")?.jsonPrimitive?.contentOrNull
+                ?: rule["templateId"]?.jsonPrimitive?.contentOrNull
+                    ?.let { com.zcode.ideaplugin.protocol.BuiltinModelCatalog.templateApi(it, zcodePath) }?.second
+                ?: continue
+            val pid = rule["providerId"]?.jsonPrimitive?.contentOrNull ?: continue
+            val name = rule["providerName"]?.jsonPrimitive?.contentOrNull ?: pid
+            return quotaCredentialsOf(baseUrl, key, pid, name)?.let { it to "" }
+                ?: (null to "baseURL 格式非法: $baseUrl")
+        }
+        return null
+    }
+
     private fun loadQuotaCredentials(): Pair<QuotaCredentials?, String> {
+        if (cliGeneration == com.zcode.ideaplugin.protocol.ProtocolGeneration.NEW) {
+            loadQuotaCredentialsV2()?.let { return it }
+        }
         val configFile = Credentials.defaultConfigPath().toFile()
         if (!configFile.exists()) return null to "config.json 不存在：$configFile"
         val providers = try {
@@ -3109,11 +3379,16 @@ if (!window.__ZCODE_LOG_HOOK__) {
         // 前端收到 modelSetPending 后回滚选中态并提示"本轮结束后生效"，补发成功再落定
         if (sessionId in streamingTurns) return deferModelSwitch(sessionId, modelId, providerId)
         val client = project.zCodeService().getClient()
-        // 带 runtimeModel：服务端先把 provider 注册进 workspace（绕过"可选模型"校验）
-        // 普通 setModel 只能切 main/lite/available 里的模型（当前只有 anthropic/GLM-5.2）
-        // 提到 try 外：冷会话自愈重试（下方 catch）复用同一 runtimeModel
-        val runtimeModel = buildRuntimeModel(providerId, modelId)
-        if (runtimeModel == null) {
+        // OLD：带 runtimeModel——服务端先把 provider 注册进 workspace（绕过"可选模型"校验；
+        // 普通 setModel 只能切 main/lite/available 里的模型）。提到 try 外：冷会话自愈重试复用。
+        // NEW：config.json 已废弃构不出 runtimeModel，客户端按模型引用切换（渠道须已在
+        // providerRegistry = 用户客户端自建的自定义供应商），构造步骤整体跳过
+        val runtimeModel = if (cliGeneration == com.zcode.ideaplugin.protocol.ProtocolGeneration.NEW) {
+            null
+        } else {
+            buildRuntimeModel(providerId, modelId)
+        }
+        if (runtimeModel == null && cliGeneration == com.zcode.ideaplugin.protocol.ProtocolGeneration.OLD) {
             log.warn("Provider $providerId not found in config.json, falling back to plain setModel (may fail)")
         }
         try {
@@ -3228,11 +3503,13 @@ if (!window.__ZCODE_LOG_HOOK__) {
                             pendingModelSwitches.putIfAbsent(sessionId, pending)
                             return@Thread
                         }
-                        // 回合锁清算滞后：稍候重试
-                        isUnsupportedModelEx(e) && unsupportedAttempts < 3 -> {
+                        // 回合锁清算滞后：稍候重试（v2 下 prompt_failed 后服务端会话模型
+                        // 视图短暂清空——实测 state patch model.available=[]，窗口数秒；
+                        // 间隔与次数放宽避开窗口，2026-09-17 缺陷BZ）
+                        isUnsupportedModelEx(e) && unsupportedAttempts < 5 -> {
                             unsupportedAttempts++
                             log.info("deferred model switch retry #$unsupportedAttempts (server lock lag): $sessionId")
-                            runCatching { Thread.sleep(1500) }
+                            runCatching { Thread.sleep(3000L * unsupportedAttempts) }
                         }
                         else -> {
                             log.warn("deferred model switch failed: $sessionId (${e.message})")
@@ -3462,9 +3739,31 @@ if (!window.__ZCODE_LOG_HOOK__) {
         return buildJsonObject { put("op", "filesPicked"); put("count", refs.size) }
     }
 
+    /**
+     * 当前会话实际模型引用 (providerId, modelId)：v2 上下文总量覆盖的取值依据。
+     * 来源：webview kv（zcode.currentModel，用户在输入框显式切换时写入，跨重启持久）。
+     * 无记录（新装/没切过）返回 null，保持服务端原值。
+     */
+    private fun currentSessionModelRef(): Pair<String, String>? {
+        val raw = try {
+            readKvJson()?.let {
+                try { Json.parseToJsonElement(it).jsonObject["zcode.currentModel"]?.jsonPrimitive?.content } catch (_: Exception) { null }
+            }
+        } catch (e: Exception) {
+            null
+        } ?: return null
+        return try {
+            val o = Json.parseToJsonElement(raw).jsonObject
+            val mid = o["modelId"]?.jsonPrimitive?.contentOrNull ?: return null
+            val pid = o["providerId"]?.jsonPrimitive?.contentOrNull ?: return null
+            pid to mid
+        } catch (e: Exception) {
+            null
+        }
+    }
+
     /** 获取会话上下文用量（session/read → runtime.contextUsage）*/
-    private fun handleGetUsage(msg: JsonObject): JsonObject {
-        val sessionId = msg["sessionId"]?.jsonPrimitive?.content
+    private fun handleGetUsage(msg: JsonObject): JsonObject {        val sessionId = msg["sessionId"]?.jsonPrimitive?.content
             ?: return errorResponse("缺少 sessionId")
         val client = project.zCodeService().getClient()
         return try {
@@ -3474,8 +3773,20 @@ if (!window.__ZCODE_LOG_HOOK__) {
                 put("op", "usage")
                 // 响应回带会话 id：流式轮询期间切会话，前端靠它丢弃旧会话的迟到响应
                 put("sessionId", sessionId)
-                put("used", ctx["used"]?.jsonPrimitive?.content?.toLongOrNull() ?: 0L)
-                put("size", ctx["size"]?.jsonPrimitive?.content?.toLongOrNull() ?: 0L)
+                var used = ctx["used"]?.jsonPrimitive?.content?.toLongOrNull() ?: 0L
+                var size = ctx["size"]?.jsonPrimitive?.content?.toLongOrNull() ?: 0L
+                // v2 上下文总量换轨（缺陷BX）：app-server 的 contextUsage.size 固定走模板
+                // 默认 200k（逆向 U2e：config.contextWindow 缺省回落 T7=2e5；多文件源实验
+                // 证明手写 providerModelRules 不进该链），与用户在 provider_config.json 配的
+                // 真实值脱节。插件用同文件 providerModelRules 的值覆盖（模型悬浮窗同源，
+                // 两处显示一致）；会话当前模型无手写值时保持服务端原值
+                if (cliGeneration == com.zcode.ideaplugin.protocol.ProtocolGeneration.NEW) {
+                    currentSessionModelRef()?.let { (pid, mid) ->
+                        newCliContextWindows()[pid to mid]?.let { size = it }
+                    }
+                }
+                put("used", used)
+                put("size", size)
                 // hitRate 服务端可为 null（新 turn 首次模型调用完成前聚合器为空，
                 // zcode.cjs: totalInputTokens>0 ? cacheRead/input : null）——null 时不
                 // 输出该字段，前端显示"—"；此前落回 0.0 会把"暂无统计"闪成"0%"再恢复
@@ -3524,8 +3835,40 @@ if (!window.__ZCODE_LOG_HOOK__) {
         val workspacePath = effectiveWorkspacePath(msg)
         // 前端 currentModel 透传：-32031 恢复时优先用用户选择的 provider 构造 runtimeModel，
         // 避免恢复链路静默切回默认 provider（个人套餐）；缺省时协议端走原有默认路径
-        val providerId = msg["providerId"]?.jsonPrimitive?.content
-        val modelId = msg["modelId"]?.jsonPrimitive?.content
+        var providerId = msg["providerId"]?.jsonPrimitive?.content
+        var modelId = msg["modelId"]?.jsonPrimitive?.content
+        // v2 死引用防御（缺陷BZ）：前端 currentModel/modelMemory 可能存着 v1 渠道
+        //（builtin:bigmodel-coding-plan 等，v2 registry 已无此渠道）。v2 下 send 带
+        // 无效模型引用时 RPC 本身成功但回合立即 prompt_failed（错误只走 telemetry），
+        // UI 表现"发了没反应"。判据：providerId 不在 v2 模型清单（provider_config.json
+        // 展平，与下拉同源）→ 静默换成清单首个可用，不打扰用户
+        if (cliGeneration == com.zcode.ideaplugin.protocol.ProtocolGeneration.NEW
+            && providerId != null && modelId != null) {
+            val known = readNewCliProviderRules().any { rule ->
+                rule["providerId"]?.jsonPrimitive?.contentOrNull == providerId &&
+                (rule["enabled"]?.jsonPrimitive?.contentOrNull ?: "true") != "false"
+            }
+            if (!known) {
+                val fb = readNewCliProviderRules().firstOrNull { rule ->
+                    (rule["enabled"]?.jsonPrimitive?.contentOrNull ?: "true") != "false"
+                }?.let { rule ->
+                    val pid = rule["providerId"]?.jsonPrimitive?.contentOrNull
+                    val mid = rule["config"]?.jsonObject?.get("modelOrder")?.jsonArray
+                        ?.firstNotNullOfOrNull { (it as? JsonPrimitive)?.contentOrNull }
+                    if (pid != null && mid != null) pid to mid else null
+                }
+                if (fb != null) {
+                    log.warn("send: dead provider ref $providerId/$modelId (v1 memory?), falling back to ${fb.first}/${fb.second}")
+                    providerId = fb.first
+                    modelId = fb.second
+                } else {
+                    // v2 清单全空/全禁用：不带模型引用走服务端默认（会话可能自带 lastUsed）
+                    log.warn("send: dead provider ref $providerId/$modelId and no v2 provider available, dropping model fields")
+                    providerId = null
+                    modelId = null
+                }
+            }
+        }
         // 粘贴图片附件（InputBox 压缩后的 base64 内联形态），协议通道原生透传
         val attachments = parseAttachments(msg["attachments"])
 
@@ -5095,6 +5438,19 @@ if (!window.__ZCODE_LOG_HOOK__) {
      */
     private fun enhanceViaGenerateText(providerId: String?, modelId: String?, text: String): Pair<String, String>? {
         val workspacePath = project.basePath ?: return null
+        // 新版 CLI：前端透传的模型引用（provider_config.json 渠道）直接可用，registry
+        // 侧解析；config.json 守卫与 upsert 自愈（方法已删）均跳过，无透传则放弃本通道
+        if (cliGeneration == com.zcode.ideaplugin.protocol.ProtocolGeneration.NEW) {
+            val pid = providerId?.takeIf { it.isNotBlank() } ?: return null
+            val mid = modelId?.takeIf { it.isNotBlank() } ?: return null
+            val timeoutMs = (45_000L + text.length / 400L * 1_000L).coerceAtMost(120_000L)
+            return try {
+                callGenerateText(project.zCodeService().getClient(), workspacePath, pid, mid, text, timeoutMs)
+            } catch (e: Exception) {
+                log.info("enhancePrompt: generateText unavailable on new cli (${e.message?.take(120)}), falling back to CLI")
+                null
+            }
+        }
         return try {
             val client = project.zCodeService().getClient()
             val fallbackModel = com.zcode.ideaplugin.protocol.RuntimeModels.defaultRuntimeModel()
@@ -5150,7 +5506,8 @@ if (!window.__ZCODE_LOG_HOOK__) {
         )
         val enhanced = result["text"]?.jsonPrimitive?.contentOrNull?.takeIf { it.isNotBlank() }
             ?: throw com.zcode.ideaplugin.protocol.ZCodeProtocolException("generateText 返回空文本")
-        val actualModel = result["modelRef"]?.jsonObject?.get("modelId")?.jsonPrimitive?.contentOrNull ?: modelId
+        // 新版 CLI 响应字段 modelRef → selection（2026-09-17 schema 实挖）；旧值兜底兼容过渡期
+        val actualModel = (result["selection"] ?: result["modelRef"])?.jsonObject?.get("modelId")?.jsonPrimitive?.contentOrNull ?: modelId
         return enhanced to actualModel
     }
 
