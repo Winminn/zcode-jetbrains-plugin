@@ -7,6 +7,7 @@ import java.util.concurrent.ConcurrentHashMap
 import kotlin.io.path.readText
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
@@ -132,7 +133,7 @@ object BuiltinModelCatalog {
     /** 目录文件 → 解析结果，按 (path, mtime) 缓存 */
     private val cache = ConcurrentHashMap<Path, Pair<Long, List<Rule>>>()
 
-    private class Rule(val match: Regex, val reasoningValues: List<String>?)
+    private class Rule(val match: Regex, val reasoningValues: List<String>?, val maxOutputTokens: Long?)
 
     fun defaultReasoningLevel(modelId: String, zcodePath: Path?, home: String = System.getProperty("user.home") ?: "."): String? {
         val values = reasoningValues(modelId, zcodePath, home) ?: return null
@@ -141,6 +142,17 @@ object BuiltinModelCatalog {
             ?: values.firstOrNull { it == "high" }
             ?: values.firstOrNull { it == "enabled" }
             ?: values.first()
+    }
+
+    /** modelId 的 maxOutputTokens 档位上限（modelRules 正则链合并，后者覆盖前者）；无目录/无命中 null */
+    fun maxOutputTokensMax(modelId: String, zcodePath: Path?, home: String = System.getProperty("user.home") ?: "."): Long? {
+        val rules = loadRules(zcodePath, home) ?: return null
+        var max: Long? = null
+        for (r in rules) {
+            if (!r.match.matches(modelId) && !r.match.matches(modelId.lowercase())) continue
+            r.maxOutputTokens?.let { max = it }
+        }
+        return max
     }
 
     /** modelId 的 reasoningLevel 合法值（modelRules 正则链合并，后者覆盖前者）；无目录/无命中 null */
@@ -178,6 +190,52 @@ object BuiltinModelCatalog {
         }
     }
 
+    /** 模板渠道定义（v1 内置渠道兜底迁移用）：建 rule 所需的全部模板侧字段 */
+    class TemplateChannel(
+        val templateId: String,
+        val name: String,
+        val accessType: String,
+        val apiType: String,
+        val baseUrl: String,
+        val builtinModelIds: List<String>,
+    )
+
+    /**
+     * 模板渠道全量定义：name（templateNameMap 中文优先）/access.type/api 节/builtinModelIds。
+     * 无目录/模板缺 api 节（不可直接建渠道）返回 null。
+     */
+    fun templateChannel(templateId: String, zcodePath: Path?, home: String = System.getProperty("user.home") ?: "."): TemplateChannel? {
+        val file = catalogFile(zcodePath, home) ?: return null
+        return try {
+            val root = Json.parseToJsonElement(file.readText()).jsonObject
+            (root["config"]?.jsonObject?.get("providerConfigRules")?.jsonObject?.get("templateRules")?.jsonArray)
+                ?.asSequence()?.mapNotNull { el ->
+                    val o = el as? JsonObject ?: return@mapNotNull null
+                    if (o["templateId"]?.jsonPrimitive?.contentOrNull != templateId) return@mapNotNull null
+                    val cfg = o["config"]?.jsonObject ?: return@mapNotNull null
+                    val api = cfg["api"]?.jsonObject ?: return@mapNotNull null
+                    val apiType = api["type"]?.jsonPrimitive?.contentOrNull ?: return@mapNotNull null
+                    val baseUrl = api["baseUrl"]?.jsonPrimitive?.contentOrNull ?: return@mapNotNull null
+                    val names = o["templateNameMap"]?.jsonObject
+                    val name = (names?.get("zh-CN") ?: names?.get("en-US"))?.jsonPrimitive?.contentOrNull
+                        ?: templateId
+                    TemplateChannel(
+                        templateId = templateId,
+                        name = name,
+                        accessType = cfg["access"]?.jsonObject?.get("type")?.jsonPrimitive?.contentOrNull ?: "api-key",
+                        apiType = apiType,
+                        baseUrl = baseUrl,
+                        builtinModelIds = cfg["builtinModelIds"]?.jsonArray
+                            ?.mapNotNull { (it as? JsonPrimitive)?.contentOrNull }
+                            ?.filter { it.isNotBlank() }
+                            ?: emptyList(),
+                    )
+                }?.firstOrNull()
+        } catch (_: Exception) {
+            null
+        }
+    }
+
     private fun loadRules(zcodePath: Path?, home: String): List<Rule>? {
         val file = catalogFile(zcodePath, home) ?: return null
         try {
@@ -189,10 +247,12 @@ object BuiltinModelCatalog {
                     val o = el as? JsonObject ?: return@mapNotNull null
                     val match = o["modelMatch"]?.jsonPrimitive?.content?.let { runCatching { Regex(it) }.getOrNull() }
                         ?: return@mapNotNull null
-                    val values = o["config"]?.jsonObject?.get("optionSpecs")?.jsonObject
-                        ?.get("reasoningLevel")?.jsonObject?.get("values")?.jsonArray
-                        ?.mapNotNull { (it as? kotlinx.serialization.json.JsonPrimitive)?.content }
-                    Rule(match, values?.takeIf { it.isNotEmpty() })
+            val values = o["config"]?.jsonObject?.get("optionSpecs")?.jsonObject
+                ?.get("reasoningLevel")?.jsonObject?.get("values")?.jsonArray
+                ?.mapNotNull { (it as? kotlinx.serialization.json.JsonPrimitive)?.content }
+            val maxOut = o["config"]?.jsonObject?.get("optionSpecs")?.jsonObject
+                ?.get("maxOutputTokens")?.jsonObject?.get("max")?.jsonPrimitive?.contentOrNull?.toLongOrNull()
+            Rule(match, values?.takeIf { it.isNotEmpty() }, maxOut)
                 }
             cache[file] = mtime to rules
             return rules

@@ -586,14 +586,20 @@ class ZCodeProtocolClient private constructor(
         // v4/telemetry/event：回合级遥测（含 turn.terminal 终态）。v2 渠道模型引用非法时
         // （如 reasoningLevel 缺失），turn 在 model_creation 阶段静默 failed——该失败只走
         // 此通道（session/event 流无 turn.failed 帧），不映射则 UI 表现"一直没响应"。
-        // 全终态映射：status=failed → turn.failed（payload.error 取 errorCode/errorMessage，
-        // 复用既有失败链路）；其余终态（completed/aborted/…）→ turn.completed——快速失败/
-        // 中止的回合可能只有 telemetry 终态而无 v4 帧对，漏映射会让前端 streaming 永不复位
-        // （输入框/润色等按 streaming 禁用的入口全部卡死，2026-09-17 润色弹窗不开实锤）
+        // 终态映射策略：failed → turn.failed（payload.error 取 errorCode/errorMessage）；
+        // aborted/cancelled 等异常终态 → 合成 turn.completed 作"回合已结束"信号（前端
+        // streaming 复位，防快速回合终态仅存于遥测时入口永久禁用）。成功终态（status=
+        // success/completed，真机实挖 success）**不合成**——真实 turn.completed（带
+        // usage/response）由既有事件链正常到达，遥测重复合成会以空 payload 抢先污染
+        // 消费方（通知空预览/双气泡、消费方 usage 断言失败，2026-09-17 实测回退）
         else if (method == "v4/telemetry/event") {
             val kind = params["kind"]?.jsonPrimitive?.jsonStringOrNull
             if (kind == "turn.terminal") {
                 val status = params["status"]?.jsonPrimitive?.jsonStringOrNull
+                if (status == "success" || status == "completed") {
+                    ProtocolLog.debug("[ZCodeProtocolClient] turn.terminal status=$status → skip (real event chain authoritative)")
+                    return
+                }
                 val sid = params["sessionId"]?.jsonPrimitive?.jsonStringOrNull ?: return
                 val failed = status == "failed"
                 val event = SessionEvent(
@@ -1397,7 +1403,20 @@ class ZCodeProtocolClient private constructor(
             put(key, buildJsonObject {
                 put("providerId", providerId)
                 put("modelId", modelId)
+                // v2 selection 必带 options.reasoningLevel（缺失报 "Reasoning level is
+                // required"，润色/标题快速通道曾因此全量降级 CLI）
+                if (generation == ProtocolGeneration.NEW) {
+                    BuiltinModelCatalog.defaultReasoningLevel(modelId, zcodePath)?.let {
+                        put("options", buildJsonObject { put("reasoningLevel", it) })
+                    }
+                }
             })
+            // v2 请求顶层 maxOutputTokens 参与模型选项强校验（缺省报 "outside the model
+            // option range"，diag-v2-generatetext-reasoning.py 实挖）；标题/润色输出很短，
+            // 取模型档位上限与 8192 的较小值。OLD 无此校验不传
+            if (generation == ProtocolGeneration.NEW) {
+                put("maxOutputTokens", minOf(BuiltinModelCatalog.maxOutputTokensMax(modelId, zcodePath) ?: 8192L, 8192L))
+            }
             if (systemPrompt != null) {
                 put("messages", buildJsonArray {
                     add(buildJsonObject {

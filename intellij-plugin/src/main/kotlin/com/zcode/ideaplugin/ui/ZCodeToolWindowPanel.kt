@@ -2649,7 +2649,7 @@ if (!window.__ZCODE_LOG_HOOK__) {
 
     /** 新版：模型清单（providerRules 展平；模型 = modelOrder/personalModelIds，显示名即 id） */
     private fun listModelsNewCli(): JsonObject {
-        val ctx = newCliContextWindows()
+        val rules = newCliModelRules()
         val models = JsonArray(readNewCliProviderRules().flatMap { rule ->
             // disabled 渠道 registry 整体排除（实验 B），下拉同步过滤防选中即 -32031
             if (rule["enabled"]?.jsonPrimitive?.contentOrNull == "false") return@flatMap emptyList()
@@ -2665,7 +2665,12 @@ if (!window.__ZCODE_LOG_HOOK__) {
                     put("providerName", pname)
                     put("modelId", mid)
                     put("modelName", mid)
-                    ctx[pid to mid]?.let { put("contextWindow", it) }
+                    rules[pid to mid]?.let { r ->
+                        r.contextWindow?.let { put("contextWindow", it) }
+                        // 视觉徽章数据源（输入框模型下拉 ModelSelect 同设置页口径）：
+                        // providerModelRules inputFormat，sparse 缺省 false
+                        if (r.supportsImages) put("supportsImages", true)
+                    }
                 }
             }
         })
@@ -5707,8 +5712,16 @@ if (!window.__ZCODE_LOG_HOOK__) {
                 }
             }
             val raw = titleViaGenerateText(pid, mid, excerpt)
-                ?: titleViaCliOneShot(pid, mid, excerpt)
-                ?: return titleRegenError(sessionId ?: "", "生成结果为空")
+                // NEW 代不做 CLI 降级：长摘录+ASCII 引号经 Windows argv 必被截断（prompt
+                // 只剩系统提示词，模型照共享临时目录名 zcode-gui-enhance 编标题——全局干扰
+                // 实锤，2026-09-17 fence-ai 会话标题污染）；快速通道失败就直接报错
+                ?: (if (cliGeneration == com.zcode.ideaplugin.protocol.ProtocolGeneration.NEW) null
+                    else titleViaCliOneShot(pid, mid, excerpt))
+                ?: return titleRegenError(
+                    sessionId ?: "",
+                    if (cliGeneration == com.zcode.ideaplugin.protocol.ProtocolGeneration.NEW) "标题生成失败（生成通道不可用，请重试）"
+                    else "生成结果为空",
+                )
             val title = extractSessionTitle(raw)
                 ?: return titleRegenError(sessionId ?: "", "生成结果无法解析为标题")
             // 服务端落库（best-effort）：非驻留会话 v4 命令会失败，前端 persist 兜底持久化
@@ -5826,7 +5839,8 @@ if (!window.__ZCODE_LOG_HOOK__) {
     }
 
     private fun cleanTitleText(t: String): String? =
-        t.trim().trim('"', '\'', '`', '。', '.', '，', ',').take(50).takeIf { it.isNotBlank() }
+        // * 与 _ ：CLI 降级输出常带 Markdown 加粗（如 **标题**），不能进会话标题
+        t.trim().trim('"', '\'', '`', '*', '_', '。', '.', '，', ',').take(50).takeIf { it.isNotBlank() }
 
     // ============ 子智能体（数据打通 ZCode 客户端） ============
 

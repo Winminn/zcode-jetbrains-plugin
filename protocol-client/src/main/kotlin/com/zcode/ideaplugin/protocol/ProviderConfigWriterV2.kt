@@ -62,24 +62,45 @@ object ProviderConfigWriterV2 {
     // ============ CRUD 入口（err null = 成功；update 增删返回 providerId）============
 
     /**
-     * 添加自定义渠道（无 templateId 自定义形态，实验 A 验证 registry 接受）。
+     * 添加渠道（默认无 templateId 自定义形态，实验 A 验证 registry 接受）。
+     * 模板渠道形态（v1 内置渠道兜底迁移用）：templateId 非空时 rule 落 templateId、
+     * access.type 取模板值（如 zhipu-coding-plan-api-key）、api.type 可显式指定、
+     * providerId 用模板 id（客户端同款：模板渠道 providerId == templateId）、
+     * draft.models 为空时 personalModelIds/modelOrder 预填模板 builtinModelIds
+     * （与客户端实拍建渠道形态一致，插件模型清单 UI 也有数据源）。
+     *
      * @return (err, providerId)
      */
-    fun addProvider(path: Path, draft: ProviderConfigWriter.ProviderDraft): Pair<String?, String> =
+    fun addProvider(
+        path: Path,
+        draft: ProviderConfigWriter.ProviderDraft,
+        templateId: String? = null,
+        accessType: String = "api-key",
+        apiTypeOverride: String? = null,
+        providerIdOverride: String? = null,
+        prefillModelIds: List<String> = emptyList(),
+        orderAtTop: Boolean = false,
+    ): Pair<String?, String> =
         synchronized(WRITE_LOCK) {
-            val providerId = newProviderId()
+            val providerId = providerIdOverride ?: newProviderId()
             val err = updateLocked(path) { root ->
                 val cfg = root["config"]?.jsonObject ?: throw IllegalStateException("缺少 config 节")
                 val rulesArr = cfg["providerConfigRules"]?.jsonObject?.get("providerRules")?.let { it as? JsonArray }
                     ?: throw IllegalStateException("缺少 providerRules")
+                if (rulesArr.any { (it as? JsonObject)?.str("providerId") == providerId }) {
+                    throw IllegalStateException("渠道已存在: $providerId")
+                }
                 val newRule = buildJsonObject {
+                    templateId?.let { put("templateId", it) }
                     put("providerId", providerId)
                     put("providerName", draft.name.trim())
-                    put("config", buildRuleConfig(draft))
+                    put("enabled", true)
+                    put("config", buildRuleConfig(draft, accessType, apiTypeOverride, prefillModelIds))
                 }
                 rewriteRoot(
                     root, JsonArray(rulesArr + newRule),
-                    modelsOf(draft.models, providerId), providerId, orderAdd = providerId,
+                    modelsOf(draft.models, providerId), providerId,
+                    orderAdd = providerId, orderAtTop = orderAtTop,
                 )
             }
             err to providerId
@@ -164,18 +185,25 @@ object ProviderConfigWriterV2 {
 
     // ============ 节点构造 ============
 
-    /** 添加用的完整 config 节（access + api + personalModelIds + modelOrder）*/
-    private fun buildRuleConfig(draft: ProviderConfigWriter.ProviderDraft): JsonObject = buildJsonObject {
+    /** 添加用的完整 config 节（access + api + personalModelIds + modelOrder）。
+     *  accessType/apiTypeOverride 供模板渠道用（订阅套餐 access.type 非 api-key）；
+     *  prefillModelIds 在 draft.models 为空时预填 personalModelIds/modelOrder（模板渠道）。 */
+    private fun buildRuleConfig(
+        draft: ProviderConfigWriter.ProviderDraft,
+        accessType: String = "api-key",
+        apiTypeOverride: String? = null,
+        prefillModelIds: List<String> = emptyList(),
+    ): JsonObject = buildJsonObject {
         put("group", "standard-personal")
         put("access", buildJsonObject {
-            put("type", "api-key")
+            put("type", accessType)
             put("apiKey", draft.apiKey.orEmpty())
         })
         put("api", buildJsonObject {
-            put("type", apiTypeOf(draft.kind))
+            put("type", apiTypeOverride ?: apiTypeOf(draft.kind))
             put("baseUrl", draft.baseURL.trim())
         })
-        val mids = draft.models.map { it.modelId.trim() }
+        val mids = draft.models.map { it.modelId.trim() }.ifEmpty { prefillModelIds.map { it.trim() } }
         put("personalModelIds", JsonArray(mids.map { JsonPrimitive(it) }))
         put("modelOrder", JsonArray(mids.map { JsonPrimitive(it) }))
     }
@@ -293,12 +321,15 @@ object ProviderConfigWriterV2 {
         orderAdd: String? = null,
         orderRemove: String? = null,
         newOrder: List<String>? = null,
+        orderAtTop: Boolean = false,
     ): JsonObject {
         val cfg = root["config"]?.jsonObject ?: JsonObject(emptyMap())
         val oldOrder = (cfg["providerOrder"] as? JsonArray)?.mapNotNull { (it as? JsonPrimitive)?.content } ?: emptyList()
         val newOrderList = newOrder ?: buildList {
             when {
-                orderAdd != null -> { addAll(oldOrder); add(orderAdd) }
+                // orderAdd 已在 order 里（rule 删了 order 残留的边缘）不重复追加
+                orderAdd != null && orderAtTop -> { add(orderAdd); addAll(oldOrder.filter { it != orderAdd }) }
+                orderAdd != null -> { addAll(oldOrder.filter { it != orderAdd }); add(orderAdd) }
                 orderRemove != null -> addAll(oldOrder.filter { it != orderRemove })
                 else -> addAll(oldOrder)
             }

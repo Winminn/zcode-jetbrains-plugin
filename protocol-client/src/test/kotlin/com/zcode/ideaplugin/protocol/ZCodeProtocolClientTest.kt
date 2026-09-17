@@ -149,9 +149,14 @@ class ZCodeProtocolClientTest {
         assertTrue(events.any { it.type == EventTypes.MODEL_STREAMING }, "应该收到 model.streaming 事件")
         assertTrue(events.any { it.type == EventTypes.TURN_COMPLETED }, "应该收到 turn.completed")
 
-        // 验证 turn.completed 的 usage
-        val completed = events.first { it.type == EventTypes.TURN_COMPLETED }
-        val usage = completed.payload["usage"]?.jsonObject
+        // 验证 turn.completed 的 usage（v2 双链可能送达多个 completed：session/event 原生
+        // 与 v4 帧映射各一，首个可能不带 usage——取任一带 usage 的判定，全带则全过）
+        val completions = events.filter { it.type == EventTypes.TURN_COMPLETED }
+        completions.forEachIndexed { i, e ->
+            println("   completed[$i] payload keys: ${e.payload.keys} usage: ${e.payload["usage"]?.jsonObject}")
+        }
+        val usage = completions.firstOrNull { it.payload["usage"]?.jsonObject != null }
+            ?.payload?.get("usage")?.jsonObject
         println("   usage: $usage")
         assertNotNull(usage, "turn.completed 应该带 usage")
     }
