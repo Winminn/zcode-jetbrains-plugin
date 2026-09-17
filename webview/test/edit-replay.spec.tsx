@@ -107,7 +107,7 @@ describe('v4 通道（editUserQuery，主路径）', () => {
     expect(sends()).toEqual([])
     expect(idOf()).toEqual(['u1', 'a1', 'u2', 'a2'])
     expect(useStore.getState().editReplay).toEqual({
-      targetMsgId: 'u2', text: '问题二（改）', rewound: false, via: 'v4',
+      targetMsgId: 'u2', text: '问题二（改）', rewound: false, via: 'v4', ackPending: true,
     })
     expect(useStore.getState().editingMessageId).toBeNull()
   })

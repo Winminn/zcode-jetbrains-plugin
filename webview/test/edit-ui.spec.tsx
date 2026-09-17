@@ -92,7 +92,7 @@ describe('用户消息操作区', () => {
     const ta = r.container.querySelector('.msg__edit-textarea') as HTMLTextAreaElement
     fireEvent.change(ta, { target: { value: '第二条（修改）' } })
     fireEvent.keyDown(ta, { key: 'Enter' })
-    expect(useStore.getState().editReplay).toEqual({ targetMsgId: 'u2', text: '第二条（修改）', rewound: false, via: 'v4' })
+    expect(useStore.getState().editReplay).toEqual({ targetMsgId: 'u2', text: '第二条（修改）', rewound: false, via: 'v4', ackPending: true })
     expect(useStore.getState().editingMessageId).toBeNull()
     // 提交后编辑器消失（消息气泡恢复渲染，重发由编排接管）
     expect(r.container.querySelector('.msg__edit-textarea')).toBeNull()

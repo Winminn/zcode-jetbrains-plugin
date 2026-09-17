@@ -278,7 +278,7 @@ function finalizeEditReplayOnTurnEnd(
       set({ editReplay: null, ...(turnError ? {} : { lastError: i18n.t('chat.edit.rewindFailed') }) })
     } else {
       // 回合已死，发第二段（服务端走空闲编辑路径）；ack 兜底定时器此刻才起算
-      set({ editReplay: { ...replay, stopping: false } })
+      set({ editReplay: { ...replay, stopping: false, ackPending: true } })
       armEditAckTimeout()
       sendToJava({
         op: 'editUserQuery',
@@ -289,6 +289,11 @@ function finalizeEditReplayOnTurnEnd(
       })
     }
   } else if (replay.via === 'v4') {
+    // 命令在途（ack 未回）：v2 旧回合停止的双终点（真实 + 遥测合成）中第二个
+    // 终点落在此窗口——是旧回合余波而非「编辑后新回合已结束」，不能按 rewound
+    // =false 误判失败（真机 23:02 实锤：139ms 窗口被击穿）。继续等 editAccepted
+    // （v2 乐观截断）或 ack 超时兜底
+    if (!replay.rewound && replay.ackPending) return
     cancelEditAckTimeout()
     set({
       editReplay: null,
@@ -764,6 +769,10 @@ interface StoreState {
      *  发 editUserQuery——服务端对「执行工具中」的回合 abort 不生效，直接编辑会被
      *  steerQueued 静默排队且队列不自动排水（accepted 却永不生效） */
     stopping?: boolean
+    /** 编辑命令在途（已发、ack 未回）。v2 停止的旧回合有双终点（真实 + 遥测合成），
+     *  第二个终点会落在 ack 前的窗口里——在途期间 turnEnded 不参与编排收尾，
+     *  否则会按「新回合已结束且未确认」误判回退失败（缺陷CD 真机 23:02 实锤） */
+    ackPending?: boolean
   } | null
   /**
    * 编辑走 v4 editUserQuery 通道（回合中编辑+带图编辑的前提）：
@@ -1822,7 +1831,7 @@ export const useStore = create<StoreState>((set, get) => ({
       }
       set({
         editingMessageId: null,
-        editReplay: { targetMsgId: targetId, text: trimmed, rewound: false, via: 'v4', attachments: images },
+        editReplay: { targetMsgId: targetId, text: trimmed, rewound: false, via: 'v4', attachments: images, ackPending: true },
       })
       armEditAckTimeout()
       sendToJava({
@@ -3612,7 +3621,7 @@ export function handleResponse(
           set({
             messages: r.messages,
             streamingMessageId: r.streamingMessageId,
-            ...(r.matched ? { editReplay: { ...replay, rewound: true } } : {}),
+            ...(r.matched ? { editReplay: { ...replay, rewound: true, ackPending: false } } : {}),
           })
         }
       }
