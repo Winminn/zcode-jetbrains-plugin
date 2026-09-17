@@ -88,6 +88,14 @@ class ZCodeProtocolClient private constructor(
     /** 已 v4 订阅的会话（幂等去重；帧到达时也以此为门禁，未订阅会话的帧不映射） */
     private val v4SubscribedSessions = ConcurrentHashMap.newKeySet<String>()
 
+    /**
+     * 仅订阅标题更新的主会话（v2 代）。v2 的标题生成结果只在 v4 帧
+     * `state.updated` delta 的 `patch.meta.title` 上广播，legacy session/event 流
+     * 不再有 session.titleUpdated——主会话（legacy 驱动）在此登记后，帧处理只抽
+     * meta.title 合成 session.titleUpdated 事件，行数据不映射（防与 legacy 双写）。
+     */
+    private val v4TitleSessions = ConcurrentHashMap.newKeySet<String>()
+
     /** v4 订阅 id（sessionId → subscribe 应答 ack.subscriptionId）：退订 RPC 的
      * 必填参数之一（三件套 topic+connectionId+subscriptionId，缺任一 -32603） */
     private val v4SubscriptionIds = java.util.concurrent.ConcurrentHashMap<String, String>()
@@ -631,7 +639,36 @@ class ZCodeProtocolClient private constructor(
         else if (method == "v4/conversation/frame") {
             val topic = params["topic"]?.jsonPrimitive?.jsonStringOrNull ?: return
             val sid = topic.removePrefix("conversation/")
-            if (sid.length == topic.length || sid !in v4SubscribedSessions) return
+            if (sid.length == topic.length) return
+            // 仅标题订阅的主会话：只抽 state.updated delta 的 meta.title 合成
+            // session.titleUpdated（v2 标题广播唯一通道，见 v4TitleSessions），行数据
+            // 不映射——主会话已有 legacy 流，映射会造成双写
+            if (sid in v4TitleSessions && sid !in v4SubscribedSessions) {
+                val frame = params["frame"]?.jsonObject ?: return
+                val deltas = frame["payload"]?.jsonObject?.get("deltas")?.jsonArray ?: return
+                for (d in deltas) {
+                    val delta = d as? JsonObject ?: continue
+                    if (delta["op"]?.jsonPrimitive?.jsonStringOrNull != "state.updated") continue
+                    val meta = delta["patch"]?.jsonObject?.get("meta")?.jsonObject ?: continue
+                    val title = meta["title"]?.jsonPrimitive?.jsonStringOrNull?.takeIf { it.isNotBlank() } ?: continue
+                    dispatchSessionEvent(SessionEvent(
+                        type = "session.titleUpdated",
+                        seq = 0L,
+                        sessionId = sid,
+                        timestamp = System.currentTimeMillis(),
+                        traceId = null,
+                        turnId = null,
+                        deliveryKind = null,
+                        payload = buildJsonObject {
+                            put("title", title)
+                            meta["titleSource"]?.jsonPrimitive?.jsonStringOrNull?.let { put("source", it) }
+                        },
+                    ))
+                    break // 一帧内多个 meta.title delta 取首个即可（均为同一权威值）
+                }
+                return
+            }
+            if (sid !in v4SubscribedSessions) return
             val frame = params["frame"]?.jsonObject ?: return
             // 帧到达诊断（缺陷AO 终测：live 在快照后停更——区分"服务端没推帧"vs
             // "帧到了没渲染"）：每会话首帧 + 每 100 帧打一条心跳计数。
@@ -1034,6 +1071,27 @@ class ZCodeProtocolClient private constructor(
         }
         val r = request("session/subscribe", params, timeoutMs)
         requireOk(r)
+        // v2：legacy 流不再推 session.titleUpdated（标题只在 v4 帧 meta.title 广播，
+        // 见 v4TitleSessions）。主会话 legacy 订阅成功后异步挂一条仅标题用途的 v4 订阅
+        // ——失败静默（标题退化为"切历史/重开会话时 listSessions 刷新"的既有兜底）
+        if (generation == ProtocolGeneration.NEW && sessionId !in v4SubscribedSessions
+            && v4TitleSessions.add(sessionId)
+        ) {
+            Thread({
+                runCatching {
+                    val rr = request("v4/conversation/subscribe", buildJsonObject {
+                        put("topic", "conversation/$sessionId")
+                        put("connectionId", v4ConnectionId)
+                        put("clientMode", deliveryKind)
+                    }, timeoutMs)
+                    rr["result"]?.jsonObject?.get("ack")?.jsonObject
+                        ?.get("subscriptionId")?.jsonPrimitive?.contentOrNull
+                        ?.let { v4SubscriptionIds[sessionId] = it }
+                }.onFailure {
+                    v4TitleSessions.remove(sessionId)
+                }
+            }, "zcode-v4-title-sub").start()
+        }
         return r["result"]?.jsonObject ?: JsonObject(emptyMap())
     }
 
@@ -1072,6 +1130,7 @@ class ZCodeProtocolClient private constructor(
     fun unsubscribeConversationV4(sessionId: String, timeoutMs: Long = 5000) {
         val subId = v4SubscriptionIds.remove(sessionId)
         v4SubscribedSessions.remove(sessionId)
+        v4TitleSessions.remove(sessionId)
         v4FrameProbe.remove(sessionId)
         v4MappedProbe.remove(sessionId)
         v4FrameMapper.cleanup(sessionId)

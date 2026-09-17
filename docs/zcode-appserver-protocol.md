@@ -264,6 +264,8 @@ flowchart LR
 - `session/read` 的 `runtime.contextUsage.size` 对模板渠道模型固定走模板默认（如 200k），providerModelRules 手写的 `contextWindow` **不进该计算链**——宿主需要自定义总量须读 provider_config.json 自行覆盖显示。
 - `state.updated` 的 `model.available[]` 描述符含 `ref{providerId, modelId}` / `label` / `contextWindow` / `maxOutputTokens` / `reasoning{levels, defaultLevel}` / `properties{inputFormat, outputFormat}`——是模型能力位（视觉/输入格式）与档位集的权威运行时来源。
 - headless CLI（`-p` positional prompt）在 v2 上经 Windows argv 传长 prompt 不可靠：含 ASCII 引号/换行会在引号处截断（实测提示词只剩前 1k 字符，且截断无任何报错）；长 prompt 的宿主自动化应改走 app-server 通道而非 CLI 子进程。
+- **会话标题生成与广播**：服务端在首条用户输入（turnNumber===0、输入 ≥10 字符、非 fork/子代理会话）后异步生成正式标题（约回合完成后 ~25s），结果**只在 v4 帧 `state.updated` delta 的 `patch.meta.title`（附 `titleSource`）广播**——legacy `session/event` 流不再推 `session.titleUpdated`。只消费 legacy 流的宿主须为主会话补一条 v4/conversation/subscribe（可只抽 meta.title，行数据不映射防与 legacy 双写）。
+- **上下文构成明细已移除**：v1 经 model_complete 事件的 `contextUsageBreakdown`（及 session/read runtime.breakdown）提供的分类构成，v2 在 session/read、legacy 事件、v4 帧全链路均无该数据——依赖它的宿主 UI 需降级隐藏。
 - `-32031` 在 v2 的语义变化：会话恢复时模型引用缺失/失效告警，宿主应在 resume 后按 provider_config.json 现役渠道重发模型引用。
 
 ---

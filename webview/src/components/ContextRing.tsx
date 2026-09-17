@@ -91,6 +91,10 @@ export function ContextRing() {
   // 第三方 provider 不显示也不拉取）
   const isGlmPlan = isBigmodelProvider(currentModel?.providerId)
 
+  // v2 代际标记：构成明细在 v2 协议面无数据源（session/read runtime 无 breakdown、
+  // legacy 事件与 v4 帧均不携带，diag-v2-breakdown.py 实证），隐藏「上下文构成」区块
+  const chatModelsNewCli = useStore((s) => s.chatModelsNewCli)
+
   // 分类明细聚合
   const categoryRows = breakdown && breakdown.length > 0 ? aggregateBreakdown(breakdown) : []
 
@@ -159,31 +163,34 @@ export function ContextRing() {
               </div>
             </div>
 
-            {/* 上下文构成（model_complete 的 contextUsageBreakdown，仅主 turn 有数据）*/}
-            <div className="ctx-popover__section">
-              <div className="ctx-popover__title">{t('usage.context.titleBreakdown')}</div>
-              {categoryRows.length > 0 ? (
-                categoryRows.map((row, i) => (
-                  <div className="ctx-popover__row ctx-popover__cat" key={i}>
-                    <span className="ctx-popover__dot" style={{ background: row.color }} />
-                    <span className="ctx-popover__label">{t(row.label)}</span>
-                    <span className="ctx-popover__bar-mini">
-                      <span style={{ width: `${Math.max(2, row.pct)}%`, background: row.color }} />
-                    </span>
-                    <span className="ctx-popover__num">{row.pct.toFixed(1)}%</span>
-                  </div>
-                ))
-              ) : (
-                <div className="ctx-popover__muted">{t('usage.context.noBreakdown')}</div>
-              )}
-              <div className="ctx-popover__row ctx-popover__row--highlight">
-                <span className="ctx-popover__label">{t('usage.context.hitRate')}</span>
-                {/* hitRate=null 表示本 turn 暂无统计（新 turn 首次模型调用完成前），显示"—"而非误导性的 0% */}
-                <span className="ctx-popover__num">
-                  {hasData && ctx!.hitRate != null ? `${(ctx!.hitRate * 100).toFixed(1)}%` : '—'}
-                </span>
+            {/* 上下文构成（model_complete 的 contextUsageBreakdown，仅主 turn 有数据）。
+                v2 无数据源：整块隐藏 */}
+            {!chatModelsNewCli && (
+              <div className="ctx-popover__section">
+                <div className="ctx-popover__title">{t('usage.context.titleBreakdown')}</div>
+                {categoryRows.length > 0 ? (
+                  categoryRows.map((row, i) => (
+                    <div className="ctx-popover__row ctx-popover__cat" key={i}>
+                      <span className="ctx-popover__dot" style={{ background: row.color }} />
+                      <span className="ctx-popover__label">{t(row.label)}</span>
+                      <span className="ctx-popover__bar-mini">
+                        <span style={{ width: `${Math.max(2, row.pct)}%`, background: row.color }} />
+                      </span>
+                      <span className="ctx-popover__num">{row.pct.toFixed(1)}%</span>
+                    </div>
+                  ))
+                ) : (
+                  <div className="ctx-popover__muted">{t('usage.context.noBreakdown')}</div>
+                )}
+                <div className="ctx-popover__row ctx-popover__row--highlight">
+                  <span className="ctx-popover__label">{t('usage.context.hitRate')}</span>
+                  {/* hitRate=null 表示本 turn 暂无统计（新 turn 首次模型调用完成前），显示"—"而非误导性的 0% */}
+                  <span className="ctx-popover__num">
+                    {hasData && ctx!.hitRate != null ? `${(ctx!.hitRate * 100).toFixed(1)}%` : '—'}
+                  </span>
+                </div>
               </div>
-            </div>
+            )}
 
             {/* GLM 额度（仅 GLM 套餐模型）*/}
             {isGlmPlan && (

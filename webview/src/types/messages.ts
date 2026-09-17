@@ -1036,6 +1036,8 @@ export type JavaResponse =
       billingKeySource?: 'custom' | 'config' | 'oauth'
       /** 客户端选中团队套餐但未配覆盖（实际按个人 key 计费）→ 输入框黄色提醒 */
       teamPlanNoOverride?: boolean
+      /** v2 代际标记（上下文构成无数据源等代际降级的判断依据） */
+      newCli?: boolean
     }
   | { op: 'modelManage'; configPath?: string; providers: ModelManageProvider[]; error?: string; newCli?: boolean }
   /** 切换回包：changes 含全部实际变更（启用内置套餐时其余内置套餐联动禁用，互斥）*/

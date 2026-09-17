@@ -1019,6 +1019,8 @@ interface StoreState {
   billingKeySource: 'custom' | 'config' | 'oauth' | null
   /** 客户端选中团队套餐但未配覆盖 → 输入框黄色提醒（配好覆盖后刷新复位） */
   teamPlanNoOverride: boolean
+  /** v2 代际标记（listModels 响应 newCli）：上下文构成明细在 v2 无协议数据源，悬浮窗据此隐藏 */
+  chatModelsNewCli: boolean
   /** 切换当前会话模型（session/setModel）*/
   setModel: (modelId: string, providerId: string) => void
   /** 把 persist 记忆的模型下发给指定会话（models 列表已就绪时才生效）*/
@@ -1307,6 +1309,7 @@ export const useStore = create<StoreState>((set, get) => ({
   modelsRefreshing: false,
   billingKeySource: null,
   teamPlanNoOverride: false,
+  chatModelsNewCli: false,
   currentModel: null,
   modelInvalidated: false,
   modelAppliedSessions: new Map<string, number>(),
@@ -4120,6 +4123,9 @@ export function handleResponse(
         modelsRefreshing: false,
         billingKeySource: msg.billingKeySource ?? null,
         teamPlanNoOverride: msg.teamPlanNoOverride ?? false,
+        // v2 代际标记：上下文构成明细在 v2 协议面无数据源（session/read runtime 无
+        // breakdown、事件流与 v4 帧均不携带，diag-v2-breakdown.py 实证），悬浮窗据此隐藏
+        chatModelsNewCli: msg.newCli === true,
       })
       // 模型清单变更后（设置页禁用 provider / Zcode 侧增删模型），已选模型若已不在
       // 列表 → 取消选择，下拉回占位提示让用户重新选；persist 记忆一并清除（防下次水合复活）。
