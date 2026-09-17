@@ -2,7 +2,7 @@
 
 > **免责声明**：本文档非 Z.ai 官方文档，由 ZC-GUI 插件开发过程中对 ZCode CLI 的静态分析与协议实测逆向整理而来，仅供第三方集成参考。协议随 CLI 版本演进可能随时变化，以官方发布为准。
 >
-> **基准版本**：ZCode CLI 0.16.5（2026-08-28 构建），部分条目附 0.16.1（2026-08-09 构建）对照。
+> **基准版本**：ZCode CLI 0.16.5（2026-08-28 构建），部分条目附 0.16.1（2026-08-09 构建）对照；§9 为新版换代 CLI（桌面客户端 3.12.3 灰度，2026-09-16 构建）相对差异——**注意 `--version` 仍报 0.16.5，版本号不可用于区分新旧代**。
 > **使用情况**：表中「ZC-GUI」列表示 [ZC-GUI](https://github.com/csuftt/zcode-jetbrains-plugin) JetBrains 插件（v0.3.1 开发中快照）对该 API 的使用状态——✅ 使用中 / ⬜ 未使用。供同样基于 app-server 做集成的开发者参考。
 
 ## 1. 概述
@@ -51,7 +51,7 @@ flowchart LR
 | `session/list` | 按工作区列会话（分页）。**0.16.5 实测坑**：① CLI 原样落库 `workspacePath`——正/反斜杠双形态并存时单形态查询各丢一半，宿主查询需双形态并集、写入需归一；② 内存补列不排子代理会话（`sess_subagent_*`），混入主列表需前缀过滤 | ✅ |
 | `session/subscribe` | 订阅会话事件流（subscribe 前会话须处于活跃状态，冷会话会报 -32004，先 `session/resume`） | ✅ |
 | `session/resume` | 恢复/激活历史会话（跨进程的会话在本进程未激活时，一切操作前都需先 resume） | ✅ |
-| `session/send` | 发送消息驱动回合；支持 `attachments` 附件、`toolDenylist`、`automationId`（定时任务触发）等特殊输入 | ✅ |
+| `session/send` | 发送消息驱动回合；支持 `attachments` 附件、`toolDenylist`、`automationId`（定时任务触发）等特殊输入。v2 代模型字段换代：`runtimeModel` 移除，改 `modelSelection {providerId, modelId, options?{reasoningLevel}}`（见 §9.3） | ✅ |
 | `session/stop` | 停止当前回合。**注意**：0.16.5 起 legacy 通道的 stop 存在失效回归（见 §4.3），建议改用 V4 stop | ✅（兜底路径） |
 | `session/close` | 关闭会话（释放运行时） | ✅ |
 | `session/read` | 读会话详情快照：`runtime`（模型、contextUsage 等）、`settings`（模式/思考级别）、`activeTurnKind` 等 | ✅ |
@@ -67,7 +67,7 @@ flowchart LR
 
 | 方法 | 语义 | ZC-GUI |
 |---|---|---|
-| `session/setModel` | 切换会话模型（`modelId` + `providerId`，可携带 `runtimeModel` 完整覆盖）。注意：回合运行中直接 setModel 会终止当前回合，需延迟到回合结束补发 | ✅ |
+| `session/setModel` | 切换会话模型（`modelId` + `providerId`，可携带 `runtimeModel` 完整覆盖）。注意：回合运行中直接 setModel 会终止当前回合，需延迟到回合结束补发。v2 代 `model` 参数为对象 `{modelId, providerId, options?{reasoningLevel}}`（见 §9.3） | ✅ |
 | `session/updateRuntimeModelConfig` | 更新运行时模型配置（上下文 limit / modalities 等客户端侧覆盖） | ✅ |
 | `session/setMode` | 设置权限模式（build / plan / default / yolo 等） | ✅ |
 | `session/setThoughtLevel` | 设置思考级别（级别集因模型而异，如 off/high/max） | ✅ |
@@ -76,9 +76,9 @@ flowchart LR
 
 | 方法 | 语义 | ZC-GUI |
 |---|---|---|
-| `workspace/generateText` | 无会话一次性文本生成（带 `operationId` 可取消）——适合输入润色等轻量场景，避免冷启动整个会话。未注册时报 -32603，先 `upsertModelProvider` 注册目标模型即可自愈 | ✅ |
+| `workspace/generateText` | 无会话一次性文本生成（带 `operationId` 可取消）——适合输入润色等轻量场景，避免冷启动整个会话。未注册时报 -32603，先 `upsertModelProvider` 注册目标模型即可自愈。v2 代参数强校验换代：`modelRef` → `selection {providerId, modelId, options?{reasoningLevel}}` + 请求顶层 `maxOutputTokens`（见 §9.4） | ✅ |
 | `workspace/cancelGenerateText` | 取消 generateText | ⬜ |
-| `workspace/upsertModelProvider` | 注册/更新自定义模型 provider（apiKey 可用 `{source:"env"}` 引用环境变量避免明文） | ✅ |
+| `workspace/upsertModelProvider` | 注册/更新自定义模型 provider（apiKey 可用 `{source:"env"}` 引用环境变量避免明文）。**v2 代已移除**——渠道注册表改由 `provider_config.json` 文件承载，运行中 app-server watch 热加载（见 §9.2） | ✅ |
 | `workspace/removeModelProvider` | 移除自定义 provider | ⬜ |
 | `workspace/readState` | 一次读全工作区状态（模型目录 / providers / 设置 / thoughtLevels） | ⬜ |
 | `workspace/setDefaultModel` | 设工作区默认模型 | ⬜ |
@@ -140,7 +140,7 @@ flowchart LR
 
 - **snapshot 帧**：`payload = {kind:"snapshot", snapshot:{rows:{window:[…行数组]}}}`。window 是尾部窗口（实测 `snapshotTailWindowRows=60` 行），长会话只有近尾部内容；回放时宿主应把已有 UI 状态对齐到快照再消费增量。
 - **行类型**：`userInput`（user prompt）/ `turnHeader`（回合头）/ `assistantText` / `reasoning` / `toolCall`。
-- **turnHeader 行关键字段**（2026-09-02 diag 实测）：`state`（`running · completedSuccess · completedInterrupted · …`）/ **`startedAt` / `endedAt` / `activeMs`（回合权威起止与活跃时长）** / `createdAt` / `fileChanges`（代码变更统计）/ `executionKind`（如 `agent`）/ `historyRoundCount` / `actions`（如 `canRewindFiles`）。**无 model 字段**——回合模型须从消息读回（assistant `info.modelID`）拿。
+- **turnHeader 行关键字段**（2026-09-02 diag 实测）：`state`（`running · completedSuccess · completedInterrupted · …`）/ **`startedAt` / `endedAt` / `activeMs`（回合权威起止与活跃时长）** / `createdAt` / `fileChanges`（代码变更统计）/ `executionKind`（如 `agent`）/ `historyRoundCount` / `actions`（如 `canRewindFiles`）。**无 model 字段**——回合模型须从消息读回（assistant `info.modelID`；v2 代改名 `modelId`，见 §9.6）拿。
 - **toolCall 行关键字段**：`toolCallId` / `toolName` / `status`（`inputStreaming · pendingApproval · running · success · error · cancelled`）/ `inputText`（参数 JSON 文本）/ `input`（已解析对象）/ `output {text}` / `error {code, message}` / **`startedAt` / `endedAt`（毫秒 epoch，optional）**。时间戳是工具耗时的权威数据源；仅消费 legacy `tool.updated` 事件的宿主拿不到精确起止，只能本地计时。
 - **增量 op**：`row.appended` / `row.upserted`（整行替换，`inputText` 为**累积全文**，宿主自行 diff 出增量）/ `row.delta`（`append` 追加文本）；`state.updated` / `row.removed` 等与本映射无关。
 - **消费建议**：v4 帧与 legacy 事件形态差异大，宿主可做一层映射器（快照回放标记 deliveryKind 供前端区分、upsert 累积文本按长度 diff、时间戳原样透传）——ZC-GUI `V4FrameMapper` 即此做法。
@@ -194,7 +194,7 @@ flowchart LR
 |---|---|---|
 | `-32004` | Session is not active——跨进程会话在本进程未激活（CLI 升级/重启后常见） | 先 `session/resume` 再重试原请求 |
 | `-32010` | 发送撞上挂死的回合 | 先停止回合再重试 |
-| `-32031` | 会话恢复告警（模型配置丢失） | `send`/`resume` 时携带 `runtimeModel`；`requestProviderRuntimeHeaders` 未按约应答也会触发 |
+| `-32031` | 会话恢复告警（模型配置丢失） | v1：`send`/`resume` 时携带 `runtimeModel`；v2：按 provider_config.json 现役渠道重发模型引用（§9.3）。`requestProviderRuntimeHeaders` 未按约应答也会触发 |
 | `-32601` | 方法不存在（标准 JSON-RPC） | 版本能力差异探针：V4 不在场的老 CLI 对 `v4/command` 回此码 |
 | `-32602` | 参数非法（标准 JSON-RPC） | 如空 workspacePath |
 | `-32603` | 内部错误（标准 JSON-RPC） | 如调用未注册模型的方法（`workspace/generateText` 未注册模型时）、MCP 配置损坏 |
@@ -213,4 +213,59 @@ flowchart LR
 
 ---
 
-*最后更新：2026-09-01 · 基于 ZCode CLI 0.16.5 · ZC-GUI v0.3.1（开发中）使用快照*
+## 9. 新版 CLI（v2 代）与 v1 的差异
+
+2026-09 灰度的换代客户端（3.12.3，下称 **v2 代**；此前的内置渠道体系称 **v1 代**）协议与配置体系全面换代，且 **`--version` 不变（仍 0.16.5）**，无法用版本号区分。以下均为协议直连实测（2026-09-17）。
+
+### 9.1 判代
+
+| 判据 | v1 代 | v2 代 |
+|---|---|---|
+| `zcode.cjs` 内容标记（主判，最终权威——宿主 spawn 的就是这份文件） | 无 | 含 `ZCODE_PERSONAL_PROVIDER_CONFIG_FILE` 字节串（11MB 文件建议流式窗口搜索），按文件 mtime 缓存 |
+| `~/.zcode/v2/setting.json` 键形态（兜底） | 有 `modelProviderFamilySelectedKeys` | 有 `providerFamilyConnectionSelections` |
+| `provider_config.json` 存在性（末位兜底） | 永不生成 | 启动即建空模板 |
+
+### 9.2 渠道体系：config.json → provider_config.json
+
+- **v1**：渠道注册表 = `~/.zcode/v2/config.json` 的 `provider` 节点（内置渠道 `builtin:` 前缀 + 自定义 UUID 渠道），key 明文在 `options.apiKey`；`workspace/upsertModelProvider` 等 RPC 写系可热注册。
+- **v2**：渠道注册表 = `~/.zcode/v2/provider_config.json`，结构：
+  - `config.providerConfigRules.providerRules[]`：`{providerId, templateId?, providerName, enabled?, config:{group:"standard-personal", access:{type, apiKey}, api:{type, baseUrl}, personalModelIds, modelOrder}}`。模板渠道带 `templateId`（providerId 惯例与 templateId 同值）；无 `templateId` 的纯自定义形态 registry 同样接受。
+  - 模板本体在安装目录 `resources/config/provider/zcode-builtin.json` 的 `templateRules`（20 个模板）：access.type 枚举 `api-key` / `zhipu-coding-plan-api-key`，api.type 枚举 `anthropic-messages` / `openai-chat-completions` / `openai-responses`，`builtinModelIds` 为模板模型清单，规则经 overlay 合成生效模型。
+  - `config.providerOrder`：客户端展示序（客户端拖拽写这里）。
+  - `config.modelConfigRules.providerModelRules[]`：模型级覆盖 `{modelId, providerId, config:{properties:{contextWindow, inputFormat?{supportsImage, supportsVideo, supportsPdf, supportsText, supportsAudio}}}}`（partial strict）；无模板的手工模型规则在 `manualProviderModelRules[]`（properties 之外还接受 `optionSpecs{reasoningLevel, maxOutputTokens{max}}`）。**两列表的 (providerId, modelId) 不得重复**，否则 superRefine 拒绝整个文件（全渠道消失）。
+- **strict 与热加载**：文件为 zod strict 解析，未知键整文件拒绝；运行中的 app-server watch 该文件，外部写入 ≤2s 热加载生效——v2 渠道增删改的唯一持久途径就是写这个文件（`upsertModelProvider` 等 RPC 写系已移除）。
+- **行为差**：`enabled:false` 的渠道被 registry 整体排除（`setModel` 报 "Provider Registry 中不存在"）；v1 遗留 config.json 中的自定义渠道不再被 registry 接受（`session/resume` 报 -32603 Provider Registry 中不存在）。
+- 订阅套餐额度查询（HTTP 面）的认证 key 同步换源：v2 从 provider_config.json 渠道的 `access.apiKey` 取。
+
+### 9.3 send / setModel：runtimeModel → modelSelection
+
+- v1：`session/send` 携带 `runtimeModel`（完整 provider 定义逐请求注册）；`setModel` 收 modelId + providerId + runtimeModel。
+- v2：`runtimeModel` 移除，`session/send` 改 `modelSelection {providerId, modelId, options?{reasoningLevel}}`；`setModel` 的 `model` 参数为对象 `{modelId, providerId, options?{reasoningLevel}}`。
+- **`options.reasoningLevel` 对有 reasoning 定义的模型必填**，取值必须在该模型合法值集内（模板表 `modelRules` 的 optionSpecs 正则链）：缺失时回合在 model_creation 阶段被拒且**无任何 legacy 事件**（见 §9.5），表现为"发了消息没反应"；带了不支持的值报 "Reasoning effort … is not supported"。
+
+### 9.4 workspace/generateText：参数与响应换代
+
+- 请求：`modelRef` → `selection {providerId, modelId, options?{reasoningLevel}}`（strict：`ref`/`label`/`contextWindow`/`maxOutputTokens` 等模型描述符字段出现在 selection 或其 options 内均拒收）。
+- **请求顶层新增 `maxOutputTokens`（与 `querySource` 平级）**——与 options.reasoningLevel 同为强校验：缺 reasoningLevel 报 -32603 "Reasoning level is required for …"；缺 maxOutputTokens 报 -32603 "maxOutputTokens is outside the model option range"。取值 ≤ 模型档位上限即可（如 min(档位上限, 8192)）。
+- 响应：模型引用字段 `modelRef` → `selection`。
+
+### 9.5 回合终态通道：v4/telemetry/event
+
+- v2 回合失败（含模型引用非法在 model_creation 被拒）**只在 `v4/telemetry/event` 通知发终态**：`kind=turn.terminal` + `status`（实测 `failed` / `success` / `aborted` 等）+ `errorCode` / `errorMessage` / `turnPhase` / `sessionId` / `turnId`。legacy `session/event` 流**无 turn.failed 帧**。
+- 成功回合：遥测 `status=success`，同时真实 `turn.completed` 事件（payload 含 `response` / `usage` / `resultType` / `cacheStats` 等）经既有事件链正常到达；v4 订阅链还会映射出第二个 completed（双链，消费方须幂等）。
+- 只消费 legacy 流的宿主**必须**订阅 `v4/telemetry/event` 并自行合成 turn.failed / 回合结束信号，否则失败回合表现为"一直没响应"；注意不要对 `status=success` 重复合成（会以空 payload 抢在真实事件前污染消费方）。成功回合的遥测也不携带 usage。
+
+### 9.6 字段改名（消息形态）
+
+- assistant 消息 `info.modelID` / `info.providerID` → **`modelId` / `providerId`**（小写驼峰；`session/messages` 响应与落库 db 均为新名）——按 modelID 读回合模型的宿主须双命名兼容。
+
+### 9.7 其他实测行为差
+
+- `session/read` 的 `runtime.contextUsage.size` 对模板渠道模型固定走模板默认（如 200k），providerModelRules 手写的 `contextWindow` **不进该计算链**——宿主需要自定义总量须读 provider_config.json 自行覆盖显示。
+- `state.updated` 的 `model.available[]` 描述符含 `ref{providerId, modelId}` / `label` / `contextWindow` / `maxOutputTokens` / `reasoning{levels, defaultLevel}` / `properties{inputFormat, outputFormat}`——是模型能力位（视觉/输入格式）与档位集的权威运行时来源。
+- headless CLI（`-p` positional prompt）在 v2 上经 Windows argv 传长 prompt 不可靠：含 ASCII 引号/换行会在引号处截断（实测提示词只剩前 1k 字符，且截断无任何报错）；长 prompt 的宿主自动化应改走 app-server 通道而非 CLI 子进程。
+- `-32031` 在 v2 的语义变化：会话恢复时模型引用缺失/失效告警，宿主应在 resume 后按 provider_config.json 现役渠道重发模型引用。
+
+---
+
+*最后更新：2026-09-17 · 基于 ZCode CLI 0.16.5（v1 代 2026-08-28 构建 / v2 代 2026-09-16 构建） · ZC-GUI v0.3.6 使用快照*
