@@ -128,6 +128,31 @@
     }
   }
 
+  /* 「迁移内置渠道」入口（v2：v1 config.json 有渠道且当前无内置渠道时显示，次级样式） */
+  &__remigrate {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    background: transparent;
+    border: 1px solid var(--border-primary);
+    border-radius: 8px;
+    padding: 5px 12px;
+    font-size: var(--fs-body);
+    color: var(--text-secondary);
+    cursor: pointer;
+    transition: background 0.15s, border-color 0.15s, color 0.15s;
+
+    &:hover:not(:disabled) {
+      color: var(--text-primary);
+      border-color: var(--border-hover);
+      background: var(--bg-hover);
+    }
+    &:disabled {
+      cursor: default;
+      opacity: 0.6;
+    }
+  }
+
   &__add {
     display: inline-flex;
     align-items: center;

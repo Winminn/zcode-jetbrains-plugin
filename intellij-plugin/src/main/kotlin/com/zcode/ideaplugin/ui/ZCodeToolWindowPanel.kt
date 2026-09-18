@@ -896,6 +896,7 @@ if (!window.__ZCODE_LOG_HOOK__) {
                         "modelRemoveProvider" -> handleModelRemoveProvider(msg)
                         "modelReorderProviders" -> handleModelReorderProviders(msg)
                         "modelSetProviderKey" -> handleModelSetProviderKey(msg)
+                        "modelRemigrateBuiltins" -> handleModelRemigrateBuiltins()
                         "setModel" -> handleSetModel(msg)
                         "cancelModelSwitch" -> handleCancelModelSwitch(msg)
                         "getSettings" -> handleGetSettings(msg)
@@ -2746,6 +2747,50 @@ if (!window.__ZCODE_LOG_HOOK__) {
             put("configPath", path.toString())
             put("providers", providerArr)
             put("newCli", true)
+            put("remigrate", remigrateAvailable())
+        }
+    }
+
+    /**
+     * 「重新执行内置渠道迁移」入口可见性（设置页按钮显隐）：
+     * v1 config.json 存在且带 provider 注册表 + v2 provider_config.json 存在 +
+     * 当前渠道里没有任何映射表内置渠道（templateId/providerId 命中映射值——与迁移器
+     * 的跳过判据同源，有即无需再迁）。标记（防复活）不影响可见性：重迁动作自带清标记。
+     */
+    private fun remigrateAvailable(): Boolean {
+        val mapped = com.zcode.ideaplugin.protocol.V1BuiltinMigrator.V1_TO_V2_TEMPLATE.values.toSet()
+        val hasBuiltin = readNewCliProviderRules().any {
+            (it["templateId"]?.jsonPrimitive?.contentOrNull in mapped) ||
+                (it["providerId"]?.jsonPrimitive?.contentOrNull in mapped)
+        }
+        if (hasBuiltin) return false
+        if (!java.nio.file.Files.isRegularFile(Credentials.personalProviderConfigPath())) return false
+        val v1 = Credentials.defaultConfigPath().toFile()
+        if (!v1.isFile) return false
+        return try {
+            Json.parseToJsonElement(v1.readText()).jsonObject["provider"]?.jsonObject?.isNotEmpty() == true
+        } catch (_: Exception) {
+            false
+        }
+    }
+
+    /**
+     * op=modelRemigrateBuiltins — 设置页「重新执行内置渠道迁移」：立刻跑一次兜底迁移
+     * （无标记，纯按文件现状判定，与启动钩子同一入口）→ 回包携带迁入渠道名，前端刷新
+     * 管理页与输入框下拉。迁入 0 条（旧配置无带 key 渠道）也回 ok，前端提示"无可迁移渠道"。
+     */
+    private fun handleModelRemigrateBuiltins(): JsonObject {
+        val zcodePath = try { com.zcode.ideaplugin.protocol.ZCodeLocator.detect() } catch (e: Exception) { null }
+        val migrated = com.zcode.ideaplugin.protocol.V1BuiltinMigrator.migrateIfNeeded(zcodePath = zcodePath)
+        val names = readNewCliProviderRules()
+            .filter { (it["providerId"]?.jsonPrimitive?.contentOrNull) in migrated.toSet() }
+            .mapNotNull { it["providerName"]?.jsonPrimitive?.contentOrNull }
+            .ifEmpty { migrated }
+        log.info("modelRemigrateBuiltins: migrated=$migrated")
+        return buildJsonObject {
+            put("op", "modelRemigrated")
+            put("ok", true)
+            put("migrated", JsonArray(names.map { JsonPrimitive(it) }))
         }
     }
 

@@ -112,5 +112,15 @@
   "removeProviderTitle": "채널 삭제(모든 모델 포함)",
   "lastModelTitle": "마지막 모델은 삭제할 수 없습니다",
   "lastModelBody": "\"{{name}}\"은(는) 채널 \"{{provider}}\"의 마지막 모델이라 단독 삭제할 수 없습니다. 이 채널을 더 사용하지 않으려면 채널 카드 오른쪽 상단의 삭제 버튼으로 전체를 삭제하세요.",
-  "configPathRevealTitle": "파일 탐색기에서 표시"
+  "configPathRevealTitle": "파일 탐색기에서 표시",
+  "remigrate": "내장 채널 마이그레이션",
+  "remigrateTitle": "이전 config.json에서 키가 있는 내장 채널 마이그레이션",
+  "remigrateConfirmTitle": "내장 채널 마이그레이션 다시 실행",
+  "remigrateConfirmBody": "이전 config.json에서 평문 API 키를 가진 내장 채널을 읽어 템플릿 형태로 채널 목록에 추가합니다(컨텍스트 길이 및 이미지/비디오/PDF 플래그 포함). 이미 있는 채널은 중복 마이그레이션되지 않습니다.",
+  "remigrateConfirmBtn": "마이그레이션 시작",
+  "remigrateDoneTitle": "마이그레이션 완료",
+  "remigrateDoneBody": "마이그레이션된 채널: {{names}}",
+  "remigrateNoneBody": "이전 설정에 마이그레이션 가능한 채널이 없습니다(평문 API 키 필요)",
+  "remigrateFailedTitle": "마이그레이션 실패",
+  "remigrateErrorBody": "마이그레이션 실패: {{error}}"
 }

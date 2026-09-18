@@ -112,5 +112,15 @@
   "removeProviderTitle": "チャネルを削除（全モデルを含む）",
   "lastModelTitle": "最後のモデルは削除できません",
   "lastModelBody": "「{{name}}」はチャネル「{{provider}}」の最後のモデルのため、単独では削除できません。このチャネルを使わない場合は、チャネルカード右上の削除ボタンでチャネル全体を削除してください。",
-  "configPathRevealTitle": "エクスプローラーで表示"
+  "configPathRevealTitle": "エクスプローラーで表示",
+  "remigrate": "組み込みチャネルを移行",
+  "remigrateTitle": "旧 config.json からキー付き組み込みチャネルを移行",
+  "remigrateConfirmTitle": "組み込みチャネルの移行を再実行",
+  "remigrateConfirmBody": "旧 config.json から平文 API キーを持つ組み込みチャネルを読み取り、テンプレート形式でチャネル一覧に追加します（コンテキスト長と画像/動画/PDF 対応フラグを含む）。既存チャネルは重複して移行されません。",
+  "remigrateConfirmBtn": "移行を開始",
+  "remigrateDoneTitle": "移行完了",
+  "remigrateDoneBody": "移行済みチャネル：{{names}}",
+  "remigrateNoneBody": "移行可能なチャネルが旧設定にありません（平文 API キーが必要です）",
+  "remigrateFailedTitle": "移行に失敗しました",
+  "remigrateErrorBody": "移行に失敗しました：{{error}}"
 }

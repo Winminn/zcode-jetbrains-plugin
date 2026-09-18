@@ -404,6 +404,8 @@ export type JavaRequest =  | { op: 'askUserPendingState' }
   /** 删除自定义渠道（含其全部模型）*/
   | { op: 'modelRemoveProvider'; providerId: string }
   | { op: 'modelReorderProviders'; providerIds: string[] }
+  /** 重新执行内置渠道迁移（v2）：清一次性标记 + 立跑兜底迁移，回包 modelRemigrated */
+  | { op: 'modelRemigrateBuiltins' }
   | { op: 'setModel'; sessionId: string; modelId: string; providerId: string }
   /** 撤销回合中挂起的延迟切换（用户在等待期重新选回生效模型）*/
   | { op: 'cancelModelSwitch'; sessionId: string }
@@ -1041,13 +1043,17 @@ export type JavaResponse =
       /** v2 代际标记（上下文构成无数据源等代际降级的判断依据） */
       newCli?: boolean
     }
-  | { op: 'modelManage'; configPath?: string; providers: ModelManageProvider[]; error?: string; newCli?: boolean }
+  | { op: 'modelManage'; configPath?: string; providers: ModelManageProvider[]; error?: string; newCli?: boolean
+      /** 可显示「重新执行内置渠道迁移」入口（v1 config.json 有渠道 + 当前无映射表内置渠道）*/
+      remigrate?: boolean }
   /** 切换回包：changes 含全部实际变更（启用内置套餐时其余内置套餐联动禁用，互斥）*/
   | { op: 'modelToggled'; changes: { providerId: string; enabled: boolean }[] }
   | { op: 'modelSetProviderKey'; ok: boolean; providerId: string; cleared: boolean }
   /** 自定义渠道增/改/删回包：ok=false 时 error 在编辑弹窗内提示（不进全局错误条）*/
   | { op: 'modelProviderSaved'; ok: boolean; action: 'add' | 'update' | 'remove'; providerId: string; error?: string }
   | { op: 'modelProvidersReordered'; ok: boolean }
+  /** 重迁回包：migrated = 迁入渠道显示名（空 = 旧配置无可迁移渠道）；ok=false 时 error 有文案 */
+  | { op: 'modelRemigrated'; ok: boolean; migrated?: string[]; error?: string }
   | { op: 'modelSet'; sessionId: string; modelId: string; providerId: string }
   /** 回合中切换挂起（缺陷AC）：Java 挂起目标模型等回合结束补发，前端回滚选中态并提示 */
   | { op: 'modelSetPending'; sessionId: string; modelId: string; providerId: string }

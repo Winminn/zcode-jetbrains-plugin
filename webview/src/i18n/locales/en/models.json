@@ -113,5 +113,15 @@
   "removeProviderTitle": "Delete channel (with all its models)",
   "lastModelTitle": "Last model cannot be removed",
   "lastModelBody": "\"{{name}}\" is the last model of channel \"{{provider}}\" and cannot be removed on its own. To stop using this channel, delete the whole channel via the trash button on the channel card.",
-  "configPathRevealTitle": "Reveal in File Explorer"
+  "configPathRevealTitle": "Reveal in File Explorer",
+  "remigrate": "Migrate built-ins",
+  "remigrateTitle": "Migrate built-in channels (with keys) from the legacy config.json",
+  "remigrateConfirmTitle": "Re-run built-in channel migration",
+  "remigrateConfirmBody": "Reads built-in channels that carry a plain API key from the legacy config.json and creates them in the current channel list (including context window and vision/video/PDF flags). Existing channels are not migrated twice.",
+  "remigrateConfirmBtn": "Start migration",
+  "remigrateDoneTitle": "Migration done",
+  "remigrateDoneBody": "Migrated: {{names}}",
+  "remigrateNoneBody": "No migratable channel in the legacy config (a plain API key is required)",
+  "remigrateFailedTitle": "Migration failed",
+  "remigrateErrorBody": "Migration failed: {{error}}"
 }

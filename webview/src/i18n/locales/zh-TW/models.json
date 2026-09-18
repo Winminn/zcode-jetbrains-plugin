@@ -112,5 +112,15 @@
   "removeProviderTitle": "刪除渠道（含全部模型）",
   "lastModelTitle": "最後一個模型不可刪除",
   "lastModelBody": "「{{name}}」是渠道「{{provider}}」的最後一個模型，不能單獨刪除。如不再使用該渠道，請點渠道卡片右上角的刪除按鈕刪除整個渠道。",
-  "configPathRevealTitle": "在檔案總管中顯示"
+  "configPathRevealTitle": "在檔案總管中顯示",
+  "remigrate": "遷移內建渠道",
+  "remigrateTitle": "從舊版 config.json 遷移帶密鑰的內建渠道",
+  "remigrateConfirmTitle": "重新執行內建渠道遷移",
+  "remigrateConfirmBody": "將讀取舊版 config.json 裡帶明文 API Key 的內建渠道，按模板形態寫入渠道列表（含模型上下文長度與視覺/影片/PDF 能力位）。已存在的渠道不會重複遷移。",
+  "remigrateConfirmBtn": "開始遷移",
+  "remigrateDoneTitle": "遷移完成",
+  "remigrateDoneBody": "已遷入渠道：{{names}}",
+  "remigrateNoneBody": "舊版設定中沒有可遷移的渠道（需要渠道帶明文 API Key）",
+  "remigrateFailedTitle": "遷移失敗",
+  "remigrateErrorBody": "遷移失敗：{{error}}"
 }

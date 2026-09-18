@@ -130,10 +130,27 @@ object BuiltinModelCatalog {
 
     private val json = Json { ignoreUnknownKeys = true }
 
-    /** 目录文件 → 解析结果，按 (path, mtime) 缓存 */
-    private val cache = ConcurrentHashMap<Path, Pair<Long, List<Rule>>>()
+    /** 目录文件 → 解析结果，按 (path, mtime+size) 缓存。size 入键：NTFS 目录项时间戳
+     *  惰性更新，快速连续重写（测试/客户端刷新）可能 mtime 相同，仅 mtime 会读到陈旧规则 */
+    private val cache = ConcurrentHashMap<Path, Pair<Pair<Long, Long>, List<Rule>>>()
 
-    private class Rule(val match: Regex, val reasoningValues: List<String>?, val maxOutputTokens: Long?)
+    private class Rule(
+        val match: Regex,
+        val reasoningValues: List<String>?,
+        val maxOutputTokens: Long?,
+        val contextWindow: Long?,
+        val supportsImage: Boolean?,
+        val supportsVideo: Boolean?,
+        val supportsPdf: Boolean?,
+    )
+
+    /** 单模型能力（modelRules 正则链合并结果；null = 链上无规则声明该键） */
+    class ModelCaps(
+        val contextWindow: Long?,
+        val supportsImage: Boolean?,
+        val supportsVideo: Boolean?,
+        val supportsPdf: Boolean?,
+    )
 
     fun defaultReasoningLevel(modelId: String, zcodePath: Path?, home: String = System.getProperty("user.home") ?: "."): String? {
         val values = reasoningValues(modelId, zcodePath, home) ?: return null
@@ -165,6 +182,28 @@ object BuiltinModelCatalog {
             r.reasoningValues?.let { values = it }
         }
         return values
+    }
+
+    /**
+     * modelId 的上下文窗口与输入能力位（modelRules properties 正则链合并，后者覆盖前者）。
+     * v1 内置渠道兜底迁移写 providerModelRules 的数据源（与 registry 同源同语义）：
+     * `.*` 泛化规则恒兜底（GLM 系 200K/1M 档、能力位全 false），具体模型规则逐级覆盖
+     * （如 GLM-5.3-Flash → 1M + 图/视频/PDF）。无目录返回 null；键未被任何命中规则声明
+     * 保持 null（调用方按 sparse 口径缺省 false）。
+     */
+    fun modelCaps(modelId: String, zcodePath: Path?, home: String = System.getProperty("user.home") ?: "."): ModelCaps? {
+        val rules = loadRules(zcodePath, home) ?: return null
+        var caps = ModelCaps(null, null, null, null)
+        for (r in rules) {
+            if (!r.match.matches(modelId) && !r.match.matches(modelId.lowercase())) continue
+            caps = ModelCaps(
+                r.contextWindow ?: caps.contextWindow,
+                r.supportsImage ?: caps.supportsImage,
+                r.supportsVideo ?: caps.supportsVideo,
+                r.supportsPdf ?: caps.supportsPdf,
+            )
+        }
+        return caps
     }
 
     /**
@@ -240,7 +279,8 @@ object BuiltinModelCatalog {
         val file = catalogFile(zcodePath, home) ?: return null
         try {
             val mtime = Files.getLastModifiedTime(file).toMillis()
-            cache[file]?.let { (t, rules) -> if (t == mtime) return rules }
+            val size = Files.size(file)
+            cache[file]?.let { (k, rules) -> if (k.first == mtime && k.second == size) return rules }
             val root = Json.parseToJsonElement(file.readText()).jsonObject
             val rules = (root["config"]?.jsonObject?.get("modelConfigRules")?.jsonObject?.get("modelRules")?.jsonArray
                 ?: return null).mapNotNull { el ->
@@ -252,9 +292,20 @@ object BuiltinModelCatalog {
                 ?.mapNotNull { (it as? kotlinx.serialization.json.JsonPrimitive)?.content }
             val maxOut = o["config"]?.jsonObject?.get("optionSpecs")?.jsonObject
                 ?.get("maxOutputTokens")?.jsonObject?.get("max")?.jsonPrimitive?.contentOrNull?.toLongOrNull()
-            Rule(match, values?.takeIf { it.isNotEmpty() }, maxOut)
+            val props = o["config"]?.jsonObject?.get("properties")?.jsonObject
+            val input = props?.get("inputFormat")?.jsonObject
+            fun inputFlag(key: String) = input?.get(key)?.jsonPrimitive?.contentOrNull?.toBooleanStrictOrNull()
+            Rule(
+                match,
+                values?.takeIf { it.isNotEmpty() },
+                maxOut,
+                props?.get("contextWindow")?.jsonPrimitive?.contentOrNull?.toLongOrNull(),
+                inputFlag("supportsImage"),
+                inputFlag("supportsVideo"),
+                inputFlag("supportsPdf"),
+            )
                 }
-            cache[file] = mtime to rules
+            cache[file] = (mtime to size) to rules
             return rules
         } catch (_: Exception) {
             return null

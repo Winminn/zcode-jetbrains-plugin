@@ -1000,14 +1000,18 @@ function mockResponse(req: JavaRequest): JavaResponse | null {
     }
     case 'modelManageList':
       // 模拟设置页「模型管理」结构（与生产同口径：内置渠道只返回生效的，第三方含
-      // disabled 标记；mockModelProviders 可变，第三方切换写回后重新读取反映变更）
+      // disabled 标记；mockModelProviders 可变，第三方切换写回后重新读取反映变更）。
+      // remigrate=true 让开发模式也能看到「迁移内置渠道」入口
       return {
         op: 'modelManage',
         configPath: 'C:\\Users\\dev\\.zcode\\v2\\config.json',
+        remigrate: true,
         providers: JSON.parse(
           JSON.stringify(mockModelProviders().filter((p) => !p.providerId.startsWith('builtin:') || p.enabled)),
         ),
       }
+    case 'modelRemigrateBuiltins':
+      return { op: 'modelRemigrated', ok: true, migrated: ['BigModel Coding Plan'] }
     case 'getUsage':
       // mock：27.9% 上下文使用率（与真实场景接近）
       return { op: 'usage', sessionId: req.sessionId, used: 278937, size: 1000000, hitRate: 0.988 }

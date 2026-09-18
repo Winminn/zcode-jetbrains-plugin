@@ -372,9 +372,17 @@ export function ModelListView() {
   const removeModelProvider = useStore((s) => s.removeModelProvider)
   const reorderModelProviders = useStore((s) => s.reorderModelProviders)
   const modelProvidersReordering = useStore((s) => s.modelProvidersReordering)
+  // 内置渠道重迁（v2）：入口显隐来自 modelManage 应答的 remigrate 位
+  const modelRemigrateAvailable = useStore((s) => s.modelRemigrateAvailable)
+  const modelRemigrating = useStore((s) => s.modelRemigrating)
+  const modelRemigrateResult = useStore((s) => s.modelRemigrateResult)
+  const remigrateBuiltins = useStore((s) => s.remigrateBuiltins)
+  const dismissRemigrateResult = useStore((s) => s.dismissRemigrateResult)
 
   const [query, setQuery] = useState('')
   const [pendingAction, setPendingAction] = useState<PendingAction | null>(null)
+  /** 重迁确认弹窗（null=关闭） */
+  const [remigrateConfirm, setRemigrateConfirm] = useState(false)
   /** 编辑弹窗目标：'add'=新增、provider=编辑、null=关闭 */
   const [editorTarget, setEditorTarget] = useState<'add' | ModelManageProvider | null>(null)
   const setProviderKey = useStore((s) => s.setProviderKey)
@@ -537,6 +545,17 @@ export function ModelListView() {
             </button>
           )}
         </div>
+        {newCli && modelRemigrateAvailable && (
+          <button
+            className="model-list-view__remigrate"
+            onClick={() => setRemigrateConfirm(true)}
+            disabled={modelRemigrating}
+            title={t('models.remigrateTitle')}
+          >
+            <span className={cx('codicon', modelRemigrating ? 'codicon-loading spin' : 'codicon-desktop-download')} />
+            {t('models.remigrate')}
+          </button>
+        )}
         <button
           className="model-list-view__refresh"
           onClick={() => loadModelManage()}
@@ -738,6 +757,39 @@ export function ModelListView() {
           danger
           onConfirm={commitRemoveProvider}
           onCancel={() => setPendingAction(null)}
+        />
+      )}
+
+      {/* 重迁确认（清标记 + 立跑迁移；已存在渠道不重复迁，安全可重试）*/}
+      {remigrateConfirm && (
+        <ConfirmDialog
+          title={t('models.remigrateConfirmTitle')}
+          message={t('models.remigrateConfirmBody')}
+          confirmText={t('models.remigrateConfirmBtn')}
+          cancelText={t('models.dialog.dismiss')}
+          onConfirm={() => {
+            setRemigrateConfirm(false)
+            remigrateBuiltins()
+          }}
+          onCancel={() => setRemigrateConfirm(false)}
+        />
+      )}
+
+      {/* 重迁结果（纯提示；成功已迁渠道名 / 无可迁移 / 失败文案）*/}
+      {modelRemigrateResult && (
+        <ConfirmDialog
+          title={modelRemigrateResult.error ? t('models.remigrateFailedTitle') : t('models.remigrateDoneTitle')}
+          message={
+            modelRemigrateResult.error
+              ? t('models.remigrateErrorBody', { error: modelRemigrateResult.error })
+              : modelRemigrateResult.names.length > 0
+                ? t('models.remigrateDoneBody', { names: modelRemigrateResult.names.join('、') })
+                : t('models.remigrateNoneBody')
+          }
+          confirmText={t('models.dialog.dismiss')}
+          cancelable={false}
+          onConfirm={dismissRemigrateResult}
+          onCancel={dismissRemigrateResult}
         />
       )}
 

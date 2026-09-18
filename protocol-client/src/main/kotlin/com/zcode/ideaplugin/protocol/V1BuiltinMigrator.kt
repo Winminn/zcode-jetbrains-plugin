@@ -17,7 +17,9 @@ import kotlinx.serialization.json.jsonPrimitive
  * v2 里没重建，key 就成了死配置——模型下拉、额度查询全部无渠道可用。本迁移在插件
  * 启动时兜底：NEW 代 + provider_config.json 无对应模板渠道 + config.json 里该渠道
  * 带明文 apiKey → 按模板形态新建 rule（providerId == templateId、access/api 取模板、
- * personalModelIds 预填模板模型清单，与客户端建渠道实拍形态一致）。
+ * personalModelIds 预填模板模型清单，与客户端建渠道实拍形态一致）；模型级
+ * contextWindow/输入能力位从目录 modelRules 解析随 rule 写入 providerModelRules
+ * （管理页上下文长度与视觉徽章的数据源，能力解析不出时退回纯模型清单）。
  *
  * 边界（全部 fail-soft，返回空表 = 无动作）：
  * - 仅 NEW 代执行（OLD 代 config.json 就是现役渠道源，无需迁移）；
@@ -28,9 +30,8 @@ import kotlinx.serialization.json.jsonPrimitive
  * - v1 条目 enabled:false 不迁；目标 templateId/providerId 在 v2 已存在不迁（用户已
  *   自行重建或客户端已迁移）。
  *
- * 写侧复用 [ProviderConfigWriterV2.addProvider]（单锁 + 滚动备份 + 原子替换）；
- * 「迁移过又删掉不再复迁」由调用方（插件启动钩子）用一次性标记保证——本对象按文件
- * 现状判断，保持纯函数性便于单测。
+ * 写侧复用 [ProviderConfigWriterV2.addProvider]（单锁 + 滚动备份 + 原子替换）；本对象
+ * 无状态、按文件现状判定，重复调用幂等（便于启动钩子与设置页入口共用）。
  */
 object V1BuiltinMigrator {
 
@@ -45,18 +46,20 @@ object V1BuiltinMigrator {
     private val json = Json { ignoreUnknownKeys = true }
 
     /**
-     * 执行兜底迁移。
+     * 执行兜底迁移。幂等：每次调用只按「v2 现状 + v1 config.json」判定——目标渠道已在
+     * provider_config.json（templateId/providerId 命中）不迁，缺失且 v1 侧带明文 key 则补建。
+     * 没有任何跨调用标记（2026-09-18 用户决策移除「防复活」一次性标记：用户在 v2 删掉的
+     * 渠道下次启动会自动补回；要永久停用请在 v1 config.json 把该渠道 enabled 置 false 或清空
+     * apiKey，那是本迁移的 opt-out 口径）。
+     *
      * @param zcodePath CLI 路径（判代主判据；null 时落配置文件兜底判代）
-     * @param skipTemplateIds 调用方指定永不迁的 templateId（「迁过又被用户删除」防复活
-     *   标记——必须在写入前过滤，事后过滤写回已发生）
-     * @return 本次新迁入的 v2 templateId 列表（空 = 无动作；调用方据此打标记/通知）
+     * @return 本次新迁入的 v2 templateId 列表（空 = 无动作；调用方据此打通知）
      */
     fun migrateIfNeeded(
         zcodePath: Path?,
         configPath: Path = Credentials.defaultConfigPath(),
         providerConfigPath: Path = Credentials.personalProviderConfigPath(),
         home: String = System.getProperty("user.home") ?: ".",
-        skipTemplateIds: Set<String> = emptySet(),
     ): List<String> {
         // ① 仅 NEW 代（zcode.cjs 可读走主判，否则配置兜底；OLD 代 config.json 现役无需迁）
         val generation = if (zcodePath != null) ProtocolGenerations.detect(zcodePath, home)
@@ -86,7 +89,6 @@ object V1BuiltinMigrator {
 
         val migrated = mutableListOf<String>()
         for ((v1Id, templateId) in V1_TO_V2_TEMPLATE) {
-            if (templateId in skipTemplateIds) continue
             if (templateId in existingTemplateIds || templateId in existingProviderIds) continue
             val entry = v1Providers[v1Id] as? JsonObject ?: continue
             // enabled 显式 false 不迁（用户在 v1 里停用的渠道不复活）
@@ -95,12 +97,31 @@ object V1BuiltinMigrator {
                 ?.takeIf { it.isNotBlank() } ?: continue
             // 模板表缺失（目录不可读/模板下架）跳过该渠道：建出的残缺 rule registry 不认
             val tpl = BuiltinModelCatalog.templateChannel(templateId, zcodePath, home) ?: continue
+            // 模型级能力（contextWindow + inputFormat 三位）取同一目录的 modelRules 正则链
+            // （与 registry 同源，GLM-5.3-Flash = 1M + 图/视频/PDF）。全部模型解析出
+            // contextWindow 才带 models（providerModelRules 随渠道同步落盘）；任一缺失
+            // 退回纯 prefill（只有模型清单、无能力位），不写半截数据。
+            val capsList = tpl.builtinModelIds.map { BuiltinModelCatalog.modelCaps(it, zcodePath, home) }
+            val models = if (capsList.all { it?.contextWindow != null }) {
+                tpl.builtinModelIds.mapIndexed { i, mid ->
+                    val c = capsList[i]!!
+                    ProviderConfigWriter.ModelDraft(
+                        modelId = mid,
+                        context = c.contextWindow!!,
+                        supportsImages = c.supportsImage == true,
+                        supportsVideo = c.supportsVideo == true,
+                        supportsPdf = c.supportsPdf == true,
+                    )
+                }
+            } else {
+                emptyList()
+            }
             val draft = ProviderConfigWriter.ProviderDraft(
                 name = tpl.name,
                 kind = "anthropic", // 仅占位：api.type 由模板值覆盖（apiTypeOverride）
                 baseURL = tpl.baseUrl,
                 apiKey = apiKey,
-                models = emptyList(),
+                models = models,
             )
             val (err, _) = ProviderConfigWriterV2.addProvider(
                 providerConfigPath, draft,

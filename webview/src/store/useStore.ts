@@ -892,6 +892,12 @@ interface StoreState {
   modelConfigPath: string | null
   /** v2 渠道体系（provider_config.json：自定义供应商，插件内可增删改；判代徽章与文案切换用）*/
   modelManageNewCli: boolean
+  /** 可显示「重新执行内置渠道迁移」入口（v1 config.json 有渠道 + 当前无映射表内置渠道）*/
+  modelRemigrateAvailable: boolean
+  /** 重迁请求执行中（按钮 loading + 防重复点击）*/
+  modelRemigrating: boolean
+  /** 重迁结果弹窗（names=迁入渠道显示名；空=无可迁移；error=失败文案），null=关闭 */
+  modelRemigrateResult: { names: string[]; error?: string } | null
   /** 正在切换启用状态的 providerId（开关 loading + 防重复点击）*/
   modelTogglingId: string | null
   /** 渠道编辑弹窗保存中（防重复提交，保存按钮 loading）*/
@@ -1114,6 +1120,10 @@ interface StoreState {
   removeModelProvider: (providerId: string) => void
   /** 渠道排序（v2 专属 op）：providerIds = 拖拽后的完整顺序 */
   reorderModelProviders: (providerIds: string[]) => void
+  /** 重新执行内置渠道迁移（清标记 + 立跑迁移），结果经 modelRemigrated 回包驱动弹窗 */
+  remigrateBuiltins: () => void
+  /** 关闭重迁结果弹窗 */
+  dismissRemigrateResult: () => void
   /** 设置用量明细时间范围并重拉 model/tool 曲线 */
   setUsageRange: (range: UsageRange) => void
   /** 设置自定义日期范围并重拉 */
@@ -1385,6 +1395,9 @@ export const useStore = create<StoreState>((set, get) => ({
   modelManageError: null,
   modelConfigPath: null,
   modelManageNewCli: false,
+  modelRemigrateAvailable: false,
+  modelRemigrating: false,
+  modelRemigrateResult: null,
   modelTogglingId: null,
   providerSaving: false,
   providerSaveError: null,
@@ -2663,6 +2676,14 @@ export const useStore = create<StoreState>((set, get) => ({
     set({ modelProvidersReordering: true })
     sendToJava({ op: 'modelReorderProviders', providerIds })
   },
+
+  remigrateBuiltins: () => {
+    if (get().modelRemigrating) return
+    set({ modelRemigrating: true, modelRemigrateResult: null })
+    sendToJava({ op: 'modelRemigrateBuiltins' })
+  },
+
+  dismissRemigrateResult: () => set({ modelRemigrateResult: null }),
 
   setUsageRange: (range) => {
     set({ usageRange: range })
@@ -4765,10 +4786,23 @@ export function handleResponse(
         modelManageError: msg.error ?? null,
         modelConfigPath: msg.configPath ?? null,
         modelManageNewCli: msg.newCli === true,
+        modelRemigrateAvailable: msg.remigrate === true,
       })
       // 设置页模型清单到达 → 输入框下拉同步（用户诉求：管理页刷新/切换后下拉跟着变，
       // 不再只在启动时拉一次）。走 listModels 保持口径与 case 'models' 既有逻辑复用
       get().loadModels()
+      break
+
+    case 'modelRemigrated':
+      // 重迁回包：结果进弹窗（names=迁入渠道名，空=无可迁移）；成功顺手全量重拉
+      //（modelManage 应答自带 loadModels 联动，输入框下拉同步刷新）
+      set({ modelRemigrating: false })
+      if (msg.ok) {
+        set({ modelRemigrateResult: { names: msg.migrated ?? [] } })
+        get().loadModelManage()
+      } else {
+        set({ modelRemigrateResult: { names: [], error: msg.error ?? '迁移失败' } })
+      }
       break
 
     case 'modelToggled': {
