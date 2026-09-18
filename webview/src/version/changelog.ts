@@ -23,6 +23,66 @@ export interface ChangelogEntry {
 
 export const CHANGELOG_DATA: ChangelogEntry[] = [
   {
+    "version": "0.3.6",
+    "date": "2026-09-18",
+    "zh": {
+      "sections": [
+        {
+          "title": "适配",
+          "items": [
+            "**适配新版 ZCode 客户端**：兼容新版 CLI（v2 协议代），新旧客户端自动判代，会话、编辑、模型切换全功能平滑过渡。",
+            "**模型渠道全面改为自定义渠道**：升级后插件自动把原有内置渠道迁移为自定义渠道（模型能力随迁，无需手动配置）；设置页「模型管理」支持渠道的新增、编辑、删除。"
+          ]
+        },
+        {
+          "title": "新增",
+          "items": [
+            "**定时任务**：AI 可直接创建与管理定时任务，任务执行卡片友好展示。",
+            "**上下文增强**（issue #13/#14）：回复支持复制 Markdown；控制台日志一键送入输入框；@ 引入文件支持文件夹、补全内联化。",
+            "**记忆搜索**：设置页记忆支持全文搜索，打开时与编辑器查找联动。",
+            "**图片预览**：大图支持滚轮缩放与拖拽平移；额度卡改为单行紧凑布局。"
+          ]
+        },
+        {
+          "title": "修复",
+          "items": [
+            "底部文件统计归零与右键菜单缺失（issue #15）。",
+            "设置页自动记忆读取不到，并新增记忆目录排查入口。",
+            "自动记忆条目摘要失效、冗余路径行，改为跟随 MEMORY 索引标题与顺序。",
+            "子会话首批内容偶发丢失（快照/首条内容被静默丢弃）。",
+            "「发送选中代码」无选区时右键菜单仍显示、点击无反馈。"
+          ]
+        },
+        {
+          "title": "Compatibility",
+          "items": [
+            "**New ZCode client support**: compatible with the new CLI generation (v2 protocol), auto-detecting old/new clients so sessions, message editing and model switching all keep working across versions.",
+            "**Model channels moved to custom providers**: after upgrading, the plugin automatically migrates existing built-in channels to custom ones (model capabilities carried over, no manual setup); channels can now be added, edited and deleted in Settings → Model Management."
+          ]
+        },
+        {
+          "title": "Added",
+          "items": [
+            "**Scheduled tasks**: the AI can create and manage scheduled tasks directly, with friendly task cards.",
+            "**Context enhancements** (issue #13/#14): copy replies as Markdown; send console logs to the input box with one click; @ file references support folders with inline completion.",
+            "**Memory search**: full-text search over memories in settings, linked with the editor's find when opened.",
+            "**Image preview**: zoom with the mouse wheel and drag to pan; quota card compacted to a single row."
+          ]
+        },
+        {
+          "title": "Fixed",
+          "items": [
+            "File stats showing zero and missing editor context menu (issue #15).",
+            "Auto-memory entries not loading in settings, plus a new memory-directory troubleshooting entry.",
+            "Auto-memory entry summaries broken and redundant path lines; now follows the MEMORY index titles and order.",
+            "First batch of a sub-session occasionally lost (snapshot / first content silently dropped).",
+            "\"Send selected code\" showed the context menu item with no selection and did nothing on click."
+          ]
+        }
+      ]
+    }
+  },
+  {
     "version": "0.3.5",
     "date": "2026-09-15",
     "zh": {
