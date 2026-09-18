@@ -52,7 +52,15 @@ export function PlanApprovalDialog({ requestId, plan, deadlineMs, onClose }: Pro
     // 进 plan 前记忆的模式（无记忆则 yolo，同 applyModeEventToPatch 的 exit_plan），
     // 权威值由后续 state.updated / loadSettings 校正；迟到的 batch 推断有幂等保护不会覆盖
     const { prePlanMode } = useStore.getState()
-    useStore.setState({ currentMode: prePlanMode ?? 'yolo', prePlanMode: null })
+    // planApprovalAnswer='approve'（缺陷CG）：batch 推断的唯一放行凭证，消费后由
+    // applyModeEventToPatch 清除；agentPlanActive 一并终止（缺陷CG 真根因：此后
+    // session 模式推送照旧同步指示器）
+    useStore.setState({
+      planApprovalAnswer: 'approve',
+      agentPlanActive: false,
+      currentMode: prePlanMode ?? 'yolo',
+      prePlanMode: null,
+    })
     onClose()
   }
 
@@ -71,13 +79,18 @@ export function PlanApprovalDialog({ requestId, plan, deadlineMs, onClose }: Pro
     // 同一 turn 流式，反馈须插在流式消息拆分处；append 尾部会钉在流式尾部直到回合
     // 结束重拉才归位（缺陷Q）
     useStore.getState().insertFeedbackMessage(text)
-    // 不做模式切换：反馈路径仍留在 plan 模式（服务端未批准，currentMode 不变）
+    // 不做模式切换：反馈路径仍留在 plan 模式（服务端未批准，currentMode 不变）。
+    // planApprovalAnswer='feedback'（缺陷CG）：挡住 batch 对 v2 拒绝的误判（记 success）
+    useStore.setState({ planApprovalAnswer: 'feedback' })
     onClose()
   }
 
   /** 显式裸拒绝：无意见直接回到规划，服务端继续 plan 模式（唯一 decline 入口，遮罩不响应）*/
   const handleDecline = () => {
     sendToJava({ op: 'askUserResponse', requestId, action: 'decline' })
+    // planApprovalAnswer='decline'（缺陷CG）：v2 batch 对拒绝也记 success（errorCount=0），
+    // 必须显式挡住 exit_plan 推断，UI 留在 plan 等权威值校正
+    useStore.setState({ planApprovalAnswer: 'decline' })
     onClose()
   }
 

@@ -429,6 +429,10 @@ function sessionResetBase(): Partial<StoreState> {
     editingMessageId: null,
     editReplay: null,
     editViaV4: null,
+    // 计划审批两标记绑定会话（缺陷CG）：旧会话的弹窗应答与 agent 计划阶段不带到
+    // 新会话——新会话若在 plan，历史回放的 enter_plan 推断会重新置位
+    planApprovalAnswer: null,
+    agentPlanActive: false,
   }
 }
 let reconcileProbeInFlight = false
@@ -732,6 +736,16 @@ interface StoreState {
   currentMode: string | null
   /** 进入 plan 前的模式（缺陷E：ExitPlanMode 批准后即时恢复用，权威值由 state.updated/loadSettings 校正）*/
   prePlanMode: string | null
+  /** 计划审批弹窗的用户应答（缺陷CG：v2 batch 对拒绝的 ExitPlanMode 也记 success，
+   * errorCount=0，前端不能再用 !isError 当批准证据——exit_plan 推断只认弹窗的 approve
+   * 应答；decline/feedback/无标记（超时/多标签/重载）一律安全侧留在 plan */
+  planApprovalAnswer: 'approve' | 'decline' | 'feedback' | null
+  /** agent 级计划阶段活跃（缺陷CG 真根因）：v2 把 agent plan 门控与 session 模式拆成
+   * 两层——EnterPlanMode 批准只开 agent 门控，session 模式不变（日志零次
+   * mode.current=plan）；拒绝后 agent 门控持续而回合边界 state.updated 推 session
+   * 基础模式（yolo 等）。此标志活跃期间 applyStateUpdated 不翻转指示器（推送值记
+   * prePlanMode），EnterPlanMode 批准置位、ExitPlanMode 批准/手动切档清除 */
+  agentPlanActive: boolean
   /** 已为该会话下发过 setThoughtLevel（applyThoughtLevelIfReady 防重入）*/
   thoughtLevelAppliedForSession: string | null
   /** setModel 已发出、modelSet 未回的时间戳（期间到达的 settings 级别部分计算于旧模型，不可信；超时视为不在途）*/
@@ -1337,6 +1351,8 @@ export const useStore = create<StoreState>((set, get) => ({
   thoughtLevel: null,
   currentMode: null,
   prePlanMode: null,
+  planApprovalAnswer: null,
+  agentPlanActive: false,
   thoughtLevelAppliedForSession: null,
   modelSwitchInFlightAt: null,
   modelPendingSwitch: null,
@@ -2366,6 +2382,9 @@ export const useStore = create<StoreState>((set, get) => ({
     const prev = get().currentMode
     set({
       currentMode: mode,
+      // 手动切档=用户显式意图，agent 计划阶段判定终止（缺陷CG：此后 session 模式
+      // 推送照旧同步指示器）
+      agentPlanActive: false,
       prePlanMode: mode === 'plan'
         ? (prev && prev !== 'plan' ? prev : get().prePlanMode)
         : null,
@@ -4503,17 +4522,28 @@ export function handleResponse(
     case 'settings': {
       // 过期的 settings 响应（切会话竞态）直接丢弃
       if (msg.sessionId !== get().currentSessionId) break
+      // 缺陷CG 三轮：轮末「兜底重拉设置」的响应在此同步 mode——v2 两层分立下它带
+      // session 层模式（yolo 等）而非 agent 门控态，裸拒绝后轮末兜底会据此切走
+      // 指示器（与 applyStateUpdated 同款 hold：agent 计划阶段活跃期间推送值记
+      // prePlanMode、保持显示 plan；v1 推 plan / 批准后 / 手动切档后照旧同步）
+      const incomingMode = msg.mode?.current ?? null
+      const holdForPlan = get().agentPlanActive && incomingMode != null && incomingMode !== 'plan'
       // 模型切换在途：本响应计算于旧模型，级别部分不可信——写入会把旧级别集污染进
       // 新模型的缓存、applyThoughtLevelIfReady 会发出对新模型非法的级别（-32603）。
       // mode 与模型无关照常同步；级别真相由 modelSet 后延迟 500ms 的 loadSettings 提供
       if (isModelSwitchInFlight(get())) {
-        set({ currentMode: msg.mode?.current ?? null })
+        if (holdForPlan) set({ prePlanMode: incomingMode })
+        else set({ currentMode: incomingMode })
         break
       }
-      set({
-        currentMode: msg.mode?.current ?? null,
-        thoughtLevel: msg.thoughtLevel,
-      })
+      if (holdForPlan) {
+        set({ thoughtLevel: msg.thoughtLevel, prePlanMode: incomingMode })
+      } else {
+        set({
+          currentMode: incomingMode,
+          thoughtLevel: msg.thoughtLevel,
+        })
+      }
       // 按当前模型缓存级别集（待命态/懒创建首问前的显示与校验用）
       writeThoughtLevelCache(get().currentModel?.modelId, msg.thoughtLevel)
       // 竞态推迟过的级别：本响应是切换落定后的权威级别集（也顺带治愈切换前被旧响应
@@ -4913,9 +4943,18 @@ function applyStateUpdated(
   if (patch) {
     const p: Partial<StoreState> = {}
     if (patch.mode?.current) {
-      p.currentMode = patch.mode.current
-      // 权威值切离 plan：清除 prePlanMode 记忆（避免下次 ExitPlanMode 恢复到过期值）
-      if (patch.mode.current !== 'plan') p.prePlanMode = null
+      // 缺陷CG 真根因：v2 的 agent 级 plan 门控与 session 级模式两层分立——拒绝后
+      // agent 仍在 plan（工具面只读），而回合边界权威推送带的是 session 基础模式
+      // （如 yolo）。agent 计划阶段活跃期间不得让 session 模式翻转指示器：推送值
+      // 记入 prePlanMode（ExitPlanMode 批准后恢复用），保持显示 plan；批准（弹窗/
+      // 推断清 agentPlanActive）或用户手动切档后照旧同步
+      if (useStore.getState().agentPlanActive && patch.mode.current !== 'plan') {
+        p.prePlanMode = patch.mode.current
+      } else {
+        p.currentMode = patch.mode.current
+        // 权威值切离 plan：清除 prePlanMode 记忆（避免下次 ExitPlanMode 恢复到过期值）
+        if (patch.mode.current !== 'plan') p.prePlanMode = null
+      }
     }
     if (patch.thoughtLevel) p.thoughtLevel = patch.thoughtLevel
     // v2 会话实际模型缓存（缺陷BW）：v2 的 session/messages assistant info 不带
@@ -4956,12 +4995,22 @@ function applyModeEventToPatch(
     const cur = get().currentMode
     if (cur && cur !== 'plan') patch.prePlanMode = cur
     patch.currentMode = 'plan'
+    patch.planApprovalAnswer = null
+    // agent 计划阶段开启（缺陷CG）：后续 session 模式推送改记 prePlanMode
+    patch.agentPlanActive = true
   } else {
     // 幂等保护：批准瞬间的乐观恢复（PlanApprovalDialog）或权威 state.updated 已把
     // 模式切离 plan 时跳过——迟到的 batch 推断不得因 prePlanMode 记忆缺失把
     // 已恢复的模式覆盖成兜底值 yolo
     const cur = get().currentMode
     if (cur && cur !== 'plan') return
+    // 缺陷CG守卫：v2 服务端把拒绝的 ExitPlanMode 也记 success（batch errorCount=0），
+    // !isError 不再是批准证据——只有弹窗明确回过 approve 才允许推断离 plan。
+    // 拒绝/意见式/无标记（超时、多标签无弹窗、重载）安全侧留在 plan，等回合边界
+    // 权威 state.updated 校正；标记消费即清，防陈旧 approve 污染后续推断
+    if (get().planApprovalAnswer !== 'approve') return
+    patch.planApprovalAnswer = null
+    patch.agentPlanActive = false
     patch.currentMode = get().prePlanMode ?? 'yolo'
     patch.prePlanMode = null
   }
