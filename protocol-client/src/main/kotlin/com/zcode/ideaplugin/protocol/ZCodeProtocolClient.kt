@@ -1122,14 +1122,23 @@ class ZCodeProtocolClient private constructor(
      */
     fun subscribeConversationV4(sessionId: String, timeoutMs: Long = 10000): JsonObject {
         if (sessionId in v4SubscribedSessions) return JsonObject(emptyMap())
+        // 先登记再发请求：帧路由按 v4SubscribedSessions 白名单放行（handleNotification 帧分支
+        // `sid !in v4SubscribedSessions → return`），而服务端 ack 之后立刻推首帧（initial 快照 +
+        // 首批增量）。等 ack 回来才登记会把这批帧静默丢掉（实测竞态：丢快照帧=少 4 条映射事件、
+        // 首帧全丢=0 条，V4ConversationStreamTest 全量跑偶发红灯即此；生产表现=订阅后首个快照/
+        // 首条内容缺失）。失败回滚登记，保证重试路径可用。
+        v4SubscribedSessions.add(sessionId)
         val params = buildJsonObject {
             put("topic", "conversation/$sessionId")
             put("connectionId", v4ConnectionId)
             put("clientMode", "desktop-continuous")
         }
-        val r = request("v4/conversation/subscribe", params, timeoutMs)
-        requireOk(r)
-        v4SubscribedSessions.add(sessionId)
+        val r = try {
+            request("v4/conversation/subscribe", params, timeoutMs).also { requireOk(it) }
+        } catch (e: Exception) {
+            v4SubscribedSessions.remove(sessionId)
+            throw e
+        }
         r["result"]?.jsonObject?.get("ack")?.jsonObject
             ?.get("subscriptionId")?.jsonPrimitive?.contentOrNull
             ?.let { v4SubscriptionIds[sessionId] = it }
