@@ -1,16 +1,20 @@
 /**
- * ExitPlanMode 计划审批弹窗
+ * ExitPlanMode 计划审批面板（底部停靠，对齐询问弹窗 dock 形态，issue #17）
  *
  * plan 模式下 AI 调用 ExitPlanMode 工具时，服务端通过 interaction/requestUserInput
  * 反向请求用户审批计划（params = {toolName:"ExitPlanMode", input:{plan:"markdown"}}）。
- * Java 端识别后推 {op:"exitPlanApproval", requestId, plan, deadlineMs} 给前端，此组件渲染计划全文。
+ * Java 端识别后推 {op:"exitPlanApproval", requestId, plan} 给前端。
+ *
+ * 0.3.7 起计划与审批分离：计划全文在消息流的 ExitPlanMode 工具卡（📖 弹窗可回看），
+ * 本面板只承载审批操作，底部停靠非模态——不遮挡对话，用户可边回看计划边决定；
+ * 无超时一直等待（Java 侧已取消 5 分钟自动 decline），header 显示「已等待」正计时。
  *
  * 应答复用 askUserResponse 通道（Java 端按 requestId 找 future 应答服务器）：
  * - 批准并执行 = {action:"accept", answer:"approve"} + 乐观退出计划模式
  * - 继续规划（意见式） = {action:"accept", answer:"用户意见文本"} —— answer 有值但
  *   ≠ "approve" 会被服务端判为反馈式拒绝（The plan was not approved by the user），
  *   AI 据此留在计划模式继续修改；因此「继续规划」要求先输入意见才可点击。
- * - 裸拒绝只走显式「拒绝」按钮（+ Java 侧 5 分钟超时兜底）。遮罩点击不响应：
+ * - 裸拒绝只走显式「拒绝」按钮（+ 回合终止 abort 兜底）。遮罩点击不响应：
  *   旧版遮罩=裸 decline，双击禁用按钮的第二击落在遮罩上会一击误拒（2026-08-20 实测）。
  *
  * ⚠️ answer 必须是小写 "approve"（zcode.cjs 常量 S7t，严格相等比较）：
@@ -22,23 +26,33 @@ import { useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { sendToJava } from '@/ipc/bridge'
 import { useStore } from '@/store/useStore'
+import { DialogCountdown, DialogElapsed } from './DialogCountdown'
 import { MarkdownBlock } from './MarkdownBlock'
-import { DialogCountdown } from './DialogCountdown'
-import { ScrollJumpButton } from './ScrollJumpButton'
 import '../styles/plan-approval-dialog.less'
+
+/** 长计划阈值：超过即摘要限高渐隐（约 10 行），全文走「查看完整计划」弹窗 */
+const PLAN_SUMMARY_LINE_LIMIT = 14
+const PLAN_SUMMARY_CHAR_LIMIT = 500
 
 interface Props {
   requestId: string
   plan: string
-  /** Java 侧应答超时时刻（epoch 毫秒），倒计时显示用；旧链路可缺省 */
+  /** Java 侧应答超时时刻（epoch 毫秒）。0.3.7 起审批无超时不再推送，仅旧链路/mock 兜底 */
   deadlineMs?: number
+  /** 事件到达时刻（epoch 毫秒）：无超时等待下「已等待」正计时起点 */
+  askedAt?: number
   onClose: () => void
 }
 
-export function PlanApprovalDialog({ requestId, plan, deadlineMs, onClose }: Props) {
+export function PlanApprovalDialog({ requestId, plan, deadlineMs, askedAt, onClose }: Props) {
   const { t } = useTranslation()
-  const bodyRef = useRef<HTMLDivElement>(null)
+  const openMarkdownPreview = useStore((s) => s.openMarkdownPreview)
   const [feedback, setFeedback] = useState('')
+  /** 收起态（最小化）：只留 header 一行（徽章/标题/正计时/展开按钮），不打扰消息区 */
+  const [collapsed, setCollapsed] = useState(false)
+  const feedbackRef = useRef<HTMLTextAreaElement>(null)
+  // 长计划 → 摘要限高渐隐 + 悬浮全文按钮（对齐 zcode 客户端）；短计划完整显示
+  const isLongPlan = plan.split('\n').length > PLAN_SUMMARY_LINE_LIMIT || plan.length > PLAN_SUMMARY_CHAR_LIMIT
 
   const handleApprove = () => {
     sendToJava({
@@ -95,62 +109,118 @@ export function PlanApprovalDialog({ requestId, plan, deadlineMs, onClose }: Pro
   }
 
   return (
-    <div className="plan-approval-overlay">
-      <div className="plan-approval-dialog">
-        <div className="plan-approval-dialog__header">
-          <span className="plan-approval-dialog__icon codicon codicon-tasklist" />
+    // dock 变体：底部停靠非模态（透明遮罩、放行消息区交互）——计划全文在消息流工具卡，
+    // 用户可边回看边决定（issue #17，对齐询问弹窗底部形态）
+    <div className="plan-approval-overlay plan-approval-overlay--dock">
+      {/* 遮罩不响应点击：裸拒绝只走显式「拒绝」按钮（见文件头注释） */}
+      <div className={`plan-approval-dialog ${collapsed ? 'plan-approval-dialog--collapsed' : ''}`}>
+        <div
+          className="plan-approval-dialog__header"
+          onClick={collapsed ? () => setCollapsed(false) : undefined}
+          role={collapsed ? 'button' : undefined}
+        >
+          <span className="plan-approval-dialog__badge">
+            <span className="codicon codicon-shield" />
+            {t('app.planApproval.badge')}
+          </span>
           <span className="plan-approval-dialog__title">{t('app.planApproval.title')}</span>
-          <span className="plan-approval-dialog__hint">{t('app.planApproval.hint')}</span>
-          <DialogCountdown deadlineMs={deadlineMs} />
+          {/* 无超时=已等待正计时；deadlineMs 仅旧链路兜底 */}
+          {deadlineMs != null ? <DialogCountdown deadlineMs={deadlineMs} /> : <DialogElapsed sinceMs={askedAt} />}
+          <button
+            type="button"
+            className="plan-approval-dialog__collapse"
+            aria-expanded={!collapsed}
+            title={collapsed ? t('app.askUser.expand') : t('app.askUser.collapse')}
+            onClick={(e) => {
+              e.stopPropagation()
+              setCollapsed((v) => !v)
+            }}
+          >
+            {/* 弹窗贴底部：展开态点收起显 chevron-down，收起态点展开显 chevron-up（对齐询问弹窗） */}
+            <span className={`codicon codicon-chevron-${collapsed ? 'up' : 'down'}`} />
+          </button>
         </div>
 
-        <div className="plan-approval-dialog__body" ref={bodyRef}>
-          <MarkdownBlock markdown={plan || t('app.planApproval.emptyPlan')} />
-        </div>
-        {/* 滚动跳转按钮（↑置顶/↓置底，对齐主界面）：长计划快速回顶/到底 */}
-        <ScrollJumpButton containerRef={bodyRef} />
-
-        <div className="plan-approval-dialog__footer">
-          {/* 一行两组：批准主按钮在左（主操作优先），竖线分隔，输入组（框+继续规划）居右 */}
-          <div className="plan-approval-dialog__actions">
-            <button className="plan-approval-dialog__btn plan-approval-dialog__btn--approve" onClick={handleApprove}>
-              <span className="codicon codicon-play" />
-              {t('app.planApproval.approveAndRun')}
-            </button>
-            <button className="plan-approval-dialog__btn plan-approval-dialog__btn--decline" onClick={handleDecline}>
-              <span className="codicon codicon-close" />
-              {t('app.planApproval.decline')}
-            </button>
-            <span className="plan-approval-dialog__divider" />
-            <div className="plan-approval-dialog__feedback-group">
-              <input
+        {!collapsed && (
+          <>
+            <div className="plan-approval-dialog__body">
+              {/* 计划摘要预览（对齐 zcode 客户端：默认可见内容再决定，长计划限高渐隐）；
+                  全文走全局预览弹窗（与消息流工具卡 📖 同层） */}
+              <div
+                className={`plan-approval-dialog__summary ${isLongPlan ? 'plan-approval-dialog__summary--clipped' : ''}`}
+              >
+                <MarkdownBlock markdown={plan || t('app.planApproval.emptyPlan')} />
+                {isLongPlan && (
+                  <button
+                    type="button"
+                    className="plan-approval-dialog__view-plan plan-approval-dialog__view-plan--overlay"
+                    onClick={() => openMarkdownPreview({ title: t('tool.planTitle'), markdown: plan })}
+                  >
+                    <span className="codicon codicon-book" />
+                    {t('app.planApproval.viewFull')}
+                  </button>
+                )}
+              </div>
+              {!isLongPlan && (
+                <button
+                  type="button"
+                  className="plan-approval-dialog__view-plan"
+                  onClick={() => openMarkdownPreview({ title: t('tool.planTitle'), markdown: plan })}
+                >
+                  <span className="codicon codicon-book" />
+                  {t('app.planApproval.viewFull')}
+                  <span className="codicon codicon-arrow-right plan-approval-dialog__view-arrow" />
+                </button>
+              )}
+              <textarea
+                ref={feedbackRef}
                 className="plan-approval-dialog__feedback-input"
                 value={feedback}
                 onChange={(e) => setFeedback(e.target.value)}
                 placeholder={t('app.planApproval.feedbackPlaceholder')}
-                maxLength={500}
+                maxLength={2000}
+                rows={3}
                 spellCheck={false}
                 onKeyDown={(e) => {
-                  // 单行输入：Enter 直接提交（无换行语义，Shift+Enter 不再区分）
-                  if (e.key === 'Enter' && !e.nativeEvent.isComposing) {
+                  // 多行输入：Ctrl/Cmd+Enter 提交意见，裸 Enter 换行
+                  if (e.key === 'Enter' && (e.ctrlKey || e.metaKey) && !e.nativeEvent.isComposing) {
                     e.preventDefault()
                     handleContinueWithFeedback()
                   }
                 }}
               />
-              <button
-                className="plan-approval-dialog__feedback-submit"
-                onClick={handleContinueWithFeedback}
-                disabled={!feedback.trim()}
-                title={!feedback.trim() ? t('app.planApproval.feedbackRequired') : undefined}
-              >
-                <span className="codicon codicon-arrow-right" />
-                {t('app.planApproval.continuePlanning')}
-              </button>
+              {/* 行为说明（动态，消除「意见+批准」歧义）：意见随『继续规划』提交；
+                  『批准执行』不带意见直接开始。独占整行可换行，不被按钮组挤压截断 */}
+              <span className="plan-approval-dialog__tip">
+                {feedback.trim()
+                  ? t('app.planApproval.tipWithFeedback')
+                  : t('app.planApproval.tip')}
+              </span>
             </div>
-          </div>
-          <span className="plan-approval-dialog__tip">{t('app.planApproval.tip')}</span>
-        </div>
+
+            <div className="plan-approval-dialog__footer">
+              <div className="plan-approval-dialog__actions">
+                <button className="plan-approval-dialog__btn plan-approval-dialog__btn--decline" onClick={handleDecline}>
+                  <span className="codicon codicon-close" />
+                  {t('app.planApproval.decline')}
+                </button>
+                <button
+                  className="plan-approval-dialog__btn plan-approval-dialog__btn--feedback"
+                  onClick={handleContinueWithFeedback}
+                  disabled={!feedback.trim()}
+                  title={!feedback.trim() ? t('app.planApproval.feedbackRequired') : undefined}
+                >
+                  <span className="codicon codicon-comment" />
+                  {t('app.planApproval.continuePlanning')}
+                </button>
+                <button className="plan-approval-dialog__btn plan-approval-dialog__btn--approve" onClick={handleApprove}>
+                  <span className="codicon codicon-play" />
+                  {t('app.planApproval.approveAndRun')}
+                </button>
+              </div>
+            </div>
+          </>
+        )}
       </div>
     </div>
   )

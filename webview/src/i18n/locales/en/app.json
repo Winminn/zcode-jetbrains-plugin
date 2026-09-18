@@ -50,12 +50,15 @@
     "title": "Plan Approval",
     "hint": "Once approved, plan mode will be exited and execution will begin",
     "emptyPlan": "_(The plan is empty)_",
-    "tip": "Declining or not answering before timeout keeps plan mode",
+    "tip": "\"Approve & Run\" exits plan mode and starts; \"Decline\", or feedback via \"Keep Planning\", stays in planning",
     "decline": "Decline",
     "continuePlanning": "Keep Planning",
     "approveAndRun": "Approve & Run",
     "feedbackPlaceholder": "Describe changes; the AI will keep refining the plan…",
-    "feedbackRequired": "Enter your feedback first"
+    "feedbackRequired": "Enter your feedback first",
+    "badge": "Approval needed",
+    "viewFull": "View full plan",
+    "tipWithFeedback": "Feedback entered: \"Keep Planning\" submits it and stays in planning; \"Approve & Run\" will not include it"
   },
   "notification": {
     "subagent": "Subagent",

@@ -50,12 +50,15 @@
     "title": "계획 승인",
     "hint": "승인하면 계획 모드를 종료하고 실행을 시작합니다",
     "emptyPlan": "_（계획 내용이 비어 있음）_",
-    "tip": "거절하거나 시간 내에 응답하지 않으면 계획 모드에 머무릅니다",
+    "tip": "\"승인 후 실행\"은 계획 모드를 종료하고 실행 시작; \"거부\" 또는 피드백과 함께 \"계획 계속\"은 계획 모드 유지",
     "decline": "거절",
     "continuePlanning": "계획 계속",
     "approveAndRun": "승인 후 실행",
     "feedbackPlaceholder": "수정 의견을 입력하면 계획을 계속 다듬습니다…",
-    "feedbackRequired": "수정 의견을 먼저 입력하세요"
+    "feedbackRequired": "수정 의견을 먼저 입력하세요",
+    "badge": "승인 필요",
+    "viewFull": "전체 계획 보기",
+    "tipWithFeedback": "피드백 입력됨: \"계획 계속\"으로 피드백을 전송하고 계획 모드 유지; \"승인 후 실행\"에는 피드백이 포함되지 않습니다"
   },
   "notification": {
     "subagent": "서브에이전트",

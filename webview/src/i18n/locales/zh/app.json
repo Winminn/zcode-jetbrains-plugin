@@ -50,12 +50,15 @@
     "title": "计划审批",
     "hint": "批准后将退出规划模式并开始执行",
     "emptyPlan": "_（计划内容为空）_",
-    "tip": "拒绝或长时间未应答都会留在规划模式",
+    "tip": "「批准执行」退出规划模式开始执行；「拒绝」或输入意见点「继续规划」则留在规划模式",
     "decline": "拒绝",
     "continuePlanning": "继续规划",
     "approveAndRun": "批准执行",
     "feedbackPlaceholder": "输入修改意见，AI 将按意见继续完善计划…",
-    "feedbackRequired": "请先输入修改意见"
+    "feedbackRequired": "请先输入修改意见",
+    "badge": "需要审批",
+    "viewFull": "查看完整计划",
+    "tipWithFeedback": "已输入意见：点「继续规划」提交意见留在规划模式；点「批准执行」不会附带此意见"
   },
   "notification": {
     "subagent": "子代理",

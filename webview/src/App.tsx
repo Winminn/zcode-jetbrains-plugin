@@ -407,12 +407,13 @@ export default function App() {
         />
       )}
 
-      {/* ExitPlanMode 计划审批弹窗 */}
+      {/* ExitPlanMode 计划审批面板（底部停靠，无超时等待） */}
       {exitPlanApproval && (
         <PlanApprovalDialog
           requestId={exitPlanApproval.requestId}
           plan={exitPlanApproval.plan}
           deadlineMs={exitPlanApproval.deadlineMs}
+          askedAt={exitPlanApproval.askedAt}
           onClose={() => useStore.setState({ exitPlanApproval: null })}
         />
       )}

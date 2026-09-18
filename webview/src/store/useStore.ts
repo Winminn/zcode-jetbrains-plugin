@@ -951,7 +951,8 @@ interface StoreState {
   } | null
 
   // ExitPlanMode 计划审批弹窗（服务端 interaction/requestUserInput，params = {input:{plan}}）
-  exitPlanApproval: { requestId: string; plan: string; deadlineMs?: number } | null
+  // askedAt = 事件到达时刻：无超时等待（0.3.7 起）下 header 的「已等待」正计时起点
+  exitPlanApproval: { requestId: string; plan: string; deadlineMs?: number; askedAt?: number } | null
 
   // 工具权限审批弹窗（服务端 interaction/requestPermission，「变更前询问」模式触发；
   // 应答走 askUserResponse 通道，answer = 选中项 optionId）
@@ -4131,9 +4132,9 @@ export function handleResponse(
       break
 
     case 'exitPlanApproval':
-      // ExitPlanMode 计划审批弹窗：渲染 plan markdown，用户批准/拒绝
+      // ExitPlanMode 计划审批面板：无超时等待（0.3.7 起），askedAt 供「已等待」正计时
       console.log('[store] 收到 exitPlanApproval，plan 长度:', msg.plan?.length ?? 0)
-      set({ exitPlanApproval: { requestId: msg.requestId, plan: msg.plan || '', deadlineMs: msg.deadlineMs }, askUserPendingActive: true })
+      set({ exitPlanApproval: { requestId: msg.requestId, plan: msg.plan || '', deadlineMs: msg.deadlineMs, askedAt: Date.now() }, askUserPendingActive: true })
       break
 
     case 'permissionRequest':

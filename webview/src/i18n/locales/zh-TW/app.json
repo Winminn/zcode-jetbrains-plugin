@@ -50,12 +50,15 @@
     "title": "計劃審批",
     "hint": "批准後將退出規劃模式並開始執行",
     "emptyPlan": "_（計劃內容為空）_",
-    "tip": "拒絕或長時間未應答都會留在規劃模式",
+    "tip": "「批准執行」退出規劃模式開始執行；「拒絕」或輸入意見點「繼續規劃」則留在規劃模式",
     "decline": "拒絕",
     "continuePlanning": "繼續規劃",
     "approveAndRun": "核准執行",
     "feedbackPlaceholder": "輸入修改意見，AI 將按意見繼續完善計畫…",
-    "feedbackRequired": "請先輸入修改意見"
+    "feedbackRequired": "請先輸入修改意見",
+    "badge": "需要審批",
+    "viewFull": "檢視完整計畫",
+    "tipWithFeedback": "已輸入意見：點「繼續規劃」提交意見留在規劃模式；點「批准執行」不會附帶此意見"
   },
   "notification": {
     "subagent": "子代理",

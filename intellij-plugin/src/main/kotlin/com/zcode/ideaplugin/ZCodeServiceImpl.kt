@@ -85,8 +85,10 @@ class ZCodeServiceImpl(private val project: Project) : ZCodeService, com.intelli
 
         /**
          * interaction/requestUserInput 等待用户
-         * 应答的超时：超时自动 decline 并关弹窗。推送弹窗时随消息附带 deadlineMs
-         * （= 当前时刻 + 本值），前端据此显示倒计时——两处必须同源，防显示与实际超时错位。
+         * 应答的超时：超时自动 decline 并关弹窗。仅普通提问（「提问自动继续」开）与
+         * 权限审批使用；ExitPlanMode 审批无超时（不推 deadlineMs，future 无限等）。
+         * 推送弹窗时随消息附带 deadlineMs（= 当前时刻 + 本值），前端据此显示倒计时
+         * ——两处必须同源，防显示与实际超时错位。
          */
         const val USER_INPUT_TIMEOUT_MS = 5 * 60 * 1000L
 
@@ -502,9 +504,11 @@ class ZCodeServiceImpl(private val project: Project) : ZCodeService, com.intelli
         // 「提问自动继续」（插件自有配置 zcode.askUser.config，行为栏可切，默认关）：
         // 关=普通提问不设超时一直等待（弹窗无倒计时）；开=5 分钟未答自动继续（本地
         // decline + requestRuntimePreferences 透传 true，服务端同语义）。ExitPlanMode
-        // 审批与权限审批不受此开关影响：审批无人应答时无限挂起回合的代价更高，
-        // 维持 5 分钟超时安全侧收尾。每次请求即时读配置——切换开关连「当前提问」也生效
-        val askUserNoTimeout = !isPlanApproval &&
+        // 审批 0.3.7 起不设超时一直等待（issue #17：长计划读不完就被自动拒绝，且协议面
+        // 无重开审批通道——拒绝后只能等 AI 重发 ExitPlanMode；服务端放弃路径已有
+        // abortPendingUserInputs 兜底关窗）。权限审批（requestPermission 通道）仍恒 5 分钟。
+        // 每次请求即时读配置——切换开关连「当前提问」也生效
+        val askUserNoTimeout = isPlanApproval ||
             !com.zcode.ideaplugin.ui.ZCodeAskUserConfig.readConfig().autoContinueEnabled
         // 内容指纹：toolName + 问题/计划文本，用于识别服务端重试（同内容、新 id）
         val contentKey = "$toolName|${params["input"]?.toString() ?: params["questions"]?.toString() ?: ""}"
@@ -548,7 +552,7 @@ class ZCodeServiceImpl(private val project: Project) : ZCodeService, com.intelli
                     put("op", "exitPlanApproval")
                     put("requestId", serverRequestId)
                     put("plan", plan)
-                    put("deadlineMs", System.currentTimeMillis() + USER_INPUT_TIMEOUT_MS)
+                    // 不带 deadlineMs：审批无超时一直等待（issue #17），前端显示「已等待」正计时
                 }
                 targetPanel.pushToWebview(askMsg)
                 log.info("[askUser] ExitPlanMode plan approval pushed to frontend, waiting for user decision...")
@@ -580,6 +584,7 @@ class ZCodeServiceImpl(private val project: Project) : ZCodeService, com.intelli
             if (askUserNoTimeout) future.get()
             else future.get(USER_INPUT_TIMEOUT_MS, java.util.concurrent.TimeUnit.MILLISECONDS)
         } catch (e: java.util.concurrent.TimeoutException) {
+            // 仅普通提问（「提问自动继续」开）会走到：ExitPlanMode 与关闭自动继续的提问均无限等
             log.warn("[askUser] Answer wait timed out (5 min), auto-declining: $serverRequestId")
             // 关窗 ack 覆盖共享此 future 的全部 id（清理前收集），防弹窗 id 已换新时
             // 只推本线程旧 id 关不掉弹窗（与权限超时路径同款纪律）
