@@ -17,7 +17,7 @@ import com.zcode.ideaplugin.ZCodeIcons
  * - 注册位置：编辑器右键（EditorPopupMenu）+ 快捷键 Ctrl+Alt+K
  * - 选区转引用串：单行 `@path#L10`，多行 `@path#L10-20`（1-based，末尾换行特判）
  * - 发送的是引用而非代码文本：消息简洁，后端按引用读取最新代码
- * - 无选区时只打开/聚焦 ZCode 输入框
+ * - 无选区时菜单隐藏（对齐 CopySelectionReferenceAction）；快捷键仍可触发，此时只打开/聚焦 ZCode 输入框
  */
 class SendSelectionToInputAction : AnAction(
     message("action.sendSelectionToInput.text"),
@@ -28,7 +28,8 @@ class SendSelectionToInputAction : AnAction(
     override fun getActionUpdateThread(): ActionUpdateThread = ActionUpdateThread.BGT
 
     override fun update(e: AnActionEvent) {
-        e.presentation.isEnabledAndVisible = e.getData(CommonDataKeys.EDITOR) != null
+        val editor = e.getData(CommonDataKeys.EDITOR)
+        e.presentation.isEnabledAndVisible = editor?.selectionModel?.hasSelection() == true
     }
 
     override fun actionPerformed(e: AnActionEvent) {
