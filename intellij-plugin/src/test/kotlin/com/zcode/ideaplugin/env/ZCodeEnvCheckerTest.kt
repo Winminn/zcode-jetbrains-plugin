@@ -438,4 +438,38 @@ class ZCodeEnvCheckerTest {
         assertTrue("version" !in bad["cli"]!!.jsonObject, "探测失败的 cli version 应省略")
         assertFalse(bad["allOk"]!!.jsonPrimitive.content.toBoolean())
     }
+    // ============ resolveCliPathForOps（2026-09-18 模型管理链路缺陷修复） ============
+
+    @Test
+    fun `resolveCliPathForOps 手动配置优先于自动探测`() {
+        val store = WritableStore()
+        ZCodeEnvChecker.setStoreForTest(store)
+        // 本机 detect() 通常可命中（Windows 开发机装着客户端），配置一个内容正确的假文件应压过它
+        val fake = kotlin.io.path.createTempFile(prefix = "fake-cli", suffix = ".cjs")
+        try {
+            fake.toFile().writeText("// zcode bundle marker")
+            store.set(ZCodeEnvChecker.KEY_CLI_PATH, fake.toString())
+            assertEquals(fake, ZCodeEnvChecker.resolveCliPathForOps())
+        } finally {
+            fake.toFile().delete()
+        }
+    }
+
+    @Test
+    fun `resolveCliPathForOps 配置文件已删除时回退自动探测`() {
+        val store = WritableStore()
+        ZCodeEnvChecker.setStoreForTest(store)
+        store.set(ZCodeEnvChecker.KEY_CLI_PATH, "Z:/not-exist/dir/zcode.cjs")
+        // 不抛异常：配置失效 → 走 detect()（命中与否随测试机而定），只验证不炸且类型正确
+        ZCodeEnvChecker.resolveCliPathForOps()
+    }
+
+    @Test
+    fun `resolveCliPathForOps 空白配置等价未配置`() {
+        val store = WritableStore()
+        ZCodeEnvChecker.setStoreForTest(store)
+        store.set(ZCodeEnvChecker.KEY_CLI_PATH, "   ")
+        ZCodeEnvChecker.resolveCliPathForOps()
+    }
 }
+

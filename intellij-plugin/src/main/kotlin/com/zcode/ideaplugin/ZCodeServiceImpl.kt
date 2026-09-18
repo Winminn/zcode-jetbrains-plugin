@@ -253,6 +253,9 @@ class ZCodeServiceImpl(private val project: Project) : ZCodeService, com.intelli
             // node/cli 失败抛 EnvCheckException（带 EnvStatus），Panel 层转成前端可识别的环境错误；
             // 凭证失败降级（credentials=null 裸启，走 app-server 自身凭证链，issue #4）
             val env = com.zcode.ideaplugin.env.ZCodeEnvChecker.resolveForStart()
+            // CLI 同级 provider 垫底：AppImage/deb 形态 zcode-builtin.json 缺失即秒退
+            // （CLI 自检无环境变量入口，只能落盘补；失败降级 warn 不阻断，见类注释）
+            com.zcode.ideaplugin.env.ZCodeProviderBootstrap.ensureBuiltinProvider(env.zcodePath)
             val newClient = ZCodeProtocolClient.start(
                 zcodePath = env.zcodePath,
                 credentials = env.credentials,

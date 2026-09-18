@@ -204,6 +204,26 @@ object ZCodeEnvChecker {
     fun configuredNodePath(): String? = store.get(KEY_NODE_PATH)?.trim()?.ifEmpty { null }
     fun configuredCliPath(): String? = store.get(KEY_CLI_PATH)?.trim()?.ifEmpty { null }
 
+    /**
+     * 模型管理/迁移等运维链路的 CLI 解析：手动配置路径优先 → 自动探测兜底 → 全落空返回 null
+     * （调用方自行回退：v1 链 / 空表 / 跳过迁移）。
+     *
+     * 2026-09-18 缺陷修复：此前模型列表/管理/额度/迁移链直调 ZCodeLocator.detect()，绕过
+     * 设置页手动路径——env 检测全绿但模型列表恒报「CLI 未找到：/opt/...」，Linux 非标准
+     * 布局（AppImage 客户端等）用户全踩。调用方不得再直调 detect()，统一走本函数。
+     */
+    fun resolveCliPathForOps(): Path? {
+        configuredCliPath()?.let { configured ->
+            val f = Path.of(configured)
+            if (Files.isRegularFile(f)) return f
+        }
+        return try {
+            ZCodeLocator.detect()
+        } catch (_: Exception) {
+            null
+        }
+    }
+
     fun saveNodePath(path: String) = store.set(KEY_NODE_PATH, path.trim())
     fun saveCliPath(path: String) = store.set(KEY_CLI_PATH, path.trim())
     fun clearNodePath() = store.set(KEY_NODE_PATH, null)

@@ -2559,11 +2559,19 @@ if (!window.__ZCODE_LOG_HOOK__) {
 
     // ============ 新版 CLI 模型列表（provider_config.json 只读，2026-09-17 双代适配） ============
 
-    /** CLI 代际（zcode.cjs 内容标记判定，mtime 缓存——升级/回滚换文件自动失效重判） */
-    private val cliGeneration: com.zcode.ideaplugin.protocol.ProtocolGeneration
-        get() = com.zcode.ideaplugin.protocol.ProtocolGenerations.detect(
-            com.zcode.ideaplugin.protocol.ZCodeLocator.detect()
-        )
+    /**
+     * CLI 代际（zcode.cjs 内容标记判定，mtime 缓存——升级/回滚换文件自动失效重判）。
+     * null = CLI 解析失败或判代异常（手动配置优先见 EnvChecker.resolveCliPathForOps），
+     * 调用方按 legacy 链回退。
+     */
+    private val cliGeneration: com.zcode.ideaplugin.protocol.ProtocolGeneration?
+        get() = com.zcode.ideaplugin.env.ZCodeEnvChecker.resolveCliPathForOps()?.let { p ->
+            try {
+                com.zcode.ideaplugin.protocol.ProtocolGenerations.detect(p)
+            } catch (_: Exception) {
+                null
+            }
+        }
 
     /** provider_config.json 的 providerRules（用户在客户端建的自定义供应商）；空/损坏返回空表 */
     private fun readNewCliProviderRules(): List<JsonObject> {
@@ -2698,7 +2706,7 @@ if (!window.__ZCODE_LOG_HOOK__) {
     private fun modelManageListNewCli(): JsonObject {
         val path = Credentials.personalProviderConfigPath()
         val rules = newCliModelRules()
-        val zcodePath = try { com.zcode.ideaplugin.protocol.ZCodeLocator.detect() } catch (e: Exception) { null }
+        val zcodePath = com.zcode.ideaplugin.env.ZCodeEnvChecker.resolveCliPathForOps()
         val providerArr = JsonArray(readNewCliProviderRules().mapNotNull { rule ->
             val pid = rule["providerId"]?.jsonPrimitive?.contentOrNull ?: return@mapNotNull null
             val cfg = rule["config"]?.jsonObject
@@ -2780,7 +2788,7 @@ if (!window.__ZCODE_LOG_HOOK__) {
      * 管理页与输入框下拉。迁入 0 条（旧配置无带 key 渠道）也回 ok，前端提示"无可迁移渠道"。
      */
     private fun handleModelRemigrateBuiltins(): JsonObject {
-        val zcodePath = try { com.zcode.ideaplugin.protocol.ZCodeLocator.detect() } catch (e: Exception) { null }
+        val zcodePath = com.zcode.ideaplugin.env.ZCodeEnvChecker.resolveCliPathForOps()
         val migrated = com.zcode.ideaplugin.protocol.V1BuiltinMigrator.migrateIfNeeded(zcodePath = zcodePath)
         val names = readNewCliProviderRules()
             .filter { (it["providerId"]?.jsonPrimitive?.contentOrNull) in migrated.toSet() }
@@ -3130,7 +3138,7 @@ if (!window.__ZCODE_LOG_HOOK__) {
      * @return null = 本链无凭证（调用方回退 v1 链）
      */
     private fun loadQuotaCredentialsV2(): Pair<QuotaCredentials?, String>? {
-        val zcodePath = try { com.zcode.ideaplugin.protocol.ZCodeLocator.detect() } catch (e: Exception) { null }
+        val zcodePath = com.zcode.ideaplugin.env.ZCodeEnvChecker.resolveCliPathForOps()
         for (rule in readNewCliProviderRules()) {
             val cfg = rule["config"]?.jsonObject ?: continue
             val access = cfg["access"]?.jsonObject ?: continue

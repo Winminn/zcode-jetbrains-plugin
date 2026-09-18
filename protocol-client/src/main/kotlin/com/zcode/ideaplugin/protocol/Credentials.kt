@@ -414,13 +414,32 @@ object ZCodeLocator {
         "/Applications/ZCode.app/Contents/Resources/glm/zcode.cjs"
     )
 
-    /** 标准 Linux 安装路径 */
-    fun linuxDefault(): Path = Path.of(
-        "/opt/ZCode/app/resources/glm/zcode.cjs"
-    )
+    /**
+     * Linux 候选安装路径（按命中概率排序）：
+     * - /opt/ZCode/resources/... — deb/rpm 安装（3.12.3 deb 实测：包内自带 zcode.cjs 与
+     *   resources/config/provider/zcode-builtin.json，CLI 路径持久；旧插件写死的
+     *   /opt/ZCode/app/... 带 app 层与实际布局不符，issue #19 报错路径即此）
+     * - ~/.zcode/server/agents/... — 新版客户端运行时布局（客户端自行下载的 agent 运行时，
+     *   0.3.x 轨道客户端的落点，issue #19 用户实际生效路径；亦覆盖 AppImage 用户比照
+     *   手工构造的布局）
+     *
+     * 注意 CLI 独立启动自检 provider 的搜索位是「zcode.cjs 同级 provider/」与「自身
+     * 路径固定 5 级祖先 + config/provider/」（后者在 Linux 解析成 /config 等死路径），
+     * deb 包内自带的 config/provider 文件裸 spawn 时命不中，缺失时需补 CLI 同级 provider/。
+     */
+    fun linuxCandidates(): List<Path> {
+        val home = System.getProperty("user.home")
+        return listOf(
+            Path.of("/opt/ZCode", *GLM_SUFFIX),
+            Path.of(home, ".zcode", "server", "agents", "glm", "zcode.cjs"),
+        )
+    }
+
+    /** 标准 Linux 安装路径（向后兼容，返回首个候选） */
+    fun linuxDefault(): Path = linuxCandidates().first()
 
     /**
-     * 自动按操作系统探测：Windows 遍历全部候选取首个存在，其余系统单路径。
+     * 自动按操作系统探测：Windows 与 Linux 遍历全部候选取首个存在，macOS 单路径。
      * 仅做文件存在性检查（[Path.exists]，微秒级），不 spawn 子进程。
      */
     fun detect(): Path {
@@ -439,9 +458,12 @@ object ZCodeLocator {
                 p
             }
             else -> {
-                val p = linuxDefault()
-                require(p.exists()) { "ZCode CLI 未找到：$p（请确认 ZCode 已安装）" }
-                p
+                val candidates = linuxCandidates()
+                val hit = candidates.firstOrNull { it.exists() }
+                requireNotNull(hit) {
+                    "ZCode CLI 未找到，已检查：${candidates.joinToString("、")}"
+                }
+                hit
             }
         }
     }

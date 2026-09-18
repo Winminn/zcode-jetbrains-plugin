@@ -7,7 +7,6 @@ import com.intellij.openapi.diagnostic.Logger
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.startup.ProjectActivity
 import com.zcode.ideaplugin.protocol.V1BuiltinMigrator
-import com.zcode.ideaplugin.protocol.ZCodeLocator
 import com.zcode.ideaplugin.ui.ZCodeAutoArchiveService
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -51,11 +50,7 @@ class ZCodeProjectActivity : ProjectActivity {
     private fun migrateV1BuiltinsOnce(project: Project) {
         try {
             clearLegacyMarker()
-            val zcodePath = try {
-                ZCodeLocator.detect()
-            } catch (_: Exception) {
-                null
-            }
+            val zcodePath = com.zcode.ideaplugin.env.ZCodeEnvChecker.resolveCliPathForOps()
             val migrated = V1BuiltinMigrator.migrateIfNeeded(zcodePath)
             if (migrated.isEmpty()) return
             log.info("v1 builtin channels migrated to provider_config.json: $migrated")

@@ -263,7 +263,9 @@ class ZCodeProtocolClient private constructor(
             Thread({
                 try {
                     stderr.forEachLine { line ->
-                        System.err.println("[app-server stderr] ${LogRedactor.redact(line)}")
+                        val redacted = LogRedactor.redact(line)
+                        System.err.println("[app-server stderr] $redacted")
+                        client.recordStderr(redacted)
                         // 模型 API 错误兜底：429 配额超限等被 app-server 按可重试分类退避重试，
                         // turn 终止帧迟迟不发（UI 无限转圈无提示），stderr dump 是错误第一现场
                         backendErrorDetector.feed(line)?.let { err ->
@@ -754,6 +756,40 @@ class ZCodeProtocolClient private constructor(
     }
 
     /**
+     * 启动期 stderr 尾部留存（脱敏后，进程生命周期内累计、上限 16 行）：秒退/超时
+     * 报错时直接引用 stderr 原文与已知根因翻译，用户不再需要翻 idea.log 找第一现场。
+     */
+    private val stderrTail = ArrayDeque<String>()
+    private val stderrTailLock = Any()
+
+    private fun recordStderr(redactedLine: String) {
+        synchronized(stderrTailLock) {
+            stderrTail.addLast(redactedLine)
+            while (stderrTail.size > 16) stderrTail.removeFirst()
+        }
+    }
+
+    private fun stderrFirstMeaningful(): String = synchronized(stderrTailLock) {
+        stderrTail.firstOrNull { it.isNotBlank() } ?: ""
+    }
+
+    private fun stderrLastMeaningful(): String = synchronized(stderrTailLock) {
+        stderrTail.lastOrNull { it.isNotBlank() } ?: ""
+    }
+
+    /** 已知秒退根因的关键字翻译（按 stderr 首行匹配；返回 null = 未知原因走通用文案） */
+    private fun explainStartupExit(firstStderr: String): String? = when {
+        firstStderr.contains("Built-in Provider Config") ->
+            "ZCode CLI 内置渠道目录缺失（provider/zcode-builtin.json）：" +
+                "插件自动垫底未成功（客户端从未登录过没有渠道目录源，或 zcode.cjs 所在目录无写权限）。" +
+                "手动修复：把客户端自带的 zcode-builtin.json 拷贝到 zcode.cjs 同级 provider/ 目录下"
+        firstStderr.contains("node:sqlite") || firstStderr.contains("No such built-in module") ->
+            "Node.js 版本过旧：CLI 依赖 node:sqlite 内置模块（Node ≥22.5），" +
+                "请在设置 → 基础设置 → 环境中指定更高版本的 Node 路径"
+        else -> null
+    }
+
+    /**
      * 启动后就绪探测：发一个轻量请求并等待任意响应（result / error 均算就绪——收到
      * 应答即证明 JSON-RPC 循环已活）。
      *
@@ -781,16 +817,25 @@ class ZCodeProtocolClient private constructor(
             println("[ZCodeProtocolClient] app-server ready in ${System.currentTimeMillis() - startedAt}ms (probe=session/list)")
         } catch (e: TimeoutException) {
             pendingResponses.remove(id)
+            val last = stderrLastMeaningful()
             throw IOException(
                 "app-server 启动超时：${timeoutMs / 1000} 秒内未响应就绪探测，进程可能已崩溃" +
-                    "（第一现场见 idea.log 中 \"app-server stderr\" 行；常见原因：node 版本过旧、ZCode 客户端损坏）"
+                    (if (last.isNotEmpty()) "；stderr 尾行：$last" else "（第一现场见 idea.log 中 \"app-server stderr\" 行）") +
+                    "；常见原因：node 版本过旧、ZCode 客户端损坏"
             )
         } catch (e: ExecutionException) {
             pendingResponses.remove(id)
             val cause = e.cause as? Exception ?: e
+            val first = stderrFirstMeaningful()
+            val explained = explainStartupExit(first)
             throw IOException(
-                "app-server 进程启动后即退出（第一现场见 idea.log 中 \"app-server stderr\" 行；" +
-                    "常见原因：node 版本过旧、ZCode 客户端损坏）", cause
+                explained
+                    ?: buildString {
+                        append("app-server 进程启动后即退出")
+                        if (first.isNotEmpty()) append("：").append(first)
+                        else append("（第一现场见 idea.log 中 \"app-server stderr\" 行；常见原因：node 版本过旧、ZCode 客户端损坏）")
+                    },
+                cause
             )
         }
     }
