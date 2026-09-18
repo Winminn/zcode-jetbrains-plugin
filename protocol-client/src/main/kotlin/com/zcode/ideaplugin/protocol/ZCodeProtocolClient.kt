@@ -178,6 +178,19 @@ class ZCodeProtocolClient private constructor(
     }
 
     /**
+     * NEW 代 modelSelection 对象（send 主路径 / -32031 重试 / generateText 三处共用）。
+     * 引用 + reasoningLevel 默认档（v2 必填，缺失 turn 在 model_creation 静默 failed）。
+     * 提取前三处内联已现漂移苗头（缺 personalModelIds 兜底之类），形状改动只改这里。
+     */
+    private fun modelSelectionJson(providerId: String, modelId: String): JsonObject = buildJsonObject {
+        put("providerId", providerId)
+        put("modelId", modelId)
+        BuiltinModelCatalog.defaultReasoningLevel(modelId, zcodePath)?.let {
+            put("options", buildJsonObject { put("reasoningLevel", it) })
+        }
+    }
+
+    /**
      * 后端模型 API 错误回调（stderr 的 APICallError dump 解析结果，见 BackendErrorDetector）。
      * 场景：429 配额超限等被 app-server 按可重试分类持续退避，turn 终止帧迟迟不发，
      * 事件流上无错误迹象——stderr 是唯一的第一现场。在 stderr 线程调用。
@@ -599,8 +612,10 @@ class ZCodeProtocolClient private constructor(
         // streaming 复位，防快速回合终态仅存于遥测时入口永久禁用）。成功终态（status=
         // success/completed，真机实挖 success）**不合成**——真实 turn.completed（带
         // usage/response）由既有事件链正常到达，遥测重复合成会以空 payload 抢先污染
-        // 消费方（通知空预览/双气泡、消费方 usage 断言失败，2026-09-17 实测回退）
-        else if (method == "v4/telemetry/event") {
+        // 消费方（通知空预览/双气泡、消费方 usage 断言失败，2026-09-17 实测回退）。
+        // 门控 NEW：master 对 v1 遥测帧"暂不处理"（v1 是否推 aborted 遥测未实证），
+        // 合成是 v2 专属补偿——门死保证 v1 行为与 master 逐字一致（2026-09-17 review）
+        else if (method == "v4/telemetry/event" && generation == ProtocolGeneration.NEW) {
             val kind = params["kind"]?.jsonPrimitive?.jsonStringOrNull
             if (kind == "turn.terminal") {
                 val status = params["status"]?.jsonPrimitive?.jsonStringOrNull
@@ -1188,13 +1203,7 @@ class ZCodeProtocolClient private constructor(
                     // reasoningLevel 必填（diag-v2-send-silent-fail.py 实证：缺了 send RPC 仍
                     // 返回成功，但 turn 在 model_creation 阶段立即 failed——错误只走
                     // v4/telemetry 事件不进 session/event 流，UI 表现为"一直没有响应"）
-                    put("modelSelection", buildJsonObject {
-                        put("providerId", providerId)
-                        put("modelId", modelId)
-                        BuiltinModelCatalog.defaultReasoningLevel(modelId, zcodePath)?.let {
-                            put("options", buildJsonObject { put("reasoningLevel", it) })
-                        }
-                    })
+                    put("modelSelection", modelSelectionJson(providerId, modelId))
                 } else if (sentRuntimeModel != null) {
                     put("runtimeModel", sentRuntimeModel)
                 }
@@ -1242,13 +1251,7 @@ class ZCodeProtocolClient private constructor(
                     val retryParams = buildJsonObject {
                         put("sessionId", sessionId)
                         put("content", content)
-                        put("modelSelection", buildJsonObject {
-                            put("providerId", providerId)
-                            put("modelId", modelId)
-                            BuiltinModelCatalog.defaultReasoningLevel(modelId, zcodePath)?.let {
-                                put("options", buildJsonObject { put("reasoningLevel", it) })
-                            }
-                        })
+                        put("modelSelection", modelSelectionJson(providerId, modelId))
                         if (!attachments.isNullOrEmpty()) {
                             put("attachments", buildAttachmentsJson(attachments))
                         }
@@ -1459,17 +1462,16 @@ class ZCodeProtocolClient private constructor(
             })
             // 模型字段按代分支：OLD=modelRef / NEW=selection（2026-09-17 schema 实挖改名）
             val key = if (generation == ProtocolGeneration.NEW) "selection" else "modelRef"
-            put(key, buildJsonObject {
-                put("providerId", providerId)
-                put("modelId", modelId)
+            if (generation == ProtocolGeneration.NEW) {
                 // v2 selection 必带 options.reasoningLevel（缺失报 "Reasoning level is
                 // required"，润色/标题快速通道曾因此全量降级 CLI）
-                if (generation == ProtocolGeneration.NEW) {
-                    BuiltinModelCatalog.defaultReasoningLevel(modelId, zcodePath)?.let {
-                        put("options", buildJsonObject { put("reasoningLevel", it) })
-                    }
-                }
-            })
+                put(key, modelSelectionJson(providerId, modelId))
+            } else {
+                put(key, buildJsonObject {
+                    put("providerId", providerId)
+                    put("modelId", modelId)
+                })
+            }
             // v2 请求顶层 maxOutputTokens 参与模型选项强校验（缺省报 "outside the model
             // option range"，diag-v2-generatetext-reasoning.py 实挖）；标题/润色输出很短，
             // 取模型档位上限与 8192 的较小值。OLD 无此校验不传

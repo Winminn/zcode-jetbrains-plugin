@@ -1,5 +1,7 @@
 {
   "toolbarHint": "内蔵チャネルは Zcode クライアント準拠。カスタムチャネルはここで管理できます",
+  "genBadgeV2": "カスタムプロバイダー体系",
+  "genBadgeV2Hint": "チャネル体系 v2：モデルチャネル = クライアントの「カスタムプロバイダー」（provider_config.json）。クライアントと設定を共有し、プラグインでの追加・編集が即時反映されます。公式内蔵チャネルはすべて SSO に移行しました",
   "add": "チャネル追加",
   "refreshTitle": "設定ファイルを再読み込み",
   "searchPlaceholder": "モデル / プロバイダーを検索",
@@ -18,8 +20,11 @@
   "section": {
     "builtin": "内蔵チャネル",
     "builtinHint": "ZCode クライアントの設定に従います。同時に有効なのは 1 つだけです。切り替えはクライアントで行ってください。トライアルプランは人間認証（CAPTCHA）が必要なためプラグインでは利用できず、一覧から除外されています",
-    "custom": "カスタムプロバイダー"
+    "custom": "カスタムプロバイダー",
+    "reorderHint": "矢印で順序を変更します（クライアントと同期）"
   },
+  "moveUp": "上へ移動",
+  "moveDown": "下へ移動",
   "builtinReadonlyHint": "内蔵チャネルが有効です（有効/無効の切り替えは ZCode クライアントで）",
   "providerDisabled": "無効",
   "providerNoModels": "このプロバイダーにモデルはありません",

@@ -403,7 +403,11 @@ object ProviderConfigWriterV2 {
         }
     }
 
-    /** 滚动备份链（v1 [ProviderConfigWriter.rotateBackups] 同款策略）*/
+    /**
+     * 滚动备份链（v1 [ProviderConfigWriter.rotateBackups] 同款滚动策略）。
+     * 不含 v1 的旧单代 `.bak`→`.bak.1` 迁移分支：provider_config.json 是 v2 新文件，
+     * 从未有单代备份遗产，该分支在此恒空转——2026-09-17 review 澄清，非遗漏。
+     */
     private fun rotateBackups(path: Path): Path {
         val name = path.fileName.toString()
         val bak1 = path.resolveSibling("$name.bak.1")

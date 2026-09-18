@@ -3904,22 +3904,14 @@ if (!window.__ZCODE_LOG_HOOK__) {
         //（builtin:bigmodel-coding-plan 等，v2 registry 已无此渠道）。v2 下 send 带
         // 无效模型引用时 RPC 本身成功但回合立即 prompt_failed（错误只走 telemetry），
         // UI 表现"发了没反应"。判据：providerId 不在 v2 模型清单（provider_config.json
-        // 展平，与下拉同源）→ 静默换成清单首个可用，不打扰用户
+        // 展平，与下拉同源）→ 静默换成可用模型（kv 近用优先，与标题/润色兜底同链），
+        // 不打扰用户。2026-09-17 review 收敛：原内联实现只读 modelOrder 漏
+        // personalModelIds，与 newCliEnabledProviderModels 漂移，改用共享 helper
         if (cliGeneration == com.zcode.ideaplugin.protocol.ProtocolGeneration.NEW
             && providerId != null && modelId != null) {
-            val known = readNewCliProviderRules().any { rule ->
-                rule["providerId"]?.jsonPrimitive?.contentOrNull == providerId &&
-                (rule["enabled"]?.jsonPrimitive?.contentOrNull ?: "true") != "false"
-            }
+            val known = newCliEnabledProviderModels().any { it.first == providerId }
             if (!known) {
-                val fb = readNewCliProviderRules().firstOrNull { rule ->
-                    (rule["enabled"]?.jsonPrimitive?.contentOrNull ?: "true") != "false"
-                }?.let { rule ->
-                    val pid = rule["providerId"]?.jsonPrimitive?.contentOrNull
-                    val mid = rule["config"]?.jsonObject?.get("modelOrder")?.jsonArray
-                        ?.firstNotNullOfOrNull { (it as? JsonPrimitive)?.contentOrNull }
-                    if (pid != null && mid != null) pid to mid else null
-                }
+                val fb = newCliFallbackModel()
                 if (fb != null) {
                     log.warn("send: dead provider ref $providerId/$modelId (v1 memory?), falling back to ${fb.first}/${fb.second}")
                     providerId = fb.first

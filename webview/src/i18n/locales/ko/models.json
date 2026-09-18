@@ -1,5 +1,7 @@
 {
   "toolbarHint": "내장 채널은 Zcode 클라이언트를 따르고, 사용자 지정 채널은 여기서 관리합니다",
+  "genBadgeV2": "사용자 지정 공급자 체계",
+  "genBadgeV2Hint": "채널 체계 v2: 모델 채널 = 클라이언트의 '사용자 지정 공급자'(provider_config.json). 클라이언트와 설정을 공유하며 플러그인에서 추가/수정하면 즉시 반영됩니다. 공식 내장 채널은 모두 SSO로 전환되었습니다",
   "add": "채널 추가",
   "refreshTitle": "설정 파일 다시 읽기",
   "searchPlaceholder": "모델 / 공급자 검색",
@@ -18,8 +20,11 @@
   "section": {
     "builtin": "내장 채널",
     "builtinHint": "ZCode 클라이언트 설정을 따르며 동시에 하나만 활성화됩니다. 전환은 클라이언트에서 진행하세요. 체험 플랜은 사람 인증(CAPTCHA)이 필요하여 플러그인에서 사용할 수 없어 목록에서 제외됩니다",
-    "custom": "사용자 지정 공급자"
+    "custom": "사용자 지정 공급자",
+    "reorderHint": "화살표로 순서를 조정합니다(클라이언트와 동기화)"
   },
+  "moveUp": "위로 이동",
+  "moveDown": "아래로 이동",
   "builtinReadonlyHint": "내장 채널 활성 상태(활성/비활성 전환은 ZCode 클라이언트에서)",
   "providerDisabled": "비활성화됨",
   "providerNoModels": "이 공급자에는 모델이 없습니다",
