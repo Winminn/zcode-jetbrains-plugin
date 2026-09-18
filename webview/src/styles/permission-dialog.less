@@ -1,7 +1,27 @@
 /**
  * 工具权限审批弹窗样式（「变更前询问」模式，interaction/requestPermission）。
- * 遮罩复用 ask-user-dialog.less 的 .ask-user-overlay
+ * 遮罩复用 ask-user-dialog.less 的 .ask-user-overlay；底部停靠（--dock）形态
+ * 与询问/计划审批弹窗一致：透明遮罩放行消息区交互。倒计时与应答逻辑不变。
  */
+
+/* dock 变体下 perm-dialog 的停靠形态（ask-user-dialog.less 的 dock 规则只嵌套了
+   .ask-user-dialog，此处对 perm-dialog 单独生效） */
+.ask-user-overlay--dock .perm-dialog {
+  pointer-events: auto;
+  animation: perm-dialog-slide-up 0.18s ease-out;
+  box-shadow: 0 -4px 20px rgba(0, 0, 0, 0.4);
+}
+
+@keyframes perm-dialog-slide-up {
+  from {
+    transform: translateY(16px);
+    opacity: 0;
+  }
+  to {
+    transform: translateY(0);
+    opacity: 1;
+  }
+}
 
 .perm-dialog {
   width: 520px;

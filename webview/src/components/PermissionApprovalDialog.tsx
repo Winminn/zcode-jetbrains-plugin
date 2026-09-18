@@ -135,7 +135,9 @@ export function PermissionApprovalDialog({
     : riskLevel === 'high' ? t('app.permissionApproval.riskHigh') : null
 
   return (
-    <div className="ask-user-overlay">
+    // dock 形态：底部停靠非模态（对齐询问/计划审批弹窗）——放行消息区交互，
+    // 用户可回看工具卡上下文再决定；倒计时与应答逻辑不变
+    <div className="ask-user-overlay ask-user-overlay--dock">
       {/* 遮罩不响应点击（与 AskUserDialog 同款纪律）：审批是显式决策，误触遮罩不得改变语义 */}
       <div className="perm-dialog" title={toolName}>
         <div className="perm-dialog__header">
