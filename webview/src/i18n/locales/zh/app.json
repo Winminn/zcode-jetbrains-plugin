@@ -66,7 +66,8 @@
     "backgroundTask": "后台任务",
     "completed": "✓ 完成",
     "failed": "✗ 失败",
-    "notice": "通知"
+    "notice": "通知",
+    "viewResult": "点击查看结果"
   },
   "status": {
     "todoTab": "任务",

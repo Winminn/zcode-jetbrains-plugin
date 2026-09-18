@@ -35,6 +35,15 @@
     &:hover {
       background: rgba(255, 255, 255, 0.04);
     }
+
+    /* 无正文（result/message 缺失）不可点开弹窗 */
+    &--static {
+      cursor: default;
+
+      &:hover {
+        background: none;
+      }
+    }
   }
 
   &__icon {
@@ -103,20 +112,12 @@
     margin-left: auto;
   }
 
+  /* 尾部「查看结果」箭头（点击整行打开阅读弹窗）*/
   &__toggle {
     color: var(--text-tertiary);
-    font-size: 10px;
+    font-size: 12px;
     flex-shrink: 0;
-  }
-
-  // ============ 展开的成果正文（markdown）============
-  &__body {
-    padding: 4px 12px 12px;
-    border-top: 1px solid var(--border-secondary);
-
-    /* 正文用 MarkdownBlock 渲染，缩小一点字号与消息正文区分 */
-    .markdown-body {
-      font-size: 13px;
-    }
+    display: inline-flex;
+    align-items: center;
   }
 }
