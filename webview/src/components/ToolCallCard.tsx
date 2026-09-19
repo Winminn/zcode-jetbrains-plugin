@@ -27,6 +27,7 @@ import { sendToJava, openExternalUrl } from '@/ipc/bridge'
 import { useStore } from '@/store/useStore'
 import { useTick } from '@/hooks/useTick'
 import { extractTodoItems, diffTodos, findPrevTodoWriteTodos } from '@/utils/todoDiff'
+import { isAgentMessageTool, shortAgentId, parseAgentMessageReceipt } from '@/utils/agentMessage'
 import { FileIcon } from './FileIcon'
 import '../styles/tool-call-card.less'
 
@@ -60,6 +61,9 @@ function toolIcon(tool: string): string {
     CronDelete: 'codicon-clockface',
     // #会话引用的上下文拉取（与输入框会话 chip 同图标）
     ReadSessionContext: 'codicon-comment-discussion',
+    // 代理间消息族（协调者↔子代理通信）：发信/回信
+    SendMessage: 'codicon-mail',
+    RespondToCoordinator: 'codicon-reply',
   }
   // mcp__ 前缀的工具统一用 package 图标
   if (tool.startsWith('mcp__')) return 'codicon-package'
@@ -130,6 +134,14 @@ function inputSummary(tool: string, input?: Record<string, unknown>): string {
       return input.strategy === 'handoff'
         ? `[handoff] ${String(input.query || '').slice(0, 60)}`
         : String(input.query || '').slice(0, 80)
+    case 'SendMessage':
+      // summary 是官方给 UI 的 5-10 词预览；前置收件人短 id 便于区分多个子代理
+      return [
+        typeof input.to === 'string' && input.to ? shortAgentId(input.to) : '',
+        typeof input.summary === 'string' ? input.summary.slice(0, 60) : '',
+      ].filter(Boolean).join(' · ')
+    case 'RespondToCoordinator':
+      return String(input.summary || '').slice(0, 80)
     default:
       // mcp__* 工具用 title，其他用第一个字符串值
       if (tool.startsWith('mcp__') && typeof input.title === 'string') return input.title
@@ -346,6 +358,14 @@ export function ToolCallCard({ part }: Props) {
       markdown: state.output,
     })
   }
+
+  // 代理间消息族（SendMessage/RespondToCoordinator）：input 友好展示（收件人/正文）
+  // 替代裸 JSON；output 为回执 JSON 文本，解析出送达形态一行展示，非 JSON 回退原文
+  const isMsgTool = isAgentMessageTool(tool)
+  const msgReceipt = useMemo(
+    () => (isMsgTool && hasOutput ? parseAgentMessageReceipt(state.output) : null),
+    [isMsgTool, hasOutput, state.output],
+  )
 
   // TodoWrite（任务列表）：与上一次调用对比做增量标注（新增/状态变更/删除）。
   // 上次快照按 callID 在主消息流里顺序回溯（跨消息，TodoWrite 不聚组、每次调用
@@ -759,6 +779,50 @@ export function ToolCallCard({ part }: Props) {
               </div>
             )
           )}
+          {/* 代理间消息族（SendMessage/RespondToCoordinator）：收件人（仅 SendMessage 有 to）
+              + 正文按原文换行展示替代裸 JSON；回执解析为送达形态一行，非 JSON 回退原文 */}
+          {isMsgTool && input && (
+            <>
+              {typeof input.to === 'string' && input.to && (
+                <div className="tool-card__section">
+                  <div className="tool-card__label">{t('tool.agentMsg.recipient')}</div>
+                  <div className="tool-card__msg-recipient" title={input.to}>
+                    <span className="codicon codicon-hubot" />
+                    <span className="tool-card__msg-recipient-id">{shortAgentId(input.to)}</span>
+                  </div>
+                </div>
+              )}
+              {typeof input.message === 'string' && input.message.trim() && (
+                <div className="tool-card__section">
+                  <div className="tool-card__label">{t('tool.agentMsg.message')}</div>
+                  <pre className="tool-card__code tool-card__prompt">{input.message}</pre>
+                </div>
+              )}
+            </>
+          )}
+          {isMsgTool && hasOutput && (
+            <div className="tool-card__section">
+              <div className="tool-card__label">{t('tool.output')}</div>
+              {msgReceipt ? (
+                <div
+                  className={`tool-card__msg-receipt${msgReceipt.status === 'failed' ? ' tool-card__msg-receipt--err' : ''}`}
+                  title={msgReceipt.id}
+                >
+                  <span className={`codicon ${msgReceipt.status === 'failed' ? 'codicon-error' : 'codicon-check'}`} />
+                  <span className="tool-card__msg-receipt-text">
+                    {msgReceipt.status === 'failed'
+                      ? (msgReceipt.error || t('tool.agentMsg.failed'))
+                      : t(`tool.agentMsg.delivery.${msgReceipt.delivery ?? 'sent'}`)}
+                    {msgReceipt.id && (
+                      <span className="tool-card__msg-receipt-id">{msgReceipt.id}</span>
+                    )}
+                  </span>
+                </div>
+              ) : (
+                <pre className="tool-card__code">{state.output}</pre>
+              )}
+            </div>
+          )}
           {/* 任务列表（TodoWrite）：全量列表 + 增量标注（新增/状态变更），已移除单列一节 */}
           {isTodoTool && input && todoDiff && todoDiff.entries.length > 0 && (
             <div className="tool-card__section tool-card__section--todo">
@@ -833,8 +897,9 @@ export function ToolCallCard({ part }: Props) {
               ExitPlanMode 的 plan 全文走 📖 弹窗，展开区不渲染 input JSON；
               web 双工具走上方专用分支（input 友好展示 + 来源列表/短预览）；
               定时任务家族走上方 cron 分支（触发时刻/标题/提示词 + message/任务列表）；
+              代理间消息族走上方消息分支（收件人/正文/回执）；
               TodoWrite 走上方任务列表分支（diff 标注），仅流式未解析时落到 rawInput 原文 */}
-          {tool !== 'Bash' && tool !== 'Write' && tool !== 'Edit' && tool !== 'Skill' && tool !== 'ExitPlanMode' && !isWebTool && !isCron && !isTodoTool && (
+          {tool !== 'Bash' && tool !== 'Write' && tool !== 'Edit' && tool !== 'Skill' && tool !== 'ExitPlanMode' && !isWebTool && !isCron && !isTodoTool && !isMsgTool && (
             <>
               {state.input && Object.keys(state.input).length > 0 && (
                 <div className="tool-card__section">

@@ -21,7 +21,20 @@
     "CronCreate": "创建定时任务",
     "CronUpdate": "修改定时任务",
     "CronList": "查看定时任务",
-    "CronDelete": "删除定时任务"
+    "CronDelete": "删除定时任务",
+    "SendMessage": "发消息给子代理",
+    "RespondToCoordinator": "回复协调者"
+  },
+  "agentMsg": {
+    "recipient": "收件代理",
+    "message": "消息正文",
+    "failed": "发送失败",
+    "delivery": {
+      "sent": "已送达",
+      "queued": "已入队，待子代理读取",
+      "steered": "已插队引导至运行中的子代理",
+      "resumed_background": "已唤醒后台子代理续跑"
+    }
   },
   "mcpToolName": "MCP·{{name}}",
   "editFileTitle": "编辑文件：{{name}}",

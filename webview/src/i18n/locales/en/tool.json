@@ -21,7 +21,20 @@
     "CronCreate": "Create Scheduled Task",
     "CronUpdate": "Update Scheduled Task",
     "CronList": "List Scheduled Tasks",
-    "CronDelete": "Delete Scheduled Task"
+    "CronDelete": "Delete Scheduled Task",
+    "SendMessage": "Send Message",
+    "RespondToCoordinator": "Respond to Coordinator"
+  },
+  "agentMsg": {
+    "recipient": "Recipient agent",
+    "message": "Message",
+    "failed": "Send failed",
+    "delivery": {
+      "sent": "Delivered",
+      "queued": "Queued for the agent to read",
+      "steered": "Steered into the running agent",
+      "resumed_background": "Resumed the background agent"
+    }
   },
   "mcpToolName": "MCP·{{name}}",
   "editFileTitle": "Edit file: {{name}}",
