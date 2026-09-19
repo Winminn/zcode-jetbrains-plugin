@@ -23,6 +23,56 @@ export interface ChangelogEntry {
 
 export const CHANGELOG_DATA: ChangelogEntry[] = [
   {
+    "version": "0.3.7",
+    "date": "2026-09-19",
+    "zh": {
+      "sections": [
+        {
+          "title": "适配",
+          "items": [
+            "**适配 ZCode 3.14.0 客户端**：修复新版 CLI 推送数组格式通知导致接收线程崩溃、会话全线超时的问题。"
+          ]
+        },
+        {
+          "title": "新增",
+          "items": [
+            "**计划与权限审批面板重做**（issue #17）：审批弹窗改为停靠输入框底部，与询问弹窗同形态；计划审批不再超时自动拒绝，会一直等待处理，并展示计划摘要。",
+            "**子代理通知卡改弹窗阅读**：通知卡只保留摘要行，点击整行在阅读弹窗中查看成果全文，长文不再原地展开刷屏。",
+            "**SendMessage 消息卡友好渲染**：子代理间通信消息以独立卡片展示。"
+          ]
+        },
+        {
+          "title": "修复",
+          "items": [
+            "会话标题生成后不实时更新、或稍后被顶回初始标题的问题：修复订阅建立首帧标题事件被多标签隔离门禁拦截的竞态，并增加列表快照防回退守卫与回合结束后的延迟重拉兜底。",
+            "Linux 下客户端更新后「ZCode CLI 未找到」（issue #19）：探测路径覆盖新版客户端运行时布局；模型列表/刷新尊重手动配置的 CLI 路径；CLI 缺少内置渠道配置文件时启动前自动补齐；无法自动补齐时报错直接给出原因与修复方法，不再需要翻日志找第一现场。"
+          ]
+        },
+        {
+          "title": "Compatibility",
+          "items": [
+            "**ZCode 3.14.0 client compatibility**: fixed array-format notification frames from the new CLI crashing the reader thread and taking down all sessions."
+          ]
+        },
+        {
+          "title": "Added",
+          "items": [
+            "**Redesigned plan & permission approval panels** (issue #17): approval dialogs now dock above the input box, matching the ask-dialog style; plan approval no longer auto-declines on timeout — it waits indefinitely and shows a plan summary.",
+            "**Subagent notification cards open in a preview dialog**: cards keep only the summary row; click to read the full result in a markdown preview dialog instead of expanding in place.",
+            "**Friendly rendering for SendMessage cards**: inter-agent messages now render as dedicated cards."
+          ]
+        },
+        {
+          "title": "Fixed",
+          "items": [
+            "Fixed session titles not updating in real time after generation, or being reverted to the initial title shortly after: fixed a race where the first title frame was blocked by the multi-tab isolation gate, and added a list-snapshot anti-rollback guard plus delayed refreshes after each turn as a fallback.",
+            "Fixed \"ZCode CLI not found\" after client updates on Linux (issue #19): detection now covers the new client runtime layout; the model list/refresh respects the manually configured CLI path; a missing built-in provider config is auto-seeded before launch, and when no source is available the error explains the cause and the fix instead of pointing at logs."
+          ]
+        }
+      ]
+    }
+  },
+  {
     "version": "0.3.6",
     "date": "2026-09-18",
     "zh": {
