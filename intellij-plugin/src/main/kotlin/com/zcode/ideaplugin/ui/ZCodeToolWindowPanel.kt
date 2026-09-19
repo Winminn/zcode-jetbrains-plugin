@@ -4583,8 +4583,13 @@ if (!window.__ZCODE_LOG_HOOK__) {
     private fun pushStreamEvent(sessionId: String, event: com.zcode.ideaplugin.protocol.model.SessionEvent) {
         // 面板已释放：dispose 摘监听器与杀进程之间存在竞态窗口，双保险在此拦断
         if (disposed) return
-        // 多标签隔离：只推本面板订阅过的会话（其他标签的事件由各自的监听器推送）
-        if (sessionId !in subscribedSessions) {
+        // 多标签隔离：只推本面板订阅过的会话（其他标签的事件由各自的监听器推送）。
+        // 例外：session.titleUpdated 豁免——v4 标题订阅建立时的 initial meta.title 帧
+        // 可能早于 subscribedSessions.add 落位（client.subscribe() 返回前后竞态窗口，
+        // 2026-09-19 [title-sub] 日志实锤：4 次 blocked 0 放行），首帧标题更新被拦即丢，
+        // 表现为"标题生成了但主界面不更新"。titleUpdated 是全局无害更新（前端仅改
+        // 列表标题，会话不在列表即被丢弃），放行不破坏隔离语义
+        if (sessionId !in subscribedSessions && event.type != "session.titleUpdated") {
             // 诊断（子会话实时流停更追查）：子会话被门禁挡住的首次打点——
             // 持续打点说明订阅簿记在任务中途被清（invalidateStaleSubscriptions 等）
             if (sessionId.startsWith("sess_subagent")) {

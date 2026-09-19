@@ -19,6 +19,15 @@ object ProtocolLog {
         if (debugEnabled) println(msg)
     }
 
+    /**
+     * 低频关键链路打点（会话标题订阅等单会话一次级事件）：恒开。
+     * 量级=每会话一条，不刷屏；2026-09-19 标题实时推送排查全程无日志可见，
+     * 断点无法定位——此类链路的成败点此后统一走 info 保留生产可见性。
+     */
+    fun info(msg: String) {
+        println(msg)
+    }
+
     fun error(msg: String) {
         System.err.println(msg)
     }

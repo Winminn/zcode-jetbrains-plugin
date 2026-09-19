@@ -1548,6 +1548,8 @@ export const useStore = create<StoreState>((set, get) => ({
   },
 
   loadSessions: () => {
+    // 记录请求发出时刻：响应合并时比对 titleUpdatedAt，早于它的快照标题不采用（防回退守卫）
+    listSessionsSentAt = Date.now()
     sendToJava({ op: 'listSessions', workspacePath: get().projectPath })
   },
 
@@ -2207,6 +2209,8 @@ export const useStore = create<StoreState>((set, get) => ({
   renameSession: (sessionId, title) => {
     // 持久化（persist 通道，listSessions 响应时合并回来）
     setPersisted(`zcode.sessionTitle.${sessionId}`, title)
+    // 本地权威更新打点：后续早于此刻的 listSessions 快照不得回退此标题（防回退守卫）
+    titleUpdatedAt[sessionId] = Date.now()
     set((s) => ({
       sessions: s.sessions.map((x) => (x.sessionId === sessionId ? { ...x, title } : x)),
     }))
@@ -2850,6 +2854,15 @@ function rangeToTimes(
 
 // ============ 标题辅助 ============
 
+// ===== 标题防回退守卫（2026-09-19）=====
+/** 各会话标题最后一次本地权威更新时刻（titleUpdated 实时事件 / 手动改名）。
+ *  listSessions 响应是"请求发出时刻"的服务端快照，AI 标题异步生成（约 10s，
+ *  3.12.x 最长数分钟）窗口内发出的请求拉到旧值；快照晚到合并时按服务端值采用
+ *  会把已显示的新标题顶回旧值（用户实测"生成的标题被顶掉回初始标题"）。
+ *  此守卫：快照早于本地最后权威更新 → 该会话标题保留本地值。 */
+const titleUpdatedAt: Record<string, number> = {}
+let listSessionsSentAt = 0
+
 /**
  * 服务端标题是否仍是占位（未生成正式标题）：
  * 空 / 会话 id 本身 / sess_ 前缀（CLI 新会话初始 title 即会话 id）。
@@ -2884,6 +2897,8 @@ function applyTitleUpdated(
   if (!st.sessions.some((s) => s.sessionId === sessionId)) return
   const nextProvisionals = { ...st.provisionalTitles }
   delete nextProvisionals[sessionId]
+  // 本地权威更新打点：后续早于此刻的 listSessions 快照不得回退此标题（防回退守卫）
+  titleUpdatedAt[sessionId] = Date.now()
   set({
     sessions: st.sessions.map((s) => (s.sessionId === sessionId ? { ...s, title: title.trim() } : s)),
     provisionalTitles: nextProvisionals,
@@ -3236,6 +3251,21 @@ export function handleResponse(
         if (stored) {
           delete nextProvisionals[s.sessionId]
           return { ...s, title: stored }
+        }
+        // 防回退守卫（2026-09-19）：快照早于本地最后权威标题更新（titleUpdated 实时
+        // 事件/手动改名）时，本次拉到的服务端 title 是生成完成前的旧值——保留本地。
+        // 不加此守卫，AI 标题会在生成后 ~10s 内被任何一次旧快照刷新顶回初始标题
+        const lastTitleAt = titleUpdatedAt[s.sessionId]
+        const prevForGuard = prevSessions.find((x) => x.sessionId === s.sessionId)
+        if (
+          listSessionsSentAt > 0 &&
+          lastTitleAt &&
+          lastTitleAt > listSessionsSentAt &&
+          prevForGuard &&
+          !isDefaultSessionTitle(prevForGuard.title, s.sessionId)
+        ) {
+          delete nextProvisionals[s.sessionId]
+          return { ...s, title: prevForGuard.title }
         }
         if (!isDefaultSessionTitle(s.title, s.sessionId)) {
           delete nextProvisionals[s.sessionId]
@@ -5607,6 +5637,12 @@ function handleStreamBatchDirect(
       get().loadUsage()
       // 兜底重拉设置（ZCode 自动进出计划模式若伴随 turn 结束也能对齐）
       get().loadSettings()
+      // 标题生成兜底重拉（2026-09-19）：服务端 AI 标题在回合结束后异步生成（3.14.0
+      // 实测约 10s，3.12.x 最长数分钟），上面 300ms 的 loadSessions 跑在生成完成之前，
+      // 实时 titleUpdated 通道若静默失效，首条输入派生的临时标题将停留到下次手动刷新。
+      // 两次延迟重拉覆盖生成窗口；listSessions 合并幂等，实时通道正常时只是重刷同值
+      setTimeout(() => get().loadSessions(), 15_000)
+      setTimeout(() => get().loadSessions(), 60_000)
     }, 300)
   }
 }

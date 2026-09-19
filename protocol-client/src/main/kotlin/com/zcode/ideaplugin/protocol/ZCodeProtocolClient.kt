@@ -591,6 +591,12 @@ class ZCodeProtocolClient private constructor(
     private fun handleNotification(method: String, params: JsonObject) {
         if (method == "session/event") {
             val event = SessionEvent.fromNotification(params)
+            // 3.14.0 起 legacy 流恢复推送 titleUpdated（0.3.6 适配 3.12.x 时的"不再推送"
+            // 结论已过时）——透传即生效，与 v4 合成通道并存，前端 applyTitleUpdated 幂等。
+            // 低频（每会话标题一次），info 保留生产可见性供实时链路排查
+            if (event.type == com.zcode.ideaplugin.protocol.model.EventTypes.SESSION_TITLE_UPDATED) {
+                ProtocolLog.info("[title-sub] legacy session/event titleUpdated: ${event.sessionId} title=${event.payload["title"]?.jsonPrimitive?.contentOrNull?.take(30)}")
+            }
             // 通知该 session 的监听器（诊断埋点已摘：见 dispatchMessage 通知分支注释）
             val listeners = eventListeners[event.sessionId]
             listeners?.forEach { it(event) }
@@ -684,6 +690,7 @@ class ZCodeProtocolClient private constructor(
                     if (delta["op"]?.jsonPrimitive?.jsonStringOrNull != "state.updated") continue
                     val meta = delta["patch"]?.jsonObject?.get("meta")?.jsonObject ?: continue
                     val title = meta["title"]?.jsonPrimitive?.jsonStringOrNull?.takeIf { it.isNotBlank() } ?: continue
+                    ProtocolLog.info("[title-sub] meta.title synthesized from v4 frame: $sid title=${title.take(30)}")
                     dispatchSessionEvent(SessionEvent(
                         type = "session.titleUpdated",
                         seq = 0L,
@@ -1153,6 +1160,7 @@ class ZCodeProtocolClient private constructor(
         if (generation == ProtocolGeneration.NEW && sessionId !in v4SubscribedSessions
             && v4TitleSessions.add(sessionId)
         ) {
+            ProtocolLog.debug("[title-sub] v4 title subscribe launching: $sessionId")
             Thread({
                 runCatching {
                     val rr = request("v4/conversation/subscribe", buildJsonObject {
@@ -1162,9 +1170,13 @@ class ZCodeProtocolClient private constructor(
                     }, timeoutMs)
                     rr["result"]?.jsonObject?.get("ack")?.jsonObject
                         ?.get("subscriptionId")?.jsonPrimitive?.contentOrNull
-                        ?.let { v4SubscriptionIds[sessionId] = it }
+                        ?.let {
+                            v4SubscriptionIds[sessionId] = it
+                            ProtocolLog.info("[title-sub] v4 title subscribe ok: $sessionId sub=${it.take(12)}")
+                        }
                 }.onFailure {
                     v4TitleSessions.remove(sessionId)
+                    ProtocolLog.info("[title-sub] v4 title subscribe FAILED (falls back to listSessions refresh): $sessionId: ${it.message?.take(150)}")
                 }
             }, "zcode-v4-title-sub").start()
         }
