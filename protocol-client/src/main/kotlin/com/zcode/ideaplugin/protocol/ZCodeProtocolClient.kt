@@ -370,7 +370,20 @@ class ZCodeProtocolClient private constructor(
                     continue
                 }
 
-                dispatchMessage(msg)
+                // 单帧处理失败只丢该帧，绝不杀 reader 线程：线程一死 app-server 虽活着
+                // 但响应再也读不回（症状=全线请求超时，新会话也建不了）。2026-09-19 事故：
+                // 新版 CLI 每 5 分钟推 process/mcpResourceSamples（params 为数组），旧代码
+                // 强转 JsonObject 抛 IllegalArgumentException 穿透到这里杀死线程（外层只
+                // catch IOException）——任何未来协议形状变化都应止步于丢帧+日志
+                try {
+                    dispatchMessage(msg)
+                } catch (e: Exception) {
+                    val method = msg["method"]?.toString()?.take(60) ?: "?"
+                    System.err.println(
+                        "[ZCodeProtocolClient] dispatch failed (method=$method), frame dropped: " +
+                            "${e.javaClass.simpleName}: ${LogRedactor.redact(e.message ?: "")}"
+                    )
+                }
             }
         } catch (e: IOException) {
             if (!closed) {
@@ -407,7 +420,9 @@ class ZCodeProtocolClient private constructor(
             // （通知到达/事件接收/监听器匹配），为"切会话丢流式"排查埋点——该问题已由
             // 全局监听器机制根治，埋点于 0.3.1 收尾摘除（实测 10 分钟 1092 事件 ≈ 3300 行日志洪水）
             method != null && id == null -> {
-                handleNotification(method, msg["params"]?.jsonObject ?: JsonObject(emptyMap()))
+                // params 形状防御：遥测类通知（process/mcpResourceSamples 等）的 params 是
+                // 数组，?.jsonObject 强转会抛异常；as? 落空对象让未知通知照常走忽略路径
+                handleNotification(method, msg["params"] as? JsonObject ?: JsonObject(emptyMap()))
             }
             else -> {
                 // 未知消息类型（可能是带 id 的通知？打印诊断）
@@ -420,7 +435,8 @@ class ZCodeProtocolClient private constructor(
     private fun handleServerRequest(msg: JsonObject) {
         val method = msg["method"]?.jsonPrimitive?.jsonStringOrNull ?: return
         val id = msg["id"]?.jsonPrimitive?.jsonStringOrNull ?: return
-        val params = msg["params"]?.jsonObject ?: JsonObject(emptyMap())
+        // 与 dispatchMessage 通知分支同款形状防御：params 非对象时落空对象
+        val params = msg["params"] as? JsonObject ?: JsonObject(emptyMap())
 
         if (method == "session/requestRuntimePreferences") {
             // 规格书 §3：必须应答，否则卡死。responder 异常时兜底 SAFE_DEFAULT（不答就永久卡死）
