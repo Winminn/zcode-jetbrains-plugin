@@ -381,15 +381,21 @@ export default function App() {
         </div>
       )}
 
-      {/* 新建会话二次确认 */}
+      {/* 新建会话确认（issue #21）：当前标签已有会话时三选——覆盖当前标签 / 新标签页打开 / 取消。
+          新标签页与 Header 新标签按钮同路径（op:createTab → Java 新 Content，原标签不动）*/}
       {confirmNewSession && (
         <ConfirmDialog
           title={t('app.newSession.title')}
           message={t('app.newSession.message')}
           confirmText={t('app.newSession.confirm')}
+          extraText={t('app.newSession.newTab')}
           onConfirm={() => {
             setConfirmNewSession(false)
             resetToNewSession() // 延迟创建：先重置为待命态，首条消息触发建会话
+          }}
+          onExtra={() => {
+            setConfirmNewSession(false)
+            sendToJava({ op: 'createTab' })
           }}
           onCancel={() => setConfirmNewSession(false)}
         />
