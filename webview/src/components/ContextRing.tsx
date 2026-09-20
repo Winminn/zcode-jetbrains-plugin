@@ -19,6 +19,7 @@ import { useTranslation } from 'react-i18next'
 import { useStore, isBigmodelProvider } from '@/store/useStore'
 import { fmtTokens, limitTitle, fmtResetTime, fmtTime } from '@/utils/format'
 import type { ContextBreakdownItem, ContextSource } from '@/types/messages'
+import { ConfirmDialog } from './ConfirmDialog'
 import '../styles/input-box.less'
 
 const POP_W = 280
@@ -71,9 +72,11 @@ export function ContextRing() {
   const quotaFetchedAt = useStore((s) => s.quotaFetchedAt)
   const usageError = useStore((s) => s.usageError)
   const loadQuota = useStore((s) => s.loadQuota)
+  const sendMessage = useStore((s) => s.sendMessage)
 
   const [hovered, setHovered] = useState(false)
   const [pos, setPos] = useState<{ left: number; bottom: number } | null>(null)
+  const [confirmCompact, setConfirmCompact] = useState(false)
   const ringRef = useRef<HTMLDivElement>(null)
 
   // 无数据时显示空环占位（不隐藏，新会话也能看到圆环，数据来了自动更新）
@@ -113,6 +116,16 @@ export function ContextRing() {
     }
   }
 
+  // 双击 = 压缩上下文：确认后发 /compact（与输入框发出完全同路，回合进行中由
+  // sendMessage 自动入队）。尚无上下文数据（新会话未对话）时双击不响应
+  const onDoubleClick = () => {
+    // Chromium 双击默认产生词选区，可能落到相邻「智能」按钮文字上，清掉
+    window.getSelection()?.removeAllRanges()
+    if (!hasData) return
+    setHovered(false)
+    setConfirmCompact(true)
+  }
+
   const size = 14
   const stroke = 1.5
   const radius = (size - stroke) / 2
@@ -127,6 +140,7 @@ export function ContextRing() {
         ref={ringRef}
         onMouseEnter={onEnter}
         onMouseLeave={() => setHovered(false)}
+        onDoubleClick={onDoubleClick}
         data-tip={t('usage.context.titleUsage')}
       >
         <svg width={size} height={size} viewBox={`0 0 ${size} ${size}`} style={{ transform: 'rotate(-90deg)' }}>
@@ -223,9 +237,24 @@ export function ContextRing() {
                 )}
               </div>
             )}
+
+            {/* 双击压缩提示（悬浮栏常驻提示位）*/}
+            <div className="ctx-popover__hint">{t('usage.context.doubleClickHint')}</div>
           </div>,
           document.body,
         )}
+
+      {confirmCompact && (
+        <ConfirmDialog
+          title={t('usage.context.compactConfirmTitle')}
+          message={t('usage.context.compactConfirmMessage')}
+          onConfirm={() => {
+            setConfirmCompact(false)
+            sendMessage('/compact')
+          }}
+          onCancel={() => setConfirmCompact(false)}
+        />
+      )}
     </>
   )
 }

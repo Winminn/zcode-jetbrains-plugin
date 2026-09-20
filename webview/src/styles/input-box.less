@@ -441,7 +441,7 @@
   min-width: 0;
 }
 
-/* 上下文用量圆环（hover 弹出富 popover，见 ContextRing.tsx）*/
+/* 上下文用量圆环（hover 弹出富 popover，双击弹压缩确认，见 ContextRing.tsx）*/
 .context-ring {
   position: relative;
   display: inline-flex;
@@ -450,7 +450,8 @@
   width: 22px;
   height: 24px;
   flex-shrink: 0;
-  cursor: default;
+  cursor: pointer;
+  user-select: none; /* 双击触发压缩，禁选防止选区蔓延到相邻按钮文字 */
 }
 
 /* 上下文/额度 hover popover（portal 到 body + fixed 定位）*/
@@ -535,6 +536,15 @@
     &--error {
       color: var(--status-error-text);
     }
+  }
+
+  /* 双击压缩提示行（popover 底部常驻）*/
+  &__hint {
+    margin-top: 4px;
+    padding: 6px 12px;
+    border-top: 1px solid var(--border-lighter, rgba(128, 128, 128, 0.15));
+    font-size: 11px;
+    color: var(--text-muted);
   }
 
   /* 分类明细行（色块 + 名称 + 迷你进度条 + 百分比）*/

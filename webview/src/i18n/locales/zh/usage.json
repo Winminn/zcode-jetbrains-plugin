@@ -76,6 +76,9 @@
     "glmQuotaWithLevel": "GLM 额度（{{level}}）",
     "quotaLoading": "额度加载中…",
     "noQuota": "暂无额度数据",
+    "doubleClickHint": "双击圆环可压缩上下文",
+    "compactConfirmTitle": "压缩上下文",
+    "compactConfirmMessage": "将发送 /compact 命令压缩对话历史、释放上下文空间。对话进行中将自动加入队列，回合结束后发送。",
     "categories": {
       "messages": "消息",
       "systemTools": "系统工具",

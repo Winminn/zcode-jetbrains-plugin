@@ -76,6 +76,9 @@
     "glmQuotaWithLevel": "GLM quota ({{level}})",
     "quotaLoading": "Loading quota…",
     "noQuota": "No quota data",
+    "doubleClickHint": "Double-click the ring to compact the context",
+    "compactConfirmTitle": "Compact context",
+    "compactConfirmMessage": "This sends /compact to summarize the conversation and free up context space. If a turn is running, it will be queued and sent after the turn ends.",
     "categories": {
       "messages": "Messages",
       "systemTools": "System tools",
