@@ -32,7 +32,7 @@ function diagWarn(text: string): void {
 }
 
 import { parseTodos, parseAgents, parseFileChanges, mergeAgentItems } from '@/utils/parseStatus'
-import { isHiddenSyntheticMessage } from '@/utils/parseNotification'
+import { isHiddenSyntheticMessage, isAgentNotification } from '@/utils/parseNotification'
 import { mergeTurnMessages } from '@/utils/mergeTurnMessages'
 import { getPersisted, setPersisted, removePersisted, entriesWithPrefix, KV_HYDRATED_EVENT } from '@/utils/persist'
 import { readStatusPanelConfig, writeStatusPanelConfig } from '@/utils/statusPanelConfig'
@@ -489,6 +489,30 @@ function tryRunDeferredCompactFlush(sessionId: string): void {
   }
   deferredCompactFlushSid = null
   useStore.getState().flushQueue()
+}
+
+/* ============ 后台任务结束/轮开始 → 转录通知拉取（缺陷CI） ============
+ * 通知合成消息（task-notification / subagent-message）由 CLI 注入转录但不发
+ * 流式事件，webview 只能靠全量快照获知；回合中快照又被流式守卫拦——卡片
+ * 永远滞后到轮末重拉。两个实时触发源，共用同一防抖拉取：
+ *   1. 任务结束信号（session.updated status≠running）：完成时刻即发（diag 实验实测
+ *      t+28s 完成 vs t+55s 注入）——覆盖「无活跃回合时完成」的即时落地；
+ *   2. turn.started：CLI 的转录注入轮界锁存（回合中完成的通知拖到轮界才进转录，
+ *      随后唤醒的 wake 轮开始时注入必已落地）——wake 轮开始即拉，卡片在 wake 轮
+ *      开场就出现，不必等它跑完。
+ * 固定延迟不顺延（密集完成不饿死，在途拉取已覆盖先行完成）；延迟 600ms 给
+ * 转录写入留窗口，也把一波触发合并成一次拉取。闲时快照直接落地、忙时走
+ * 流式合并（只摘新增通知卡）。 */
+let notificationPullTimer: ReturnType<typeof setTimeout> | null = null
+function scheduleNotificationTranscriptPull(sessionId: string): void {
+  if (sessionId !== useStore.getState().currentSessionId) return
+  if (notificationPullTimer) return
+  notificationPullTimer = setTimeout(() => {
+    notificationPullTimer = null
+    const st = useStore.getState()
+    if (sessionId !== st.currentSessionId) return // 切会话后不代拉
+    sendToJava({ op: 'messages', sessionId, workspacePath: st.currentWorkspacePath })
+  }, 600)
 }
 
 /** 排队消息（对话进行中 Enter 入队，回合结束自动发送；text 为拼好技能/文件引用的最终文本）*/
@@ -3871,13 +3895,19 @@ export function handleResponse(
         break
       }
       if (msg.sessionId === get().currentSessionId) {
-        // 流式进行中到达的重拉响应 = 过期快照：turn 结束触发的 300ms 延迟重拉，
-        // 会落后于排队消息自动发出后已开启的新 turn（idea.log 2026-08-15 时序证据：
-        // completed → flushQueue 发送 → 新 turn.started → 旧重拉才 resume/返回）。
-        // 此时全量替换会抹掉流式中的 assistant 消息（断流），且 turn.started 借用的
-        // messageId 与重拉后服务端 user 消息撞车时，AI delta 会叠进用户气泡（叠字）。
-        // 丢弃——本轮 turn 结束还会再拉一次权威数据落地。
-        if (get().streaming) break
+        // 流式进行中到达的重拉响应 = 可能是过期快照：turn 结束触发的 300ms 延迟
+        // 重拉，会落后于排队消息自动发出后已开启的新 turn（idea.log 2026-08-15 时序
+        // 证据：completed → flushQueue 发送 → 新 turn.started → 旧重拉才 resume/返回）。
+        // 全量替换会抹掉流式中的 assistant 消息（断流），且 turn.started 借用的
+        // messageId 与重拉后服务端 user 消息撞车时，AI delta 会叠进用户气泡（叠字）
+        // ——这些仍然不能整包落地。但通知合成消息（task-notification /
+        // subagent-message）只随快照到达，整丢会让卡片滞后到轮末（缺陷CI）：改为
+        // 只摘新增通知卡插到流式气泡之前，其余内容仍等轮末权威落地——过期快照
+        // 的既有消息同 id 去重不插入，不会把历史改写冲进流式。
+        if (get().streaming) {
+          mergeNotificationsMidTurn(msg, set, get)
+          break
+        }
         // 打开会话的首拉标志（selectSession 置位、下方快照落地复位）：P2 补发依据
         const firstFetch = get().loadingMessages
         applyMessagesSnapshot(msg, set, get)
@@ -5344,6 +5374,12 @@ function handleStreamBatchDirect(
   // 看门狗心跳：当前会话有任何事件到达 = 回合活着（静默对账不会触发）
   lastStreamActivityAt = Date.now()
 
+  // 通知卡实时落地（缺陷CI）：同单推路径——轮开始即调度转录拉取
+  //（wake 轮开始时轮界注入的通知已落地，卡片随合并腿在 wake 轮开场出现）
+  for (const event of events) {
+    if (event.type === 'turn.started') scheduleNotificationTranscriptPull(sessionId)
+  }
+
   let messages = get().messages
   let streamingMessageId = get().streamingMessageId
   let activities = get().subagentActivities
@@ -5406,6 +5442,9 @@ function handleStreamBatchDirect(
           bgTasks = { ...curTasks, [key]: { ...curTasks[key], endedAt: Date.now() } }
           bgDirty = true
         }
+        // 通知卡实时落地（缺陷CI）：状态迁移 = 通知合成消息已注入转录，调度转录
+        // 重拉。taskId/toolCallId 双可选校验拦掉会话级 status 帧（无任务字段不拉）
+        if (tp.taskId || tp.toolCallId) scheduleNotificationTranscriptPull(event.sessionId)
       }
     }
     // 子代理转发工具事件（source=subagent）：不进主聊天 parts（防刷屏），
@@ -5681,6 +5720,11 @@ function handleStreamEvent(
   // 看门狗心跳：当前会话有任何事件到达 = 回合活着（静默对账不会触发）
   lastStreamActivityAt = Date.now()
 
+  // 通知卡实时落地（缺陷CI）：轮开始 = CLI 轮界注入的通知合成消息已落地的可靠
+  // 信号（实验实证：任务结束事件在完成时刻发，注入拖到轮界——完成时刻拉转录
+  // 必空；wake 轮开始时转录必有）。同任务结束信号共用防抖拉取
+  if (event.type === 'turn.started') scheduleNotificationTranscriptPull(sessionId)
+
   // ===== 工具输入大块 delta 的流式回放（同批量路径；mock/关键事件走单推）=====
   const atoms = sliceBigStreamDeltas([event])
   if (atoms || (replayQueues.get(sessionId)?.length ?? 0) > 0) {
@@ -5814,6 +5858,8 @@ function handleStreamEvent(
       if (key) {
         set({ backgroundTasks: { ...curTasks, [key]: { ...curTasks[key], endedAt: Date.now() } } })
       }
+      // 通知卡实时落地（缺陷CI）：同批量路径，状态迁移即调度转录重拉
+      if (tp.taskId || tp.toolCallId) scheduleNotificationTranscriptPull(event.sessionId)
     }
   }
 
@@ -6282,11 +6328,66 @@ export function preserveAskUserDurations(
 }
 
 /** messages 响应的权威落地（常规重拉与对账收尾共用） */
+/**
+ * 流式中快照到达的通知卡摘取合并（缺陷CI）：只取「本地还没有 + 通知白名单
+ * （isAgentNotification）」的合成消息，插到流式气泡之前；其余快照内容一律不
+ * 落地（防断流/叠字，见 case 'messages' 守卫注释）。通知是唯一在回合中「服务端
+ * 已落库、本地时间线却无从得知」的消息族（CLI 注入转录不发流式事件），按白
+ * 名单摘取不会把过期快照的历史改写冲进流式。顺手跑通知收尾（幂等，仅 running
+ * 可翻转），底部栏与子代理活动卡随通知及时落定，不等轮末。
+ *
+ * wake 轮 id 撞车特例（2026-09-20 真机 12:53 实锤）：turn.started 会借用「触发
+ * 本轮的那条用户消息」的 id 给本地流式气泡（叠字守卫注释的同款机制），而 wake
+ * 轮的触发消息恰是 task-notification 本身——流式气泡顶着通知真身 id，按 id 去
+ * 重会把通知拦掉（卡片只能等轮末全量替换）。故撞 id 的通知以 local_n_ 前缀
+ * 副本插入，真身 id 登记防重；权威快照落地（全量替换）时清空，真身回归接管。
+ */
+let midTurnInsertedNotifIds = new Set<string>()
+function mergeNotificationsMidTurn(
+  msg: { messages: ZCodeMessage[] },
+  set: (partial: Partial<StoreState>) => void,
+  get: () => StoreState,
+): void {
+  const st = get()
+  const knownIds = new Set(st.messages.map((m) => m.info.id))
+  // 撞 id 放行：wake 轮流式气泡占用通知真身 id（id 已在 knownIds），不能在
+  // 此处拦掉——它是转 local_n_ 副本的唯一来源
+  const incoming = msg.messages.filter(
+    (m) => !midTurnInsertedNotifIds.has(m.info.id)
+      && isAgentNotification(m.info)
+      && (!knownIds.has(m.info.id) || m.info.id === st.streamingMessageId),
+  )
+  if (incoming.length === 0) return
+  const idx = st.streamingMessageId
+    ? st.messages.findIndex((m) => m.info.id === st.streamingMessageId)
+    : -1
+  // 仅撞 id 的通知转 local_n_ 副本（真身 id 被流式气泡占用）；其余真身直插，
+  // 后续快照按 knownIds 自然去重
+  const insertables = incoming.map((m) => {
+    if (m.info.id === st.streamingMessageId) {
+      midTurnInsertedNotifIds.add(m.info.id)
+      return { info: { ...m.info, id: `local_n_${m.info.id}` }, parts: m.parts }
+    }
+    return m
+  })
+  const patch: Partial<StoreState> = {
+    messages: idx >= 0
+      ? [...st.messages.slice(0, idx), ...insertables, ...st.messages.slice(idx)]
+      : [...st.messages, ...insertables],
+  }
+  const activities = finalizeActivitiesFromNotifications(st.subagentActivities, incoming, Date.now())
+  if (activities !== st.subagentActivities) patch.subagentActivities = activities
+  set(patch)
+}
+
 function applyMessagesSnapshot(
   msg: { messages: ZCodeMessage[]; goalTarget?: unknown; goalStats?: unknown },
   set: (partial: Partial<StoreState>) => void,
   get: () => StoreState,
 ) {
+  // 全量替换落地 = 真身消息接管时间线，流式期插入的本地通知副本（local_n_）与
+  // 防重登记一并作废（缺陷CI，见 mergeNotificationsMidTurn）
+  midTurnInsertedNotifIds.clear()
   const st = get()
   // 过滤 model-only 合成消息（todo_reminder 等，2026-08-15 误渲染成
   // "子代理完成"卡片的根源）——只影响展示，下方派生计算仍用原始全量。
