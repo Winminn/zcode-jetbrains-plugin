@@ -133,16 +133,18 @@ describe('缺陷BI：会话级模型记忆（issue #9 修复）', () => {
     // 模拟新 webview（重启/新标签）：已应用集合与回执集合都为空
     useStore.setState({ modelAppliedSessions: new Map(), modelAckSessions: new Set() })
     setModelMemory({ [SID1]: GLM, [SID2]: KIMI })
-    // 切到会话 2：重放会话 2 自己的 kimi（不是全局默认）——subscribed 回执前挂起不下发
-    // （十五轮错峰：大会话冷启动时即发 setModel 必撞忙窗口超时）
+    // 切到会话 2：显示取会话 2 自己的 kimi——记忆=显示的同值重放被缺陷CU 守卫跳过
+    //（send 恒带模型兜正服务端漂移），不再是 subscribed 后重放 kimi
     useStore.getState().selectSession({ sessionId: SID2, workspacePath: 'G:\\mock' })
     expect(setModelReqs(SID2)).toEqual([])
     pushResponse({ op: 'subscribed', sessionId: SID2 })
-    expect(lastSetModelReq()).toMatchObject({ sessionId: SID2, ...KIMI })
-    // 切回会话 1：重放会话 1 自己的 GLM——修复前（全局记忆）这里会把 kimi 切给会话 1
+    expect(setModelReqs(SID2)).toEqual([])
+    expect(useStore.getState().modelAckSessions.has(SID2)).toBe(true)
+    expect(useStore.getState().currentModel).toEqual(KIMI)
+    // 切回会话 1：显示取会话 1 自己的 GLM（修复前（全局记忆）这里会把 kimi 切给会话 1）
     useStore.getState().selectSession({ sessionId: SID1, workspacePath: 'G:\\mock' })
     pushResponse({ op: 'subscribed', sessionId: SID1 })
-    expect(lastSetModelReq()).toMatchObject({ sessionId: SID1, ...GLM })
+    expect(setModelReqs()).toEqual([])
     expect(useStore.getState().currentModel).toEqual(GLM)
     // Set 守卫：再切回会话 2 不重发（首见才下发）
     sentRequests.length = 0

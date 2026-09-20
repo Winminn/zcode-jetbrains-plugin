@@ -14,6 +14,17 @@
  *   2. modelSetFailed 清除回执标记（与登记解锁同语义，失败后仍可重试）。
  *   3. 用户 setModel 动作清除回执标记（新切换回执若丢失，TTL 过期后追发链路保持可用）。
  *   4. 真回执丢失场景保留：无 ack 且登记超 TTL → 下次触发仍重发（TTL 语义不回退）。
+ *      「真」= 重放目标 ≠ 当前显示模型（服务端可能漂移在旧模型上）；目标 = 当前显示
+ *      模型的重放属纯多余，由缺陷 CU 守卫统一跳过（见下方 CU 用例）。
+ *
+ * 缺陷CU（2026-09-20 修复）：BO 守卫的建立前提是「初始化时 applyModelIfReady 已成功
+ * 发出 setModel 并拿到回执」。虚机实锤（09:12:51 日志指纹与 BO 同款）：webview 启动后
+ * models 一直为空（多标签页各自拉清单，本 webview 视角响应丢失/未达）→ 会话订阅后的
+ * 12s 兜底恢复在 models 空分支静默 return——不发、不登记、acked 建立不起来 → 此后第一
+ * 次 models 就绪（用户点模型列表 → 设置页模型管理联动 loadModels）补出这笔迟到的首次
+ * 下发，目标=当前在用模型，回合中被 Java 挂起成幽灵横幅。修复：applyModelIfReady 中
+ * 重放目标=当前显示模型（sameModel 命中）时直接登记 acked 跳过——send 恒带模型每回合
+ * 兜正服务端漂移，该重放无正向价值。
  *
  * 独立文件原因：不与 selectSession 用例混跑——selectSession 会给会话挂
  * pendingModelApplyAfterSubscribe（12s 真表计时器，条目常驻本测试进程），case 'models'
@@ -131,31 +142,84 @@ describe('缺陷BO：回执已到的会话不再被 applyModelIfReady 重放（�
     expect(setModelReqs()).toEqual([])
   })
 
-  it('modelSetFailed 清回执：失败后 models 刷新仍可重试（与登记解锁同语义）', () => {
+  it('modelSetFailed 清回执：目标=显示模型的失败不重放（CU）；目标≠显示模型按记忆重试（BO 语义保留）', () => {
     pushResponse({ op: 'modelSet', sessionId: SID1, ...GLM }) // 先落定
-    pushResponse({ op: 'modelSetFailed', sessionId: SID1, ...KIMI, message: 'Model switch failed: [-32603] Unsupported model' })
+    // prev=切换前生效模型（GLM）：failed 的记忆修复分支据此把会话记忆回滚留存（prev 空 → 删记忆）
+    useStore.setState({ modelSwitchPrevModel: { ...GLM } })
+    pushResponse({ op: 'modelSetFailed', sessionId: SID1, ...GLM, message: 'Model switch failed: [-32603] Unsupported model' })
     useStore.setState({ modelAppliedSessions: new Map() }) // 失败解锁已清登记
     sentRequests.length = 0
     pushManageAndModels()
-    // 会话 1 记忆=GLM（beforeEach），重试按记忆目标放行
-    expect(setModelReqs(SID1).length).toBe(1)
+    // 失败目标=当前显示模型（GLM）：服务端本就在用，重放纯多余（缺陷CU 守卫跳过并登记 acked）
+    expect(setModelReqs(SID1)).toEqual([])
+    expect(useStore.getState().modelAckSessions.has(SID1)).toBe(true)
+
+    // 真可重试场景：用户失败后改选 KIMI（记忆留存新目标），显示仍在 GLM——目标≠显示
+    storage.set('zcode.modelMemory', JSON.stringify({ [SID1]: KIMI }))
+    useStore.setState({ modelAckSessions: new Set() })
+    pushManageAndModels()
+    expect(lastSetModelReq()).toMatchObject({ sessionId: SID1, ...KIMI })
   })
 
-  it('用户 setModel 清回执：新切换回执丢失时 TTL 追发链路仍可用', () => {
+  it('用户 setModel 清回执：目标=显示模型的在途切换不因回执丢失而追发（CU，漂移由 send 恒带模型兜正）', () => {
     pushResponse({ op: 'modelSet', sessionId: SID1, ...GLM }) // 旧切换的回执
-    useStore.getState().setModel(KIMI.modelId, KIMI.providerId) // 新切换在途（清 ack、写记忆 kimi）
+    useStore.getState().setModel(KIMI.modelId, KIMI.providerId) // 新切换在途（清 ack、显示翻转 KIMI、写记忆 kimi）
     // 回执丢失：不推 modelSet/Pending/Failed —— 登记做旧越过 TTL
     expireRegistration(SID1)
     sentRequests.length = 0
     pushManageAndModels()
-    expect(lastSetModelReq()).toMatchObject({ sessionId: SID1, ...KIMI }) // 按记忆目标追发
+    // 重放目标 KIMI = 当前显示模型：纯多余，跳过（修复前按记忆目标追发——回合中即幽灵横幅）
+    expect(setModelReqs(SID1)).toEqual([])
+    expect(useStore.getState().modelAckSessions.has(SID1)).toBe(true)
   })
 
-  it('真回执丢失场景保留（TTL 语义不回退）：无 ack 且登记超 TTL → models 刷新重发', () => {
+  it('真回执丢失场景保留（TTL 语义不回退）：无 ack 且登记超 TTL、目标≠显示模型 → models 刷新重发', () => {
+    // 服务端漂移场景：显示停在 KIMI（上次切换失败回滚不彻底/别端切走），会话记忆指向 GLM
+    useStore.setState({ currentModel: { ...KIMI } })
     expireRegistration(SID1)
     sentRequests.length = 0
     pushManageAndModels()
     expect(setModelReqs(SID1).length).toBe(1)
     expect(lastSetModelReq()).toMatchObject({ sessionId: SID1, ...GLM })
+  })
+})
+
+describe('缺陷CU：models 迟到就绪前静默跳过的会话，models 就绪后不再补发同值重放（幽灵横幅根因）', () => {
+  /** 复现链路尾部：设置页模型管理 → case 'modelManage' 连带 loadModels → models 到达
+   *  触发 applyModelIfReady */
+  function pushManageAndModels(): void {
+    pushResponse({ op: 'modelManage', providers: [], configPath: 'G:\\mock\\config.json' })
+    pushResponse({
+      op: 'models',
+      models: [
+        { ...GLM, label: 'GLM-5.3' },
+        { ...KIMI, label: 'Kimi K3' },
+      ],
+    })
+  }
+
+  it('主场景：models 空期间静默跳过（acked 建立不起来），models 就绪后同值重放被挡', () => {
+    // 虚机时序：本 webview 的 models 一直为空（清单响应丢失/未达），会话记忆已恢复、
+    // 显示=记忆（selectSession/待命水合同值）
+    useStore.setState({ models: [] })
+    useStore.getState().applyModelIfReady(SID1) // 订阅回执/12s 兜底触发：models 空分支静默 return
+    expect(setModelReqs()).toEqual([]) // 不发（models 未就绪）
+    expect(useStore.getState().modelAckSessions.has(SID1)).toBe(false) // 回执守卫建立不起来（盲区本源）
+    // 用户点模型列表 → 联动 loadModels → models 首次就绪
+    pushManageAndModels()
+    // 修复前：补发 setModel（目标=当前在用模型 GLM）→ 回合中被挂起 → 幽灵「本轮结束后生效」横幅
+    // 修复后：重放目标=当前显示模型 → 登记 acked 跳过
+    expect(setModelReqs()).toEqual([])
+    expect(useStore.getState().modelAckSessions.has(SID1)).toBe(true)
+    expect(useStore.getState().lastNotice).toBeNull()
+  })
+
+  it('models 就绪后目标≠显示模型仍正常下发（新守卫不挡真切换）', () => {
+    useStore.setState({ models: [], currentModel: { ...KIMI } }) // 显示与记忆漂移（GLM≠KIMI）
+    useStore.getState().applyModelIfReady(SID1)
+    expect(setModelReqs()).toEqual([]) // models 空：仍静默
+    pushManageAndModels()
+    expect(setModelReqs(SID1).length).toBe(1)
+    expect(useStore.getState().modelAckSessions.has(SID1)).toBe(false) // 下发在途，等回执登记
   })
 })

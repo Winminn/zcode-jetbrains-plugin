@@ -2323,6 +2323,17 @@ export const useStore = create<StoreState>((set, get) => ({
       } catch { /* ignore */ }
     }
     if (!target) return
+    // 重放目标=当前显示模型（缺陷CU，BO 盲区）：models 迟到就绪前本函数曾在 models 空
+    // 分支静默 return，回执守卫 modelAckSessions 建立不起来；此后任何一次模型清单刷新
+    //（设置页模型管理联动 loadModels 等）都会补出这笔迟到的首次下发——目标=当前在用
+    // 模型，纯多余重放，回合中被 Java 挂起成幽灵「本轮结束后生效」横幅。选择器已显示
+    // 同值即视为落定（send 恒带模型每回合兜正服务端漂移），登记 acked 挡住后续重放。
+    // 仅限存量会话的重放（own 路径）：新建会话是首次应用而非重放——显示常被待命水合
+    // 先写成同一全局默认，服务端新会话未必在用它，必须真切上去并重建 settings
+    if (!(newSession || get().createdSessionIds.has(sessionId)) && sameModel(target, get().currentModel)) {
+      set({ modelAckSessions: new Set([...get().modelAckSessions, sessionId]) })
+      return
+    }
     // 记忆的模型已不在可选列表（典型：provider 被禁/体验套餐被过滤/配置已删）：
     // 兜底生效套餐（个人/团队，issue #8）首选、其次列表首个，并回写对应层记忆
     // （会话级→会话级、全局→全局）——否则会话静默跑在服务端默认模型上、选择器空占位
