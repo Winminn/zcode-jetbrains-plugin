@@ -2,6 +2,8 @@ package com.zcode.ideaplugin.ui
 
 import com.intellij.openapi.project.DumbAware
 import com.intellij.openapi.project.Project
+import com.intellij.openapi.actionSystem.ActionPlaces
+import com.intellij.openapi.actionSystem.DefaultActionGroup
 import com.intellij.openapi.wm.ToolWindow
 import com.intellij.openapi.wm.ToolWindowFactory
 import com.intellij.openapi.wm.ToolWindowManager
@@ -11,6 +13,7 @@ import com.intellij.ui.content.ContentManager
 import com.intellij.ui.content.ContentManagerEvent
 import com.intellij.ui.content.ContentManagerListener
 import com.zcode.ideaplugin.ZCodeBundle.message
+import com.zcode.ideaplugin.action.RenameTabAction
 import com.zcode.ideaplugin.zCodeService
 
 /**
@@ -108,6 +111,12 @@ class ZCodeToolWindowFactory : ToolWindowFactory, DumbAware {
             val panel = ZCodeToolWindowPanel(project, initialSessionId, lazyStart = lazy)
             val content = ContentFactory.getInstance().createContent(panel, tabName, false)
             content.isCloseable = true
+            // 标签右键菜单：重命名标签（issue #18/#21；改名与持久化封装在 panel.renameTab）
+            content.setActions(
+                DefaultActionGroup(RenameTabAction(panel)),
+                ActionPlaces.TOOLWINDOW_CONTENT,
+                panel,
+            )
             // 标签关闭/销毁时释放 panel（JCEF 资源）
             content.setDisposer(panel)
             panel.attachContent(content)
@@ -196,7 +205,14 @@ class ZCodeToolWindowFactory : ToolWindowFactory, DumbAware {
 
             override fun selectionChanged(event: ContentManagerEvent) {
                 if (cm.selectedContent !== event.content) return
-                val panel = event.content.component as? ZCodeToolWindowPanel ?: return
+                val panel = event.content.component as? ZCodeToolWindowPanel
+                if (panel == null) {
+                    // 非聊天标签（浏览器）无标签重命名语义，标题栏不留重命名按钮
+                    toolWindow.setTitleActions(emptyList())
+                    return
+                }
+                // 标题栏按钮随选中标签切换实例（Run 面板 Stop 同机制；右键菜单无插件扩展点，见 #18/#21）
+                toolWindow.setTitleActions(listOf(RenameTabAction(panel)))
                 panel.ensureJcefCreated() // 懒加载标签激活（已激活时为 no-op）
                 project.zCodeService().setActivePanel(panel)
                 // 内嵌浏览器全局共享：展开状态下随标签切换迁移挂载（宽度延续）——
@@ -248,6 +264,8 @@ class ZCodeToolWindowFactory : ToolWindowFactory, DumbAware {
         (cm.selectedContent?.component as? ZCodeToolWindowPanel)?.let {
             it.ensureJcefCreated() // 兜底：选中项若为懒加载则激活（正常路径激活标签已立即创建）
             project.zCodeService().setActivePanel(it)
+            // 标题栏重命名按钮初始挂载（后续随 selectionChanged 切换）
+            toolWindow.setTitleActions(listOf(RenameTabAction(it)))
         }
     }
 

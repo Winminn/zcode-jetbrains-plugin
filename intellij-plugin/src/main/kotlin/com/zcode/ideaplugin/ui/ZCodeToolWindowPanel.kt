@@ -961,6 +961,18 @@ if (!window.__ZCODE_LOG_HOOK__) {
     /** 标签基础标题（不含生成中后缀），持久化用 */
     fun getBaseTabTitle(): String = baseTabTitle
 
+    /**
+     * 重命名标签（右键菜单，RenameTabAction 调用）：改基础名并立即刷新 displayName
+     * （复用 applyTabDisplayName，流式 ● 后缀自动保留）。改名不触发 selectionChanged，
+     * 必须在此手动补 persistTabs，否则重启丢名。
+     */
+    fun renameTab(newName: String) {
+        if (newName.isBlank()) return
+        baseTabTitle = newName
+        applyTabDisplayName()
+        attachedContent?.manager?.let { cm -> ZCodeToolWindowFactory.persistTabs(project, cm) }
+    }
+
     /** 当前会话 id（重启恢复的绑定来源）*/
     fun getCurrentSessionIdForPersist(): String? = currentSessionId
 
