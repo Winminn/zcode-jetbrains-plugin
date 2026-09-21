@@ -19,6 +19,8 @@ import kotlinx.serialization.json.put
  * 右键菜单：把选中的文件引用发送到 ZCode 输入框（对齐 cc-gui SendFilePathToInputAction）
  *
  * - 注册位置：项目树（ProjectViewPopupMenu）+ 编辑器 Tab（EditorTabPopupMenu）+ 编辑器（EditorPopupMenu）
+ * - 编辑器右键在有选中代码时隐藏（SendSelectionToInputAction 更精确，互补显示：
+ *   有选区=发送选中代码，无选区=发送文件）
  * - 支持多选：`@C:\abs\path @C:\abs\path2`（空格分隔）
  * - 只发送引用，不读文件内容（输入框 chip 显示 basename，发送时 CLI 按引用读文件）
  */
@@ -31,7 +33,11 @@ class SendFileToInputAction : AnAction(
     override fun getActionUpdateThread(): ActionUpdateThread = ActionUpdateThread.BGT
 
     override fun update(e: AnActionEvent) {
-        e.presentation.isEnabledAndVisible = resolveFiles(e).isNotEmpty()
+        // 编辑器语境有选中代码时让位「发送选中代码到输入框」（选区比整文件引用更精确，
+        // 两项同时显示徒增选择成本）；项目树/编辑器 Tab 右键无编辑器选区概念，不受影响
+        val editor = e.getData(CommonDataKeys.EDITOR)
+        val hasSelection = editor?.selectionModel?.hasSelection() == true
+        e.presentation.isEnabledAndVisible = !hasSelection && resolveFiles(e).isNotEmpty()
     }
 
     override fun actionPerformed(e: AnActionEvent) {
