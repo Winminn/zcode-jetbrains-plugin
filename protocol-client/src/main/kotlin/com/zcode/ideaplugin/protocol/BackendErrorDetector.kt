@@ -1,5 +1,7 @@
 package com.zcode.ideaplugin.protocol
 
+import kotlinx.serialization.json.jsonObject
+
 /**
  * app-server stderr 的模型 API 错误解析器（vercel.ai APICallError dump 兜底通道）
  *
@@ -59,9 +61,57 @@ class BackendErrorDetector(
         return BackendApiError(statusCode = statusCode, code = code, message = message ?: line.take(200))
     }
 
+    // ===== 崩溃级进程异常（官方机器可读契约，2026-09-21 开源源码 process-diagnostic.ts）=====
+
+    /**
+     * `[zcode-process-exception] {version,errorId,kind,origin,name,message,stack,occurredAt}`
+     * 单行 JSON——app-server 崩溃级错误的官方 stderr 契约（任何入口异常的统一出口，
+     * cli/src/main.ts 写入）。与 [feed] 的 APICallError 语义不同：那是模型 API 错误
+     * （进程活着、服务端在重试），这是进程要挂了——readLoop 断连收尾会另行走，此处
+     * 只负责把结构化根因实时递给宿主展示（比断连后翻 stderr 尾部更直接）。
+     *
+     * @return 解析结果；非契约行返回 null。按 errorId 去重（重试/多行重复只报一次）。
+     */
+    fun parseProcessException(line: String): ProcessException? {
+        if (!line.startsWith(PROCESS_EXCEPTION_PREFIX)) return null
+        val payload = try {
+            json.parseToJsonElement(line.substring(PROCESS_EXCEPTION_PREFIX.length)).jsonObject
+        } catch (_: Exception) {
+            return null
+        }
+        val errorId = payload.str("errorId") ?: return null
+        synchronized(this) {
+            if (errorId == lastProcessExceptionId) return null
+            lastProcessExceptionId = errorId
+        }
+        return ProcessException(
+            errorId = errorId,
+            kind = payload.str("kind") ?: "unknown",
+            origin = payload.str("origin") ?: "unknown",
+            name = payload.str("name") ?: "",
+            message = payload.str("message") ?: "",
+        )
+    }
+
+    /** 进程崩溃契约的解析结果（stack/occurredAt/version 对用户无增量，不入上报） */
+    data class ProcessException(
+        val errorId: String,
+        val kind: String,
+        val origin: String,
+        val name: String,
+        val message: String,
+    )
+
+    private var lastProcessExceptionId: String? = null
+    private val json = kotlinx.serialization.json.Json { ignoreUnknownKeys = true }
+
+    private fun kotlinx.serialization.json.JsonObject.str(key: String): String? =
+        (this[key] as? kotlinx.serialization.json.JsonPrimitive)?.content
+
     companion object {
         private val STATUS_CODE_RE = Regex("""Error code:\s*(\d+)""")
         private val CODE_RE = Regex("""'code':\s*'([^']*)'""")
         private val MESSAGE_RE = Regex("""'message':\s*'([^']*)'""")
+        private const val PROCESS_EXCEPTION_PREFIX = "[zcode-process-exception] "
     }
 }

@@ -198,6 +198,16 @@ class ZCodeProtocolClient private constructor(
     @Volatile
     var backendErrorHandler: ((BackendErrorDetector.BackendApiError) -> Unit)? = null
 
+    /**
+     * app-server 崩溃级进程异常通道（官方 `[zcode-process-exception]` stderr 契约，
+     * BackendErrorDetector.parseProcessException 解析、errorId 去重）。与
+     * [backendErrorHandler] 的区别：那是模型 API 错误（进程活着、服务端在重试），
+     * 这是进程要挂了——readLoop 断连收尾另行走，此处只负责把结构化根因实时递给
+     * 宿主展示（比断连后翻 stderr 尾部更直接）。在 stderr 线程调用。
+     */
+    @Volatile
+    var processExceptionHandler: ((BackendErrorDetector.ProcessException) -> Unit)? = null
+
     // 进程是否还活着
     @Volatile
     private var closed = false
@@ -237,6 +247,21 @@ class ZCodeProtocolClient private constructor(
             // 高级用户自设的 ZCODE_HTTP_PROXY 等 env 原样透传（zcode.cjs 自行消费）
             val proxyConfig = ProxyConfigStore.read().takeIf { !it.isEmpty }
             proxyConfig?.toEnvMap()?.let { env.putAll(it) }
+            // 代际判定提前到 env 组装（原在 spawn 后）：NEW 代需要显式 provider 文件 env 对。
+            // 显式对被 CLI 直接采用、不做 SEA 物化缓存（provider-runtime-env.ts L61-66）——
+            // 路径受控后 updateAccountConfig 的 basedOnZCodeBuiltinRevision 才能与 CLI 侧
+            // 逐字符对齐（不匹配则 Registry 冻结不发布，账号渠道激活整个失效）；顺带绕开
+            // 多进程共享物化缓存的版本撕裂（0.3.x 实踩 -32603）。OLD 代无此机制不注入。
+            val generation = ProtocolGenerations.detect(zcodePath)
+            if (generation == ProtocolGeneration.NEW) {
+                val providerEnv = AccountProviderBridge.buildProviderFileEnv(zcodePath)
+                if (providerEnv.isNotEmpty()) {
+                    env.putAll(providerEnv)
+                    println("[ZCodeProtocolClient] provider config env: builtin=${providerEnv[AccountProviderBridge.ENV_BUILTIN]}")
+                } else {
+                    println("[ZCodeProtocolClient] provider config env skipped: zcode-builtin.json not found (account channels stay fail-closed)")
+                }
+            }
 
             val pb = ProcessBuilder(nodePath, zcodePath.toString(), "app-server")
             pb.environment().clear()
@@ -247,8 +272,7 @@ class ZCodeProtocolClient private constructor(
             val stdin = PrintWriter(process.outputStream.bufferedWriter(), true)
             val stdout = process.inputStream.bufferedReader()
 
-            // 代际判定在 spawn 侧（zcode.cjs 标记主判）：进程已在跑，文件即权威
-            val generation = ProtocolGenerations.detect(zcodePath)
+            // 代际已提前判定（spawn 侧同款判据）：进程已在跑，文件即权威
             println("[ZCodeProtocolClient] CLI generation = $generation (zcode.cjs=${zcodePath.fileName})")
             val client = ZCodeProtocolClient(process, stdin, stdout, zcodePath, nodePath, credentials, proxyConfig, generation)
             // 排障主线索（issue #12 用户实测三态：坏地址失败/清空直连/好地址成功——
@@ -266,6 +290,12 @@ class ZCodeProtocolClient private constructor(
                         val redacted = LogRedactor.redact(line)
                         System.err.println("[app-server stderr] $redacted")
                         client.recordStderr(redacted)
+                        // 崩溃级进程异常（官方 [zcode-process-exception] JSON 契约）：
+                        // 实时上报结构化根因，替代"断连后翻 stderr 尾部"
+                        backendErrorDetector.parseProcessException(line)?.let { pe ->
+                            println("[ZCodeProtocolClient] Process exception detected: kind=${pe.kind} origin=${pe.origin} name=${pe.name}")
+                            client.processExceptionHandler?.invoke(pe)
+                        }
                         // 模型 API 错误兜底：429 配额超限等被 app-server 按可重试分类退避重试，
                         // turn 终止帧迟迟不发（UI 无限转圈无提示），stderr dump 是错误第一现场
                         backendErrorDetector.feed(line)?.let { err ->
@@ -292,6 +322,13 @@ class ZCodeProtocolClient private constructor(
             } catch (e: Exception) {
                 client.close()
                 throw e
+            }
+            // 账号渠道激活推送（NEW 代）：CLI Provider Registry 已就绪，推 Account Overlay
+            // 解除 zhipu-account 渠道 fail-closed（官方 Desktop Host 同构做法）。后台线程
+            // fail-soft：无凭证/推送失败只是保持现状（账号渠道不可用），绝不阻断主流程
+            if (generation == ProtocolGeneration.NEW) {
+                Thread({ client.pushAccountOverlay(zcodePath) }, "zcode-account-overlay-push")
+                    .apply { isDaemon = true; start() }
             }
             return client
         }
@@ -503,16 +540,36 @@ class ZCodeProtocolClient private constructor(
                 })
             }
         }
-        // 体验套餐(zcode-plan 网关)模型请求前的运行时 headers 刷新（携带滑块验证 param）。
-        // 插件无法完成人机验证，如实应答 headersApplied=false：服务端在 prepare 阶段
-        // 快速失败，errorMessage 原文进入 turn.failed detail（2026-08-28 实测）——替代
-        // 此前落入 -32601 兜底的 ZodError 校验崩溃（用户只见 "Model request failed."）
+        // 模型请求前的运行时鉴权供给（Account 型渠道每次 attempt 都会来要，runner.ts
+        // 仅 zhipu-account Model 挂此端口；普通 apiKey 渠道不进）。2026-09-21 开源源码
+        // 升级：按 accountAccess.mode 从 credentials.json 供给 apiKey（官方同款判据
+        // AccountProviderBridge.requestAuthApiKey）——此前恒拒绝是 zcode-plan 滑块场景
+        // 的防御，但那同时把插件本可代答的登录型渠道也堵死了（fail-closed 总根因的
+        // 应答半边）。供给不了（team 需远端解析/凭证缺失/captcha 类）时快速失败：
+        // 服务端 prepare 阶段即抛 -32031，errorMessage 进 turn.failed detail，替代
+        // 旧版落入 -32601 兜底的 ZodError 校验崩溃（用户只见 "Model request failed."）
         else if (method == "interaction/requestProviderRuntimeHeaders") {
-            respondToServer(id, buildJsonObject {
-                put("headersApplied", false)
-                put("errorMessage", "host plugin cannot provide captcha verify param " +
-                    "(zcode-plan gateway requires human verification; switch to a non-zcode-plan model)")
-            })
+            val providerId = params["providerId"]?.jsonPrimitive?.jsonStringOrNull ?: ""
+            val mode = params["accountAccess"]?.jsonObject?.get("mode")?.jsonPrimitive?.jsonStringOrNull
+            val apiKey = try {
+                AccountProviderBridge.requestAuthApiKey(providerId, mode)
+            } catch (e: Exception) {
+                println("[ZCodeProtocolClient] providerRuntimeHeaders credential read error (${e.javaClass.simpleName}): ${e.message}")
+                null
+            }
+            if (apiKey != null) {
+                println("[ZCodeProtocolClient] providerRuntimeHeaders: supplying apiKey for $providerId (mode=$mode)")
+                respondToServer(id, buildJsonObject {
+                    put("headersApplied", true)
+                    put("requestAuth", buildJsonObject { put("apiKey", apiKey) })
+                })
+            } else {
+                respondToServer(id, buildJsonObject {
+                    put("headersApplied", false)
+                    put("errorMessage", "host plugin cannot provide runtime auth for $providerId " +
+                        "(mode=$mode: credential missing, team-plan not supported, or captcha-gated gateway)")
+                })
+            }
         }
         // 宿主浏览器反向请求（browser-use）：异步执行——navigate/screenshot 可能秒级耗时，
         // 与 requestUserInput 同理禁止阻塞 reader 线程
@@ -751,6 +808,40 @@ class ZCodeProtocolClient private constructor(
     }
 
     // ============ 底层发送 ============
+
+    /**
+     * 账号渠道激活推送：provider/updateAccountConfig（Account Overlay 内存资格位）。
+     * 在 start() 就绪探测后由后台线程调用（每次 app-server 启动至多一次）。全程
+     * fail-soft：无 Built-in 文件/无可用凭证/CLI 拒绝/超时都只打日志——账号渠道
+     * 保持 fail-closed 是可接受的现状（此前一直如此），不能反过来阻断会话主流程。
+     */
+    private fun pushAccountOverlay(zcodePath: Path) {
+        try {
+            val builtin = BuiltinModelCatalog.locateBuiltinFile(zcodePath)
+            val overlay = builtin?.let { AccountProviderBridge.buildAccountOverlay(it) }
+            if (builtin == null || overlay == null) {
+                println("[ZCodeAccountOverlay] push skipped: builtin file or credentials unavailable (account channels stay fail-closed)")
+                return
+            }
+            val result = request(
+                "provider/updateAccountConfig",
+                buildJsonObject {
+                    put("revision", overlay.revision)
+                    put("basedOnZCodeBuiltinRevision", overlay.basedOnZCodeBuiltinRevision)
+                    put("providers", overlay.providers)
+                    put("states", overlay.states)
+                },
+                timeoutMs = 15_000,
+            )
+            requireOk(result)
+            val payload = result["result"]?.jsonObject
+            val status = payload?.get("status")?.jsonPrimitive?.jsonStringOrNull ?: "?"
+            val count = payload?.get("providerCount")?.jsonPrimitive?.contentOrNull ?: "?"
+            println("[ZCodeAccountOverlay] pushed: status=$status providerCount=$count providers=${overlay.providers.keys}")
+        } catch (e: Exception) {
+            println("[ZCodeAccountOverlay] push failed (fail-soft, account channels stay unavailable): ${e.message}")
+        }
+    }
 
     /** 发送客户端请求并等待响应 */
     private fun request(method: String, params: JsonObject, timeoutMs: Long = 20000): JsonObject {
@@ -1603,6 +1694,37 @@ class ZCodeProtocolClient private constructor(
         val r = request("workspace/upsertModelProvider", params, timeoutMs)
         requireOk(r)
         return r["result"]?.jsonObject ?: JsonObject(emptyMap())
+    }
+
+    /**
+     * provider/testModelConnectivity — 渠道连通性测试（2026-09-21 开源源码确认）。
+     *
+     * 服务端行为（workspace-model-runtime.ts）：先强制 refreshProviderRegistry
+     * （「跨进程 watcher 可能永久漏掉原子写事件」——外部直写 provider_config.json 后
+     * 调它即生效，插件无需自测），再对 selection 真发一次最小模型请求。成功回
+     * {success:true}；失败走 JSON-RPC error（message 为服务端原始报错，含
+     * provider.notInRegistry / 鉴权失败 / 网络错误等）。
+     *
+     * 仅 NEW 代支持（providerRegistry 体系方法，OLD 代 -32601，调用方按代际分流）。
+     * selection 复用 [modelSelectionJson]（含 reasoningLevel 默认档，缺了报
+     * "Reasoning level is required"）。
+     */
+    fun testModelConnectivity(
+        workspacePath: String,
+        providerId: String,
+        modelId: String,
+        timeoutMs: Long = 30_000,
+    ) {
+        val nativePath = workspacePath.replace('/', File.separatorChar)
+        val params = buildJsonObject {
+            put("workspace", buildJsonObject {
+                put("workspacePath", nativePath)
+                put("workspaceKey", nativePath)
+            })
+            put("selection", modelSelectionJson(providerId, modelId))
+        }
+        val r = request("provider/testModelConnectivity", params, timeoutMs)
+        requireOk(r)
     }
 
     /** session/messages — 读历史 */

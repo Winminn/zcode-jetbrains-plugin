@@ -27,6 +27,10 @@ import kotlinx.serialization.json.jsonPrimitive
  *   插件不代建官方文件）；
  * - 只迁 options.apiKey 非空的渠道（订阅渠道 key 由客户端 oauth 后自动落盘；体验套餐
  *   builtin:bigmodel-start-plan 滑块门控，v2 无对应模板，不在映射表）；
+ * - **订阅型模板守卫（2026-09-21 账号渠道供给链上线后新增）**：bigmodel-api/zai-api
+ *   与账号渠道 account:{family}-individual-coding-plan 是同一套餐同一批模型（差异只在
+ *   凭证形态：落盘 key vs OAuth 托管），账号渠道已激活时迁移就是造重复入口——跳过。
+ *   API Key 手填型（standard-api 系）按量计费，账号渠道不覆盖，照常迁移；
  * - v1 条目 enabled:false 不迁；目标 templateId/providerId 在 v2 已存在不迁（用户已
  *   自行重建或客户端已迁移）。
  *
@@ -43,24 +47,45 @@ object V1BuiltinMigrator {
         "builtin:zai" to "zai-standard-api",
     )
 
+    /**
+     * 订阅型模板 → 家族：与账号渠道 account:{family}-individual-coding-plan 同套餐
+     * 同模型（凭证形态不同），账号渠道激活时迁移即造重复入口，[migrateIfNeeded] 跳过。
+     * standard-api 系是手填 key 按量计费，不在本表（账号渠道不覆盖，照常迁移）。
+     */
+    val SUBSCRIPTION_TEMPLATE_FAMILY: Map<String, String> = mapOf(
+        "bigmodel-api" to "bigmodel",
+        "zai-api" to "zai",
+    )
+
     private val json = Json { ignoreUnknownKeys = true }
 
     /**
-     * 执行兜底迁移。幂等：每次调用只按「v2 现状 + v1 config.json」判定——目标渠道已在
-     * provider_config.json（templateId/providerId 命中）不迁，缺失且 v1 侧带明文 key 则补建。
-     * 没有任何跨调用标记（2026-09-18 用户决策移除「防复活」一次性标记：用户在 v2 删掉的
-     * 渠道下次启动会自动补回；要永久停用请在 v1 config.json 把该渠道 enabled 置 false 或清空
-     * apiKey，那是本迁移的 opt-out 口径）。
-     *
-     * @param zcodePath CLI 路径（判代主判据；null 时落配置文件兜底判代）
-     * @return 本次新迁入的 v2 templateId 列表（空 = 无动作；调用方据此打通知）
+     * 当前会被实际迁入的 templateId 预演（dry-run，只读不写）。设置页「迁移内置渠道」
+     * 按钮显隐（remigrateAvailable）与实际迁移同源——订阅型守卫跳过后按钮不再出现
+     * （否则点击永远无动作，成了死按钮）。
      */
-    fun migrateIfNeeded(
+    fun pendingMigrationTargets(
         zcodePath: Path?,
         configPath: Path = Credentials.defaultConfigPath(),
         providerConfigPath: Path = Credentials.personalProviderConfigPath(),
         home: String = System.getProperty("user.home") ?: ".",
-    ): List<String> {
+    ): List<String> = collectPending(zcodePath, configPath, providerConfigPath, home).map { it.templateId }
+
+    /** 待迁条目（收集阶段产物，含写入所需全部材料） */
+    private class PendingMigration(
+        val v1Id: String,
+        val templateId: String,
+        val apiKey: String,
+        val tpl: BuiltinModelCatalog.TemplateChannel,
+        val models: List<ProviderConfigWriter.ModelDraft>,
+    )
+
+    private fun collectPending(
+        zcodePath: Path?,
+        configPath: Path,
+        providerConfigPath: Path,
+        home: String,
+    ): List<PendingMigration> {
         // ① 仅 NEW 代（zcode.cjs 可读走主判，否则配置兜底；OLD 代 config.json 现役无需迁）
         val generation = if (zcodePath != null) ProtocolGenerations.detect(zcodePath, home)
         else ProtocolGenerations.detectByConfig(home)
@@ -86,10 +111,25 @@ object V1BuiltinMigrator {
         }
         val existingTemplateIds = existingRules.mapNotNull { strOf(it, "templateId") }.toSet()
         val existingProviderIds = existingRules.mapNotNull { strOf(it, "providerId") }.toSet()
+        // ④ 订阅型守卫：同家族账号渠道已激活（凭证齐备、已随 updateAccountConfig 进
+        //    registry）时，对应订阅模板渠道不再迁——同一套餐两个入口（OAuth 托管 vs
+        //    落盘 key）只会造成计费歧义。凭证文件跟随迁移器的 configPath（同目录口径，
+        //    与迁移目标一致、测试可注入），不用 AccountProviderBridge 默认参数（那恒指
+        //    真实 user.home，fake home 测试与 dataBaseDir 迁移场景都会读错）。账号渠道
+        //    解析失败（目录不可读）按未激活处理，退回原迁移行为，不因新守卫放大故障面
+        val activeAccountIds = try {
+            val credPath = configPath.resolveSibling("credentials.json")
+            AccountProviderBridge.activatableAccountChannels(zcodePath, home, AccountProviderBridge.readCredentialEntries(credPath))
+                .mapTo(HashSet()) { it.providerId }
+        } catch (_: Exception) {
+            emptySet()
+        }
 
-        val migrated = mutableListOf<String>()
+        val pending = mutableListOf<PendingMigration>()
         for ((v1Id, templateId) in V1_TO_V2_TEMPLATE) {
             if (templateId in existingTemplateIds || templateId in existingProviderIds) continue
+            val family = SUBSCRIPTION_TEMPLATE_FAMILY[templateId]
+            if (family != null && "account:$family-individual-coding-plan" in activeAccountIds) continue
             val entry = v1Providers[v1Id] as? JsonObject ?: continue
             // enabled 显式 false 不迁（用户在 v1 里停用的渠道不复活）
             if (entry["enabled"]?.jsonPrimitive?.contentOrNull == "false") continue
@@ -116,23 +156,48 @@ object V1BuiltinMigrator {
             } else {
                 emptyList()
             }
-            val draft = ProviderConfigWriter.ProviderDraft(
-                name = tpl.name,
-                kind = "anthropic", // 仅占位：api.type 由模板值覆盖（apiTypeOverride）
-                baseURL = tpl.baseUrl,
-                apiKey = apiKey,
-                models = models,
-            )
+            pending.add(PendingMigration(v1Id, templateId, apiKey, tpl, models))
+        }
+        return pending
+    }
+
+    /**
+     * 执行兜底迁移。幂等：每次调用只按「v2 现状 + v1 config.json + 账号渠道激活态」
+     * 判定（收集逻辑见 [collectPending]）——目标渠道已在 provider_config.json（
+     * templateId/providerId 命中）不迁，缺失且 v1 侧带明文 key 则补建，同家族账号渠道
+     * 已激活的订阅模板跳过。没有任何跨调用标记（2026-09-18 用户决策移除「防复活」
+     * 一次性标记：用户在 v2 删掉的渠道下次启动会自动补回；要永久停用请在 v1 config.json
+     * 把该渠道 enabled 置 false 或清空 apiKey，那是本迁移的 opt-out 口径；订阅型渠道
+     * 在账号渠道激活期间自然豁免，无需 opt-out）。
+     *
+     * @param zcodePath CLI 路径（判代主判据；null 时落配置文件兜底判代）
+     * @return 本次新迁入的 v2 templateId 列表（空 = 无动作；调用方据此打通知）
+     */
+    fun migrateIfNeeded(
+        zcodePath: Path?,
+        configPath: Path = Credentials.defaultConfigPath(),
+        providerConfigPath: Path = Credentials.personalProviderConfigPath(),
+        home: String = System.getProperty("user.home") ?: ".",
+    ): List<String> {
+        val migrated = mutableListOf<String>()
+        for (p in collectPending(zcodePath, configPath, providerConfigPath, home)) {
             val (err, _) = ProviderConfigWriterV2.addProvider(
-                providerConfigPath, draft,
-                templateId = templateId,
-                accessType = tpl.accessType,
-                apiTypeOverride = tpl.apiType,
-                providerIdOverride = templateId,
-                prefillModelIds = tpl.builtinModelIds,
+                providerConfigPath,
+                ProviderConfigWriter.ProviderDraft(
+                    name = p.tpl.name,
+                    kind = "anthropic", // 仅占位：api.type 由模板值覆盖（apiTypeOverride）
+                    baseURL = p.tpl.baseUrl,
+                    apiKey = p.apiKey,
+                    models = p.models,
+                ),
+                templateId = p.templateId,
+                accessType = p.tpl.accessType,
+                apiTypeOverride = p.tpl.apiType,
+                providerIdOverride = p.templateId,
+                prefillModelIds = p.tpl.builtinModelIds,
                 orderAtTop = true, // 内置渠道默认置顶（用户可后续拖拽调整）
             )
-            if (err == null) migrated.add(templateId)
+            if (err == null) migrated.add(p.templateId)
         }
         return migrated
     }

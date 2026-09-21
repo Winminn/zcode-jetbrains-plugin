@@ -80,4 +80,46 @@ class BackendErrorDetectorTest {
         assertNotNull(err)
         assertFalse(err.isQuotaError)
     }
+
+    // ===== 崩溃级进程异常（官方 [zcode-process-exception] 契约）=====
+
+    private val peLine =
+        """[zcode-process-exception] {"version":"0.16.5","errorId":"e-abc123","kind":"uncaughtException",""" +
+            """"origin":"bootstrap.zcode_protocol","name":"TypeError","message":"x is not a function",""" +
+            """"stack":"at ...","occurredAt":"2026-09-21T00:00:00.000Z"}"""
+
+    @Test
+    fun `解析进程崩溃契约行`() {
+        val d = BackendErrorDetector()
+        val pe = d.parseProcessException(peLine)
+        assertNotNull(pe)
+        assertEquals("e-abc123", pe.errorId)
+        assertEquals("uncaughtException", pe.kind)
+        assertEquals("bootstrap.zcode_protocol", pe.origin)
+        assertEquals("TypeError", pe.name)
+        assertEquals("x is not a function", pe.message)
+    }
+
+    @Test
+    fun `同 errorId 只上报一次`() {
+        val d = BackendErrorDetector()
+        assertNotNull(d.parseProcessException(peLine))
+        assertNull(d.parseProcessException(peLine))
+    }
+
+    @Test
+    fun `非契约行与坏 JSON 返回 null`() {
+        val d = BackendErrorDetector()
+        assertNull(d.parseProcessException("普通崩溃堆栈行"))
+        assertNull(d.parseProcessException("[zcode-process-exception] {broken json"))
+        assertNull(d.parseProcessException("""[zcode-process-exception] {"kind":"x"}""")) // 缺 errorId
+    }
+
+    @Test
+    fun `APICallError 与进程契约互不干扰`() {
+        val d = BackendErrorDetector()
+        assertNotNull(d.parseProcessException(peLine))
+        assertNotNull(d.feed(quotaLine))
+        assertNull(d.feed(peLine)) // 契约行不误入 APICallError 通道
+    }
 }

@@ -23,6 +23,15 @@ import '../styles/model-list-view.less'
 
 const cx = (...c: (string | false | null | undefined)[]) => c.filter(Boolean).join(' ')
 
+/**
+ * 内置形态渠道：builtin:*（客户端 config.json 注册表）+ account:*（账号渠道，订阅
+ * 套餐，凭证由客户端 OAuth 托管、插件经 requestProviderRuntimeHeaders 按请求供给）。
+ * 两者在设置页同为只读展示（不进自定义供应商的编辑/删除/启停链）。
+ */
+function isBuiltinProvider(p: { providerId: string }): boolean {
+  return p.providerId.startsWith('builtin:') || p.providerId.startsWith('account:')
+}
+
 /** token 数 → K/M 缩写（1000000 → 1M、204800 → 200K）*/
 function formatTokens(n: number): string {
   if (n >= 1_000_000) {
@@ -191,8 +200,9 @@ function ProviderCard({
           <span className={cx('codicon', provider.enabled ? 'codicon-server-environment' : 'codicon-server-process')} />
           <span className="model-list-view__provider-name">{provider.providerName}</span>
           <PlanBadge plan={provider.plan} />
-          {/* 自定义 key 入口=状态合一的文字按钮：已配置紫色、未配置灰色弱化，点击打开编辑弹窗 */}
-          {builtin && (
+          {/* 自定义 key 入口=状态合一的文字按钮：已配置紫色、未配置灰色弱化，点击打开编辑弹窗。
+              account:* 账号渠道的 key 由客户端 OAuth 托管（插件按请求供给），不提供覆盖编辑 */}
+          {builtin && !provider.providerId.startsWith('account:') && (
             <button
               className={cx('model-list-view__provider-key-btn', provider.customKey && 'is-set')}
               onClick={() => onEditKey?.(provider)}
@@ -615,15 +625,17 @@ export function ModelListView() {
         </div>
       ) : (
         <div className="model-list-view__list">
-          {/* 内置渠道区：只读展示生效渠道（启停以 ZCode 客户端配置为准，禁用不展示）*/}
-          {visible.some((p) => p.providerId.startsWith('builtin:')) && (
+          {/* 内置渠道区：只读展示生效渠道（启停以 ZCode 客户端配置为准，禁用不展示）。
+              account:* = 账号渠道（订阅套餐，凭证由客户端 OAuth 托管、插件经
+              requestProviderRuntimeHeaders 按请求供给），同为只读内置形态 */}
+          {visible.some(isBuiltinProvider) && (
             <div className="model-list-view__section">
               <span className="model-list-view__section-title">{t('models.section.builtin')}</span>
               <span className="model-list-view__section-hint">{t('models.section.builtinHint')}</span>
             </div>
           )}
           {visible
-            .filter((p) => p.providerId.startsWith('builtin:'))
+            .filter(isBuiltinProvider)
             .map((p) => (
               <ProviderCard
                 key={p.providerId}
@@ -635,7 +647,7 @@ export function ModelListView() {
 
           {/* 自定义供应商区：插件内增删改 + 独立启停 + 上移/下移排序（v2 写 providerOrder）。
               拖拽方案废弃（缺陷BX）：draggable 挂整卡与卡内 toggle/按钮点击冲突，按下即灰 */}
-          {visible.some((p) => !p.providerId.startsWith('builtin:')) && (
+          {visible.some((p) => !isBuiltinProvider(p)) && (
             <div className="model-list-view__section">
               <span className="model-list-view__section-title">{t('models.section.custom')}</span>
               {newCli && (
@@ -644,7 +656,7 @@ export function ModelListView() {
             </div>
           )}
           {visible
-            .filter((p) => !p.providerId.startsWith('builtin:'))
+            .filter((p) => !isBuiltinProvider(p))
             .map((p, idx, arr) => (
               <ProviderCard
                 key={p.providerId}

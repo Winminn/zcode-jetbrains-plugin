@@ -897,6 +897,8 @@ if (!window.__ZCODE_LOG_HOOK__) {
                         "modelReorderProviders" -> handleModelReorderProviders(msg)
                         "modelSetProviderKey" -> handleModelSetProviderKey(msg)
                         "modelRemigrateBuiltins" -> handleModelRemigrateBuiltins()
+                        "modelSetDefaultSelection" -> handleModelSetDefaultSelection(msg)
+                        "modelTestConnectivity" -> handleModelTestConnectivity(msg)
                         "setModel" -> handleSetModel(msg)
                         "cancelModelSwitch" -> handleCancelModelSwitch(msg)
                         "getSettings" -> handleGetSettings(msg)
@@ -2627,6 +2629,63 @@ if (!window.__ZCODE_LOG_HOOK__) {
     private fun newCliValidModel(pid: String?, mid: String?): Boolean =
         pid != null && mid != null && newCliEnabledProviderModels().any { it.first == pid && mid in it.second }
 
+    /** providerId 是否为可激活账号渠道（发送守卫用；判定与模型列表/推送同源） */
+    private fun accountChannelKnown(providerId: String): Boolean =
+        com.zcode.ideaplugin.protocol.AccountProviderBridge
+            .activatableAccountChannels(com.zcode.ideaplugin.env.ZCodeEnvChecker.resolveCliPathForOps())
+            .any { it.providerId == providerId }
+
+    /** 账号渠道 plan 徽章映射（前端 PlanBadge 三值，i18n 已有中文文案：个人/体验/团队套餐） */
+    private fun accountPlanOf(mode: String): String? = when (mode) {
+        "individual-coding-plan" -> "personal"
+        "team-coding-plan" -> "team"
+        "start-plan" -> "trial"
+        else -> null
+    }
+
+    /**
+     * 账号渠道的模型/渠道条目（listModels 下拉与 modelManage 设置页共用）。
+     * 能力位（contextWindow/supportsImages）取 BuiltinModelCatalog.modelCaps——模型规则
+     * 正则链与 providerId 无关，账号渠道与自定义渠道的同名模型能力一致（GLM-5.3→1M、
+     * GLM-5.3-Flash→1M+视觉，`.*` 兜底 200K）。
+     */
+    private fun accountModelRows(
+        zcodePath: java.nio.file.Path?,
+        asProviderCards: Boolean,
+    ): List<JsonObject> {
+        val channels = com.zcode.ideaplugin.protocol.AccountProviderBridge
+            .activatableAccountChannels(zcodePath)
+        return channels.flatMap { e ->
+            val plan = accountPlanOf(e.mode)
+            e.builtinModelIds.map { mid ->
+                val caps = com.zcode.ideaplugin.protocol.BuiltinModelCatalog.modelCaps(mid, zcodePath)
+                if (asProviderCards) {
+                    buildJsonObject {
+                        put("providerId", e.providerId)
+                        put("providerName", e.providerName)
+                        put("modelId", mid)
+                        put("modelName", mid)
+                        plan?.let { put("plan", it) }
+                        caps?.contextWindow?.let { put("contextWindow", it) }
+                        if (caps?.supportsImage == true) put("supportsImages", true)
+                        if (caps?.supportsVideo == true) put("supportsVideo", true)
+                        if (caps?.supportsPdf == true) put("supportsPdf", true)
+                    }
+                } else {
+                    buildJsonObject {
+                        put("providerId", e.providerId)
+                        put("providerName", e.providerName)
+                        put("modelId", mid)
+                        put("modelName", mid)
+                        plan?.let { put("plan", it) }
+                        caps?.contextWindow?.let { put("contextWindow", it) }
+                        if (caps?.supportsImage == true) put("supportsImages", true)
+                    }
+                }
+            }
+        }
+    }
+
     /**
      * v2 模型解析兜底链：kv 当前会话模型 → 首个启用渠道的首模型。透传模型失效
      * （历史专用配置是 v1 形态渠道 id 如 builtin:bigmodel-coding-plan、渠道已删）时
@@ -2677,7 +2736,7 @@ if (!window.__ZCODE_LOG_HOOK__) {
     /** 新版：模型清单（providerRules 展平；模型 = modelOrder/personalModelIds，显示名即 id） */
     private fun listModelsNewCli(): JsonObject {
         val rules = newCliModelRules()
-        val models = JsonArray(readNewCliProviderRules().flatMap { rule ->
+        val selfRules = readNewCliProviderRules().flatMap { rule ->
             // disabled 渠道 registry 整体排除（实验 B），下拉同步过滤防选中即 -32031
             if (rule["enabled"]?.jsonPrimitive?.contentOrNull == "false") return@flatMap emptyList()
             val pid = rule["providerId"]?.jsonPrimitive?.contentOrNull ?: return@flatMap emptyList()
@@ -2700,8 +2759,17 @@ if (!window.__ZCODE_LOG_HOOK__) {
                     }
                 }
             }
-        })
-        log.info("listModels(new cli) returned ${models.size} model(s) from provider_config.json")
+        }
+        // 账号渠道（account:*）：凭证齐备的渠道随 updateAccountConfig 推送进了 registry
+        //（2026-09-21 开源供给链），模型权威 = zcode-builtin.json 条目的 builtinModelIds。
+        // 展示判定与推送/发送守卫同源（activatableAccountChannels）。账号渠道置顶
+        //（下拉分组按数组序渲染，订阅套餐是主用渠道）。
+        val accountRules = accountModelRows(
+            com.zcode.ideaplugin.env.ZCodeEnvChecker.resolveCliPathForOps(),
+            asProviderCards = false,
+        )
+        val models = JsonArray(accountRules + selfRules)
+        log.info("listModels(new cli) returned ${models.size} model(s) from provider_config.json (+${accountRules.size} account)")
         return buildJsonObject {
             put("op", "models")
             put("models", models)
@@ -2719,7 +2787,31 @@ if (!window.__ZCODE_LOG_HOOK__) {
         val path = Credentials.personalProviderConfigPath()
         val rules = newCliModelRules()
         val zcodePath = com.zcode.ideaplugin.env.ZCodeEnvChecker.resolveCliPathForOps()
-        val providerArr = JsonArray(readNewCliProviderRules().mapNotNull { rule ->
+        // 账号渠道（account:*）：与下拉同源的渠道卡形态（plan 徽章+能力位），归设置页
+        // 内置区只读展示——凭证在 credentials.json 托管，不走自定义渠道的编辑/删除链
+        val accountProviders = com.zcode.ideaplugin.protocol.AccountProviderBridge
+            .activatableAccountChannels(zcodePath)
+            .map { e ->
+                buildJsonObject {
+                    put("providerId", e.providerId)
+                    put("providerName", e.providerName)
+                    put("enabled", true)
+                    accountPlanOf(e.mode)?.let { put("plan", it) }
+                    put("account", true)
+                    put("models", JsonArray(e.builtinModelIds.map { mid ->
+                        val caps = com.zcode.ideaplugin.protocol.BuiltinModelCatalog.modelCaps(mid, zcodePath)
+                        buildJsonObject {
+                            put("modelId", mid)
+                            put("modelName", mid)
+                            caps?.contextWindow?.let { put("contextWindow", it) }
+                            if (caps?.supportsImage == true) put("supportsImages", true)
+                            if (caps?.supportsVideo == true) put("supportsVideo", true)
+                            if (caps?.supportsPdf == true) put("supportsPdf", true)
+                        }
+                    }))
+                }
+            }
+        val providerArr = JsonArray(accountProviders + readNewCliProviderRules().mapNotNull { rule ->
             val pid = rule["providerId"]?.jsonPrimitive?.contentOrNull ?: return@mapNotNull null
             val cfg = rule["config"]?.jsonObject
             val mids = (cfg?.get("modelOrder")?.jsonArray ?: cfg?.get("personalModelIds")?.jsonArray)
@@ -2761,37 +2853,33 @@ if (!window.__ZCODE_LOG_HOOK__) {
                 }))
             }
         })
-        log.info("modelManageList(new cli) returned ${providerArr.size} provider(s) from provider_config.json")
+        log.info("modelManageList(new cli) returned ${providerArr.size} provider(s) (incl. ${accountProviders.size} account) from provider_config.json+builtin")
         return buildJsonObject {
             put("op", "modelManage")
             put("configPath", path.toString())
             put("providers", providerArr)
             put("newCli", true)
             put("remigrate", remigrateAvailable())
+            // 全局默认模型（provider_config.json config.defaultModelSelection，官方 login/TUI
+            // 同款语义）；未设置不带键，前端据有无渲染「设为默认」徽章
+            com.zcode.ideaplugin.protocol.ProviderConfigWriterV2.readDefaultModelSelection(path)?.let {
+                put("defaultSelection", it)
+            }
         }
     }
 
     /**
-     * 「重新执行内置渠道迁移」入口可见性（设置页按钮显隐）：
-     * v1 config.json 存在且带 provider 注册表 + v2 provider_config.json 存在 +
-     * 当前渠道里没有任何映射表内置渠道（templateId/providerId 命中映射值——与迁移器
-     * 的跳过判据同源，有即无需再迁）。标记（防复活）不影响可见性：重迁动作自带清标记。
+     * 「重新执行内置渠道迁移」入口可见性（设置页按钮显隐）：直接用迁移器的预演
+     * [pendingMigrationTargets]（含全部守卫：代际/文件存在/已迁过/v1 有 key/
+     * 订阅型账号渠道豁免）——预演非空才显示按钮，保证「看得见的按钮点了必有动作」，
+     * 与实际迁移同源不漂移（2026-09-21 订阅守卫上线：账号渠道激活后订阅模板不再迁，
+     * 按钮随之消失）。
      */
     private fun remigrateAvailable(): Boolean {
-        val mapped = com.zcode.ideaplugin.protocol.V1BuiltinMigrator.V1_TO_V2_TEMPLATE.values.toSet()
-        val hasBuiltin = readNewCliProviderRules().any {
-            (it["templateId"]?.jsonPrimitive?.contentOrNull in mapped) ||
-                (it["providerId"]?.jsonPrimitive?.contentOrNull in mapped)
-        }
-        if (hasBuiltin) return false
-        if (!java.nio.file.Files.isRegularFile(Credentials.personalProviderConfigPath())) return false
-        val v1 = Credentials.defaultConfigPath().toFile()
-        if (!v1.isFile) return false
-        return try {
-            Json.parseToJsonElement(v1.readText()).jsonObject["provider"]?.jsonObject?.isNotEmpty() == true
-        } catch (_: Exception) {
-            false
-        }
+        val targets = com.zcode.ideaplugin.protocol.V1BuiltinMigrator.pendingMigrationTargets(
+            zcodePath = com.zcode.ideaplugin.env.ZCodeEnvChecker.resolveCliPathForOps(),
+        )
+        return targets.isNotEmpty()
     }
 
     /**
@@ -3093,6 +3181,75 @@ if (!window.__ZCODE_LOG_HOOK__) {
         return buildJsonObject {
             put("op", "modelProvidersReordered")
             put("ok", true)
+        }
+    }
+
+    /**
+     * op=modelSetDefaultSelection — 写全局默认模型（provider_config.json 的
+     * config.defaultModelSelection，官方 login/TUI 同款语义：裸 spawn app-server 无
+     * 会话级 setModel 前的初始选型，跨会话/跨客户端生效）。params：providerId +
+     * modelId 必填，reasoningLevel 可选；三者全空 = 清除默认。仅新版渠道体系支持。
+     */
+    private fun handleModelSetDefaultSelection(msg: JsonObject): JsonObject {
+        if (cliGeneration != com.zcode.ideaplugin.protocol.ProtocolGeneration.NEW) {
+            return errorResponse("全局默认模型仅新版渠道体系支持")
+        }
+        val providerId = msg["providerId"]?.jsonPrimitive?.contentOrNull
+        val modelId = msg["modelId"]?.jsonPrimitive?.contentOrNull
+        val reasoningLevel = msg["reasoningLevel"]?.jsonPrimitive?.contentOrNull
+        val err = com.zcode.ideaplugin.protocol.ProviderConfigWriterV2.setDefaultModelSelection(
+            Credentials.personalProviderConfigPath(), providerId, modelId, reasoningLevel,
+        )
+        if (err != null) {
+            log.warn("modelSetDefaultSelection failed: $err")
+            return errorResponse(err)
+        }
+        val label = if (providerId == null || modelId == null) "<cleared>" else "$providerId/$modelId"
+        log.info("modelSetDefaultSelection: $label")
+        com.zcode.ideaplugin.env.ZCodeEnvChecker.invalidate()
+        return buildJsonObject {
+            put("op", "modelDefaultSelectionSet")
+            put("ok", true)
+        }
+    }
+
+    /**
+     * op=modelTestConnectivity — 渠道连通性测试（provider/testModelConnectivity，
+     * 2026-09-21 开源新增协议面）。服务端先强制刷新 Registry（外部直写
+     * provider_config.json 即生效）再真发一次最小模型请求——插件自测连通可全部退役。
+     * params：providerId + modelId；仅新版渠道体系支持（OLD 代 -32601，直接拦）。
+     * 成功 {op, ok:true}；失败 {op, ok:false, error:服务端原始报错}。
+     */
+    private fun handleModelTestConnectivity(msg: JsonObject): JsonObject {
+        val providerId = msg["providerId"]?.jsonPrimitive?.contentOrNull
+            ?: return errorResponse("缺少 providerId")
+        val modelId = msg["modelId"]?.jsonPrimitive?.contentOrNull
+            ?: return errorResponse("缺少 modelId")
+        if (cliGeneration != com.zcode.ideaplugin.protocol.ProtocolGeneration.NEW) {
+            return errorResponse("连通性测试仅新版渠道体系支持")
+        }
+        return try {
+            project.zCodeService().getClient().testModelConnectivity(
+                workspacePath = project.basePath ?: "",
+                providerId = providerId,
+                modelId = modelId,
+            )
+            log.info("modelTestConnectivity ok: $providerId/$modelId")
+            buildJsonObject {
+                put("op", "modelConnectivityResult")
+                put("ok", true)
+                put("providerId", providerId)
+                put("modelId", modelId)
+            }
+        } catch (e: Exception) {
+            log.info("modelTestConnectivity failed: $providerId/$modelId (${e.message?.take(200)})")
+            buildJsonObject {
+                put("op", "modelConnectivityResult")
+                put("ok", false)
+                put("providerId", providerId)
+                put("modelId", modelId)
+                put("error", e.message ?: e.javaClass.simpleName)
+            }
         }
     }
 
@@ -3904,13 +4061,16 @@ if (!window.__ZCODE_LOG_HOOK__) {
                 var used = ctx["used"]?.jsonPrimitive?.content?.toLongOrNull() ?: 0L
                 var size = ctx["size"]?.jsonPrimitive?.content?.toLongOrNull() ?: 0L
                 // v2 上下文总量换轨（缺陷BX）：app-server 的 contextUsage.size 固定走模板
-                // 默认 200k（逆向 U2e：config.contextWindow 缺省回落 T7=2e5；多文件源实验
-                // 证明手写 providerModelRules 不进该链），与用户在 provider_config.json 配的
-                // 真实值脱节。插件用同文件 providerModelRules 的值覆盖（模型悬浮窗同源，
-                // 两处显示一致）；会话当前模型无手写值时保持服务端原值
+                // 默认 200k（逆向 U2e：config.contextWindow 缺省回落 T7=2e5），与模型真实
+                // 上下文脱节。真实值取 BuiltinModelCatalog.modelCaps（与模型下拉/设置页
+                // 同一规则链：GLM-5.3→1M、GLM-5.3-Flash→1M，`.*` 兜底 200K）——账号渠道
+                //（account:*）与自定义渠道同名模型能力一致；无规则命中时保持服务端原值
                 if (cliGeneration == com.zcode.ideaplugin.protocol.ProtocolGeneration.NEW) {
                     currentSessionModelRef()?.let { (pid, mid) ->
-                        newCliContextWindows()[pid to mid]?.let { size = it }
+                        val caps = com.zcode.ideaplugin.protocol.BuiltinModelCatalog.modelCaps(
+                            mid, com.zcode.ideaplugin.env.ZCodeEnvChecker.resolveCliPathForOps(),
+                        )
+                        caps?.contextWindow?.let { size = it }
                     }
                 }
                 put("used", used)
@@ -3974,7 +4134,12 @@ if (!window.__ZCODE_LOG_HOOK__) {
         // personalModelIds，与 newCliEnabledProviderModels 漂移，改用共享 helper
         if (cliGeneration == com.zcode.ideaplugin.protocol.ProtocolGeneration.NEW
             && providerId != null && modelId != null) {
-            val known = newCliEnabledProviderModels().any { it.first == providerId }
+            val known = newCliEnabledProviderModels().any { it.first == providerId } ||
+                // 账号渠道（account:*）：不在 provider_config.json，registry 来源是
+                // updateAccountConfig 推送——与模型列表同源判定（2026-09-21 曾因只认
+                // v2 清单把账号渠道判成死引用，选中后静默回落 bigmodel-api，用户以为
+                // 切换成功实际计费渠道根本没变）
+                accountChannelKnown(providerId)
             if (!known) {
                 val fb = newCliFallbackModel()
                 if (fb != null) {
@@ -4581,6 +4746,17 @@ if (!window.__ZCODE_LOG_HOOK__) {
                 err.statusCode?.let { put("statusCode", it) }
                 err.code?.let { put("code", it) }
                 put("message", err.message)
+            })
+        }
+        // 崩溃级进程异常（官方 [zcode-process-exception] stderr 契约）：复用 backendError
+        // 前端顶栏通道实时展示根因（code=process-exception 区分于模型 API 错误）；
+        // readLoop 断连收尾另行走，此处只管让用户在第一现场看到原因
+        client.processExceptionHandler = { pe ->
+            log.warn("[backendError] process exception errorId=${pe.errorId} kind=${pe.kind} origin=${pe.origin} name=${pe.name} message=${pe.message.take(300)}")
+            sendToJsDirect(buildJsonObject {
+                put("op", "backendError")
+                put("code", "process-exception")
+                put("message", "app-server 异常退出（${pe.kind}/${pe.origin}）: ${pe.name} ${pe.message}".trim())
             })
         }
     }

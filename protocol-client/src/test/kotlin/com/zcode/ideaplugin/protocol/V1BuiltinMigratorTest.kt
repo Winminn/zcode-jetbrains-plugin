@@ -282,4 +282,100 @@ class V1BuiltinMigratorTest {
             zcodePath = null, configPath = configPath, providerConfigPath = providerConfigPath, home = home.toString(),
         ).isEmpty())
     }
+
+    // ============ 订阅型守卫（2026-09-21 账号渠道供给链上线后新增） ============
+
+    /** 重写 fake 目录：模板表 + 账号渠道条目（providerRules），订阅守卫测试环境 */
+    private fun writeCatalogWithAccount(standardTemplate: Boolean) {
+        val runtime = home.resolve(".zcode").resolve("v2").resolve("runtime").resolve("provider").resolve("fake")
+        val stdRule = if (standardTemplate) {
+            """,
+                {"templateId":"bigmodel-standard-api","templateNameMap":{"zh-CN":"BigModel","en-US":"BigModel"},
+                 "config":{"access":{"type":"api-key"},
+                           "api":{"type":"anthropic-messages","baseUrl":"https://open.bigmodel.cn/api/anthropic"},
+                           "builtinModelIds":["GLM-5.3"]}}"""
+        } else ""
+        Files.write(runtime.resolve("zcode-builtin.json"), """
+            {"schemaVersion":1,"config":{
+              "providerConfigRules":{
+                "templateRules":[
+                  {"templateId":"bigmodel-api","templateNameMap":{"zh-CN":"BigModel Coding Plan","en-US":"BigModel Coding Plan"},
+                   "config":{"access":{"type":"zhipu-coding-plan-api-key"},
+                             "api":{"type":"anthropic-messages","baseUrl":"https://open.bigmodel.cn/api/anthropic"},
+                             "builtinModelIds":["GLM-5.3","GLM-5.3-Flash"]}}$stdRule],
+                "providerRules":[
+                  {"providerId":"account:bigmodel-individual-coding-plan","providerName":"BigModel Individual Coding Plan",
+                   "config":{"access":{"type":"zhipu-account","mode":"individual-coding-plan"},
+                             "api":{"type":"anthropic-messages","baseUrl":"https://open.bigmodel.cn/api/anthropic"},
+                             "builtinModelIds":["GLM-5.3","GLM-5.3-Flash"]}}]},
+              "modelConfigRules":{"modelRules":[]}}}
+        """.trimIndent().toByteArray())
+    }
+
+    /** 写 fake credentials.json：bigmodel 账号凭证齐备（identity + coding-plan key） */
+    private fun writeBigmodelCredentials() {
+        Files.write(configPath.resolveSibling("credentials.json"), """
+            {"oauth:bigmodel:user_info":"{\"id\":\"u-01\"}",
+             "account-provider:coding-plan:account:bigmodel-individual-coding-plan:account:u-01:api-key":"sk-oauth-key"}
+        """.trimIndent().toByteArray())
+    }
+
+    @Test
+    fun `同家族账号渠道激活时订阅模板不迁移`() {
+        createHome()
+        writeCatalogWithAccount(standardTemplate = false)
+        writeBigmodelCredentials()
+        writeV1Config("builtin:bigmodel-coding-plan" to ("sk-old-key" to true))
+        // 预演与实迁同源：targets 空 → 迁移无动作
+        assertTrue(V1BuiltinMigrator.pendingMigrationTargets(
+            zcodePath = null, configPath = configPath, providerConfigPath = providerConfigPath, home = home.toString(),
+        ).isEmpty(), "账号渠道已激活 = 订阅模板豁免（预演）")
+        assertTrue(V1BuiltinMigrator.migrateIfNeeded(
+            zcodePath = null, configPath = configPath, providerConfigPath = providerConfigPath, home = home.toString(),
+        ).isEmpty(), "账号渠道已激活 = 订阅模板豁免（实迁）")
+        assertTrue(rules().isEmpty())
+    }
+
+    @Test
+    fun `账号渠道未激活时订阅模板照常迁移`() {
+        createHome()
+        writeCatalogWithAccount(standardTemplate = false)
+        // 无 credentials.json（未登录过客户端）→ 守卫不生效
+        writeV1Config("builtin:bigmodel-coding-plan" to ("sk-old-key" to true))
+        assertEquals(listOf("bigmodel-api"), V1BuiltinMigrator.pendingMigrationTargets(
+            zcodePath = null, configPath = configPath, providerConfigPath = providerConfigPath, home = home.toString(),
+        ))
+        assertEquals(listOf("bigmodel-api"), V1BuiltinMigrator.migrateIfNeeded(
+            zcodePath = null, configPath = configPath, providerConfigPath = providerConfigPath, home = home.toString(),
+        ))
+        assertEquals(1, rules().size)
+    }
+
+    @Test
+    fun `standard-api 手填型不受订阅守卫影响`() {
+        createHome()
+        writeCatalogWithAccount(standardTemplate = true)
+        writeBigmodelCredentials() // 账号渠道已激活
+        writeV1Config("builtin:bigmodel" to ("sk-manual-key" to true))
+        // standard-api 是 API Key 按量计费，账号渠道不覆盖：照常迁
+        assertEquals(listOf("bigmodel-standard-api"), V1BuiltinMigrator.migrateIfNeeded(
+            zcodePath = null, configPath = configPath, providerConfigPath = providerConfigPath, home = home.toString(),
+        ))
+        assertEquals("bigmodel-standard-api", rules().single()["providerId"]!!.jsonPrimitive.content)
+    }
+
+    @Test
+    fun `守卫按家族判定且模板缺失渠道照常跳过`() {
+        createHome()
+        writeCatalogWithAccount(standardTemplate = false)
+        writeBigmodelCredentials() // 只有 bigmodel 家族激活
+        // bigmodel 订阅被守卫豁免；zai 订阅家族未激活但 fake catalog 无 zai 模板（模板表缺失跳过）
+        writeV1Config(
+            "builtin:bigmodel-coding-plan" to ("sk-bm" to true),
+            "builtin:zai-coding-plan" to ("sk-zai" to true),
+        )
+        assertTrue(V1BuiltinMigrator.migrateIfNeeded(
+            zcodePath = null, configPath = configPath, providerConfigPath = providerConfigPath, home = home.toString(),
+        ).isEmpty())
+    }
 }

@@ -275,6 +275,66 @@ object BuiltinModelCatalog {
         }
     }
 
+    /** 账号渠道条目（zcode-builtin.json providerRules 里 access.type=zhipu-account 的定义） */
+    class AccountProviderEntry(
+        val providerId: String,
+        val providerName: String,
+        val mode: String,
+        val baseUrl: String,
+        val builtinModelIds: List<String>,
+    )
+
+    /** 账号渠道条目缓存（同 loadRules 的 mtime+size 键；发送路径每次校验会读） */
+    private val accountEntryCache = ConcurrentHashMap<Path, Pair<Pair<Long, Long>, List<AccountProviderEntry>>>()
+
+    /**
+     * 账号渠道全量定义（2026-09-21 开源源码：registry 里账号渠道的模型权威 = 条目
+     * config.builtinModelIds，providerName 即官方 picker 的 label；mode/baseUrl 供激活
+     * 判据用——start-plan 系 zcode-plan 网关、off-peak 需服务端票据，均不可激活）。
+     * 无目录返回空表。
+     */
+    fun accountProviderEntries(zcodePath: Path?, home: String = System.getProperty("user.home") ?: "."): List<AccountProviderEntry> {
+        val file = catalogFile(zcodePath, home) ?: return emptyList()
+        return accountProviderEntriesFromFile(file)
+    }
+
+    /** [accountProviderEntries] 的直读文件版（AccountProviderBridge 已定位文件时用） */
+    fun accountProviderEntriesFromFile(file: Path): List<AccountProviderEntry> {
+        return try {
+            val mtime = Files.getLastModifiedTime(file).toMillis()
+            val size = Files.size(file)
+            accountEntryCache[file]?.let { (k, v) -> if (k.first == mtime && k.second == size) return v }
+            val parsed = parseAccountEntries(file)
+            accountEntryCache[file] = (mtime to size) to parsed
+            parsed
+        } catch (_: Exception) {
+            emptyList()
+        }
+    }
+
+    private fun parseAccountEntries(file: Path): List<AccountProviderEntry> {
+        val root = Json.parseToJsonElement(file.readText()).jsonObject
+        return (root["config"]?.jsonObject?.get("providerConfigRules")?.jsonObject?.get("providerRules")?.jsonArray)
+            ?.mapNotNull { el ->
+                val o = el as? JsonObject ?: return@mapNotNull null
+                val cfg = o["config"]?.jsonObject ?: return@mapNotNull null
+                if (cfg["access"]?.jsonObject?.get("type")?.jsonPrimitive?.contentOrNull != "zhipu-account") {
+                    return@mapNotNull null
+                }
+                AccountProviderEntry(
+                    providerId = o["providerId"]?.jsonPrimitive?.contentOrNull ?: return@mapNotNull null,
+                    providerName = o["providerName"]?.jsonPrimitive?.contentOrNull
+                        ?: o["providerId"]?.jsonPrimitive?.contentOrNull ?: return@mapNotNull null,
+                    mode = cfg["access"]?.jsonObject?.get("mode")?.jsonPrimitive?.contentOrNull ?: return@mapNotNull null,
+                    baseUrl = cfg["api"]?.jsonObject?.get("baseUrl")?.jsonPrimitive?.contentOrNull ?: "",
+                    builtinModelIds = cfg["builtinModelIds"]?.jsonArray
+                        ?.mapNotNull { (it as? JsonPrimitive)?.contentOrNull }
+                        ?.filter { it.isNotBlank() }
+                        ?: emptyList(),
+                )
+            }?.filter { it.builtinModelIds.isNotEmpty() } ?: emptyList()
+    }
+
     private fun loadRules(zcodePath: Path?, home: String): List<Rule>? {
         val file = catalogFile(zcodePath, home) ?: return null
         try {
@@ -345,4 +405,13 @@ object BuiltinModelCatalog {
         val fallback = Path.of(home, "AppData", "config", "provider", "zcode-builtin.json")
         return fallback.takeIf { Files.isRegularFile(it) }
     }
+
+    /**
+     * 定位 zcode-builtin.json 供 [AccountProviderBridge] 组 spawn env 对与 revision
+     * 计算。与读侧 [catalogFile] 同一候选序（v2/runtime CDN 缓存 → 安装目录 →
+     * AppData 兜底）；找不到返回 null（env 对不注入，CLI 走自解析，账号渠道保持
+     * fail-closed——功能降级但不致错）。
+     */
+    fun locateBuiltinFile(zcodePath: Path?, home: String = System.getProperty("user.home") ?: "."): Path? =
+        catalogFile(zcodePath, home)
 }
