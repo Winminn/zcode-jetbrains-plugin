@@ -60,12 +60,19 @@ beforeEach(() => {
     })
   }
   // jsdom 不实现 execCommand（调用即抛 Not implemented）。stub：焦点在
-  // contenteditable 上时追加文本并把光标移到末尾（inputbox-sessref 同款）
+  // contenteditable 上时追加文本/HTML 并把光标移到末尾（inputbox-sessref 同款；
+  // insertHTML 服务粘贴折叠内联 chip，issue #22②）
   document.execCommand = ((cmd: string, _ui: unknown, value = '') => {
-    if (cmd === 'insertText') {
+    if (cmd === 'insertText' || cmd === 'insertHTML') {
       const el = document.activeElement as HTMLElement | null
-      if (el?.isContentEditable) {
-        el.textContent = (el.textContent ?? '') + value
+      if (el && (el.isContentEditable || el.getAttribute('contenteditable') !== null)) {
+        if (cmd === 'insertHTML') {
+          const tpl = document.createElement('template')
+          tpl.innerHTML = value
+          while (tpl.content.firstChild) el.appendChild(tpl.content.firstChild)
+        } else {
+          el.textContent = (el.textContent ?? '') + value
+        }
         const range = document.createRange()
         range.selectNodeContents(el)
         range.collapse(false)
@@ -261,21 +268,24 @@ describe('InputBox textToInput（控制台日志，走粘贴折叠逻辑）', ()
     })
   }
 
-  it('长日志（>500 字符）折叠进上方粘贴 chip，不顶满输入框；发送拼到正文末尾', () => {
+  it('长日志（>500 字符）折叠为光标处内联粘贴 chip，不顶满输入框；发送按位展开', () => {
     const { container, editor, sendBtn, onSend } = setup()
+    // 先写正文再推送日志（issue #22② 主场景：描述在前、粘贴跟在光标处）
+    type(editor, '看下这个报错')
     const longLog = Array.from({ length: 30 }, (_, i) => `2026-09-15 20:00:00.${i} ERROR com.example.Service line-${i}`).join('\n')
     pushText(longLog)
-    // 正文不含日志全文（编辑器仍空），上方出现粘贴折叠 chip
+    // 正文不含日志全文，光标处出现内联粘贴 chip（顶部折叠栏已随内联化退场）
     expect(editor.textContent).not.toContain('ERROR com.example.Service')
-    const chip = container.querySelector('.pasted-text-ref')
-    expect(chip).not.toBeNull()
+    expect(editor.querySelector('.paste-ref--inline')).not.toBeNull()
+    expect(container.querySelector('.input-box__refs')).toBeNull()
 
-    type(editor, '看下这个报错')
     fireEvent.click(sendBtn)
     expect(onSend).toHaveBeenCalled()
     const text = onSend.mock.calls[0][0] as string
     expect(text).toContain('看下这个报错')
-    expect(text).toContain('ERROR com.example.Service') // 折叠日志拼在正文后
+    expect(text).toContain('ERROR com.example.Service') // 日志原文在 chip 位置展开
+    // 位置关系保留：描述在前、日志原文在后（旧实现恒拼整条消息末尾）
+    expect(text.indexOf('看下这个报错')).toBeLessThan(text.indexOf('ERROR com.example.Service'))
   })
 
   it('短文本直接插进正文，多次推送追加不互顶', () => {

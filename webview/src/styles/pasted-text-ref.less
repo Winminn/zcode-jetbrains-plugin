@@ -92,3 +92,19 @@
   word-break: break-word;
   color: var(--color-tool-value);
 }
+
+/* ===== 内联变体（contenteditable 文本流中，issue #22② 粘贴跟随光标）===== */
+/* 结构与顶部版同类名（.pasted-text-ref 基础样式直接复用），只补文本流适配：
+   紧凑尺寸（编辑器行高 19.5px，6px padding 明显撑行）、基线对齐、
+   禁继承的 CSS ::after tooltip（编辑区 wrapper overflow:auto 裁剪，tooltip
+   由 InputBox 的 JS 挂 body 机制接管，同 .file-ref--inline）*/
+.pasted-text-ref.paste-ref--inline {
+  padding: 3px 8px;
+  vertical-align: middle;
+  user-select: none;
+  margin: 0 1px;
+
+  &:hover::after {
+    display: none;
+  }
+}

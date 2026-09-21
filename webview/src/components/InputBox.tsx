@@ -41,12 +41,12 @@ import { AgentSelect, AgentColorDot } from './AgentSelect'
 import { PromptEnhancerDialog } from './PromptEnhancerDialog'
 import { sendToJava, onMessage } from '@/ipc/bridge'
 import type { JavaResponse, SlashCommand, AgentDef, ImageAttachmentInput } from '@/types/messages'
-import { insertChipAtCursor, insertCommandChipAtCursor, insertSessionChipAtCursor, convertCompletedPaths, convertCompletedSessionRefs, matchSessionRefTrigger, serializeEditor, type CmdChipKind } from '@/utils/inlineFileTags'
+import { insertChipAtCursor, insertCommandChipAtCursor, insertSessionChipAtCursor, insertPasteChipAtCursor, convertCompletedPaths, convertCompletedSessionRefs, matchSessionRefTrigger, serializeEditor, hasAnyInlineChip, type CmdChipKind } from '@/utils/inlineFileTags'
 import { relativeTime } from '@/utils/time'
 import { parseGoalCommand } from '@/utils/goalCommand'
 import { KV_HYDRATED_EVENT, KV_DISABLED_EVENT } from '@/utils/persist'
 import { readEnhanceConfig, ENHANCE_CONFIG_CHANGED_EVENT } from '@/utils/enhanceConfig'
-import { PastedTextRef, PastedTextPreview, type PastedTextItem } from './PastedTextRef'
+import { PastedTextPreview, type PastedTextItem } from './PastedTextRef'
 import { readImageFile, decodeBase64Size, type ImageAttachmentResult } from '@/utils/imageAttachment'
 import { ImagePreview } from './ImagePreview'
 import '../styles/input-box.less'
@@ -78,8 +78,9 @@ const BUILTIN_COMMANDS: { name: string; icon?: string }[] = [
 ]
 
 /**
- * 粘贴折叠阈值：≥10 行或 ≥500 字符的粘贴文本折叠为顶部 chip（点击预览），
- * 不进输入框正文（撑爆编辑区影响阅读）。正常短句/几行说明不受影响。
+ * 粘贴折叠阈值：≥10 行或 ≥500 字符的粘贴文本折叠为光标处内联粘贴 chip
+ * （点击预览全文，issue #22②），不进输入框正文（撑爆编辑区影响阅读），
+ * 发送时在 chip 位置展开原文。正常短句/几行说明不受影响。
  * 量级参考 GitHub Copilot Chat 的 Pasted 折叠行为。
  */
 const PASTE_COLLAPSE_LINES = 10
@@ -114,8 +115,9 @@ export function InputBox({ onSend, isStreaming = false, onStop, disabled = false
   const tipChipRef = useRef<HTMLElement | null>(null)
   const [fileRefs, setFileRefs] = useState<string[]>([])
   const [skillRefs, setSkillRefs] = useState<SlashCommand[]>([])
-  /** 折叠的粘贴长文本（≥10 行或 ≥500 字符），发送时拼到正文末尾 */
-  const [pastedTexts, setPastedTexts] = useState<PastedTextItem[]>([])
+  /** 粘贴 chip 原文映射（id→text，chip DOM 只带 data-paste-id——原文可能很大不进属性；
+   *  发送序列化按位展开、clearEditor/发送后清空，Backspace 删 chip 的残留条目随之回收）*/
+  const pasteTextsRef = useRef(new Map<string, string>())
   /** 粘贴的图片附件（压缩后的 base64 载荷），发送时随消息走 attachments 协议 */
   const [images, setImages] = useState<ImageAttachment[]>([])
   /** 正在大图预览的图片（输入框附件缩略图点击）*/
@@ -295,7 +297,9 @@ export function InputBox({ onSend, isStreaming = false, onStop, disabled = false
   /** 润色按钮：取编辑器正文（与 doSend 同源的序列化），触发一次性 CLI 调用 */
   function handleEnhanceClick() {
     if (enhancing || isStreaming) return
-    const text = serializeEditor(editorRef.current ?? document.createElement('div')).replace(/\s+$/, '')
+    const text = serializeEditor(editorRef.current ?? document.createElement('div'), {
+      pasteText: pasteTextResolver,
+    }).replace(/\s+$/, '')
     if (!text.trim()) return
     enhancePromptAction(text)
   }
@@ -453,10 +457,15 @@ export function InputBox({ onSend, isStreaming = false, onStop, disabled = false
   }
 
   // ============ 发送 ============
+  /** serializeEditor 的粘贴原文 resolver（chip DOM 只带 id，发送时按位展开原文）*/
+  function pasteTextResolver(id: string): string | undefined {
+    return pasteTextsRef.current.get(id)
+  }
+
   /**
    * 组装引用前缀文本：子智能体引用拼最前（@名称，主 Agent 据此调度该子智能体——
    * 2026-08-23 协议实测），技能引用次之（/技能名），顶部文件引用（@路径）再次，
-   * 正文（含内联引用）最后，折叠的粘贴文本按粘贴顺序拼到正文末尾（CLI 收到完整原文）。
+   * 正文（含内联引用与内联粘贴原文，均按编辑器内位置展开）最后。
    * 发送与定时共用的文本终态（定时不支持图片，图片引导只在 doSend 里追加）。
    */
   function assembleRefsText(text: string): string {
@@ -471,41 +480,30 @@ export function InputBox({ onSend, isStreaming = false, onStop, disabled = false
       parts.push(fileRefs.map((f) => `@${f}`).join(' '))
     }
     if (text) parts.push(text)
-    if (pastedTexts.length > 0) {
-      parts.push(pastedTexts.map((p) => p.text).join('\n\n'))
-    }
     return parts.join('\n')
   }
 
   function doSend() {
     // 未选模型时不发送（引导用户先选择，避免 CLI 偷偷用默认模型）
     if (!currentModel) return
-    // 序列化：内联 chip → @路径（chip 与正文的位置关系保留在文本流中）
-    const text = serializeEditor(editorRef.current ?? document.createElement('div')).replace(/\s+$/, '')
-    if (
-      !text.trim() &&
-      fileRefs.length === 0 &&
-      skillRefs.length === 0 &&
-      pastedTexts.length === 0 &&
-      images.length === 0
-    )
-      return
+    // 序列化：内联 chip 按位展开（@路径 //命令 /会话引用/粘贴原文），位置关系保留在文本流中
+    const text = serializeEditor(editorRef.current ?? document.createElement('div'), {
+      pasteText: pasteTextResolver,
+    }).replace(/\s+$/, '')
+    if (!text.trim() && fileRefs.length === 0 && skillRefs.length === 0 && images.length === 0) return
 
     const fullText = assembleRefsText(text)
     // 目标模式拦截（/goal）：goal 命令 chip（序列化成 /goal 前缀文本）或直接键入
     // /goal 均转 goalManage 控制意图，不进对话流；目标卡（GoalCard）悬浮在聊天区
     // 右上角展示状态。子命令：pause/resume/clear；无参 = 状态提示。
-    // 匹配对象是拼装后的 fullText：长目标提示词会触发粘贴折叠（≥10 行/≥500 字符
-    // 不进正文、存 pastedTexts 拼在正文后），旧守卫把 pastedTexts 排除导致拦截失效、
-    // /goal 走普通发送（0.3.2 真机反馈）。fileRefs/skillRefs 拼在正文最前，@ 前缀
-    // 自然匹配不上 ^\/goal，行为不变；带图片/子智能体发送目标时不拦截（objective
-    // 是纯文本，图片无法随 goal 下发）。
+    // 匹配对象是拼装后的 fullText，长目标提示词内联在正文里同样命中（fileRefs/
+    // skillRefs 拼在正文最前，@ 前缀自然匹配不上 ^\/goal，行为不变）；带图片/
+    // 子智能体发送目标时不拦截（objective 是纯文本，图片无法随 goal 下发）。
     if (images.length === 0 && !selectedAgent) {
       const goalCmd = parseGoalCommand(fullText)
       if (goalCmd) {
         goalManage(goalCmd.action, goalCmd.objective)
         clearEditor()
-        setPastedTexts([])
         setSlashQuery(null)
         return
       }
@@ -542,7 +540,6 @@ export function InputBox({ onSend, isStreaming = false, onStop, disabled = false
     clearEditor()
     setFileRefs([])
     setSkillRefs([])
-    setPastedTexts([])
     setImages([])
     setSlashQuery(null)
   }
@@ -552,6 +549,8 @@ export function InputBox({ onSend, isStreaming = false, onStop, disabled = false
       editorRef.current.textContent = ''
       setHasText(false)
     }
+    // 编辑器 DOM 清空即含内联粘贴 chip，原文映射同步回收（含 Backspace 删 chip 的残留条目）
+    pasteTextsRef.current.clear()
     setGhostSuffix('')
     // 文本已清空，@/# 补全弹层一并关闭（弹层状态不随程序清空自动复位，缺陷BJ：
     // 带 # 的 URL 消息发送后空态面板残留）
@@ -568,7 +567,7 @@ export function InputBox({ onSend, isStreaming = false, onStop, disabled = false
   function editQueuedToInput(text: string, attachments?: ImageAttachmentInput[]) {
     const el = editorRef.current
     if (!el) return
-    const existing = serializeEditor(el).replace(/\s+$/, '')
+    const existing = serializeEditor(el, { pasteText: pasteTextResolver }).replace(/\s+$/, '')
     el.textContent = existing ? `${existing}\n${text}` : text
     setHasText(!!el.textContent?.trim())
     if (attachments?.length) {
@@ -678,22 +677,25 @@ export function InputBox({ onSend, isStreaming = false, onStop, disabled = false
    */
   /**
    * 纯文本进输入框（粘贴与 IDE 推送共用）：
-   *   超阈值（≥PASTE_COLLAPSE_LINES 行或 ≥PASTE_COLLAPSE_CHARS 字符）→ 折叠进
-   *   pastedTexts（上方 chip，发送时拼到正文末尾），防长日志顶满输入框；
+   *   超阈值（≥PASTE_COLLAPSE_LINES 行或 ≥PASTE_COLLAPSE_CHARS 字符）→ 光标处插
+   *   内联粘贴 chip（issue #22②：粘贴跟随光标，正文上下文不再错位；原文存
+   *   pasteTextsRef 映射，发送时按位展开；insertHTML 进 undo 栈，误粘贴可撤销），
+   *   防长日志顶满输入框；
    *   短文本 → 光标处插入，落地后触发完整路径/会话引用转 chip。
    * 调用方须先确保编辑器聚焦（execCommand 依赖焦点，无焦点时静默失败）。
    */
   const insertPlainText = useCallback((pasted: string) => {
     const lines = pasted.split('\n').length
     if (lines >= PASTE_COLLAPSE_LINES || pasted.length >= PASTE_COLLAPSE_CHARS) {
-      setPastedTexts((prev) => [
-        ...prev,
-        {
-          id: `paste_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
-          text: pasted,
-          chars: pasted.length,
-        },
-      ])
+      const el = editorRef.current
+      if (!el) return
+      const id = `paste_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`
+      if (!insertPasteChipAtCursor(el, id, t('input.pasted.label', { count: pasted.length }), t('input.pasted.clickToPreview'))) {
+        return
+      }
+      pasteTextsRef.current.set(id, pasted)
+      // chip 的 DOM 插入不触发 onInput（execCommand 触发时机不定），手动同步
+      setHasText(true)
       return
     }
     if (!document.execCommand('insertText', false, pasted)) {
@@ -723,9 +725,10 @@ export function InputBox({ onSend, isStreaming = false, onStop, disabled = false
       if (!el) return
       convertCompletedPaths(el, true)
       convertCompletedSessionRefs(el, (id) => sessionTitleResolverRef.current(id))
-      setHasText(!!el.textContent?.trim())
+      // 正文或任一类内联 chip 都是有效内容（chip 无 textContent，纯 chip 输入也要可发送）
+      setHasText(!!el.textContent?.trim() || hasAnyInlineChip(el))
     }, 0)
-  }, [])
+  }, [t])
 
   const handlePaste = useCallback((e: React.ClipboardEvent) => {
     // 图片优先（对齐 cc-gui：一旦有图即不处理文本，截图/网页复制图片的主路径）
@@ -751,19 +754,35 @@ export function InputBox({ onSend, isStreaming = false, onStop, disabled = false
     insertPlainText(pasted)
   }, [insertPlainText])
 
-  /** 内联 chip 的 ✕ 删除（编辑器内动态 DOM，事件委托；文件 chip 与命令 chip 共用）*/
+  /** 内联 chip 的 ✕ 删除与粘贴 chip 点击预览（编辑器内动态 DOM，事件委托；四类 chip 共用）*/
   const handleEditorClick = useCallback((e: React.MouseEvent) => {
     const target = e.target as HTMLElement
-    const closeBtn = target.closest('.file-ref__remove, .cmd-ref__remove, .sess-ref__remove')
-    if (!closeBtn) return
-    e.preventDefault()
-    e.stopPropagation()
-    closeBtn.closest('.file-ref--inline, .cmd-ref--inline, .sess-ref--inline')?.remove()
-    // chip 被删后 mouseout 不再触发（元素已脱离 DOM），tooltip 须主动清掉
-    document.getElementById(INLINE_CHIP_TIP_ID)?.remove()
-    tipChipRef.current = null
-    const el = editorRef.current
-    setHasText(!!el?.textContent?.trim())
+    const closeBtn = target.closest('.file-ref__remove, .cmd-ref__remove, .sess-ref__remove, .pasted-text-ref__remove')
+    if (closeBtn) {
+      e.preventDefault()
+      e.stopPropagation()
+      const chip = closeBtn.closest('.file-ref--inline, .cmd-ref--inline, .sess-ref--inline, .paste-ref--inline')
+      // 粘贴 chip 同步回收原文映射；正在预览的就是它时一并关弹窗
+      const pasteId = chip?.getAttribute('data-paste-id')
+      if (pasteId) {
+        pasteTextsRef.current.delete(pasteId)
+        setPreviewPasteId((cur) => (cur === pasteId ? null : cur))
+      }
+      chip?.remove()
+      // chip 被删后 mouseout 不再触发（元素已脱离 DOM），tooltip 须主动清掉
+      document.getElementById(INLINE_CHIP_TIP_ID)?.remove()
+      tipChipRef.current = null
+      const el = editorRef.current
+      setHasText(!!el?.textContent?.trim() || (el ? hasAnyInlineChip(el) : false))
+      return
+    }
+    // 粘贴 chip 本体点击 → 弹全文预览（✕ 已在上面分支处理）
+    const pasteChip = target.closest('.paste-ref--inline') as HTMLElement | null
+    if (pasteChip?.dataset.pasteId) {
+      e.preventDefault()
+      e.stopPropagation()
+      setPreviewPasteId(pasteChip.dataset.pasteId)
+    }
   }, [])
 
   // ============ 内联 chip hover tooltip ============
@@ -807,12 +826,12 @@ export function InputBox({ onSend, isStreaming = false, onStop, disabled = false
     }
     const hideTip = () => document.getElementById(INLINE_CHIP_TIP_ID)?.remove()
     const onOver = (e: MouseEvent) => {
-      const chip = (e.target as HTMLElement)?.closest?.('.file-ref--inline, .cmd-ref--inline, .sess-ref--inline') as HTMLElement | null
+      const chip = (e.target as HTMLElement)?.closest?.('.file-ref--inline, .cmd-ref--inline, .sess-ref--inline, .paste-ref--inline') as HTMLElement | null
       if (chip) showTip(chip)
     }
     const onOut = (e: MouseEvent) => {
-      const from = (e.target as HTMLElement)?.closest?.('.file-ref--inline, .cmd-ref--inline, .sess-ref--inline')
-      const to = (e.relatedTarget as HTMLElement)?.closest?.('.file-ref--inline, .cmd-ref--inline, .sess-ref--inline')
+      const from = (e.target as HTMLElement)?.closest?.('.file-ref--inline, .cmd-ref--inline, .sess-ref--inline, .paste-ref--inline')
+      const to = (e.relatedTarget as HTMLElement)?.closest?.('.file-ref--inline, .cmd-ref--inline, .sess-ref--inline, .paste-ref--inline')
       if (from && !to) hideTip()
     }
     el.addEventListener('mouseover', onOver)
@@ -1018,7 +1037,7 @@ export function InputBox({ onSend, isStreaming = false, onStop, disabled = false
         }
       }
       // IDE 侧推送纯文本正文（控制台选中日志等，issue #14）：走粘贴同款逻辑——
-      // 长文本折叠进 pastedTexts（防顶满输入框，发送时拼正文末尾），短文本光标处
+      // 长文本折叠为光标处内联粘贴 chip（防顶满输入框，发送时按位展开），短文本光标处
       // 插入。用户此刻焦点在控制台，先聚焦编辑器把光标落到末尾（execCommand
       // 依赖焦点，无焦点时静默失败）
       if (msg.op === 'textToInput' && msg.text.trim()) {
@@ -1430,9 +1449,9 @@ export function InputBox({ onSend, isStreaming = false, onStop, disabled = false
     !disabled &&
     !!currentModel &&
     (hasText ||
+      (editorRef.current ? hasAnyInlineChip(editorRef.current) : false) ||
       fileRefs.length > 0 ||
       skillRefs.length > 0 ||
-      pastedTexts.length > 0 ||
       images.length > 0)
 
   return (
@@ -1494,7 +1513,7 @@ export function InputBox({ onSend, isStreaming = false, onStop, disabled = false
         {/* 选中子智能体 chip + 文件引用 chips（蓝色）+ 粘贴文本（灰色）+ 粘贴图片缩略图。
             技能/命令/goal chip 已内联进输入框（0.3.2 真机反馈）。对齐 cc-gui ChatInputBoxHeader：
             AttachmentList 在 ContextBar 之上，不贴输入框 */}
-        {(selectedAgent || skillRefs.length > 0 || fileRefs.length > 0 || pastedTexts.length > 0 || images.length > 0) && (
+        {(selectedAgent || skillRefs.length > 0 || fileRefs.length > 0 || images.length > 0) && (
           <div className="input-box__refs">
             {/* 模型不支持图片提示（附件带图时）：图片会随消息保存，但发给模型前被服务端剥离 */}
             {images.length > 0 && !currentModelSupportsImages && (
@@ -1538,14 +1557,6 @@ export function InputBox({ onSend, isStreaming = false, onStop, disabled = false
                 key={f}
                 path={f}
                 onRemove={() => setFileRefs((prev) => prev.filter((x) => x !== f))}
-              />
-            ))}
-            {pastedTexts.map((p) => (
-              <PastedTextRef
-                key={p.id}
-                item={p}
-                onPreview={() => setPreviewPasteId(p.id)}
-                onRemove={() => setPastedTexts((prev) => prev.filter((x) => x.id !== p.id))}
               />
             ))}
             {images.map((img, i) => {
@@ -1971,12 +1982,15 @@ export function InputBox({ onSend, isStreaming = false, onStop, disabled = false
 
       </div>
 
-      {/* 粘贴文本预览弹窗（fixed 全屏遮罩，Escape/点遮罩关闭）*/}
+      {/* 粘贴文本预览弹窗（fixed 全屏遮罩，Escape/点遮罩关闭；原文从映射取）*/}
       {previewPasteId &&
         (() => {
-          const item = pastedTexts.find((p) => p.id === previewPasteId)
-          return item ? (
-            <PastedTextPreview item={item} onClose={() => setPreviewPasteId(null)} />
+          const text = pasteTextsRef.current.get(previewPasteId)
+          return text !== undefined ? (
+            <PastedTextPreview
+              item={{ id: previewPasteId, text, chars: text.length } satisfies PastedTextItem}
+              onClose={() => setPreviewPasteId(null)}
+            />
           ) : null
         })()}
 

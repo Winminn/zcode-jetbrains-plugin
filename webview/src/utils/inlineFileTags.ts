@@ -62,6 +62,13 @@ export function hasInlineChips(el: HTMLElement): boolean {
   return !!el.querySelector(`.${CHIP_CLASS}`)
 }
 
+/** 编辑器里是否有任一类内联 chip（canSend/hasText 判定：chip 本身就是有效内容）*/
+export function hasAnyInlineChip(el: HTMLElement): boolean {
+  return !!el.querySelector(
+    `.${CHIP_CLASS}, .${CMD_CHIP_CLASS}, .${SESS_CHIP_CLASS}, .${PASTE_CHIP_CLASS}`,
+  )
+}
+
 /** 收集编辑器内所有内联 chip 的路径（发送时合并引用列表用）*/
 export function getInlineChipPaths(el: HTMLElement): string[] {
   return Array.from(el.querySelectorAll<HTMLSpanElement>(`.${CHIP_CLASS}`))
@@ -302,6 +309,102 @@ export function convertCompletedSessionRefs(
   return converted
 }
 
+// ============ 内联粘贴文本 chip（超阈值粘贴跟随光标，issue #22②）============
+//
+// 与文件/命令/会话 chip「属性携带内容」不同，粘贴原文可能很大（≥500 字符甚至
+// 数 MB 日志），不进 DOM 属性：chip 只带 data-paste-id，原文存调用方的 id→原文
+// 映射（InputBox 的 Map ref），序列化时经 pasteText resolver 按位展开。
+// 插入走 execCommand('insertHTML')（进 undo 栈，误粘贴 Ctrl+Z 可整体撤销）。
+
+const PASTE_CHIP_CLASS = 'paste-ref--inline'
+
+/** 构造内联粘贴文本 chip 的 HTML（label/tip 由调用方 i18n 后传入；✕ 复用顶部 chip 同类名）*/
+export function buildPasteChipHTML(id: string, label: string, tip: string): string {
+  return (
+    `<span class="pasted-text-ref ${PASTE_CHIP_CLASS}" contenteditable="false" data-paste-id="${escapeHtml(id)}" data-tip="${escapeHtml(tip)}">` +
+    `<span class="codicon codicon-note pasted-text-ref__icon"></span>` +
+    `<span class="pasted-text-ref__name">${escapeHtml(label)}</span>` +
+    `<button class="pasted-text-ref__remove" type="button" tabindex="-1">✕</button>` +
+    `</span>`
+  )
+}
+
+/**
+ * 在当前光标位置插入内联粘贴 chip：前后皆补空格可继续输入，且粘贴块不与前文
+ * 粘连（/goal 等命令后直粘场景 serialize 仍保留命令分隔）。优先 execCommand
+ * ('insertHTML')（进 undo 栈，误粘贴可撤销）；失效时手动 range 插入兜底
+ * （绕过 undo 也不丢粘贴，与 insertPlainText 兜底同哲学）。
+ * @returns 是否插入了 chip（失败时调用方应回收映射条目）
+ */
+export function insertPasteChipAtCursor(
+  el: HTMLElement,
+  id: string,
+  label: string,
+  tip: string,
+): boolean {
+  // focus 前快照光标并随后恢复：Chromium focus 不动光标（恢复幂等），jsdom 会把
+  // selection 收敛到元素 0 位（不恢复则 chip 插错位置）
+  const sel = window.getSelection()
+  const saved =
+    sel && sel.rangeCount > 0 && el.contains(sel.anchorNode) ? sel.getRangeAt(0).cloneRange() : null
+  el.focus()
+  if (sel && saved) {
+    sel.removeAllRanges()
+    sel.addRange(saved)
+  }
+  // 光标前是非空白字符时 chip 前补空格（对称 chip 后的补空格）
+  const lead = needsLeadingSpace(saved) ? ' ' : ''
+  const chipHTML = buildPasteChipHTML(id, label, tip)
+  const html = `${lead}${chipHTML} `
+  // execCommand 在非 Chromium 环境/jsdom 可能不存在（调用即抛），统一按失败走手动兜底
+  let inserted = false
+  try {
+    inserted = document.execCommand('insertHTML', false, html)
+  } catch {
+    inserted = false
+  }
+  if (inserted) return true
+  if (!sel || sel.rangeCount === 0 || !el.contains(sel.anchorNode)) return false
+  const range = sel.getRangeAt(0)
+  range.deleteContents()
+  const tpl = document.createElement('template')
+  tpl.innerHTML = chipHTML
+  const chip = tpl.content.firstElementChild as HTMLElement | null
+  if (!chip) return false
+  // 前导空格/chip/尾随空格组装成一个 fragment 一次插入：collapsed range 的
+  // insertNode 恒插在 start 处，分次插入会让后插者排到先插者前面
+  const frag = document.createDocumentFragment()
+  if (needsLeadingSpace(range)) frag.appendChild(document.createTextNode(' '))
+  frag.appendChild(chip)
+  frag.appendChild(document.createTextNode(' '))
+  range.insertNode(frag)
+  const after = document.createRange()
+  after.setStartAfter(chip)
+  after.collapse(true)
+  sel.removeAllRanges()
+  sel.addRange(after)
+  return true
+}
+
+/** range 折叠点前一个字符是否为非空白（决定 chip 前是否补空格）。
+ *  折叠点可能落在文本节点内，也可能落在元素上（前一个子节点承载该字符）*/
+function needsLeadingSpace(range: Range | null): boolean {
+  if (!range) return false
+  const { startContainer: sc, startOffset: off } = range
+  if (sc.nodeType === Node.TEXT_NODE) {
+    const ch = sc.textContent?.[off - 1]
+    return !!ch && !/\s/.test(ch)
+  }
+  if (sc.nodeType === Node.ELEMENT_NODE && off > 0) {
+    const prev = sc.childNodes[off - 1]
+    if (prev?.nodeType === Node.TEXT_NODE) {
+      const ch = prev.textContent?.slice(-1)
+      return !!ch && !/\s/.test(ch)
+    }
+  }
+  return false
+}
+
 // ============ 完整路径检测与转换 ============
 
 /**
@@ -411,12 +514,19 @@ export function convertCompletedPaths(el: HTMLElement, includeTrailing = false):
   return converted
 }
 
+/** serializeEditor 的可选依赖：粘贴 chip 原文不在 DOM 里，序列化时经此按 id 取回 */
+export interface SerializeOptions {
+  /** id → 粘贴原文；返回 undefined 时降级占位（正常不会发生，映射与编辑器同生命周期）*/
+  pasteText?: (id: string) => string | undefined
+}
+
 /**
  * 序列化编辑器内容为纯文本（发送用）：
  * 内联文件 chip → @data-path（含 #L10-20 行号引用），内联命令 chip → /data-cmd，
- * 内联会话 chip → [#标题](#sess_id)（ReadSessionContext 引用协议），BR/DIV → 换行。
+ * 内联会话 chip → [#标题](#sess_id)（ReadSessionContext 引用协议），
+ * 内联粘贴 chip → 原文按位展开（pasteText resolver 取回），BR/DIV → 换行。
  */
-export function serializeEditor(el: HTMLElement): string {
+export function serializeEditor(el: HTMLElement, opts?: SerializeOptions): string {
   let out = ''
   const visit = (node: Node) => {
     if (node.nodeType === Node.TEXT_NODE) {
@@ -438,6 +548,11 @@ export function serializeEditor(el: HTMLElement): string {
         elm.getAttribute('data-sess') ?? '',
         elm.getAttribute('data-title') ?? '',
       )
+      return
+    }
+    if (elm.classList?.contains(PASTE_CHIP_CLASS)) {
+      const text = opts?.pasteText?.(elm.getAttribute('data-paste-id') ?? '')
+      out += text ?? '[粘贴内容已丢失]'
       return
     }
     if (elm.isContentEditable === false) return
