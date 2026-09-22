@@ -254,7 +254,7 @@ class ZCodeEnvCheckerTest {
         assertTrue(s.cli.generation in listOf("v1", "v2"), "generation 应为 v1/v2: ${s.cli.generation}")
         if (s.cli.generation == "v2") {
             // 新版客户端：config.json 废弃，凭证检测走 provider_config.json（本机已建渠道应有效）
-            println("✅ 判代 = v2（自定义供应商体系），凭证 = ${s.credentials.model} (${s.credentials.path})")
+            println("✅ 判代 = v2（供应商注册表体系），凭证 = ${s.credentials.model} (${s.credentials.path})")
             assertTrue(s.credentials.ok, "v2 本机凭证应有效: ${s.credentials.error}")
             assertTrue(s.credentials.path!!.endsWith("provider_config.json"), "v2 凭证路径应为 provider_config.json")
         } else if (java.nio.file.Files.isRegularFile(com.zcode.ideaplugin.protocol.Credentials.defaultConfigPath())) {

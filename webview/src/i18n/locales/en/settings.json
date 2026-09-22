@@ -130,8 +130,8 @@
           "hint": "Channel system v1: model channels come from the client login (config.json); API keys can be managed inside the plugin"
         },
         "v2": {
-          "label": "Custom provider system",
-          "hint": "Channel system v2: model channels are managed by the client's custom providers (provider_config.json), read-only in the plugin; official builtin channels are all SSO-only now"
+          "label": "Provider registry system",
+          "hint": "Channel system v2: model channels are managed by the provider registry — custom providers (provider_config.json) are editable in the plugin, and official account channels (OAuth sign-in) are resolved and activated by the plugin"
         }
       }
     },

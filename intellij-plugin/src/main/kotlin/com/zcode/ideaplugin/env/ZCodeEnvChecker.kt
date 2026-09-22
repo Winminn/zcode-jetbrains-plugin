@@ -68,7 +68,7 @@ data class CliStatus(
     val arg: String? = null,
     /** 形如 "0.16.5"（spawn `node <cli> --version`）；探测失败/未探测 null（展示用，不影响 allOk）*/
     val version: String? = null,
-    /** 协议代际标签（"v1"=内置渠道体系 / "v2"=自定义供应商体系）；cli 未找到时 null */
+    /** 协议代际标签（"v1"=内置渠道体系 / "v2"=供应商注册表体系）；cli 未找到时 null */
     val generation: String? = null,
 )
 
@@ -377,7 +377,7 @@ object ZCodeEnvChecker {
     }
 
     /**
-     * 凭证检测按代分流：v2（自定义供应商体系）走 provider_config.json——新版 config.json
+     * 凭证检测按代分流：v2（供应商注册表体系）走 provider_config.json——新版 config.json
      * 已废弃（用户报"配置文件不存在"误报即此），凭证健康 = 客户端渠道配置可用。
      * v1 维持 config.json 明文凭证口径（原逻辑）。
      */

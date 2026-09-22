@@ -1,7 +1,7 @@
 {
   "toolbarHint": "內建渠道以 Zcode 用戶端為準；自訂渠道可在外掛內增刪改",
-  "genBadgeV2": "自訂供應商體系",
-  "genBadgeV2Hint": "渠道體系 v2：模型渠道 = 用戶端「自訂供應商」（provider_config.json），與用戶端共用同一設定、外掛內增刪改即時生效；官方內建渠道已全部改為單點登入",
+  "genBadgeV2": "供應商註冊表體系",
+  "genBadgeV2Hint": "渠道體系 v2：自訂供應商（provider_config.json）與用戶端共用同一設定、外掛內增刪改即時生效；官方帳號渠道（OAuth 登入）由外掛解析啟用",
   "add": "新增渠道",
   "refreshTitle": "重新讀取設定檔",
   "searchPlaceholder": "搜尋模型 / 供應商",

@@ -1,7 +1,7 @@
 {
   "toolbarHint": "Built-in channels follow the Zcode client; custom channels can be managed here",
-  "genBadgeV2": "Custom provider system",
-  "genBadgeV2Hint": "Channel system v2: model channels are the client's custom providers (provider_config.json), shared with the client and editable in the plugin with instant effect; official built-in channels are all SSO-only now",
+  "genBadgeV2": "Provider registry system",
+  "genBadgeV2Hint": "Channel system v2: custom providers (provider_config.json) are shared with the client and editable in the plugin with instant effect; official account channels (OAuth sign-in) are resolved and activated by the plugin",
   "add": "Add Channel",
   "refreshTitle": "Reload config file",
   "searchPlaceholder": "Search models / providers",

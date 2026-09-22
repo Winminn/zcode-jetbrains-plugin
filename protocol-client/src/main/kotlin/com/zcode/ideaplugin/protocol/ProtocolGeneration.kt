@@ -29,7 +29,8 @@ enum class ProtocolGeneration {
 
     /**
      * 对外机器可读标签（环境检测徽章等 UI 展示）：体系序数而非"新/旧"——
-     * v1 = 内置渠道体系（config.json），v2 = 自定义供应商体系（provider_config.json）。
+     * v1 = 内置渠道体系（config.json），v2 = 供应商注册表体系（provider_config.json
+     * 自定义供应商 + zhipu-account 账号渠道）。
      */
     val label: String get() = if (this == NEW) "v2" else "v1"
 }

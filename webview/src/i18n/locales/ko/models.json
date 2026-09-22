@@ -1,7 +1,7 @@
 {
   "toolbarHint": "내장 채널은 Zcode 클라이언트를 따르고, 사용자 지정 채널은 여기서 관리합니다",
-  "genBadgeV2": "사용자 지정 공급자 체계",
-  "genBadgeV2Hint": "채널 체계 v2: 모델 채널 = 클라이언트의 '사용자 지정 공급자'(provider_config.json). 클라이언트와 설정을 공유하며 플러그인에서 추가/수정하면 즉시 반영됩니다. 공식 내장 채널은 모두 SSO로 전환되었습니다",
+  "genBadgeV2": "공급자 레지스트리 체계",
+  "genBadgeV2Hint": "채널 체계 v2: 사용자 지정 공급자(provider_config.json)는 클라이언트와 설정을 공유하며 플러그인에서 추가/수정하면 즉시 반영됩니다. 공식 계정 채널(OAuth 로그인)은 플러그인이 해석하여 활성화합니다",
   "add": "채널 추가",
   "refreshTitle": "설정 파일 다시 읽기",
   "searchPlaceholder": "모델 / 공급자 검색",

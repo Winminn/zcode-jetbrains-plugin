@@ -882,7 +882,7 @@ export interface EnvCliStatus {
   found: boolean
   /** 形如 "0.16.5"（spawn `node <cli> --version`）；探测失败缺省 */
   version?: string
-  /** 协议代际标签："v1" = 内置渠道体系（config.json）/ "v2" = 自定义供应商体系（provider_config.json）；判代失败缺省 */
+  /** 协议代际标签："v1" = 内置渠道体系（config.json）/ "v2" = 供应商注册表体系（provider_config.json + 账号渠道）；判代失败缺省 */
   generation?: string
   error?: string
   code?: string
