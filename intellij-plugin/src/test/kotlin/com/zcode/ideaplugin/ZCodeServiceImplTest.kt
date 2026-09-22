@@ -155,4 +155,63 @@ class ZCodeServiceImplTest {
         assertTrue(ZCodeServiceImpl.sameTurn("turn-1", null))
         assertTrue(ZCodeServiceImpl.sameTurn(null, null))
     }
+
+    // ============ 等待输入通知摘要（issue #24）============
+
+    private fun pendingKind(name: String) =
+        com.zcode.ideaplugin.ui.ZCodeNotifyService.PendingInputKind.valueOf(name)
+
+    @Test
+    fun `等待通知摘要 计划审批取 plan 提问取第一问`() {
+        val planParams = buildJsonObject {
+            put("toolName", "ExitPlanMode")
+            put("input", buildJsonObject { put("plan", "# 实施计划\n1. 先做 A") })
+        }
+        assertEquals(
+            "# 实施计划\n1. 先做 A",
+            ZCodeServiceImpl.pendingInputPreview(pendingKind("PLAN_APPROVAL"), "ExitPlanMode", planParams),
+        )
+        val askParams = buildJsonObject {
+            put("toolName", "AskUserQuestion")
+            put("questions", buildJsonArray {
+                add(buildJsonObject { put("question", "选择哪种方案？"); put("header", "方案") })
+                add(buildJsonObject { put("question", "第二问不该被取到") })
+            })
+        }
+        assertEquals(
+            "选择哪种方案？",
+            ZCodeServiceImpl.pendingInputPreview(pendingKind("ASK_USER"), "AskUserQuestion", askParams),
+        )
+    }
+
+    @Test
+    fun `等待通知摘要 权限审批拼接工具名与理由`() {
+        val params = buildJsonObject { put("reason", "运行单元测试 gradlew test") }
+        assertEquals(
+            "Bash - 运行单元测试 gradlew test",
+            ZCodeServiceImpl.pendingInputPreview(pendingKind("PERMISSION"), "Bash", params),
+        )
+        // 只有其一给那个；都没有回 null（通知层走 bundle 兜底文案）
+        assertEquals("Bash", ZCodeServiceImpl.pendingInputPreview(pendingKind("PERMISSION"), "Bash", buildJsonObject { }))
+        assertEquals(
+            "写配置文件",
+            ZCodeServiceImpl.pendingInputPreview(pendingKind("PERMISSION"), null, buildJsonObject { put("reason", "写配置文件") }),
+        )
+        assertNull(ZCodeServiceImpl.pendingInputPreview(pendingKind("PERMISSION"), " ", buildJsonObject { put("reason", "  ") }))
+    }
+
+    @Test
+    fun `等待通知摘要 形态不符回 null 走兜底文案`() {
+        // questions 缺失/非数组/无 question 字段
+        assertNull(ZCodeServiceImpl.pendingInputPreview(pendingKind("ASK_USER"), "AskUserQuestion", buildJsonObject { }))
+        assertNull(ZCodeServiceImpl.pendingInputPreview(
+            pendingKind("ASK_USER"), "AskUserQuestion",
+            buildJsonObject { put("questions", buildJsonArray { add(buildJsonObject { put("header", "无问题文本") }) }) },
+        ))
+        // plan 缺失
+        assertNull(ZCodeServiceImpl.pendingInputPreview(
+            pendingKind("PLAN_APPROVAL"), "ExitPlanMode",
+            buildJsonObject { put("input", buildJsonObject { put("plan", "") }) },
+        ))
+    }
 }

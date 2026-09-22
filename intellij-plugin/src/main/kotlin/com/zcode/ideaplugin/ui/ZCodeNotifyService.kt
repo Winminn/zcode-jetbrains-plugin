@@ -25,6 +25,16 @@ object ZCodeNotifyService {
     /** kv 通道里的通知配置键（前端 utils/notifyConfig.ts 同源）*/
     const val KV_KEY = "zcode.notify.config"
 
+    /** 等待用户输入的通知形态（issue #24：AI 停下等选择时系统级提醒）*/
+    enum class PendingInputKind {
+        /** AskUserQuestion 提问 */
+        ASK_USER,
+        /** ExitPlanMode 计划审批（规划完成等执行选择）*/
+        PLAN_APPROVAL,
+        /** 工具权限审批（requestPermission）*/
+        PERMISSION,
+    }
+
     /** 提醒配置（前端 JSON 持久化镜像；字段缺席时走这里的默认值——默认关闭）*/
     data class NotifyConfig(
         val notifyEnabled: Boolean = false,
@@ -113,6 +123,42 @@ object ZCodeNotifyService {
         if (sessionId == null) return
         val panel = project.zCodeService().findPanelForSession(sessionId) ?: return
         panel.activateContent()
+    }
+
+    /**
+     * 等待用户输入提醒入口（反向请求挂起点调用，issue #24）：
+     * AskUserQuestion 提问 / ExitPlanMode 计划审批 / 权限审批弹出的同时系统级提醒——
+     * 用户切走了不知道 AI 停下在等，是比"任务完成"更强的打扰理由。
+     * [body] 传问题/计划/工具摘要，空则回 bundle 兜底文案；受通知总开关门控。
+     */
+    fun notifyPendingInput(project: Project, sessionId: String?, kind: PendingInputKind, body: String?) {
+        if (!readConfig().notifyEnabled) return
+        ApplicationManager.getApplication().executeOnPooledThread {
+            try {
+                val (titleKey, bodyKey) = when (kind) {
+                    PendingInputKind.ASK_USER -> "notify.pending.askUser.title" to "notify.pending.askUser.body"
+                    PendingInputKind.PLAN_APPROVAL -> "notify.pending.planApproval.title" to "notify.pending.planApproval.body"
+                    PendingInputKind.PERMISSION -> "notify.pending.permission.title" to "notify.pending.permission.body"
+                }
+                val content = body?.trim()?.take(120)?.ifEmpty { null }
+                    ?: ZCodeBundle.message(bodyKey)
+                val notification = NotificationGroupManager.getInstance()
+                    .getNotificationGroup("ZCode")
+                    .createNotification(ZCodeBundle.message(titleKey), content, NotificationType.INFORMATION)
+                notification.addAction(object : com.intellij.openapi.actionSystem.AnAction(
+                    ZCodeBundle.message("notify.turn.openToolWindow")
+                ) {
+                    override fun actionPerformed(e: com.intellij.openapi.actionSystem.AnActionEvent) {
+                        openConversationTab(project, sessionId)
+                        notification.expire()
+                    }
+                })
+                com.intellij.notification.Notifications.Bus.notify(notification, project)
+            } catch (e: Exception) {
+                com.intellij.openapi.diagnostic.Logger.getInstance("ZCodePlugin")
+                    .warn("Pending-input notification failed: ${e.message}")
+            }
+        }
     }
 
     /**

@@ -9,6 +9,7 @@ import com.zcode.ideaplugin.protocol.Credentials
 import com.zcode.ideaplugin.protocol.ProxyConfig
 import com.zcode.ideaplugin.protocol.ZcGuiConfig
 import com.zcode.ideaplugin.protocol.ZCodeProtocolClient
+import com.zcode.ideaplugin.ui.ZCodeNotifyService
 import com.zcode.ideaplugin.ui.ZCodeToolWindowPanel
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonArray
@@ -79,6 +80,41 @@ class ZCodeServiceImpl(private val project: Project) : ZCodeService, com.intelli
          */
         internal fun sameTurn(a: String?, b: String?): Boolean =
             a == null || b == null || a == b
+
+        /**
+         * 回合收尾通知的延迟弹窗口（issue #24 误报修复）：轮末排队消息 flush 后
+         * 立刻开新回合，立即弹「任务完成」在用户视角是误报。延迟窗口内同会话
+         * turn.started 到达即取消通知（压缩回合的延迟 flush 最长 1.5s 兜底，3s 足够覆盖）。
+         */
+        internal const val TURN_END_NOTIFY_DELAY_MS = 3_000L
+
+        /**
+         * 等待输入通知的正文摘要（纯函数，单测覆盖，issue #24）：
+         * 计划审批取 input.plan、提问取 questions 第一项的 question、权限审批取
+         * toolName 与 reason 拼接（中性分隔符，bundle 多语言共用）。取不到返回
+         * null，通知层回 bundle 兜底文案。
+         */
+        internal fun pendingInputPreview(
+            kind: com.zcode.ideaplugin.ui.ZCodeNotifyService.PendingInputKind,
+            toolName: String?,
+            params: JsonObject,
+        ): String? = when (kind) {
+            com.zcode.ideaplugin.ui.ZCodeNotifyService.PendingInputKind.PLAN_APPROVAL ->
+                (params["input"] as? JsonObject)?.get("plan")
+                    ?.jsonPrimitive?.contentOrNull?.takeIf { it.isNotBlank() }
+            com.zcode.ideaplugin.ui.ZCodeNotifyService.PendingInputKind.ASK_USER ->
+                (params["questions"] as? JsonArray)?.filterIsInstance<JsonObject>()
+                    ?.firstNotNullOfOrNull { it["question"]?.jsonPrimitive?.contentOrNull?.takeIf { q -> q.isNotBlank() } }
+            com.zcode.ideaplugin.ui.ZCodeNotifyService.PendingInputKind.PERMISSION -> {
+                val reason = params["reason"]?.jsonPrimitive?.contentOrNull?.takeIf { it.isNotBlank() }
+                val name = toolName?.takeIf { it.isNotBlank() }
+                when {
+                    name != null && reason != null -> "$name - $reason"
+                    name != null -> name
+                    else -> reason
+                }
+            }
+        }
 
         /** 活跃 Service 实例（多项目并开各一个）；宿主探针聚合判定用，dispose 移除 */
         private val activeInstances = java.util.concurrent.CopyOnWriteArrayList<ZCodeServiceImpl>()
@@ -212,6 +248,19 @@ class ZCodeServiceImpl(private val project: Project) : ZCodeService, com.intelli
     /** 已提醒过的回合收尾（防 deliveryKind 重投重复提醒）：turnKey → 时刻 */
     private val notifiedTurnEnds = ConcurrentHashMap<String, Long>()
 
+    /**
+     * 收尾通知延迟调度（issue #24 误报修复）：turn.completed 到达不立即弹，见
+     * TURN_END_NOTIFY_DELAY_MS。挂起任务按 sessionId 记账，同会话 turn.started
+     * 到达即取消；put 覆盖前先 cancel 防旧任务漏网
+     */
+    private val pendingTurnEndNotify =
+        ConcurrentHashMap<String, java.util.concurrent.ScheduledFuture<*>>()
+
+    /** 收尾通知调度器（daemon 单线程，项目 dispose 时关闭）*/
+    private val notifyScheduler = java.util.concurrent.Executors.newSingleThreadScheduledExecutor { r ->
+        Thread(r, "ZCode-TurnEndNotify").apply { isDaemon = true }
+    }
+
     /** handleStop 成功停止后标记（对齐 cc-gui isManuallyInterrupted：手动打断不提醒）*/
     override fun markManualStop(sessionId: String) {
         manualStopMarks[sessionId] = System.currentTimeMillis()
@@ -239,7 +288,24 @@ class ZCodeServiceImpl(private val project: Project) : ZCodeService, com.intelli
             } else {
                 (event.payload["response"] as? JsonPrimitive)?.contentOrNull
             }
-            com.zcode.ideaplugin.ui.ZCodeNotifyService.notifyTurnEnd(project, event.sessionId, body, failed)
+            // 延迟弹（issue #24 误报修复）：轮末排队消息 flush 后立刻开新回合，
+            // 立即弹「已完成」在用户视角=任务没完却报完成。延迟窗口内同会话
+            // turn.started 到达即取消（全局监听器）；窗口内手动 stop 在任务里二次豁免
+            val sid = event.sessionId
+            pendingTurnEndNotify.remove(sid)?.cancel(false)
+            pendingTurnEndNotify[sid] = notifyScheduler.schedule({
+                pendingTurnEndNotify.remove(sid)
+                try {
+                    val sm = manualStopMarks[sid]
+                    if (sm != null && System.currentTimeMillis() - sm < 30_000L) {
+                        manualStopMarks.remove(sid)
+                        return@schedule
+                    }
+                    com.zcode.ideaplugin.ui.ZCodeNotifyService.notifyTurnEnd(project, sid, body, failed)
+                } catch (e: Exception) {
+                    log.warn("Turn-end notification failed: ${e.message}")
+                }
+            }, TURN_END_NOTIFY_DELAY_MS, java.util.concurrent.TimeUnit.MILLISECONDS)
         } catch (e: Exception) {
             log.warn("Turn-end notification failed: ${e.message}")
         }
@@ -340,7 +406,11 @@ class ZCodeServiceImpl(private val project: Project) : ZCodeService, com.intelli
             // 不匹配保住新回合刚弹出的弹窗（2026-08-27 实测：重试弹窗被迟到清理顶掉）。
             // 正常应答路径 pending 已清空，此处 no-op 无副作用
             c.addGlobalEventListener { event ->
-                if (event.type == "turn.completed" || event.type == "turn.failed") {
+                if (event.type == "turn.started") {
+                    // 轮末排队消息 flush 开的新回合（issue #24 误报修复）：
+                    // 取消刚挂起的「任务完成」通知——任务还在继续
+                    pendingTurnEndNotify.remove(event.sessionId)?.cancel(false)
+                } else if (event.type == "turn.completed" || event.type == "turn.failed") {
                     if (pendingUserInputs.values.any {
                             it.sessionId == event.sessionId && sameTurn(it.turnId, event.turnId)
                         }
@@ -444,6 +514,8 @@ class ZCodeServiceImpl(private val project: Project) : ZCodeService, com.intelli
         }
         // 从宿主探针聚合集中摘除（先于释放浏览器实例）
         activeInstances.remove(this)
+        // 关闭收尾通知调度器（挂起的延迟任务一并作废，防 dispose 后触达死项目）
+        notifyScheduler.shutdownNow()
         // 释放共享浏览器实例（所有标签共用这一个）
         sharedBrowserPanel?.let {
             try {
@@ -584,6 +656,11 @@ class ZCodeServiceImpl(private val project: Project) : ZCodeService, com.intelli
             // 广播挂起标志（含未收到弹窗的面板——多标签同会话时弹窗只路由到一个标签，
             // 其余标签的流式看门狗靠它豁免，否则 60s 静默误判 streamLost 收尾回合）
             broadcastAskUserPending(true)
+            // 等待输入系统通知（issue #24：规划模式等提问/计划审批等待时用户切走了
+            // 不知道 AI 停下在等；受通知总开关门控，点击回会话）
+            val notifyKind = if (isPlanApproval) ZCodeNotifyService.PendingInputKind.PLAN_APPROVAL
+            else ZCodeNotifyService.PendingInputKind.ASK_USER
+            ZCodeNotifyService.notifyPendingInput(project, sessionId, notifyKind, pendingInputPreview(notifyKind, toolName, params))
         }
 
         // 阻塞等用户选择（在协议客户端的独立线程，不阻塞 reader/EDT）。
@@ -683,6 +760,12 @@ class ZCodeServiceImpl(private val project: Project) : ZCodeService, com.intelli
             targetPanel.pushToWebview(askMsg)
             log.info("[permission] Approval dialog pushed to frontend (tool=$toolName), waiting for user decision...")
             broadcastAskUserPending(true)
+            // 等待输入系统通知（issue #24：权限审批卡 5 分钟超时自动 deny，用户切走
+            // 错过更伤；受通知总开关门控，点击回会话）
+            ZCodeNotifyService.notifyPendingInput(
+                project, sessionId, ZCodeNotifyService.PendingInputKind.PERMISSION,
+                pendingInputPreview(ZCodeNotifyService.PendingInputKind.PERMISSION, toolName, params),
+            )
         }
 
         // 阻塞等用户选择；超时/中断安全侧 deny（与协议层兜底同语义）。
