@@ -17,7 +17,8 @@ import { useTranslation } from 'react-i18next'
 import type { TFunction } from 'i18next'
 import type { ToolPart, AskUserQuestion } from '@/types/messages'
 import { relativeTime, formatToolDuration } from '@/utils/time'
-import { parsePartialToolInput, lineCount, tailLines } from '@/utils/partialToolInput'
+import { parsePartialToolInput, tailLines } from '@/utils/partialToolInput'
+import { lineDiffStats } from '@/utils/lineDiff'
 import { extractWebSources, extractDomain } from '@/utils/webSources'
 import { isCronTool, describeCronSchedule, parseCronToolOutput, describeAutomationTime } from '@/utils/cronTool'
 import { isBackgroundTaskOutput } from '@/utils/backgroundTask'
@@ -291,13 +292,12 @@ export function ToolCallCard({ part }: Props) {
   const hasDiff = !!input && tool === 'Edit' && oldContent && newContent
 
   // 行数徽标（收起即可见）：流式期间随 delta 累计跳动，完成态定格收尾；
-  // lineCount 口径与组卡（FileToolGroupCard）一致，流式→完成数字不回跳
+  // LCS 对齐口径（与组卡一致、与 diff 视图显示一致，issue #23 跟进），流式→完成数字不回跳
   const lineStats = useMemo(() => {
     if (!isWriteEdit) return null
-    const add = lineCount(newContent)
-    const del = tool === 'Edit' ? lineCount(oldContent) : 0
+    const { additions: add, deletions: del } = lineDiffStats(oldContent, newContent)
     return add > 0 || del > 0 ? { add, del } : null
-  }, [isWriteEdit, tool, newContent, oldContent])
+  }, [isWriteEdit, newContent, oldContent])
 
   const handleOpenFile = (e: React.MouseEvent) => {
     e.stopPropagation()

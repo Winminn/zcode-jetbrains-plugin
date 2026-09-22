@@ -7,12 +7,13 @@
  * - Agent：tool === "Agent" | "Task" → state.input.description + state.status，
  *   —— 按 callID 去重，后面的状态覆盖前面的
  * - 文件改动：tool === "Edit" | "Write" | "MultiEdit" → 按文件路径聚合，
- *   —— 新旧块行数各自计数（与编辑组卡一致；ZCode 无 git 状态，统一 M）
+ *   —— 行级 LCS 对齐统计（与编辑组卡一致、与 diff 视图显示一致；ZCode 无 git 状态，统一 M）
  *
  * 纯函数、幂等，每次 messages 变化（全量拉取 / 流式增量）后重新解析。
  */
 
 import i18n from '@/i18n/config'
+import { lineDiffStats } from '@/utils/lineDiff'
 import type { AgentItem, FileChangeItem, FileEditContent, SubagentActivity, SubagentInfo, TodoItem, ToolState, ZCodeMessage } from '@/types/messages'
 
 /** 工具 part 的 input 字段名兼容（实测 Edit 用 file_path，Write 用 path）*/
@@ -245,9 +246,10 @@ function normalizeRpcStatus(rpcStatus: string, prev?: string): string {
 
 /**
  * 从消息列表解析文件改动（Edit/Write/MultiEdit 按路径聚合增删行数）。
- * 口径 = 改动行双侧计数（GitHub 式，与编辑组卡 FileToolGroupCard 一致）：
- * additions = 新块行数、deletions = 旧块行数——替换了多少行就计多少，
- * 不取净差值（净差会把同行数替换算成 +0/−0，改名类重构全部归零，缺陷BR/issue#15）。
+ * 口径 = 行级 LCS 对齐（utils/lineDiff，与 diff 视图显示的变更行数一致，
+ * issue #23 跟进）：additions = 新行数 − 公共行数、deletions = 旧行数 − 公共行数。
+ * 不同内容的同行数替换仍计 +N/−N（净差公式会归零的问题不复存在，缺陷BR/issue#15
+ * 的诉求保留）；只有新旧内容完全相同时才计 0（diff 视图同样无变更可显示）。
  * 同时保留每次编辑的 old/new 内容（edits，底部文件栏弹前后对比用）。
  */
 export function parseFileChanges(messages: ZCodeMessage[]): FileChangeItem[] {
@@ -294,14 +296,16 @@ export function parseFileChanges(messages: ZCodeMessage[]): FileChangeItem[] {
             const rec = e as Record<string, unknown>
             const oldC = getOldContent(rec)
             const newC = getNewContent(rec)
-            add(path, lineCount(newC), lineCount(oldC), { oldContent: oldC, newContent: newC })
+            const st = lineDiffStats(oldC, newC)
+            add(path, st.additions, st.deletions, { oldContent: oldC, newContent: newC })
           }
         }
       } else {
-        // Edit = 替换 → 新旧块各自计行
+        // Edit = 替换 → LCS 对齐后计真实变更行
         const oldC = getOldContent(input)
         const newC = getNewContent(input)
-        add(path, lineCount(newC), lineCount(oldC), { oldContent: oldC, newContent: newC })
+        const st = lineDiffStats(oldC, newC)
+        add(path, st.additions, st.deletions, { oldContent: oldC, newContent: newC })
       }
     }
   }

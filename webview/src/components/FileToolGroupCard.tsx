@@ -11,7 +11,8 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import type { ToolPart } from '@/types/messages'
-import { parsePartialToolInput, lineCount } from '@/utils/partialToolInput'
+import { parsePartialToolInput } from '@/utils/partialToolInput'
+import { lineDiffStats } from '@/utils/lineDiff'
 import { sendToJava } from '@/ipc/bridge'
 import { FileIcon } from './FileIcon'
 import { NEAR_BOTTOM_PX } from './ScrollJumpButton'
@@ -82,13 +83,15 @@ function parseFileItem(part: ToolPart): FileItem {
     input.new_string ?? input.newString ?? input.content ??
     partialText(partial, 'new_string', 'newString', 'content') ?? '',
   )
+  // LCS 对齐统计（与 diff 视图显示的变更行数一致，issue #23 跟进）；
+  // Write 无 oldContent → lineDiffStats 自然全算新增（newContent 已按工具取对字段）
+  const stats = lineDiffStats(oldContent, newContent)
   return {
     filePath,
     fileName: fileNameOf(filePath),
     status: part.state.status,
-    // Edit：替换前后行数近似增删；Write：整个文件视为新增（newContent 已按工具取对字段）
-    additions: lineCount(newContent),
-    deletions: part.tool === 'Write' ? 0 : lineCount(oldContent),
+    additions: stats.additions,
+    deletions: stats.deletions,
     oldContent,
     newContent,
     isEditTool: part.tool === 'Edit',
