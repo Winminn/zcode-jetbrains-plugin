@@ -191,7 +191,7 @@ function hasEditableUnsupportedParts(m: ZCodeMessage): boolean {
   })
 }
 
-function userEditText(m: ZCodeMessage): string {
+export function userEditText(m: ZCodeMessage): string {
   return (m.parts ?? [])
     .filter((p) => p.type === 'text')
     .map((p) => (p as { text?: string }).text ?? '')

@@ -50,9 +50,9 @@
     "editCancel": "Cancel",
     "editRegenerate": "Regenerate",
     "fork": "Fork after this reply",
-    "retryTitle": "Retry (truncate this reply and regenerate)",
     "showRaw": "Show raw text",
-    "showRefs": "Show reference chips"
+    "showRefs": "Show reference chips",
+    "resend": "Resend"
   },
   "edit": {
     "replaying": "Regenerating with the edited message…",
@@ -176,8 +176,9 @@
     "confirmMessage": "History is kept up to this reply (inclusive); the original session stays untouched.",
     "confirmOk": "Fork"
   },
-  "retry": {
-    "notRetryable": "The last turn cannot be retried: only replies sent normally and completed fully are retryable (steered injections, scheduled messages, background tasks, and interrupted turns are not)",
-    "failed": "Retry failed"
+  "resend": {
+    "confirmTitle": "Resend this message?",
+    "confirmMessage": "The message will be resent as-is to regenerate the reply. The current reply will be discarded.",
+    "confirmOk": "Resend"
   }
 }

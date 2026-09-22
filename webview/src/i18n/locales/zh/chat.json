@@ -50,9 +50,9 @@
     "editCancel": "取消",
     "editRegenerate": "重新生成",
     "fork": "从此回复分叉",
-    "retryTitle": "重跑（截断本回复后重新生成）",
     "showRaw": "显示原文",
-    "showRefs": "还原引用显示"
+    "showRefs": "还原引用显示",
+    "resend": "重发"
   },
   "edit": {
     "replaying": "正在按编辑后的消息重新生成…",
@@ -176,8 +176,9 @@
     "confirmMessage": "历史保留到这条回复（含），原会话不受影响。",
     "confirmOk": "分叉"
   },
-  "retry": {
-    "notRetryable": "最后一轮不支持重跑：须是正常发送并完整结束的回复（引导注入/定时消息/后台任务/被停止的回合不可重跑）",
-    "failed": "重跑失败"
+  "resend": {
+    "confirmTitle": "重发这条消息？",
+    "confirmMessage": "将按原文重新发送并重新生成回复，当前这轮回复会被裁掉。",
+    "confirmOk": "重发"
   }
 }

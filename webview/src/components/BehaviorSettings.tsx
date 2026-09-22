@@ -27,12 +27,6 @@ import { readNotifyConfig, writeNotifyConfig } from '@/utils/notifyConfig'
 import { readEnhanceConfig, writeEnhanceConfig, type EnhanceModel } from '@/utils/enhanceConfig'
 import { readTurnCollapseConfig, writeTurnCollapseConfig, type TurnCollapseConfig } from '@/utils/turnCollapseConfig'
 import { readAskUserAutoConfig, writeAskUserAutoConfig } from '@/utils/askUserConfig'
-import {
-  readTerminalShellConfig,
-  writeTerminalShellConfig,
-  TERMINAL_SHELL_OPTIONS,
-  type TerminalShellSelection,
-} from '@/utils/terminalShellConfig'
 import { useStore } from '@/store/useStore'
 import '../styles/basic-settings.less'
 import '../styles/agent-select.less'
@@ -53,14 +47,6 @@ export function BehaviorSettings() {
     writeAskUserAutoConfig(next)
   }
 
-  // 终端 shell 偏好（同 persist kv 通道，Kotlin 侧应答 requestRuntimePreferences 时读取）
-  const [shell, setShell] = useState(readTerminalShellConfig)
-
-  const updateShell = (patch: Partial<typeof shell>) => {
-    const next = { ...shell, ...patch }
-    setShell(next)
-    writeTerminalShellConfig(next)
-  }
 
   const update = (patch: Partial<typeof config>) => {
     const next = { ...config, ...patch }
@@ -231,29 +217,6 @@ export function BehaviorSettings() {
         <small className="basic-settings__hint">
           <span className="codicon codicon-info" />
           <span>{t('settings.behavior.askUserAuto.hint')}</span>
-        </small>
-      </section>
-      {/* 终端 shell 偏好（requestRuntimePreferences 应答透传 integratedTerminalShell；
-          新建/续接会话的下一回合起生效）*/}
-      <section className="basic-settings__section">
-        <div className="basic-settings__field-header">
-          <span className="codicon codicon-terminal" />
-          <span className="basic-settings__field-label">{t('settings.behavior.shellTitle')}</span>
-        </div>
-        <select
-          className="basic-settings__select"
-          value={shell.selection}
-          onChange={(e) => updateShell({ selection: e.target.value as TerminalShellSelection })}
-        >
-          {TERMINAL_SHELL_OPTIONS.map((opt) => (
-            <option key={opt.value} value={opt.value}>
-              {t(opt.labelKey)}
-            </option>
-          ))}
-        </select>
-        <small className="basic-settings__hint">
-          <span className="codicon codicon-info" />
-          <span>{t('settings.behavior.shellHint')}</span>
         </small>
       </section>
     </>

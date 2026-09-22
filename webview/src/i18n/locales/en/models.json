@@ -46,15 +46,10 @@
   "disableHint": "Disable this provider (writes config.json; chat model dropdown syncs immediately)",
   "enableHint": "Enable this provider (writes config.json; chat model dropdown syncs immediately)",
   "deleteTitle": "Delete model",
-  "defaultBadge": "Default",
-  "defaultBadgeHint": "Global default model (initial model for new sessions)",
-  "setDefaultTitle": "Set as global default",
-  "clearDefaultTitle": "Clear global default",
-  "testTitle": "Test connectivity (sends one minimal model request)",
+  "testTitle": "Test this model's connectivity (sends one minimal request)",
   "testOk": "OK",
   "testFail": "Failed",
-  "testOkHint": "Connection successful ({{model}})",
-  "testFailHint": "Connection failed ({{model}})",
+  "testOkHint": "Connection successful",
   "dialog": {
     "deleteTitle": "Delete Model",
     "deleteModelBody": "Remove \"{{name}}\" from \"{{provider}}\"? Takes effect immediately.",
@@ -132,5 +127,7 @@
   "remigrateDoneBody": "Migrated: {{names}}",
   "remigrateNoneBody": "No migratable channel in the legacy config (a plain API key is required)",
   "remigrateFailedTitle": "Migration failed",
-  "remigrateErrorBody": "Migration failed: {{error}}"
+  "remigrateErrorBody": "Migration failed: {{error}}",
+  "testFailDetailHint": "Click for failure details",
+  "testFailDetailTitle": "Connectivity test failed: {{provider}}"
 }

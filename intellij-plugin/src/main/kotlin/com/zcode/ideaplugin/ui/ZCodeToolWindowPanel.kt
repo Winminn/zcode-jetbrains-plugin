@@ -256,6 +256,11 @@ class ZCodeToolWindowPanel(
         const val KEY_BROWSER_EXPANDED = "zcode.browser.paneExpanded"
         const val KEY_CHAT_BASE_WIDTH = "zcode.browser.chatBaseWidth"
 
+        /** 最近一条后端模型 API 错误（stderr APICallError 原始详情，epochMs to 文案；
+         *  连通性测试失败时按时间窗捞取——服务端 JSON-RPC error 对 401/403 只回
+         *  "Provider authentication failed." 归类文案，原始报文只在 stderr 第一现场）*/
+        internal var lastBackendApiError: Pair<Long, String>? = null
+
         /** openExternal 的目标（设置页开源支持区块，前端复制展示用同地址字面量）*/
         const val GITHUB_REPO_URL = "https://github.com/csuftt/zcode-jetbrains-plugin"
 
@@ -858,7 +863,6 @@ if (!window.__ZCODE_LOG_HOOK__) {
                         "createSession" -> handleCreateSession(msg)
                         "forkSession" -> handleForkSession(msg)
                         "editUserQuery" -> handleEditUserQuery(msg)
-                        "retryLastTurn" -> handleRetryLastTurn(msg)
                         "subscribe" -> handleSubscribe(msg)
                         "subscribeChild" -> handleSubscribeChild(msg)
                         "unsubscribeChild" -> handleUnsubscribeChild(msg)
@@ -918,7 +922,6 @@ if (!window.__ZCODE_LOG_HOOK__) {
                         "modelReorderProviders" -> handleModelReorderProviders(msg)
                         "modelSetProviderKey" -> handleModelSetProviderKey(msg)
                         "modelRemigrateBuiltins" -> handleModelRemigrateBuiltins()
-                        "modelSetDefaultSelection" -> handleModelSetDefaultSelection(msg)
                         "modelTestConnectivity" -> handleModelTestConnectivity(msg)
                         "setModel" -> handleSetModel(msg)
                         "cancelModelSwitch" -> handleCancelModelSwitch(msg)
@@ -1931,42 +1934,6 @@ if (!window.__ZCODE_LOG_HOOK__) {
     }
 
     /**
-     * op=retryLastTurn — 重跑最后一轮（v4/command retryTurn，2026-09-21 开源协议面）。
-     * 服务端语义 = rewind 截断到最后 user prompt + 原文重发；应答后前端靠事件流自然
-     * 收敛（新 turn.started + 截断），无独立回放编排。应答用专用 op 不走 errorResponse
-     * （同 editUserQuery 的理由：可能发生在回合进行中，不能误清流式态）。
-     */
-    private fun handleRetryLastTurn(msg: JsonObject): JsonObject {
-        val sessionId = msg["sessionId"]?.jsonPrimitive?.content
-            ?: return retryRejected("缺少 sessionId", "missingParams")
-        return try {
-            project.zCodeService().getClient().retryTurnViaV4(sessionId)
-            log.info("Retry turn accepted: $sessionId")
-            buildJsonObject {
-                put("op", "retryAccepted")
-                put("sessionId", sessionId)
-            }
-        } catch (e: ZCodeProtocolException) {
-            if (e.code == -32601) {
-                log.info("Retry via v4 unavailable (no v4 surface)")
-                buildJsonObject { put("op", "retryUnsupported") }
-            } else {
-                log.warn("Retry turn failed: ${e.message}")
-                retryRejected(e.message ?: "未知错误", e.reason ?: "internalError")
-            }
-        } catch (e: Exception) {
-            log.warn("Retry turn failed: ${e.message}")
-            retryRejected(e.message ?: "未知错误", "internalError")
-        }
-    }
-
-    private fun retryRejected(message: String, reason: String? = null): JsonObject = buildJsonObject {
-        put("op", "retryRejected")
-        put("message", message)
-        reason?.let { put("reason", it) }
-    }
-
-    /**
      * op:editUserQuery 的 attachments 数组 → v4 ref 引用形态列表。
      * 两种来源（webview EditComposer）：
      * - cache：保留的原消息图片，url 是内置 server 的 /zcode-image/<sid>/<fileName>
@@ -2917,11 +2884,6 @@ if (!window.__ZCODE_LOG_HOOK__) {
             put("providers", providerArr)
             put("newCli", true)
             put("remigrate", remigrateAvailable())
-            // 全局默认模型（provider_config.json config.defaultModelSelection，官方 login/TUI
-            // 同款语义）；未设置不带键，前端据有无渲染「设为默认」徽章
-            com.zcode.ideaplugin.protocol.ProviderConfigWriterV2.readDefaultModelSelection(path)?.let {
-                put("defaultSelection", it)
-            }
         }
     }
 
@@ -3242,35 +3204,6 @@ if (!window.__ZCODE_LOG_HOOK__) {
     }
 
     /**
-     * op=modelSetDefaultSelection — 写全局默认模型（provider_config.json 的
-     * config.defaultModelSelection，官方 login/TUI 同款语义：裸 spawn app-server 无
-     * 会话级 setModel 前的初始选型，跨会话/跨客户端生效）。params：providerId +
-     * modelId 必填，reasoningLevel 可选；三者全空 = 清除默认。仅新版渠道体系支持。
-     */
-    private fun handleModelSetDefaultSelection(msg: JsonObject): JsonObject {
-        if (cliGeneration != com.zcode.ideaplugin.protocol.ProtocolGeneration.NEW) {
-            return errorResponse("全局默认模型仅新版渠道体系支持")
-        }
-        val providerId = msg["providerId"]?.jsonPrimitive?.contentOrNull
-        val modelId = msg["modelId"]?.jsonPrimitive?.contentOrNull
-        val reasoningLevel = msg["reasoningLevel"]?.jsonPrimitive?.contentOrNull
-        val err = com.zcode.ideaplugin.protocol.ProviderConfigWriterV2.setDefaultModelSelection(
-            Credentials.personalProviderConfigPath(), providerId, modelId, reasoningLevel,
-        )
-        if (err != null) {
-            log.warn("modelSetDefaultSelection failed: $err")
-            return errorResponse(err)
-        }
-        val label = if (providerId == null || modelId == null) "<cleared>" else "$providerId/$modelId"
-        log.info("modelSetDefaultSelection: $label")
-        com.zcode.ideaplugin.env.ZCodeEnvChecker.invalidate()
-        return buildJsonObject {
-            put("op", "modelDefaultSelectionSet")
-            put("ok", true)
-        }
-    }
-
-    /**
      * op=modelTestConnectivity — 渠道连通性测试（provider/testModelConnectivity，
      * 2026-09-21 开源新增协议面）。服务端先强制刷新 Registry（外部直写
      * provider_config.json 即生效）再真发一次最小模型请求——插件自测连通可全部退役。
@@ -3285,6 +3218,7 @@ if (!window.__ZCODE_LOG_HOOK__) {
         if (cliGeneration != com.zcode.ideaplugin.protocol.ProtocolGeneration.NEW) {
             return errorResponse("连通性测试仅新版渠道体系支持")
         }
+        val startedAt = System.currentTimeMillis()
         return try {
             project.zCodeService().getClient().testModelConnectivity(
                 workspacePath = project.basePath ?: "",
@@ -3300,12 +3234,27 @@ if (!window.__ZCODE_LOG_HOOK__) {
             }
         } catch (e: Exception) {
             log.info("modelTestConnectivity failed: $providerId/$modelId (${e.message?.take(200)})")
+            // 服务端错误映射表把 401/403 一律归类成 "Provider authentication failed."，
+            // 原始报文（如"模型不支持当前套餐"这类业务限制）被丢掉，只在 stderr 的
+            // APICallError dump 第一现场。测试发起后到达的 stderr 错误即本次探测真因；
+            // stderr 线程与 JSON-RPC 回包线程无同步，短暂轮询容忍其晚到（≤500ms）。
+            var rawError: String? = null
+            var waited = 0
+            while (rawError == null && waited < 500) {
+                val cached = lastBackendApiError
+                if (cached != null && cached.first >= startedAt) {
+                    rawError = cached.second
+                } else {
+                    Thread.sleep(50)
+                    waited += 50
+                }
+            }
             buildJsonObject {
                 put("op", "modelConnectivityResult")
                 put("ok", false)
                 put("providerId", providerId)
                 put("modelId", modelId)
-                put("error", e.message ?: e.javaClass.simpleName)
+                put("error", rawError ?: e.message ?: e.javaClass.simpleName)
             }
         }
     }
@@ -4796,6 +4745,12 @@ if (!window.__ZCODE_LOG_HOOK__) {
      * 只提示、不复位前端 streaming（turn 可能仍在服务端重试，由终止帧收尾）。
      */
     private fun registerBackendErrorHandler(client: com.zcode.ideaplugin.protocol.ZCodeProtocolClient) {
+        // 真因缓存走不去重原始通道：连点重测同签名错误时 60s 去重窗内 backendErrorHandler
+        // 静默（横幅防轰炸），若缓存也走它，测试弹窗会回退笼统归类文案
+        client.rawBackendErrorHandler = { err ->
+            lastBackendApiError = System.currentTimeMillis() to
+                "HTTP ${err.statusCode ?: "?"}: ${err.message}"
+        }
         client.backendErrorHandler = { err ->
             log.warn("[backendError] model API error statusCode=${err.statusCode} code=${err.code} message=${err.message.take(300)}")
             sendToJsDirect(buildJsonObject {

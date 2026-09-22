@@ -199,6 +199,15 @@ class ZCodeProtocolClient private constructor(
     var backendErrorHandler: ((BackendErrorDetector.BackendApiError) -> Unit)? = null
 
     /**
+     * 模型 API 错误的**不去重**原始通道（stderr 线程调用）：每条命中 APICallError 的
+     * dump 都回调，无 60s 同签名去重（去重只作用于 [backendErrorHandler] 的横幅展示）。
+     * 消费方：连通性测试的真因缓存——连点重测同签名错误时，去重窗内主回调静默，
+     * 只有本通道能持续供数。
+     */
+    @Volatile
+    var rawBackendErrorHandler: ((BackendErrorDetector.BackendApiError) -> Unit)? = null
+
+    /**
      * app-server 崩溃级进程异常通道（官方 `[zcode-process-exception]` stderr 契约，
      * BackendErrorDetector.parseProcessException 解析、errorId 去重）。与
      * [backendErrorHandler] 的区别：那是模型 API 错误（进程活着、服务端在重试），
@@ -314,6 +323,9 @@ class ZCodeProtocolClient private constructor(
             // 症状为所有协议请求超时（进程 alive 但不响应）。
             val stderr = process.errorStream.bufferedReader()
             val backendErrorDetector = BackendErrorDetector()
+            // 不去重原始通道：每条模型 API 错误都递给宿主（连通性测试真因缓存依赖；
+            // backendErrorHandler 有 60s 同签名去重，仅供横幅展示防轰炸）
+            backendErrorDetector.onRawApiError = { err -> client.rawBackendErrorHandler?.invoke(err) }
             Thread({
                 try {
                     stderr.forEachLine { line ->
@@ -519,16 +531,6 @@ class ZCodeProtocolClient private constructor(
                 put("nativeSearchEnhancementsEnabled", prefs.nativeSearchEnhancementsEnabled)
                 put("memoryEnabled", prefs.memoryEnabled)
                 put("askUserQuestionAutoResolutionEnabled", prefs.askUserQuestionAutoResolutionEnabled)
-                // 终端 shell 偏好（可选字段）：null=缺省走 CLI auto 探测（官方同款语义）
-                prefs.integratedTerminalShell?.let { s ->
-                    put("integratedTerminalShell", buildJsonObject {
-                        put("mode", "shell")
-                        put("dialect", s.dialect)
-                        put("id", s.id)
-                        put("label", s.label)
-                        put("path", s.path)
-                    })
-                }
             })
         }
         else if (method == "interaction/requestUserInput") {
@@ -2133,126 +2135,6 @@ class ZCodeProtocolClient private constructor(
         }
     }
 
-    /**
-     * v4 行流翻页定位（editUserQueryViaV4 同款游标翻页，行序=新→旧，首页即最新段）。
-     * predicate 命中即返回该行；翻满 50 页未命中返回 null（调用方决定降级或报错）。
-     */
-    private fun v4FindRow(sessionId: String, timeoutMs: Long, predicate: (JsonObject) -> Boolean): JsonObject? {
-        var beforeRowId: Long? = null
-        var hasMore = true
-        var pages = 0
-        while (hasMore && pages < 50) {
-            val rowsParams = buildJsonObject {
-                put("sessionId", sessionId)
-                put("topic", "conversation/$sessionId")
-                put("limit", 200)
-                beforeRowId?.let { put("beforeRowId", it) }
-            }
-            val rowsResp = request("v4/conversation/rowsRange", rowsParams, timeoutMs)
-            requireOk(rowsResp)
-            val result = rowsResp["result"]?.jsonObject
-                ?: throw ZCodeProtocolException("rowsRange 应答缺 result")
-            val rows = result["rows"]?.jsonArray ?: JsonArray(emptyList())
-            if (rows.isEmpty()) return null
-            for (element in rows) {
-                val o = element.jsonObject
-                if (predicate(o)) return o
-            }
-            hasMore = result["hasMore"]?.jsonPrimitive?.booleanOrNull == true
-            beforeRowId = rows.firstOrNull()?.jsonObject?.get("rowId")?.jsonPrimitive?.longOrNull
-            pages += 1
-        }
-        return null
-    }
-
-    /**
-     * v4 CAS 命令两段式信封（editUserQuery/fork 同款 fork12 模式）：首发 baseRevision=0
-     * 必 stale，取 revisionAtDecision 重试一次；accepted/duplicate/noop 均视为成功
-     * （noop=同值命令服务端幂等折叠）。拒绝时抛带 reasonCode 原文案的协议异常。
-     */
-    private fun v4CasCommand(
-        sessionId: String,
-        type: String,
-        payload: JsonObject,
-        logEpoch: String,
-        timeoutMs: Long,
-    ): JsonObject {
-        var baseRevision = 0
-        var res: JsonObject = JsonObject(emptyMap())
-        for (attempt in 0 until 2) {
-            val params = buildJsonObject {
-                put("commandId", "$type-${java.util.UUID.randomUUID()}")
-                put("clientId", "zcode-idea-plugin")
-                put("sessionId", sessionId)
-                put("type", type)
-                put("payload", payload)
-                put("issuedAt", System.currentTimeMillis())
-                put("baseRevision", baseRevision)
-                put("baseLogEpoch", logEpoch)
-            }
-            val r = request("v4/command", params, timeoutMs)
-            requireOk(r)
-            res = r["result"]?.jsonObject ?: JsonObject(emptyMap())
-            val status = res["status"]?.jsonPrimitive?.content
-            if (status == "accepted" || status == "duplicate" || status == "noop") return res
-            if (status == "stale" && attempt == 0) {
-                baseRevision = res["revisionAtDecision"]?.jsonPrimitive?.intOrNull ?: break
-            } else {
-                break
-            }
-        }
-        val reason = res["reasonCode"]?.jsonPrimitive?.content ?: ""
-        val detail = res["message"]?.jsonPrimitive?.content ?: ""
-        throw ZCodeProtocolException(
-            "命令被拒绝: ${res["status"]?.jsonPrimitive?.content ?: "unknown"} $reason $detail".trim(),
-            reason = "commandFailed",
-        )
-    }
-
-    /**
-     * v4/command retryTurn — 重跑最后一轮（官方桌面客户端同款通道）。服务端语义 =
-     * rewind 截断到最后 user prompt + 原文重发（fork-edit-retry.ts retryTurn）。
-     * 前置校验 actions.canRetry（resolver 同款判据，product-projection.ts：只挂全
-     * 投影唯一「最新 assistantText」行，且要求该行 complete + turnHeader 非 running +
-     * 同 turn 有 realUser userInput——steer 注入/定时消息/后台通知合成的轮次与被
-     * 停止的回合都不可重跑，直接发会被 guard.actionUnavailable 拒）。回合进行中
-     * 发送由服务端 preempt 抢占，与 editUserQuery 同语义。
-     */
-    fun retryTurnViaV4(sessionId: String, timeoutMs: Long = 20000): JsonObject {
-        val wasSubscribed = sessionId in v4SubscribedSessions
-        val logEpoch = tempV4Subscribe(sessionId, timeoutMs)
-        try {
-            val row = v4FindRow(sessionId, timeoutMs) {
-                it["kind"]?.jsonPrimitive?.contentOrNull == "assistantText"
-            } ?: throw ZCodeProtocolException("行流中找不到 assistant 回复行", reason = "commandFailed")
-            // canRetry 只可能挂在这唯一一行上（latestRetryableRowId），更旧行必无——
-            // 命中即查，false 短路报错，不翻页白找（editUserQuery 的 targetSeen 短路同款）
-            val canRetry = (row["actions"] as? JsonObject)?.get("canRetry")
-                ?.jsonPrimitive?.booleanOrNull == true
-            if (!canRetry) {
-                throw ZCodeProtocolException(
-                    "最后一轮不支持重跑：须是正常发送并完整结束的回复（引导注入/定时消息/后台任务/被停止的回合不可重跑）",
-                    reason = "notRetryable",
-                )
-            }
-            val rowId = row["rowId"]?.jsonPrimitive?.intOrNull
-                ?: throw ZCodeProtocolException("rowsRange 行缺 rowId")
-            val entityId = row["entityId"]?.jsonPrimitive?.contentOrNull
-                ?: throw ZCodeProtocolException("rowsRange 行缺 entityId")
-            val payload = buildJsonObject {
-                put("target", buildJsonObject {
-                    put("rowId", rowId)
-                    put("entityId", entityId)
-                })
-            }
-            return v4CasCommand(sessionId, "retryTurn", payload, logEpoch, timeoutMs)
-        } finally {
-            if (!wasSubscribed) {
-                unsubscribeConversationV4(sessionId, timeoutMs)
-            }
-        }
-    }
-
     /** session/resume — 续会话（命门） */
     fun resume(sessionId: String, workspace: Workspace, timeoutMs: Long = 15000): JsonObject {
         // 归一原生分隔符（同 createSession：防 0.16.5 原样落库造成同项目双形态行）
@@ -2897,6 +2779,7 @@ class ZCodeProtocolClient private constructor(
         browserListHandler = null
         browserExecuteHandler = null
         backendErrorHandler = null
+        rawBackendErrorHandler = null
         // 唤醒所有等待的 future
         pendingResponses.values.forEach { it.completeExceptionally(IOException("client closed")) }
         destroyProcessTree()

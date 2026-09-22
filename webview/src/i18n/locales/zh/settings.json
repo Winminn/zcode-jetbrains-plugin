@@ -196,11 +196,6 @@
       "hint": "默认一直等待（提问弹窗不显示倒计时、不会自动关闭）；计划审批等确认仍保留 5 分钟超时。仅插件本地生效，与 ZCode 客户端的同名设置相互独立",
       "onHint": "点击关闭提问自动继续",
       "offHint": "点击开启提问自动继续"
-    },
-    "shellTitle": "终端 Shell",
-    "shellAuto": "自动检测（默认）",
-    "shellGitBash": "Git Bash",
-    "shellCmd": "命令提示符（CMD）",
-    "shellHint": "AI 执行终端命令使用的 shell。自动检测=CLI 自行探测 Git Bash；改动对新会话的下一回合起生效。协议无 PowerShell 档位"
+    }
   }
 }

@@ -62,14 +62,15 @@ function renderUser(msg: ZCodeMessage, editable: boolean) {
 }
 
 describe('用户消息操作区', () => {
-  it('所有 user 消息有复制按钮，编辑按钮仅 editable 消息有，无分叉按钮', () => {
+  it('所有 user 消息有复制按钮，编辑/重发按钮仅 editable 消息有，无分叉按钮', () => {
     const r1 = renderUser(u1, false)
     expect(r1.container.querySelectorAll('.msg__action-btn').length).toBe(1) // 仅复制
     expect(r1.container.querySelector('.codicon-git-branch')).toBeNull() // 分叉入口在 assistant 回复 footer
     cleanup()
     const r2 = renderUser(u2, true)
-    expect(r2.container.querySelectorAll('.msg__action-btn').length).toBe(2) // 复制 + 编辑
+    expect(r2.container.querySelectorAll('.msg__action-btn').length).toBe(3) // 复制 + 编辑 + 重发
     expect(r2.container.querySelector('.codicon-edit')).not.toBeNull()
+    expect(r2.container.querySelector('.codicon-debug-restart')).not.toBeNull() // 重发
   })
 
   it('点编辑 → 行内编辑器（预填原文），Esc 取消还原', () => {

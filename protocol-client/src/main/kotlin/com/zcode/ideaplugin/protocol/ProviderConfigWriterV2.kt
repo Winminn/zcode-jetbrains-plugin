@@ -184,52 +184,6 @@ object ProviderConfigWriterV2 {
             }
         }
 
-    /**
-     * 写全局默认模型（config.defaultModelSelection，官方 login/TUI 同款语义——
-     * provider_config.json 顶层字段即"全局默认"，裸 spawn 的 app-server 无会话级
-     * setModel 前的初始选型）。selection 为 null = 清除该字段。
-     * 形状 = modelSelectionSchema：{providerId, modelId, options?{reasoningLevel?}}
-     * （provider-config-file-codec.ts L26 引 shared model-selection）。
-     */
-    fun setDefaultModelSelection(
-        path: Path,
-        providerId: String?,
-        modelId: String?,
-        reasoningLevel: String? = null,
-    ): String? =
-        synchronized(WRITE_LOCK) {
-            updateLocked(path) { root ->
-                val cfg = root["config"]?.jsonObject ?: throw IllegalStateException("缺少 config 节")
-                val newSelection: JsonObject? = if (providerId == null || modelId == null) {
-                    null
-                } else {
-                    buildJsonObject {
-                        put("providerId", providerId)
-                        put("modelId", modelId)
-                        if (!reasoningLevel.isNullOrBlank()) {
-                            put("options", buildJsonObject { put("reasoningLevel", reasoningLevel) })
-                        }
-                    }
-                }
-                buildJsonObject {
-                    root.forEach { (k, v) -> if (k != "config") put(k, v) }
-                    put("config", buildJsonObject {
-                        cfg.forEach { (k, v) -> if (k != "defaultModelSelection") put(k, v) }
-                        newSelection?.let { put("defaultModelSelection", it) }
-                    })
-                }
-            }
-        }
-
-    /** 读当前全局默认模型（{providerId, modelId, options?} 原样返回；未设置返回 null） */
-    fun readDefaultModelSelection(path: Path): JsonObject? =
-        try {
-            val cfg = Json.parseToJsonElement(path.toFile().readText(Charsets.UTF_8)).jsonObject["config"]?.jsonObject
-            cfg?.get("defaultModelSelection") as? JsonObject
-        } catch (_: Exception) {
-            null
-        }
-
     // ============ 节点构造 ============
 
     /** 添加用的完整 config 节（access + api + personalModelIds + modelOrder）。

@@ -52,25 +52,29 @@ type PendingAction =
 /** 自定义 key 输入值（PendingAction.kind=key 期间的受控状态；空=清除） */
 type KeyDraft = { value: string; configured: boolean }
 
-/** 单个模型行：名称 + ID + 上下文/输出徽章 + 删除（onDelete 缺省不渲染——内置渠道只读）*/
+/** 单个模型行：名称 + ID + 上下文/输出徽章 + 连通性测试 + 删除（onDelete 缺省不渲染——内置渠道只读）
+ *  测试按模型粒度：hover 出现插头按钮（真发一次最小请求），结果徽章挂本行（失败可点开详情）*/
 function ModelRow({
   model,
   onDelete,
   deleteBlockedTitle,
-  onSetDefault,
-  isDefault = false,
-  defaultToggling = false,
+  onTestConnectivity,
+  testing = false,
+  connResult,
+  onShowConnError,
 }: {
   model: ModelManageModel
   onDelete?: () => void
   /** 非空 = 渠道最后一个模型：按钮可点但点击转弹窗提醒（deleteBlockedTitle 作按钮 title）*/
   deleteBlockedTitle?: string
-  /** 设为全局默认（newCli 体系才有；缺省不渲染星钮）。已是默认时点击=清除 */
-  onSetDefault?: () => void
-  /** 该模型是当前全局默认：星钮实心高亮 + 「默认」徽章 */
-  isDefault?: boolean
-  /** 默认写回中（防连点）*/
-  defaultToggling?: boolean
+  /** 连通性测试入口（缺省不渲染——newCli 未接线时整列隐藏）*/
+  onTestConnectivity?: () => void
+  /** 该模型测试进行中（按钮 loading 常驻）*/
+  testing?: boolean
+  /** 最近一次本模型测试结果（行尾徽章；失败可点开错误详情弹窗）*/
+  connResult?: { ok: boolean; error?: string }
+  /** 失败徽章点击回调（打开错误详情弹窗）；缺省不可点 */
+  onShowConnError?: () => void
 }) {
   const { t } = useTranslation()
   return (
@@ -82,14 +86,6 @@ function ModelRow({
       <span className="model-list-view__model-id" title={model.modelId}>
         {model.modelId}
       </span>
-      {isDefault && (
-        <span
-          className="model-list-view__model-badge model-list-view__model-badge--default"
-          title={t('models.defaultBadgeHint')}
-        >
-          {t('models.defaultBadge')}
-        </span>
-      )}
       {model.supportsImages && (
         <span className="model-list-view__model-badge model-list-view__model-badge--vision" title={t('models.vision')}>
           {t('models.vision')}
@@ -105,14 +101,31 @@ function ModelRow({
           {t('models.outputBadge', { size: formatTokens(model.maxOutput) })}
         </span>
       )}
-      {onSetDefault && (
-        <button
-          className={`model-list-view__model-default${isDefault ? ' is-default' : ''}`}
-          onClick={onSetDefault}
-          disabled={defaultToggling}
-          title={isDefault ? t('models.clearDefaultTitle') : t('models.setDefaultTitle')}
+      {connResult && !testing && (
+        <span
+          className={cx(
+            'model-list-view__model-badge',
+            connResult.ok
+              ? 'model-list-view__model-badge--vision'
+              : 'model-list-view__model-badge--conn-fail',
+          )}
+          title={connResult.ok
+            ? t('models.testOkHint')
+            : t('models.testFailDetailHint')}
+          onClick={connResult.ok || !onShowConnError ? undefined : onShowConnError}
         >
-          <span className={`codicon ${isDefault ? 'codicon-star-full' : 'codicon-star-empty'}`} />
+          <span className={cx('codicon', connResult.ok ? 'codicon-check' : 'codicon-close')} />
+          {connResult.ok ? t('models.testOk') : t('models.testFail')}
+        </span>
+      )}
+      {onTestConnectivity && (
+        <button
+          className={cx('model-list-view__model-test', testing && 'is-testing')}
+          onClick={onTestConnectivity}
+          disabled={testing}
+          title={t('models.testTitle')}
+        >
+          <span className={cx('codicon', testing ? 'codicon-loading spin' : 'codicon-plug')} />
         </button>
       )}
       {onDelete && (
@@ -146,11 +159,10 @@ function ProviderCard({
   moveDisabled = false,
   isFirst = false,
   isLast = false,
-  onSetDefault,
-  defaultToggling = false,
-  onTestConnectivity,
-  connectivityTesting = false,
-  connectivityResult,
+  onTestModel,
+  testingKey,
+  connResults,
+  onShowConnError,
 }: {
   provider: ModelManageProvider
   builtin?: boolean
@@ -167,16 +179,14 @@ function ProviderCard({
   moveDisabled?: boolean
   isFirst?: boolean
   isLast?: boolean
-  /** 设为全局默认（newCli 体系；缺省不渲染星钮）*/
-  onSetDefault?: (provider: ModelManageProvider, model: ModelManageModel) => void
-  /** 默认写回中（星钮防连点）*/
-  defaultToggling?: boolean
-  /** 连通性测试（渠道级：测其当前默认模型或首个模型）；缺省不渲染按钮 */
-  onTestConnectivity?: (provider: ModelManageProvider, model: ModelManageModel) => void
-  /** 测试进行中（该渠道按钮 loading，其余渠道按钮禁用防并发）*/
-  connectivityTesting?: boolean
-  /** 最近一次测试结果（头部徽章展示）*/
-  connectivityResult?: { ok: boolean; error?: string; modelId: string }
+  /** 模型级连通性测试入口（缺省不渲染各模型行测试按钮）；真发一次该模型的最小请求 */
+  onTestModel?: (provider: ModelManageProvider, model: ModelManageModel) => void
+  /** 测试进行中的「providerId|modelId」组合键（匹配行 loading，全局防并发）*/
+  testingKey?: string | null
+  /** 最近一次各模型测试结果（组合键 → 结果；重测覆盖）*/
+  connResults?: Record<string, { ok: boolean; error?: string }>
+  /** 失败徽章点击回调（打开错误详情弹窗）；缺省不可点 */
+  onShowConnError?: (providerName: string, error: string) => void
 }) {
   const { t } = useTranslation()
   const modelTogglingId = useStore((s) => s.modelTogglingId)
@@ -184,14 +194,6 @@ function ProviderCard({
   const toggling = modelTogglingId === provider.providerId
   // 激活 key 眼睛切换（常态脱敏，点开看全）
   const [keyVisible, setKeyVisible] = useState(false)
-  // 测试目标：当前全局默认模型若属于此渠道则测它，否则首个模型（渠道可用性等价）
-  const defaultModelSelection = useStore((s) => s.defaultModelSelection)
-  const isDefaultModel = (pid: string, mid: string) =>
-    defaultModelSelection?.providerId === pid && defaultModelSelection?.modelId === mid
-  const testTarget =
-    defaultModelSelection && defaultModelSelection.providerId === provider.providerId
-      ? provider.models.find((m) => m.modelId === defaultModelSelection.modelId) ?? provider.models[0]
-      : provider.models[0]
 
   const handleToggle = () => {
     if (!toggling) toggleModelProvider(provider.providerId, !provider.enabled)
@@ -268,35 +270,6 @@ function ProviderCard({
           <span className="model-list-view__provider-count">
             {t('models.modelsCount', { count: provider.models.length })}
           </span>
-          {/* 连通性测试（渠道级：provider/testModelConnectivity 真发一次最小模型请求，
-              服务端先强制刷 Registry）。测目标=当前全局默认模型若属于此渠道，否则首个模型；
-              结果徽章常驻头部（重测覆盖），error 悬浮看全文 */}
-          {onTestConnectivity && provider.enabled && provider.models.length > 0 && (
-            <button
-              className="model-list-view__provider-action model-list-view__provider-test"
-              onClick={() => onTestConnectivity(provider, testTarget)}
-              disabled={connectivityTesting}
-              title={t('models.testTitle')}
-            >
-              <span className={cx('codicon', connectivityTesting ? 'codicon-loading spin' : 'codicon-plug')} />
-            </button>
-          )}
-          {connectivityResult && !connectivityTesting && (
-            <span
-              className={cx(
-                'model-list-view__model-badge',
-                connectivityResult.ok
-                  ? 'model-list-view__model-badge--vision'
-                  : 'model-list-view__conn-badge--fail',
-              )}
-              title={connectivityResult.ok
-                ? t('models.testOkHint', { model: connectivityResult.modelId })
-                : `${t('models.testFailHint', { model: connectivityResult.modelId })} ${connectivityResult.error ?? ''}`}
-            >
-              <span className={cx('codicon', connectivityResult.ok ? 'codicon-check' : 'codicon-error')} />
-              {connectivityResult.ok ? t('models.testOk') : t('models.testFail')}
-            </span>
-          )}
           {!builtin && (
             <span className="model-list-view__provider-actions">
               {onMove && !isFirst && (
@@ -410,9 +383,14 @@ function ProviderCard({
               deleteBlockedTitle={
                 onDeleteModel && provider.models.length <= 1 ? t('models.lastModelTitle') : undefined
               }
-              onSetDefault={onSetDefault ? () => onSetDefault(provider, m) : undefined}
-              isDefault={isDefaultModel(provider.providerId, m.modelId)}
-              defaultToggling={defaultToggling}
+              onTestConnectivity={
+                onTestModel && provider.enabled ? () => onTestModel(provider, m) : undefined
+              }
+              testing={testingKey === `${provider.providerId}|${m.modelId}`}
+              connResult={connResults?.[`${provider.providerId}|${m.modelId}`]}
+              onShowConnError={
+                onShowConnError ? () => onShowConnError(provider.providerName, connResults?.[`${provider.providerId}|${m.modelId}`]?.error ?? '') : undefined
+              }
             />
           ))}
         </div>
@@ -470,22 +448,16 @@ export function ModelListView() {
   const modelRemigrateResult = useStore((s) => s.modelRemigrateResult)
   const remigrateBuiltins = useStore((s) => s.remigrateBuiltins)
   const dismissRemigrateResult = useStore((s) => s.dismissRemigrateResult)
-  // 全局默认模型 + 连通性测试（newCli 体系专属：op 有代际守卫，OLD 代不渲染入口）
-  const setDefaultModel = useStore((s) => s.setDefaultModel)
+  // 连通性测试（newCli 体系专属：op 有代际守卫，OLD 代不渲染入口）
   const testConnectivity = useStore((s) => s.testConnectivity)
   const connectivityTestingId = useStore((s) => s.connectivityTestingId)
   const connectivityResults = useStore((s) => s.connectivityResults)
-  const defaultModelSelection = useStore((s) => s.defaultModelSelection)
-  const newCliDefaultWired = newCli && !!setDefaultModel
-  // 星钮点击：已是默认 → 清除（modelId null）；否则设为默认
-  const handleSetDefault = (p: ModelManageProvider, m: ModelManageModel) => {
-    const isCur =
-      defaultModelSelection?.providerId === p.providerId && defaultModelSelection?.modelId === m.modelId
-    setDefaultModel(p.providerId, isCur ? null : m.modelId)
-  }
+  const newCliTestWired = newCli && !!testConnectivity
 
   const [query, setQuery] = useState('')
   const [pendingAction, setPendingAction] = useState<PendingAction | null>(null)
+  /** 连通性失败详情弹窗（null=关闭；失败徽章点击打开，看服务端完整报错）*/
+  const [connErrorDetail, setConnErrorDetail] = useState<{ providerName: string; error: string } | null>(null)
   /** 重迁确认弹窗（null=关闭） */
   const [remigrateConfirm, setRemigrateConfirm] = useState(false)
   /** 编辑弹窗目标：'add'=新增、provider=编辑、null=关闭 */
@@ -737,11 +709,10 @@ export function ModelListView() {
                 provider={p}
                 builtin
                 onEditKey={openKeyEditor}
-                onSetDefault={newCliDefaultWired ? handleSetDefault : undefined}
-                defaultToggling={false}
-                onTestConnectivity={newCliDefaultWired ? (p, m) => testConnectivity(p.providerId, m.modelId) : undefined}
-                connectivityTesting={connectivityTestingId === p.providerId}
-                connectivityResult={connectivityResults[p.providerId]}
+                onTestModel={newCliTestWired ? (p, m) => testConnectivity(p.providerId, m.modelId) : undefined}
+                testingKey={connectivityTestingId}
+                connResults={connectivityResults}
+                onShowConnError={newCliTestWired ? (name, err) => setConnErrorDetail({ providerName: name, error: err }) : undefined}
               />
             ))}
 
@@ -769,10 +740,10 @@ export function ModelListView() {
                 moveDisabled={modelProvidersReordering}
                 isFirst={idx === 0}
                 isLast={idx === arr.length - 1}
-                onSetDefault={newCliDefaultWired ? handleSetDefault : undefined}
-                onTestConnectivity={newCliDefaultWired ? (p, m) => testConnectivity(p.providerId, m.modelId) : undefined}
-                connectivityTesting={connectivityTestingId === p.providerId}
-                connectivityResult={connectivityResults[p.providerId]}
+                onTestModel={newCliTestWired ? (p, m) => testConnectivity(p.providerId, m.modelId) : undefined}
+                testingKey={connectivityTestingId}
+                connResults={connectivityResults}
+                onShowConnError={newCliTestWired ? (name, err) => setConnErrorDetail({ providerName: name, error: err }) : undefined}
               />
             ))}
         </div>
@@ -888,6 +859,22 @@ export function ModelListView() {
             remigrateBuiltins()
           }}
           onCancel={() => setRemigrateConfirm(false)}
+        />
+      )}
+
+      {/* 连通性失败详情（失败徽章点击打开：服务端完整报错，word-break 保长 URL/堆栈可读）*/}
+      {connErrorDetail && (
+        <ConfirmDialog
+          title={t('models.testFailDetailTitle', { provider: connErrorDetail.providerName })}
+          message={
+            <div className="model-list-view__dialog-body">
+              <p className="model-list-view__conn-error-text">{connErrorDetail.error}</p>
+            </div>
+          }
+          confirmText={t('models.dialog.dismiss')}
+          cancelable
+          onConfirm={() => setConnErrorDetail(null)}
+          onCancel={() => setConnErrorDetail(null)}
         />
       )}
 

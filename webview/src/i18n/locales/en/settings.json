@@ -196,11 +196,6 @@
       "hint": "Waits indefinitely by default (no countdown, never auto-closes); plan approvals keep the 5-minute timeout. Plugin-local only, independent of the ZCode client setting",
       "onHint": "Click to disable auto-continue",
       "offHint": "Click to enable auto-continue"
-    },
-    "shellTitle": "Terminal Shell",
-    "shellAuto": "Auto-detect (default)",
-    "shellGitBash": "Git Bash",
-    "shellCmd": "Command Prompt (CMD)",
-    "shellHint": "Shell used by the AI when running terminal commands. Auto-detect lets the CLI probe for Git Bash; applies from the next turn of new sessions. PowerShell is not available in the protocol"
+    }
   }
 }

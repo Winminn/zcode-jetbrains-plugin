@@ -715,7 +715,7 @@
       background: var(--bg-hover);
 
       .model-list-view__model-delete,
-      .model-list-view__model-default {
+      .model-list-view__model-test {
         opacity: 1;
       }
     }
@@ -752,6 +752,9 @@
 
   &__model-badge {
     flex-shrink: 0;
+    display: inline-flex;
+    align-items: center;
+    gap: 3px;
     font-size: var(--fs-hint);
     line-height: 16px;
     padding: 0 7px;
@@ -761,22 +764,27 @@
     font-variant-numeric: tabular-nums;
     white-space: nowrap;
 
+    .codicon {
+      font-size: 11px;
+    }
+
     /* 视觉能力徽章变体：绿色与窗口徽章区分（同 VisionBadge 配色）*/
     &--vision {
       background: rgba(76, 175, 80, 0.14);
       color: var(--status-success, #4caf50);
     }
 
-    /* 「默认」徽章变体：橙色（与视觉绿/上下文蓝区分）*/
-    &--default {
-      background: rgba(255, 152, 0, 0.16);
-      color: #f57c00;
-      font-weight: 600;
+    /* 连通性测试失败徽章：红色可点击（打开错误详情弹窗；成功复用 --vision 绿）*/
+    &--conn-fail {
+      background: rgba(244, 67, 54, 0.12);
+      color: var(--status-error, #f44336);
+      cursor: pointer;
     }
+
   }
 
-  /* 设为全局默认的星钮：hover 行内出现；已是默认时常显实心高亮 */
-  &__model-default {
+  /* 模型行连通性测试按钮：hover 才出现（同 delete 弱化语义），测试中 loading 常驻 */
+  &__model-test {
     flex-shrink: 0;
     background: transparent;
     border: none;
@@ -785,15 +793,20 @@
     display: inline-flex;
     padding: 2px;
     opacity: 0;
-    transition: opacity 0.15s, color 0.15s;
+    transition: opacity 0.15s;
 
-    &:hover {
-      color: #f57c00;
+    .codicon {
+      font-size: 12px;
     }
-
-    &.is-default {
+    &:hover {
+      color: var(--text-primary);
+    }
+    &:disabled {
+      cursor: default;
+      opacity: 0.7;
+    }
+    &.is-testing {
       opacity: 1;
-      color: #f57c00;
     }
   }
 
@@ -878,49 +891,16 @@
     }
   }
 
-  /* 连通性测试按钮（渠道卡头部）：复用 provider-action 尺寸语义 */
-  &__provider-test {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    width: 20px;
-    height: 20px;
-    border: none;
-    border-radius: 5px;
-    background: transparent;
-    color: var(--text-tertiary);
-    cursor: pointer;
-    transition: color 0.15s, background 0.15s;
-    flex-shrink: 0;
-
-    .codicon {
-      font-size: 12px;
-    }
-    &:hover {
-      color: var(--text-primary);
-      background: var(--bg-hover);
-    }
-    &:disabled {
-      cursor: default;
-      opacity: 0.7;
-    }
-  }
-
-  /* 连通性失败徽章：红色（成功复用 model-badge--vision 绿）*/
-  &__conn-badge--fail {
-    flex-shrink: 0;
-    font-size: var(--fs-hint);
-    line-height: 16px;
-    padding: 0 7px;
-    border-radius: 8px;
-    background: rgba(244, 67, 54, 0.12);
-    color: var(--status-error, #f44336);
-    white-space: nowrap;
-
-    .codicon {
-      font-size: 11px;
-      vertical-align: -1px;
-    }
+  &__conn-error-text {
+    margin: 0;
+    font-size: var(--fs-hint, 11px);
+    line-height: 1.7;
+    color: var(--text-secondary);
+    word-break: break-all;
+    white-space: pre-wrap;
+    max-height: 320px;
+    overflow-y: auto;
+    font-family: var(--font-mono, Consolas, monospace);
   }
 }
 

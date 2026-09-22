@@ -50,9 +50,9 @@
     "editCancel": "취소",
     "editRegenerate": "다시 생성",
     "fork": "이 답변에서 분기",
-    "retryTitle": "재실행 (이 답변을 잘라내고 다시 생성)",
     "showRaw": "원본 보기",
-    "showRefs": "참조 칩 표시"
+    "showRefs": "참조 칩 표시",
+    "resend": "재전송"
   },
   "edit": {
     "replaying": "편집된 메시지로 다시 생성하는 중…",
@@ -176,8 +176,9 @@
     "confirmMessage": "기록은 이 답변까지 유지되며 원본 세션은 영향을 받지 않습니다.",
     "confirmOk": "분기"
   },
-  "retry": {
-    "notRetryable": "마지막 턴은 재실행할 수 없습니다: 정상적으로 전송되고 완료된 답변만 가능합니다 (스티어 주입, 예약 메시지, 백그라운드 작업, 중단된 턴 제외)",
-    "failed": "재실행 실패"
+  "resend": {
+    "confirmTitle": "이 메시지를 다시 보내시겠습니까?",
+    "confirmMessage": "원문 그대로 다시 보내어 답변을 재생성합니다. 현재 답변은 삭제됩니다.",
+    "confirmOk": "재전송"
   }
 }

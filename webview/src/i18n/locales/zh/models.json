@@ -46,15 +46,10 @@
   "disableHint": "禁用该供应商（写回 config.json，聊天模型下拉立即同步）",
   "enableHint": "启用该供应商（写回 config.json，聊天模型下拉立即同步）",
   "deleteTitle": "删除模型",
-  "defaultBadge": "默认",
-  "defaultBadgeHint": "全局默认模型（新会话的初始模型）",
-  "setDefaultTitle": "设为全局默认",
-  "clearDefaultTitle": "清除全局默认",
-  "testTitle": "测试连通性（真发一次最小模型请求）",
+  "testTitle": "测试该模型连通性（真发一次最小请求）",
   "testOk": "可用",
   "testFail": "不可用",
-  "testOkHint": "连接成功（{{model}}）",
-  "testFailHint": "连接失败（{{model}}）",
+  "testOkHint": "连接成功",
   "dialog": {
     "deleteTitle": "删除模型",
     "deleteModelBody": "确定从「{{provider}}」删除模型「{{name}}」？删除后立即生效。",
@@ -132,5 +127,7 @@
   "remigrateDoneBody": "已迁入渠道：{{names}}",
   "remigrateNoneBody": "旧版配置中没有可迁移的渠道（需要渠道带明文 API Key）",
   "remigrateFailedTitle": "迁移失败",
-  "remigrateErrorBody": "迁移失败：{{error}}"
+  "remigrateErrorBody": "迁移失败：{{error}}",
+  "testFailDetailHint": "点击查看失败原因",
+  "testFailDetailTitle": "连通性测试失败：{{provider}}"
 }

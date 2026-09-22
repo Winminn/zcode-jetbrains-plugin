@@ -28,6 +28,11 @@ class BackendErrorDetector(
     private var lastSignature: String? = null
     private var lastReportAt = 0L
 
+    /** 不去重的原始上报（每条命中都回调，主回调有 60s 同签名去重窗）。
+     *  依赖方：连通性测试的真因缓存（ZCodeToolWindowPanel.lastBackendApiError）——
+     *  连点重测时同签名被去重，若只走主回调缓存会静默断供，弹窗回退笼统归类文案 */
+    var onRawApiError: ((BackendApiError) -> Unit)? = null
+
     /** 解析结果（statusCode/code 可缺，message 必有）*/
     data class BackendApiError(
         val statusCode: Int?,
@@ -53,12 +58,14 @@ class BackendErrorDetector(
         if (statusCode == null && code == null && message.isNullOrBlank()) return null
 
         val signature = "$statusCode|$code"
+        val parsed = BackendApiError(statusCode = statusCode, code = code, message = message ?: line.take(200))
+        onRawApiError?.invoke(parsed)
         val t = now()
         if (signature == lastSignature && t - lastReportAt < dedupeWindowMs) return null
         lastSignature = signature
         lastReportAt = t
 
-        return BackendApiError(statusCode = statusCode, code = code, message = message ?: line.take(200))
+        return parsed
     }
 
     // ===== 崩溃级进程异常（官方机器可读契约，2026-09-21 开源源码 process-diagnostic.ts）=====
