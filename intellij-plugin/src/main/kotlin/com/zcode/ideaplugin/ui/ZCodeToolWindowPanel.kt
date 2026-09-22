@@ -3306,14 +3306,22 @@ if (!window.__ZCODE_LOG_HOOK__) {
      */
     /**
      * v2 额度凭证（provider_config.json 换轨，NEW 代优先走此链，失败回退 config.json 链）：
-     * 选型按渠道优先级——bigmodel 系 coding-plan 渠道（access.type 含 zhipu-coding-plan
-     * 或 templateId=bigmodel-api，key = coding plan 计费 key，monitor 端点同源）；其余
-     * 渠道的 key 不是 GLM plan 凭证不适用。baseUrl：rule.api 缺失时按 templateId 查内置
-     * 模板表（bigmodel-api → https://open.bigmodel.cn/api/anthropic）。
+     * ① OAuth 账号渠道最高优先——setting.json 选中账号渠道的计费 key（AccountProviderBridge
+     *    解密 credentials.json，与 requestProviderRuntimeHeaders 供给同源；账号渠道计费态
+     *    不在 provider_config.json，此前只扫明文渠道致纯账号用户额度页无数据）；
+     * ② bigmodel 系 coding-plan 渠道（access.type 含 zhipu-coding-plan 或
+     *    templateId=bigmodel-api，key = coding plan 计费 key，monitor 端点同源）；其余
+     *    渠道的 key 不是 GLM plan 凭证不适用。baseUrl：rule.api 缺失时按 templateId 查内置
+     *    模板表（bigmodel-api → https://open.bigmodel.cn/api/anthropic）。
      * @return null = 本链无凭证（调用方回退 v1 链）
      */
     private fun loadQuotaCredentialsV2(): Pair<QuotaCredentials?, String>? {
         val zcodePath = com.zcode.ideaplugin.env.ZCodeEnvChecker.resolveCliPathForOps()
+        com.zcode.ideaplugin.protocol.AccountProviderBridge.selectedAccountCredential(zcodePath)?.let { c ->
+            log.info("quota credentials: provider=${c.providerId} (${c.providerName}, account-channel) keyLen=${c.apiKey.length}")
+            return quotaCredentialsOf(c.baseUrl, c.apiKey, c.providerId, c.providerName)?.let { it to "" }
+                ?: (null to "baseURL 格式非法: ${c.baseUrl}")
+        }
         for (rule in readNewCliProviderRules()) {
             val cfg = rule["config"]?.jsonObject ?: continue
             val access = cfg["access"]?.jsonObject ?: continue

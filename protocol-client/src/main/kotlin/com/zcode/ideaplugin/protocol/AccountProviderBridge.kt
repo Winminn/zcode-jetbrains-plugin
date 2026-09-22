@@ -3,6 +3,7 @@ package com.zcode.ideaplugin.protocol
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
@@ -123,6 +124,56 @@ object AccountProviderBridge {
     /** individual 套餐凭证 key（官方 accountProviderCredentialKey.ts L20-36；identity 走 JS encodeURIComponent 同款转义） */
     fun individualPlanKey(providerId: String, identity: String): String =
         "account-provider:coding-plan:$providerId:account:${jsEncodeURIComponent(identity)}:api-key"
+
+    // ============ 额度凭证：setting.json 选中账号渠道 ============
+
+    /** 账号渠道 kind 全集（FAMILY_BY_PROVIDER 条目 `account:<family>-<kind>` 后缀同源） */
+    private val ACCOUNT_KINDS = setOf("individual-coding-plan", "team-coding-plan", "start-plan")
+
+    /** 选中账号渠道的额度凭证候选（baseDomain 推导交调用方 quotaCredentialsOf） */
+    class SelectedAccountCredential(
+        val providerId: String,
+        val providerName: String,
+        val baseUrl: String,
+        val apiKey: String,
+    )
+
+    /**
+     * setting.json 选中账号渠道的额度凭证（2026-09-22 v2 额度链补口）：
+     * `providerFamilyConnectionSelections[providerFamilyDomain].kind` 指向账号渠道时，
+     * 取该渠道目录条目的 baseUrl + [requestAuthApiKey] 解密 key（与
+     * requestProviderRuntimeHeaders 供给同源——账号渠道计费态不在 provider_config.json，
+     * 明文链扫不到）。team（无材料）/ captcha 网关（start-plan）/ 选择非账号渠道 /
+     * 任一材料缺失 → null，调用方落回 provider_config.json 明文链。
+     */
+    fun selectedAccountCredential(
+        zcodePath: Path?,
+        home: String = System.getProperty("user.home") ?: ".",
+        entries: Map<String, String> = readCredentialEntries(),
+    ): SelectedAccountCredential? {
+        val setting = Path.of(home, ".zcode", "v2", "setting.json")
+        val (providerId, mode) = try {
+            if (!setting.isRegularFile()) return null
+            val root = json.parseToJsonElement(setting.readText()).jsonObject
+            val selections = root["providerFamilyConnectionSelections"]?.jsonObject ?: return null
+            val domain = root["providerFamilyDomain"]?.jsonPrimitive?.contentOrNull
+                ?: selections.keys.firstOrNull()
+                ?: return null
+            val kind = selections[domain]?.jsonObject?.get("kind")?.jsonPrimitive?.content
+                ?.takeIf { it in ACCOUNT_KINDS }
+                ?: return null
+            val pid = "account:$domain-$kind"
+            // FAMILY_BY_PROVIDER 复核：kind 形状漂移时不误挂未知渠道
+            if (pid in FAMILY_BY_PROVIDER) pid to kind else return null
+        } catch (_: Exception) {
+            return null
+        }
+        val entry = BuiltinModelCatalog.accountProviderEntries(zcodePath, home)
+            .find { it.providerId == providerId } ?: return null
+        if (RuntimeModels.isCaptchaGatedBaseUrl(entry.baseUrl)) return null
+        val key = requestAuthApiKey(providerId, mode, entries) ?: return null
+        return SelectedAccountCredential(providerId, entry.providerName, entry.baseUrl, key)
+    }
 
     /** JS encodeURIComponent 语义（Java URLEncoder 的空格→+ 与 !'()* 差异在此对齐） */
     private fun jsEncodeURIComponent(s: String): String = buildString {

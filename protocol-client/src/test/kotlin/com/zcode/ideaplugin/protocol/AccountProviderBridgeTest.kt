@@ -178,4 +178,94 @@ class AccountProviderBridgeTest {
             AccountProviderBridge.individualPlanKey("account:zai-individual-coding-plan", "u id/1"),
         )
     }
+
+    // ===== selectedAccountCredential（额度凭证：setting.json 选中账号渠道）=====
+
+    /** 临时 home：setting.json 写激活态，zcode-builtin.json 落 runtime/provider（目录候选①） */
+    private fun homeWithSetting(settingJson: String): String {
+        val home = Files.createTempDirectory("acct-home")
+        val v2 = Files.createDirectories(home.resolve(".zcode/v2"))
+        Files.writeString(v2.resolve("setting.json"), settingJson)
+        val runtime = Files.createDirectories(v2.resolve("runtime/provider"))
+        Files.copy(builtinFile(), runtime.resolve("zcode-builtin.json"),
+            java.nio.file.StandardCopyOption.REPLACE_EXISTING)
+        return home.toString()
+    }
+
+    @Test
+    fun `选中 individual 账号渠道返回解密 key 凭证`() {
+        val home = homeWithSetting(
+            """{"providerFamilyConnectionSelections":{"bigmodel":{"kind":"individual-coding-plan"}},
+               "providerFamilyDomain":"bigmodel"}""",
+        )
+        val c = AccountProviderBridge.selectedAccountCredential(null, home.toString(), fullEntries())!!
+        assertEquals("account:bigmodel-individual-coding-plan", c.providerId)
+        assertEquals("account:bigmodel-individual-coding-plan-name", c.providerName)
+        assertEquals("https://open.bigmodel.cn/api/anthropic", c.baseUrl)
+        assertEquals("bigmodel-plan-key", c.apiKey)
+    }
+
+    @Test
+    fun `providerFamilyDomain 缺省取首个 selection 键`() {
+        val home = homeWithSetting(
+            """{"providerFamilyConnectionSelections":{"zai":{"kind":"individual-coding-plan"}}}""",
+        )
+        assertEquals(
+            "zai-plan-key",
+            AccountProviderBridge.selectedAccountCredential(null, home.toString(), fullEntries())!!.apiKey,
+        )
+    }
+
+    @Test
+    fun `选择非账号渠道或 kind 漂移返回 null`() {
+        // 客户端选中自定义供应商（kind 非账号三档）
+        assertNull(
+            AccountProviderBridge.selectedAccountCredential(
+                null,
+                homeWithSetting("""{"providerFamilyConnectionSelections":{"bigmodel":{"kind":"api-key"}},"providerFamilyDomain":"bigmodel"}"""),
+                fullEntries(),
+            ),
+        )
+        // 未知 kind（形状漂移）
+        assertNull(
+            AccountProviderBridge.selectedAccountCredential(
+                null,
+                homeWithSetting("""{"providerFamilyConnectionSelections":{"bigmodel":{"kind":"future-mode"}},"providerFamilyDomain":"bigmodel"}"""),
+                fullEntries(),
+            ),
+        )
+    }
+
+    @Test
+    fun `team 无材料与 start-plan 网关门控返回 null`() {
+        assertNull(
+            AccountProviderBridge.selectedAccountCredential(
+                null,
+                homeWithSetting("""{"providerFamilyConnectionSelections":{"bigmodel":{"kind":"team-coding-plan"}},"providerFamilyDomain":"bigmodel"}"""),
+                fullEntries(),
+            ),
+        )
+        assertNull(
+            AccountProviderBridge.selectedAccountCredential(
+                null,
+                homeWithSetting("""{"providerFamilyConnectionSelections":{"zai":{"kind":"start-plan"}},"providerFamilyDomain":"zai"}"""),
+                fullEntries(),
+            ),
+        )
+    }
+
+    @Test
+    fun `setting 缺失或凭证材料缺失返回 null`() {
+        // 无 setting.json
+        val emptyHome = Files.createTempDirectory("acct-empty")
+        assertNull(AccountProviderBridge.selectedAccountCredential(null, emptyHome.toString(), fullEntries()))
+        // setting 在但 credentials 无 individual 材料
+        assertNull(
+            AccountProviderBridge.selectedAccountCredential(
+                null,
+                homeWithSetting("""{"providerFamilyConnectionSelections":{"bigmodel":{"kind":"individual-coding-plan"}},"providerFamilyDomain":"bigmodel"}"""),
+                emptyMap(),
+            ),
+        )
+    }
 }
