@@ -88,6 +88,23 @@
     transition: opacity 0.15s;
   }
 
+  /* 待交互红点角标（审批/提问挂起计数）：error 红底白字胶囊，超 9 显示 9+ */
+  &__pending-badge {
+    flex-shrink: 0;
+    margin-left: 4px;
+    min-width: 16px;
+    height: 16px;
+    padding: 0 4px;
+    border-radius: 8px;
+    background: var(--status-error, #f44336);
+    color: #fff;
+    font-size: 10px;
+    line-height: 16px;
+    font-weight: 600;
+    text-align: center;
+    cursor: default;
+  }
+
   &:hover &__fork-badge {
     opacity: 1;
   }

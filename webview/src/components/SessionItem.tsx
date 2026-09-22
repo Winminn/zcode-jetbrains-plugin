@@ -21,6 +21,7 @@ import { memo, useEffect, useRef, useState, Fragment, type ReactNode } from 'rea
 import { useTranslation } from 'react-i18next'
 import type { SessionInfo } from '@/types/messages'
 import { relativeTime, formatFileSize } from '@/utils/time'
+import { useStore } from '@/store/useStore'
 import '../styles/session-item.less'
 
 interface Props {
@@ -51,6 +52,9 @@ function SessionItemInner({
   const { t } = useTranslation()
   const [confirming, setConfirming] = useState(false)
   const confirmTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  // 待交互数（审批/提问挂起）：红点角标。本地方案数据源（协议客户端反向请求计数，
+  // pendingInteractions 推送）；0/无键不渲染
+  const pendingCount = useStore((s) => s.pendingInteractionCounts[session.sessionId]) ?? 0
 
   // 卸载时清理确认定时器
   useEffect(() => () => {
@@ -127,6 +131,11 @@ function SessionItemInner({
               style={{ fontSize: '12px' }}
               title={t('history.goalSession')}
             />
+          )}
+          {pendingCount > 0 && (
+            <span className="session-item__pending-badge" title={t('history.pendingBadge', { count: pendingCount })}>
+              {pendingCount > 9 ? '9+' : pendingCount}
+            </span>
           )}
         </div>
         <span className="session-item__time">

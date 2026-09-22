@@ -208,6 +208,36 @@ class ZCodeProtocolClient private constructor(
     @Volatile
     var processExceptionHandler: ((BackendErrorDetector.ProcessException) -> Unit)? = null
 
+    /**
+     * 会话级「待用户交互」计数（requestPermission / requestUserInput 到来 +1、应答 -1），
+     * 变更即回调快照（sessionId → pending 数）。会话列表红点的数据源——这是本地方案：
+     * 官方 pendingInteractionSummary 只在 v4 sessions-index topic 订阅里（要常驻占
+     * v4 订阅槽），而反向请求本来就路经本客户端，零协议成本；app-server 重启后挂起
+     * 交互会重发反向请求，计数自愈。reader/worker 双线程触达，全部并发容器。
+     */
+    private val pendingInteractions = java.util.concurrent.ConcurrentHashMap<String, MutableSet<String>>()
+
+    @Volatile
+    var onPendingInteractionsChanged: ((Map<String, Int>) -> Unit)? = null
+
+    private fun addPendingInteraction(sessionId: String, requestId: String) {
+        pendingInteractions.getOrPut(sessionId) { java.util.concurrent.ConcurrentHashMap.newKeySet() }.add(requestId)
+        notifyPendingInteractions()
+    }
+
+    private fun removePendingInteraction(requestId: String) {
+        var changed = false
+        for (set in pendingInteractions.values) {
+            changed = set.remove(requestId) || changed
+        }
+        if (changed) notifyPendingInteractions()
+    }
+
+    private fun notifyPendingInteractions() {
+        val snapshot = pendingInteractions.mapValues { it.value.size }.filterValues { it > 0 }
+        onPendingInteractionsChanged?.invoke(snapshot)
+    }
+
     // 进程是否还活着
     @Volatile
     private var closed = false
@@ -489,6 +519,16 @@ class ZCodeProtocolClient private constructor(
                 put("nativeSearchEnhancementsEnabled", prefs.nativeSearchEnhancementsEnabled)
                 put("memoryEnabled", prefs.memoryEnabled)
                 put("askUserQuestionAutoResolutionEnabled", prefs.askUserQuestionAutoResolutionEnabled)
+                // 终端 shell 偏好（可选字段）：null=缺省走 CLI auto 探测（官方同款语义）
+                prefs.integratedTerminalShell?.let { s ->
+                    put("integratedTerminalShell", buildJsonObject {
+                        put("mode", "shell")
+                        put("dialect", s.dialect)
+                        put("id", s.id)
+                        put("label", s.label)
+                        put("path", s.path)
+                    })
+                }
             })
         }
         else if (method == "interaction/requestUserInput") {
@@ -497,6 +537,7 @@ class ZCodeProtocolClient private constructor(
             println("[ZCodeProtocolClient] interaction/requestUserInput received, dispatching to async handler")
             val handler = userInputRequestHandler
             if (handler != null) {
+                addPendingInteraction(params["sessionId"]?.jsonPrimitive?.jsonStringOrNull ?: "", id)
                 reverseRequestExecutor.execute {
                     try {
                         respondInteractiveAnswer(id, handler(id, params))
@@ -507,6 +548,8 @@ class ZCodeProtocolClient private constructor(
                         // 走到这里的是真正的意外错误）
                         println("[ZCodeProtocolClient] interaction/requestUserInput handler error (${e.javaClass.simpleName}): ${e.message}")
                         respondToServer(id, buildJsonObject { put("action", "decline") })
+                    } finally {
+                        removePendingInteraction(id)
                     }
                 }
             } else {
@@ -521,6 +564,7 @@ class ZCodeProtocolClient private constructor(
         else if (method == "interaction/requestPermission") {
             val handler = permissionRequestHandler
             if (handler != null) {
+                addPendingInteraction(params["sessionId"]?.jsonPrimitive?.jsonStringOrNull ?: "", id)
                 reverseRequestExecutor.execute {
                     try {
                         respondInteractiveAnswer(id, handler(id, params))
@@ -530,6 +574,8 @@ class ZCodeProtocolClient private constructor(
                             put("decision", "deny")
                             put("reason", "Handler error: ${e.message ?: e.javaClass.simpleName}")
                         })
+                    } finally {
+                        removePendingInteraction(id)
                     }
                 }
             } else {
@@ -2080,6 +2126,126 @@ class ZCodeProtocolClient private constructor(
                 )
             }
             return res
+        } finally {
+            if (!wasSubscribed) {
+                unsubscribeConversationV4(sessionId, timeoutMs)
+            }
+        }
+    }
+
+    /**
+     * v4 行流翻页定位（editUserQueryViaV4 同款游标翻页，行序=新→旧，首页即最新段）。
+     * predicate 命中即返回该行；翻满 50 页未命中返回 null（调用方决定降级或报错）。
+     */
+    private fun v4FindRow(sessionId: String, timeoutMs: Long, predicate: (JsonObject) -> Boolean): JsonObject? {
+        var beforeRowId: Long? = null
+        var hasMore = true
+        var pages = 0
+        while (hasMore && pages < 50) {
+            val rowsParams = buildJsonObject {
+                put("sessionId", sessionId)
+                put("topic", "conversation/$sessionId")
+                put("limit", 200)
+                beforeRowId?.let { put("beforeRowId", it) }
+            }
+            val rowsResp = request("v4/conversation/rowsRange", rowsParams, timeoutMs)
+            requireOk(rowsResp)
+            val result = rowsResp["result"]?.jsonObject
+                ?: throw ZCodeProtocolException("rowsRange 应答缺 result")
+            val rows = result["rows"]?.jsonArray ?: JsonArray(emptyList())
+            if (rows.isEmpty()) return null
+            for (element in rows) {
+                val o = element.jsonObject
+                if (predicate(o)) return o
+            }
+            hasMore = result["hasMore"]?.jsonPrimitive?.booleanOrNull == true
+            beforeRowId = rows.firstOrNull()?.jsonObject?.get("rowId")?.jsonPrimitive?.longOrNull
+            pages += 1
+        }
+        return null
+    }
+
+    /**
+     * v4 CAS 命令两段式信封（editUserQuery/fork 同款 fork12 模式）：首发 baseRevision=0
+     * 必 stale，取 revisionAtDecision 重试一次；accepted/duplicate/noop 均视为成功
+     * （noop=同值命令服务端幂等折叠）。拒绝时抛带 reasonCode 原文案的协议异常。
+     */
+    private fun v4CasCommand(
+        sessionId: String,
+        type: String,
+        payload: JsonObject,
+        logEpoch: String,
+        timeoutMs: Long,
+    ): JsonObject {
+        var baseRevision = 0
+        var res: JsonObject = JsonObject(emptyMap())
+        for (attempt in 0 until 2) {
+            val params = buildJsonObject {
+                put("commandId", "$type-${java.util.UUID.randomUUID()}")
+                put("clientId", "zcode-idea-plugin")
+                put("sessionId", sessionId)
+                put("type", type)
+                put("payload", payload)
+                put("issuedAt", System.currentTimeMillis())
+                put("baseRevision", baseRevision)
+                put("baseLogEpoch", logEpoch)
+            }
+            val r = request("v4/command", params, timeoutMs)
+            requireOk(r)
+            res = r["result"]?.jsonObject ?: JsonObject(emptyMap())
+            val status = res["status"]?.jsonPrimitive?.content
+            if (status == "accepted" || status == "duplicate" || status == "noop") return res
+            if (status == "stale" && attempt == 0) {
+                baseRevision = res["revisionAtDecision"]?.jsonPrimitive?.intOrNull ?: break
+            } else {
+                break
+            }
+        }
+        val reason = res["reasonCode"]?.jsonPrimitive?.content ?: ""
+        val detail = res["message"]?.jsonPrimitive?.content ?: ""
+        throw ZCodeProtocolException(
+            "命令被拒绝: ${res["status"]?.jsonPrimitive?.content ?: "unknown"} $reason $detail".trim(),
+            reason = "commandFailed",
+        )
+    }
+
+    /**
+     * v4/command retryTurn — 重跑最后一轮（官方桌面客户端同款通道）。服务端语义 =
+     * rewind 截断到最后 user prompt + 原文重发（fork-edit-retry.ts retryTurn）。
+     * 前置校验 actions.canRetry（resolver 同款判据，product-projection.ts：只挂全
+     * 投影唯一「最新 assistantText」行，且要求该行 complete + turnHeader 非 running +
+     * 同 turn 有 realUser userInput——steer 注入/定时消息/后台通知合成的轮次与被
+     * 停止的回合都不可重跑，直接发会被 guard.actionUnavailable 拒）。回合进行中
+     * 发送由服务端 preempt 抢占，与 editUserQuery 同语义。
+     */
+    fun retryTurnViaV4(sessionId: String, timeoutMs: Long = 20000): JsonObject {
+        val wasSubscribed = sessionId in v4SubscribedSessions
+        val logEpoch = tempV4Subscribe(sessionId, timeoutMs)
+        try {
+            val row = v4FindRow(sessionId, timeoutMs) {
+                it["kind"]?.jsonPrimitive?.contentOrNull == "assistantText"
+            } ?: throw ZCodeProtocolException("行流中找不到 assistant 回复行", reason = "commandFailed")
+            // canRetry 只可能挂在这唯一一行上（latestRetryableRowId），更旧行必无——
+            // 命中即查，false 短路报错，不翻页白找（editUserQuery 的 targetSeen 短路同款）
+            val canRetry = (row["actions"] as? JsonObject)?.get("canRetry")
+                ?.jsonPrimitive?.booleanOrNull == true
+            if (!canRetry) {
+                throw ZCodeProtocolException(
+                    "最后一轮不支持重跑：须是正常发送并完整结束的回复（引导注入/定时消息/后台任务/被停止的回合不可重跑）",
+                    reason = "notRetryable",
+                )
+            }
+            val rowId = row["rowId"]?.jsonPrimitive?.intOrNull
+                ?: throw ZCodeProtocolException("rowsRange 行缺 rowId")
+            val entityId = row["entityId"]?.jsonPrimitive?.contentOrNull
+                ?: throw ZCodeProtocolException("rowsRange 行缺 entityId")
+            val payload = buildJsonObject {
+                put("target", buildJsonObject {
+                    put("rowId", rowId)
+                    put("entityId", entityId)
+                })
+            }
+            return v4CasCommand(sessionId, "retryTurn", payload, logEpoch, timeoutMs)
         } finally {
             if (!wasSubscribed) {
                 unsubscribeConversationV4(sessionId, timeoutMs)

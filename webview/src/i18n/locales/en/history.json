@@ -64,5 +64,6 @@
   "messageCount": "{{count}} messages",
   "running": "Running",
   "forkedSession": "Forked session",
-  "goalSession": "Goal session"
+  "goalSession": "Goal session",
+  "pendingBadge": "{{count}} pending"
 }

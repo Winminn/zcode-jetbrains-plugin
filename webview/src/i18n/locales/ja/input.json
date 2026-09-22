@@ -57,7 +57,9 @@
     "steerNowShort": "割り込み",
     "steerDisabled": "既に割り込み中のメッセージがあります。落ち着くまでお待ちください",
     "imageOnly": "（画像）",
-    "imageBadge": "画像 {{count}} 枚"
+    "imageBadge": "画像 {{count}} 枚",
+    "moveUp": "上へ（先に送信）",
+    "moveDown": "下へ"
   },
   "pasted": {
     "clickToPreview": "クリックで全文をプレビュー",

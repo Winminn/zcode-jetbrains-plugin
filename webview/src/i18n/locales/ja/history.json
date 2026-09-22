@@ -23,5 +23,6 @@
   "messageCount": "{{count}} 件のメッセージ",
   "running": "実行中",
   "forkedSession": "フォークされたセッション",
-  "goalSession": "ゴールセッション"
+  "goalSession": "ゴールセッション",
+  "pendingBadge": "保留中 {{count}} 件"
 }

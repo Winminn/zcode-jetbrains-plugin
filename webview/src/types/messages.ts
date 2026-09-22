@@ -393,6 +393,12 @@ export type JavaRequest =  | { op: 'askUserPendingState' }
   | { op: 'listModels' }
   /** 设置页「模型管理」清单（apiKey 缺失的无效 provider 已过滤，带 configPath）*/
   | { op: 'modelManageList' }
+  /** 设为/清除全局默认模型（provider_config.json config.defaultModelSelection；modelId 缺省=清除）*/
+  | { op: 'modelSetDefaultSelection'; providerId: string; modelId?: string }
+  /** 渠道连通性测试（provider/testModelConnectivity，服务端真发一次最小模型请求）*/
+  | { op: 'modelTestConnectivity'; providerId: string; modelId: string }
+  /** 重跑最后一轮（v4/command retryTurn，服务端 rewind+重发原文）*/
+  | { op: 'retryLastTurn'; sessionId: string }
   /** 切换 provider 启用/禁用（Kotlin 备份+原子写回 config.json 的 enabled 字段）*/
   | { op: 'modelToggleProvider'; providerId: string; enabled: boolean }
   /** 设置/清除内置渠道自定义 apiKey 覆盖（apiKey 空串=清除），写 ~/.zcgui/config.json 并触发注册表推送 */
@@ -947,6 +953,15 @@ export type JavaResponse =
    *  reason=机器可读错误码（missingParams/attachmentResolveFailed/notLatestUserMessage/
    *  commandFailed/internalError）→ 前端映射 i18n 五语言文案；message 原文仅回退兜底 */
   | { op: 'editRejected'; message?: string; reason?: string }
+  /** 重跑最后一轮回包（v4/command retryTurn）：受理后前端就地截断最后一轮（乐观，
+   *  v2 rewind 事件不进 legacy 流），新回合流式自然渲染；rejected=未执行 */
+  | { op: 'retryAccepted'; sessionId: string }
+  | { op: 'retryUnsupported' }
+  | { op: 'retryRejected'; message?: string; reason?: string }
+  /** 会话待交互计数推送（审批/提问挂起数；协议客户端反向请求计数，全量快照）。
+   *  会话列表红点角标数据源——本地方案（官方 pendingInteractionSummary 在 v4
+   *  sessions-index topic 订阅里，需常驻占 v4 订阅槽） */
+  | { op: 'pendingInteractions'; counts: Record<string, number> }
   /** steerMessage 应答：accepted=true 时 UI 由 turn.steerQueued/steerDrained 事件驱动；error=受理失败（清 chip + 横幅）。queueItemId=queue_<commandId>（前端已预置，ack 仅核对）*/
   | { op: 'steerMessage'; sessionId: string; accepted?: boolean; delivery?: string; queueItemId?: string; error?: string }
   /** cancelSteer 应答：removed=true 已撤销（清 chip + 队列条目回插）；false=已注入落位（queue.itemMissing），提示不可撤 */
@@ -1045,7 +1060,12 @@ export type JavaResponse =
     }
   | { op: 'modelManage'; configPath?: string; providers: ModelManageProvider[]; error?: string; newCli?: boolean
       /** 可显示「重新执行内置渠道迁移」入口（v1 config.json 有渠道 + 当前无映射表内置渠道）*/
-      remigrate?: boolean }
+      remigrate?: boolean
+      /** 全局默认模型（provider_config.json config.defaultModelSelection）；未设置缺省 */
+      defaultModelSelection?: { providerId: string; modelId: string; reasoningLevel?: string } }
+  | { op: 'modelDefaultSelectionSet'; ok: boolean; error?: string }
+  /** 连通性测试回包（provider/testModelConnectivity）：ok=false 时 error=服务端原始报错 */
+  | { op: 'modelConnectivityResult'; ok: boolean; providerId: string; modelId: string; error?: string }
   /** 切换回包：changes 含全部实际变更（启用内置套餐时其余内置套餐联动禁用，互斥）*/
   | { op: 'modelToggled'; changes: { providerId: string; enabled: boolean }[] }
   | { op: 'modelSetProviderKey'; ok: boolean; providerId: string; cleared: boolean }

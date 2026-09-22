@@ -278,7 +278,23 @@ class ZCodeServiceImpl(private val project: Project) : ZCodeService, com.intelli
                     memoryEnabled = p.memoryEnabled,
                     askUserQuestionAutoResolutionEnabled =
                         com.zcode.ideaplugin.ui.ZCodeAskUserConfig.readConfig().autoContinueEnabled,
+                    // 终端 shell 偏好（行为设置页下拉）：auto=null 走 CLI 自动探测，
+                    // git-bash/cmd 显式指定（path 探测不到真实文件时也回 null 走探测链）
+                    integratedTerminalShell =
+                        com.zcode.ideaplugin.ui.ZCodeTerminalShellConfig.resolveSelection()?.let {
+                            com.zcode.ideaplugin.protocol.model.IntegratedTerminalShell(
+                                dialect = it.dialect, id = it.id, label = it.label, path = it.path,
+                            )
+                        },
                 )
+            }
+            // 待交互计数（审批/提问挂起数）→ 所有已开标签红点（SessionItem badge）。
+            // 回调在 reader/worker 线程触发，广播函数内部自切 EDT
+            newClient.onPendingInteractionsChanged = { counts ->
+                val countsJson = buildJsonObject {
+                    counts.forEach { (sid, n) -> put(sid, n) }
+                }
+                com.zcode.ideaplugin.ui.ZCodeToolWindowPanel.broadcastPendingInteractions(countsJson)
             }
             client = newClient
             // 新 app-server 进程的驻留集合从零开始：账本与提醒状态一并重置

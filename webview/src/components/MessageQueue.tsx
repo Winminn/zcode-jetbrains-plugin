@@ -31,6 +31,7 @@ export function MessageQueue({ onEdit }: Props) {
   const sendQueuedNow = useStore((s) => s.sendQueuedNow)
   const sendQueuedAsSteer = useStore((s) => s.sendQueuedAsSteer)
   const steerPending = useStore((s) => s.steerPending)
+  const moveQueuedMessage = useStore((s) => s.moveQueuedMessage)
 
   if (queued.length === 0) return null
 
@@ -65,6 +66,29 @@ export function MessageQueue({ onEdit }: Props) {
               </span>
             )}
             <span className="message-queue__actions">
+              {/* 上移/下移（队列条目 ≥2 时渲染）：自研本地队列纯前端重排——发送顺序
+                  =数组顺序，1 号位下一条发出。拖拽方案废弃（缺陷BX 同因：draggable
+                  与条目内按钮点击冲突），用箭头按钮 */}
+              {queued.length > 1 && (
+                <span className="message-queue__reorder">
+                  <button
+                    className="message-queue__btn message-queue__btn--move"
+                    onClick={() => moveQueuedMessage(m.id, -1)}
+                    disabled={i === 0}
+                    title={t('input.queue.moveUp')}
+                  >
+                    <span className="codicon codicon-arrow-up" />
+                  </button>
+                  <button
+                    className="message-queue__btn message-queue__btn--move"
+                    onClick={() => moveQueuedMessage(m.id, 1)}
+                    disabled={i === queued.length - 1}
+                    title={t('input.queue.moveDown')}
+                  >
+                    <span className="codicon codicon-arrow-down" />
+                  </button>
+                </span>
+              )}
               <button
                 className="message-queue__btn message-queue__btn--send"
                 onClick={() => sendQueuedNow(m.id)}

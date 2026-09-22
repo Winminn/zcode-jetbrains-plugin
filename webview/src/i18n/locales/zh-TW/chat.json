@@ -50,6 +50,7 @@
     "editCancel": "取消",
     "editRegenerate": "重新生成",
     "fork": "從此回覆分叉",
+    "retryTitle": "重跑（截斷本回覆後重新生成）",
     "showRaw": "顯示原文",
     "showRefs": "還原引用顯示"
   },
@@ -174,5 +175,9 @@
     "confirmTitle": "從此回覆分叉新會話？",
     "confirmMessage": "歷史保留到這條回覆（含），原會話不受影響。",
     "confirmOk": "分叉"
+  },
+  "retry": {
+    "notRetryable": "最後一輪不支援重跑：須是正常發送並完整結束的回覆（引導注入/定時訊息/背景任務/被停止的回合不可重跑）",
+    "failed": "重跑失敗"
   }
 }

@@ -26,6 +26,8 @@ import { createPortal } from 'react-dom'
 import { useTranslation } from 'react-i18next'
 import type { ZCodeMessage, MessagePart, TextPart, ImagePart, FilePart } from '@/types/messages'
 import { useStore } from '@/store/useStore'
+
+const cx = (...c: (string | false | null | undefined)[]) => c.filter(Boolean).join(' ')
 import { renderUserRefChips, hasUserRefChips, type CmdRefInfo } from '@/utils/userRefChips'
 import { MarkdownBlock } from './MarkdownBlock'
 import { AgentNotificationCard } from './AgentNotificationCard'
@@ -667,6 +669,24 @@ function AssistantBubble({
     !!info.id &&
     !info.id.startsWith('stream_local_') &&
     !info.id.startsWith('local_')
+
+  // 重跑最后一轮（v4/command retryTurn）：仅最新 assistant 回复显示（服务端守卫
+  // latestAssistantRetryOnly 只放行最后一轮）；流式中/乐观消息不可用
+  const retrying = useStore((s) => s.retrying)
+  const retryUnsupported = useStore((s) => s.retryUnsupported)
+  const lastAssistantId = useStore((s) => {
+    for (let i = s.messages.length - 1; i >= 0; i--) {
+      if (s.messages[i].info.role === 'assistant') return s.messages[i].info.id
+    }
+    return ''
+  })
+  const retryable =
+    !retryUnsupported &&
+    !streaming &&
+    !!info.id &&
+    info.id === lastAssistantId &&
+    !info.id.startsWith('stream_local_') &&
+    !info.id.startsWith('local_')
   const { t } = useTranslation()
 
   // 连续 Bash 命令聚组（cc-gui groupBlocks 规则）：压缩批量命令的消息区长度。
@@ -736,6 +756,7 @@ function AssistantBubble({
         streaming={streaming}
         copy={!streaming ? collectAssistantMarkdown(parts) : undefined}
         fork={forkable ? { busy: forkBusy, onClick: () => setConfirmFork(true) } : undefined}
+        retry={retryable ? { busy: retrying, onClick: () => useStore.getState().retryLastTurn() } : undefined}
       />
       {confirmFork && (
         <ConfirmDialog
@@ -819,6 +840,7 @@ function MessageFooter({
   streaming,
   copy,
   fork,
+  retry,
 }: {
   info: ZCodeMessage['info']
   time: string
@@ -827,6 +849,8 @@ function MessageFooter({
   copy?: string
   /** 分叉按钮（footer 行右侧，hover 显示；undefined=不渲染——流式中/乐观消息）*/
   fork?: { busy: boolean; onClick: () => void }
+  /** 重跑最后一轮按钮（仅最新 assistant 回复渲染）*/
+  retry?: { busy: boolean; onClick: () => void }
 }) {
   const { t } = useTranslation()
   const { state: copyState, showResult: showCopyResult } = useCopyFeedback(1200)
@@ -873,7 +897,7 @@ function MessageFooter({
         </span>
       )}
       {info.cost ? <span className="msg__footer-cost">${info.cost.toFixed(4)}</span> : null}
-      {(copy || fork) && (
+      {(copy || fork || retry) && (
         // 操作按钮组容器：推尾（margin-left:auto）只挂容器一处——挂在两个按钮上会
         // 均分剩余空间，复制/分叉被撑开到中间和最右（窄屏换行后同样松散）
         <span className="msg__footer-actions">
@@ -898,6 +922,18 @@ function MessageFooter({
               aria-label={t('chat.message.fork')}
             >
               <span className="codicon codicon-git-branch" />
+            </button>
+          )}
+          {retry && (
+            <button
+              type="button"
+              className="msg__action-btn msg__footer-retry"
+              onClick={retry.onClick}
+              disabled={retry.busy}
+              title={t('chat.message.retryTitle')}
+              aria-label={t('chat.message.retryTitle')}
+            >
+              <span className={cx('codicon', retry.busy ? 'codicon-loading spin' : 'codicon-debug-restart')} />
             </button>
           )}
         </span>

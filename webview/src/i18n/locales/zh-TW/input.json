@@ -57,7 +57,9 @@
     "steerNowShort": "引導",
     "steerDisabled": "已有訊息在引導中，請等落位後再引導",
     "imageOnly": "（圖片）",
-    "imageBadge": "{{count}} 張圖片"
+    "imageBadge": "{{count}} 張圖片",
+    "moveUp": "上移（提前發送）",
+    "moveDown": "下移"
   },
   "pasted": {
     "clickToPreview": "點選預覽完整內容",

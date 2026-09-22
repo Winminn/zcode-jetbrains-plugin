@@ -482,9 +482,10 @@
   }
 
   &__footer-fork,
-  &__footer-copy {
+  &__footer-copy,
+  &__footer-retry {
     opacity: 0;
-    transition: opacity 0.15s;
+    transition: opacity 0.15s, color 0.15s;
     pointer-events: none; /* 隐藏期间不可点 */
 
     .msg--assistant:hover &,

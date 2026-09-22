@@ -23,5 +23,6 @@
   "messageCount": "메시지 {{count}}건",
   "running": "실행 중",
   "forkedSession": "포크된 세션",
-  "goalSession": "골 세션"
+  "goalSession": "골 세션",
+  "pendingBadge": "응답 대기 {{count}}건"
 }

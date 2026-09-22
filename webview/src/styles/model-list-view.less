@@ -714,7 +714,8 @@
     &:hover {
       background: var(--bg-hover);
 
-      .model-list-view__model-delete {
+      .model-list-view__model-delete,
+      .model-list-view__model-default {
         opacity: 1;
       }
     }
@@ -764,6 +765,35 @@
     &--vision {
       background: rgba(76, 175, 80, 0.14);
       color: var(--status-success, #4caf50);
+    }
+
+    /* 「默认」徽章变体：橙色（与视觉绿/上下文蓝区分）*/
+    &--default {
+      background: rgba(255, 152, 0, 0.16);
+      color: #f57c00;
+      font-weight: 600;
+    }
+  }
+
+  /* 设为全局默认的星钮：hover 行内出现；已是默认时常显实心高亮 */
+  &__model-default {
+    flex-shrink: 0;
+    background: transparent;
+    border: none;
+    color: var(--text-tertiary);
+    cursor: pointer;
+    display: inline-flex;
+    padding: 2px;
+    opacity: 0;
+    transition: opacity 0.15s, color 0.15s;
+
+    &:hover {
+      color: #f57c00;
+    }
+
+    &.is-default {
+      opacity: 1;
+      color: #f57c00;
     }
   }
 
@@ -816,6 +846,7 @@
 .model-list-view {
   /* 卡片头部行内编辑/删除渠道入口（仅自定义渠道渲染）*/
   &__provider-actions {
+
     display: inline-flex;
     align-items: center;
     gap: 4px;
@@ -844,6 +875,51 @@
     }
     &--danger:hover {
       color: var(--status-error, #f48771);
+    }
+  }
+
+  /* 连通性测试按钮（渠道卡头部）：复用 provider-action 尺寸语义 */
+  &__provider-test {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 20px;
+    height: 20px;
+    border: none;
+    border-radius: 5px;
+    background: transparent;
+    color: var(--text-tertiary);
+    cursor: pointer;
+    transition: color 0.15s, background 0.15s;
+    flex-shrink: 0;
+
+    .codicon {
+      font-size: 12px;
+    }
+    &:hover {
+      color: var(--text-primary);
+      background: var(--bg-hover);
+    }
+    &:disabled {
+      cursor: default;
+      opacity: 0.7;
+    }
+  }
+
+  /* 连通性失败徽章：红色（成功复用 model-badge--vision 绿）*/
+  &__conn-badge--fail {
+    flex-shrink: 0;
+    font-size: var(--fs-hint);
+    line-height: 16px;
+    padding: 0 7px;
+    border-radius: 8px;
+    background: rgba(244, 67, 54, 0.12);
+    color: var(--status-error, #f44336);
+    white-space: nowrap;
+
+    .codicon {
+      font-size: 11px;
+      vertical-align: -1px;
     }
   }
 }

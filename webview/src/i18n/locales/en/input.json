@@ -57,7 +57,9 @@
     "steerNowShort": "Steer",
     "steerDisabled": "A message is already steering — wait for it to land",
     "imageOnly": "(image)",
-    "imageBadge": "{{count}} image(s)"
+    "imageBadge": "{{count}} image(s)",
+    "moveUp": "Move up (send earlier)",
+    "moveDown": "Move down"
   },
   "pasted": {
     "clickToPreview": "Click to preview full content",

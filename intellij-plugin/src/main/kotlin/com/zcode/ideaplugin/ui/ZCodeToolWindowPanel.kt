@@ -252,7 +252,7 @@ class ZCodeToolWindowPanel(
     // 重启宽度还原（PropertiesComponent，project 级）：关闭时浏览器展开 → IDE 恢复的
     // TW 总宽含浏览器宽，重启后浏览器收起、聊天独占总宽显得很大——持久化聊天基准宽+展开
     // 状态，恢复会话时一次性还原到基准宽
-    private companion object {
+    internal companion object {
         const val KEY_BROWSER_EXPANDED = "zcode.browser.paneExpanded"
         const val KEY_CHAT_BASE_WIDTH = "zcode.browser.chatBaseWidth"
 
@@ -272,6 +272,26 @@ class ZCodeToolWindowPanel(
          *  间 storage 事件不派发，已开标签收不到其他标签的 localStorage 变更——
          *  cc-gui ThemeConfigService 的 CopyOnWriteArraySet 回调注册同模式）*/
         val activePanels = java.util.concurrent.CopyOnWriteArraySet<ZCodeToolWindowPanel>()
+
+        /**
+         * 待交互计数广播（ZCodeServiceImpl 注册的协议客户端回调 → 所有已开标签，
+         * 会话列表红点数据源）。EDT 上推送（sendToJs 要求），懒加载未激活标签自动跳过。
+         */
+        fun broadcastPendingInteractions(counts: JsonObject) {
+            SwingUtilities.invokeLater {
+                activePanels.forEach { panel ->
+                    try {
+                        panel.pushToWebview(buildJsonObject {
+                            put("op", "pendingInteractions")
+                            put("counts", counts)
+                        })
+                    } catch (_: Exception) {
+                        // 未初始化/销毁中的标签跳过（懒激活后 subscribe 拉不到此状态——
+                        // 红点短暂缺失可接受，下次交互变更即恢复）
+                    }
+                }
+            }
+        }
     }
 
     /** 读取外观配置 JSON（fontScale/themePref/chatBg/chatBar/userMsg），无配置返回 null */
@@ -838,6 +858,7 @@ if (!window.__ZCODE_LOG_HOOK__) {
                         "createSession" -> handleCreateSession(msg)
                         "forkSession" -> handleForkSession(msg)
                         "editUserQuery" -> handleEditUserQuery(msg)
+                        "retryLastTurn" -> handleRetryLastTurn(msg)
                         "subscribe" -> handleSubscribe(msg)
                         "subscribeChild" -> handleSubscribeChild(msg)
                         "unsubscribeChild" -> handleUnsubscribeChild(msg)
@@ -1905,6 +1926,42 @@ if (!window.__ZCODE_LOG_HOOK__) {
      */
     private fun editRejected(message: String, reason: String? = null): JsonObject = buildJsonObject {
         put("op", "editRejected")
+        put("message", message)
+        reason?.let { put("reason", it) }
+    }
+
+    /**
+     * op=retryLastTurn — 重跑最后一轮（v4/command retryTurn，2026-09-21 开源协议面）。
+     * 服务端语义 = rewind 截断到最后 user prompt + 原文重发；应答后前端靠事件流自然
+     * 收敛（新 turn.started + 截断），无独立回放编排。应答用专用 op 不走 errorResponse
+     * （同 editUserQuery 的理由：可能发生在回合进行中，不能误清流式态）。
+     */
+    private fun handleRetryLastTurn(msg: JsonObject): JsonObject {
+        val sessionId = msg["sessionId"]?.jsonPrimitive?.content
+            ?: return retryRejected("缺少 sessionId", "missingParams")
+        return try {
+            project.zCodeService().getClient().retryTurnViaV4(sessionId)
+            log.info("Retry turn accepted: $sessionId")
+            buildJsonObject {
+                put("op", "retryAccepted")
+                put("sessionId", sessionId)
+            }
+        } catch (e: ZCodeProtocolException) {
+            if (e.code == -32601) {
+                log.info("Retry via v4 unavailable (no v4 surface)")
+                buildJsonObject { put("op", "retryUnsupported") }
+            } else {
+                log.warn("Retry turn failed: ${e.message}")
+                retryRejected(e.message ?: "未知错误", e.reason ?: "internalError")
+            }
+        } catch (e: Exception) {
+            log.warn("Retry turn failed: ${e.message}")
+            retryRejected(e.message ?: "未知错误", "internalError")
+        }
+    }
+
+    private fun retryRejected(message: String, reason: String? = null): JsonObject = buildJsonObject {
+        put("op", "retryRejected")
         put("message", message)
         reason?.let { put("reason", it) }
     }

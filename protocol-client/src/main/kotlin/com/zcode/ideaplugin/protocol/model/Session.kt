@@ -54,13 +54,29 @@ data class ProtocolVersion(
 data class RuntimePreferences(
     val nativeSearchEnhancementsEnabled: Boolean = false,
     val memoryEnabled: Boolean = false,
-    val askUserQuestionAutoResolutionEnabled: Boolean = false
+    val askUserQuestionAutoResolutionEnabled: Boolean = false,
+    /**
+     * 终端 shell 选择（integratedTerminalShellSelection，validationAppSettings.ts）：
+     * null=不回字段，CLI 自行探测（win32 自动找 Git Bash→legacy-shell）；显式指定时
+     * CLI accessSync 校验 path，失败自动落回探测链。无 powershell 档位（协议枚举限定）。
+     */
+    val integratedTerminalShell: IntegratedTerminalShell? = null,
 ) {
     companion object {
         /** 安全默认值（全 false） */
         val SAFE_DEFAULT = RuntimePreferences()
     }
 }
+
+/** 终端 shell 显式指定（官方 discriminated union 的 mode:"shell" 分支） */
+@Serializable
+data class IntegratedTerminalShell(
+    /** 协议枚举：cmd | git-bash（effective 层另有 posix/legacy-shell，但选择面只有这两种） */
+    val dialect: String,
+    val id: String,
+    val label: String,
+    val path: String,
+)
 
 /**
  * session/send 的图片附件（ZCode Protocol 通道原生形态，2026-08-26 zcode.cjs 源码确认）：

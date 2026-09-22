@@ -64,5 +64,6 @@
   "messageCount": "{{count}} 条消息",
   "running": "运行中",
   "forkedSession": "分叉会话",
-  "goalSession": "目标模式会话"
+  "goalSession": "目标模式会话",
+  "pendingBadge": "待应答 {{count}} 条"
 }

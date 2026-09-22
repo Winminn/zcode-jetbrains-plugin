@@ -33,7 +33,8 @@ import java.nio.file.StandardCopyOption
  *
  * 写回纪律同 [ProviderConfigWriter]：进程内单锁串行、滚动备份 .bak.1~.bak.5、tmp + 原子
  * 替换、失败回滚；根节点其余键（schemaVersion/providerOrder/manualProviderModelRules…）
- * LinkedHashMap 保序原样保留。与客户端的跨进程并发靠原子替换兜底（watch 热加载天然幂等）。
+ * LinkedHashMap 保序原样保留。跨进程并发（官方 Desktop Host 同文件直写）走 .lock 文件
+ * 独占锁对齐官方 withFileLock 语义（2026-09-21 开源仓库 atomicWritePrivateTextFile 对照）。
  */
 object ProviderConfigWriterV2 {
 
@@ -418,9 +419,22 @@ object ProviderConfigWriterV2 {
         }
     }
 
-    /** 读-改-写（调用方已持锁）：mutator 返回新根；IllegalStateException.message 作错误文案 */
+    /** 读-改-写（调用方已持进程内锁；再叠 .lock 跨进程文件锁对齐官方写入姿势） */
     private fun updateLocked(path: Path, mutator: (JsonObject) -> JsonObject): String? {
         if (!Files.isRegularFile(path)) return "provider_config.json 不存在: $path"
+        // 官方 withFileLock 同款：advisory 独占文件锁串行多进程写方（Desktop Host /
+        // 插件）；OS 级锁进程崩溃自动释放无残留。写入都是毫秒级，阻塞等待即可。
+        java.nio.channels.FileChannel.open(
+            path.resolveSibling(path.fileName.toString() + ".lock"),
+            java.nio.file.StandardOpenOption.CREATE, java.nio.file.StandardOpenOption.WRITE,
+        ).use { ch ->
+            ch.lock()
+            return updateUnderLocks(path, mutator)
+        }
+    }
+
+    /** 进程内锁 + 跨进程锁都已持有的读-改-写本体 */
+    private fun updateUnderLocks(path: Path, mutator: (JsonObject) -> JsonObject): String? {
         val root = try {
             Json.parseToJsonElement(path.toFile().readText(Charsets.UTF_8)).jsonObject
         } catch (e: Exception) {
@@ -438,7 +452,13 @@ object ProviderConfigWriterV2 {
             val tmp = path.resolveSibling(path.fileName.toString() + ".tmp")
             tmp.toFile().writeText(json.encodeToString(JsonObject.serializer(), newRoot), Charsets.UTF_8)
             try {
-                Files.move(tmp, path, StandardCopyOption.REPLACE_EXISTING)
+                // ATOMIC_MOVE：同目录 rename 单步生效，观察方（CLI 1s 轮询 sha256）
+                // 不会读到半截文件；不支持原子替换的文件系统回退普通 move
+                try {
+                    Files.move(tmp, path, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING)
+                } catch (_: java.nio.file.AtomicMoveNotSupportedException) {
+                    Files.move(tmp, path, StandardCopyOption.REPLACE_EXISTING)
+                }
             } catch (e: Exception) {
                 Files.copy(bak1, path, StandardCopyOption.REPLACE_EXISTING)
                 throw e

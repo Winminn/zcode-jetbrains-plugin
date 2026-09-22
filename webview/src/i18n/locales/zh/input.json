@@ -57,7 +57,9 @@
     "steerNowShort": "引导",
     "steerDisabled": "已有消息在引导中，请等落位后再引导",
     "imageOnly": "（图片）",
-    "imageBadge": "{{count}} 张图片"
+    "imageBadge": "{{count}} 张图片",
+    "moveUp": "上移（提前发送）",
+    "moveDown": "下移"
   },
   "pasted": {
     "clickToPreview": "点击预览完整内容",

@@ -57,11 +57,20 @@ function ModelRow({
   model,
   onDelete,
   deleteBlockedTitle,
+  onSetDefault,
+  isDefault = false,
+  defaultToggling = false,
 }: {
   model: ModelManageModel
   onDelete?: () => void
   /** 非空 = 渠道最后一个模型：按钮可点但点击转弹窗提醒（deleteBlockedTitle 作按钮 title）*/
   deleteBlockedTitle?: string
+  /** 设为全局默认（newCli 体系才有；缺省不渲染星钮）。已是默认时点击=清除 */
+  onSetDefault?: () => void
+  /** 该模型是当前全局默认：星钮实心高亮 + 「默认」徽章 */
+  isDefault?: boolean
+  /** 默认写回中（防连点）*/
+  defaultToggling?: boolean
 }) {
   const { t } = useTranslation()
   return (
@@ -73,6 +82,14 @@ function ModelRow({
       <span className="model-list-view__model-id" title={model.modelId}>
         {model.modelId}
       </span>
+      {isDefault && (
+        <span
+          className="model-list-view__model-badge model-list-view__model-badge--default"
+          title={t('models.defaultBadgeHint')}
+        >
+          {t('models.defaultBadge')}
+        </span>
+      )}
       {model.supportsImages && (
         <span className="model-list-view__model-badge model-list-view__model-badge--vision" title={t('models.vision')}>
           {t('models.vision')}
@@ -87,6 +104,16 @@ function ModelRow({
         <span className="model-list-view__model-badge" title={t('models.outputTitle')}>
           {t('models.outputBadge', { size: formatTokens(model.maxOutput) })}
         </span>
+      )}
+      {onSetDefault && (
+        <button
+          className={`model-list-view__model-default${isDefault ? ' is-default' : ''}`}
+          onClick={onSetDefault}
+          disabled={defaultToggling}
+          title={isDefault ? t('models.clearDefaultTitle') : t('models.setDefaultTitle')}
+        >
+          <span className={`codicon ${isDefault ? 'codicon-star-full' : 'codicon-star-empty'}`} />
+        </button>
       )}
       {onDelete && (
         <button
@@ -119,6 +146,11 @@ function ProviderCard({
   moveDisabled = false,
   isFirst = false,
   isLast = false,
+  onSetDefault,
+  defaultToggling = false,
+  onTestConnectivity,
+  connectivityTesting = false,
+  connectivityResult,
 }: {
   provider: ModelManageProvider
   builtin?: boolean
@@ -135,6 +167,16 @@ function ProviderCard({
   moveDisabled?: boolean
   isFirst?: boolean
   isLast?: boolean
+  /** 设为全局默认（newCli 体系；缺省不渲染星钮）*/
+  onSetDefault?: (provider: ModelManageProvider, model: ModelManageModel) => void
+  /** 默认写回中（星钮防连点）*/
+  defaultToggling?: boolean
+  /** 连通性测试（渠道级：测其当前默认模型或首个模型）；缺省不渲染按钮 */
+  onTestConnectivity?: (provider: ModelManageProvider, model: ModelManageModel) => void
+  /** 测试进行中（该渠道按钮 loading，其余渠道按钮禁用防并发）*/
+  connectivityTesting?: boolean
+  /** 最近一次测试结果（头部徽章展示）*/
+  connectivityResult?: { ok: boolean; error?: string; modelId: string }
 }) {
   const { t } = useTranslation()
   const modelTogglingId = useStore((s) => s.modelTogglingId)
@@ -142,6 +184,14 @@ function ProviderCard({
   const toggling = modelTogglingId === provider.providerId
   // 激活 key 眼睛切换（常态脱敏，点开看全）
   const [keyVisible, setKeyVisible] = useState(false)
+  // 测试目标：当前全局默认模型若属于此渠道则测它，否则首个模型（渠道可用性等价）
+  const defaultModelSelection = useStore((s) => s.defaultModelSelection)
+  const isDefaultModel = (pid: string, mid: string) =>
+    defaultModelSelection?.providerId === pid && defaultModelSelection?.modelId === mid
+  const testTarget =
+    defaultModelSelection && defaultModelSelection.providerId === provider.providerId
+      ? provider.models.find((m) => m.modelId === defaultModelSelection.modelId) ?? provider.models[0]
+      : provider.models[0]
 
   const handleToggle = () => {
     if (!toggling) toggleModelProvider(provider.providerId, !provider.enabled)
@@ -218,6 +268,35 @@ function ProviderCard({
           <span className="model-list-view__provider-count">
             {t('models.modelsCount', { count: provider.models.length })}
           </span>
+          {/* 连通性测试（渠道级：provider/testModelConnectivity 真发一次最小模型请求，
+              服务端先强制刷 Registry）。测目标=当前全局默认模型若属于此渠道，否则首个模型；
+              结果徽章常驻头部（重测覆盖），error 悬浮看全文 */}
+          {onTestConnectivity && provider.enabled && provider.models.length > 0 && (
+            <button
+              className="model-list-view__provider-action model-list-view__provider-test"
+              onClick={() => onTestConnectivity(provider, testTarget)}
+              disabled={connectivityTesting}
+              title={t('models.testTitle')}
+            >
+              <span className={cx('codicon', connectivityTesting ? 'codicon-loading spin' : 'codicon-plug')} />
+            </button>
+          )}
+          {connectivityResult && !connectivityTesting && (
+            <span
+              className={cx(
+                'model-list-view__model-badge',
+                connectivityResult.ok
+                  ? 'model-list-view__model-badge--vision'
+                  : 'model-list-view__conn-badge--fail',
+              )}
+              title={connectivityResult.ok
+                ? t('models.testOkHint', { model: connectivityResult.modelId })
+                : `${t('models.testFailHint', { model: connectivityResult.modelId })} ${connectivityResult.error ?? ''}`}
+            >
+              <span className={cx('codicon', connectivityResult.ok ? 'codicon-check' : 'codicon-error')} />
+              {connectivityResult.ok ? t('models.testOk') : t('models.testFail')}
+            </span>
+          )}
           {!builtin && (
             <span className="model-list-view__provider-actions">
               {onMove && !isFirst && (
@@ -331,6 +410,9 @@ function ProviderCard({
               deleteBlockedTitle={
                 onDeleteModel && provider.models.length <= 1 ? t('models.lastModelTitle') : undefined
               }
+              onSetDefault={onSetDefault ? () => onSetDefault(provider, m) : undefined}
+              isDefault={isDefaultModel(provider.providerId, m.modelId)}
+              defaultToggling={defaultToggling}
             />
           ))}
         </div>
@@ -388,6 +470,19 @@ export function ModelListView() {
   const modelRemigrateResult = useStore((s) => s.modelRemigrateResult)
   const remigrateBuiltins = useStore((s) => s.remigrateBuiltins)
   const dismissRemigrateResult = useStore((s) => s.dismissRemigrateResult)
+  // 全局默认模型 + 连通性测试（newCli 体系专属：op 有代际守卫，OLD 代不渲染入口）
+  const setDefaultModel = useStore((s) => s.setDefaultModel)
+  const testConnectivity = useStore((s) => s.testConnectivity)
+  const connectivityTestingId = useStore((s) => s.connectivityTestingId)
+  const connectivityResults = useStore((s) => s.connectivityResults)
+  const defaultModelSelection = useStore((s) => s.defaultModelSelection)
+  const newCliDefaultWired = newCli && !!setDefaultModel
+  // 星钮点击：已是默认 → 清除（modelId null）；否则设为默认
+  const handleSetDefault = (p: ModelManageProvider, m: ModelManageModel) => {
+    const isCur =
+      defaultModelSelection?.providerId === p.providerId && defaultModelSelection?.modelId === m.modelId
+    setDefaultModel(p.providerId, isCur ? null : m.modelId)
+  }
 
   const [query, setQuery] = useState('')
   const [pendingAction, setPendingAction] = useState<PendingAction | null>(null)
@@ -642,6 +737,11 @@ export function ModelListView() {
                 provider={p}
                 builtin
                 onEditKey={openKeyEditor}
+                onSetDefault={newCliDefaultWired ? handleSetDefault : undefined}
+                defaultToggling={false}
+                onTestConnectivity={newCliDefaultWired ? (p, m) => testConnectivity(p.providerId, m.modelId) : undefined}
+                connectivityTesting={connectivityTestingId === p.providerId}
+                connectivityResult={connectivityResults[p.providerId]}
               />
             ))}
 
@@ -669,6 +769,10 @@ export function ModelListView() {
                 moveDisabled={modelProvidersReordering}
                 isFirst={idx === 0}
                 isLast={idx === arr.length - 1}
+                onSetDefault={newCliDefaultWired ? handleSetDefault : undefined}
+                onTestConnectivity={newCliDefaultWired ? (p, m) => testConnectivity(p.providerId, m.modelId) : undefined}
+                connectivityTesting={connectivityTestingId === p.providerId}
+                connectivityResult={connectivityResults[p.providerId]}
               />
             ))}
         </div>

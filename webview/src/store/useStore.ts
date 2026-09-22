@@ -944,6 +944,18 @@ interface StoreState {
   modelProvidersReordering: boolean
   /** 渠道增/改/删失败文案（弹窗内提示；成功时清除）*/
   providerSaveError: string | null
+  /** 全局默认模型（provider_config.json config.defaultModelSelection，官方 login/TUI 同款语义）；null=未设置 */
+  defaultModelSelection: { providerId: string; modelId: string } | null
+  /** 连通性测试进行中的 providerId（按钮 loading + 防重复）*/
+  connectivityTestingId: string | null
+  /** 连通性测试结果（providerId → 结果，卡片头部徽章；重测覆盖，未测渠道无键）*/
+  connectivityResults: Record<string, { ok: boolean; error?: string; modelId: string }>
+  /** 重跑最后一轮执行中（防重复点击；按钮 loading）*/
+  retrying: boolean
+  /** 老 CLI 无 v4 命令面（-32601）：重跑入口隐藏（会话属性级，防每次点击才失败）*/
+  retryUnsupported: boolean
+  /** 会话待交互计数（审批/提问挂起；pendingInteractions 全量快照推送，红点角标）*/
+  pendingInteractionCounts: Record<string, number>
   mcpLogsLoading: boolean
 
   // 用量明细曲线（model-usage / tool-usage）
@@ -1163,6 +1175,14 @@ interface StoreState {
   remigrateBuiltins: () => void
   /** 关闭重迁结果弹窗 */
   dismissRemigrateResult: () => void
+  /** 设为/清除全局默认模型（provider_config.json config.defaultModelSelection；modelId null=清除）*/
+  setDefaultModel: (providerId: string, modelId: string | null) => void
+  /** 渠道连通性测试（provider/testModelConnectivity，服务端真发一次最小模型请求）*/
+  testConnectivity: (providerId: string, modelId: string) => void
+  /** 重跑最后一轮（v4/command retryTurn，服务端 rewind+重发原文）*/
+  retryLastTurn: () => void
+  /** 队列条目上移/下移（自研本地队列纯前端重排，-1=上移 1=下移）*/
+  moveQueuedMessage: (id: string, direction: -1 | 1) => void
   /** 设置用量明细时间范围并重拉 model/tool 曲线 */
   setUsageRange: (range: UsageRange) => void
   /** 设置自定义日期范围并重拉 */
@@ -1442,6 +1462,12 @@ export const useStore = create<StoreState>((set, get) => ({
   modelTogglingId: null,
   providerSaving: false,
   providerSaveError: null,
+  defaultModelSelection: null,
+  connectivityTestingId: null,
+  connectivityResults: {},
+  retrying: false,
+  retryUnsupported: false,
+  pendingInteractionCounts: {},
   modelProvidersReordering: false,
   modelUsage: null,
   toolUsage: null,
@@ -2700,6 +2726,35 @@ export const useStore = create<StoreState>((set, get) => ({
   loadModelManage: () => {
     set({ modelManageLoading: true, modelManageError: null })
     sendToJava({ op: 'modelManageList' })
+  },
+
+  setDefaultModel: (providerId, modelId) => {
+    sendToJava({ op: 'modelSetDefaultSelection', providerId, ...(modelId ? { modelId } : {}) })
+  },
+
+  testConnectivity: (providerId, modelId) => {
+    if (get().connectivityTestingId) return
+    set({ connectivityTestingId: providerId })
+    sendToJava({ op: 'modelTestConnectivity', providerId, modelId })
+  },
+
+  retryLastTurn: () => {
+    const sid = get().currentSessionId
+    if (!sid || get().retrying) return
+    set({ retrying: true })
+    sendToJava({ op: 'retryLastTurn', sessionId: sid })
+  },
+
+  moveQueuedMessage: (id, direction) => {
+    set((s) => {
+      const idx = s.queuedMessages.findIndex((m) => m.id === id)
+      const to = idx + direction
+      if (idx < 0 || to < 0 || to >= s.queuedMessages.length) return s
+      const q = [...s.queuedMessages]
+      const [item] = q.splice(idx, 1)
+      q.splice(to, 0, item)
+      return { queuedMessages: q }
+    })
   },
 
   setProviderKey: (providerId: string, apiKey: string) => {
@@ -4889,10 +4944,64 @@ export function handleResponse(
         modelConfigPath: msg.configPath ?? null,
         modelManageNewCli: msg.newCli === true,
         modelRemigrateAvailable: msg.remigrate === true,
+        defaultModelSelection: msg.defaultModelSelection ?? null,
       })
       // 设置页模型清单到达 → 输入框下拉同步（用户诉求：管理页刷新/切换后下拉跟着变，
       // 不再只在启动时拉一次）。走 listModels 保持口径与 case 'models' 既有逻辑复用
       get().loadModels()
+      break
+
+    case 'modelDefaultSelectionSet':
+      // 设为默认/清除默认写回：失败提示，成功靠 modelManageList 重拉刷徽章
+      if (!msg.ok) set({ lastError: msg.error ?? '设置默认模型失败' })
+      get().loadModelManage()
+      break
+
+    case 'modelConnectivityResult': {
+      // 连通性测试回包：结果按渠道存徽章（重测覆盖；切页不丢，重拉 modelManage 保留）
+      const results = { ...get().connectivityResults }
+      if (get().connectivityTestingId === msg.providerId) {
+        results[msg.providerId] = { ok: msg.ok, error: msg.error, modelId: msg.modelId }
+        set({ connectivityResults: results, connectivityTestingId: null })
+      }
+      break
+    }
+
+    case 'retryAccepted': {
+      // 重跑受理（v4/command retryTurn）：服务端已 rewind 截断到最后 user prompt 并
+      // 重发原文。v2 的 rewind 事件不进 legacy 流（同 editUserQuery 的乐观截断理由），
+      // 就地截断本地最后一轮（最后一条 user 消息起全删，含它自身——服务端重发会产生
+      // 新 user 气泡），新回合流式自然渲染
+      set({ retrying: false })
+      const st = get()
+      const sid = st.currentSessionId
+      if (sid && msg.sessionId === sid && !st.streaming) {
+        const idx = st.messages.map((m) => m.info.role).lastIndexOf('user')
+        if (idx >= 0) set({ messages: st.messages.slice(0, idx) })
+      }
+      break
+    }
+
+    case 'retryUnsupported':
+      // 老 CLI 无 v4 面：隐藏重跑入口（会话属性级记忆，防每次点了才失败）
+      set({ retrying: false, retryUnsupported: true })
+      break
+
+    case 'retryRejected':
+      // reason 码优先（五语言包）：notRetryable=前置校验判定该轮无重跑资格
+      // （steer 注入/定时消息/后台通知合成轮、被停止的回合）；message 中文原文仅回退兜底
+      set({
+        retrying: false,
+        lastError:
+          msg.reason === 'notRetryable'
+            ? i18n.t('chat.retry.notRetryable')
+            : msg.message || i18n.t('chat.retry.failed'),
+      })
+      break
+
+    case 'pendingInteractions':
+      // 待交互计数全量快照（协议客户端反向请求计数，Kotlin 广播）：直接覆盖
+      set({ pendingInteractionCounts: msg.counts ?? {} })
       break
 
     case 'modelRemigrated':
