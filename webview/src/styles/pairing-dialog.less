@@ -1,0 +1,318 @@
+/**
+ * 手机远程配对弹窗——对齐 ZCode 客户端「移动远程控制」布局：
+ * 段落标题 + 状态卡（连接状态独立展示）+ 备用链接卡 + 恒定 QR 区。
+ * 壳对齐 changelog-dialog（overlay / elevated 卡片），主题变量全走 variables.less。
+ */
+
+.pairing-overlay {
+  position: fixed;
+  inset: 0;
+  background: var(--bg-overlay);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+}
+
+.pairing-dialog {
+  display: flex;
+  flex-direction: column;
+  width: 440px;
+  max-width: calc(100vw - 48px);
+  max-height: calc(100vh - 64px);
+  overflow-y: auto;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-primary);
+  border-radius: 10px;
+  box-shadow: var(--shadow-lg, var(--shadow-card));
+}
+
+.pairing-dialog__header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 14px 16px 10px;
+  flex-shrink: 0;
+
+  > .codicon {
+    font-size: 18px;
+    color: var(--text-primary);
+  }
+
+  .pairing-dialog__title {
+    flex: 1;
+    font-size: 14px;
+    font-weight: 600;
+    color: var(--text-primary);
+  }
+
+  .icon-button {
+    border: none;
+    background: transparent;
+    cursor: pointer;
+    color: var(--text-secondary);
+    padding: 4px;
+    border-radius: 4px;
+    display: flex;
+    align-items: center;
+
+    &:hover {
+      background: var(--bg-hover, rgba(128, 128, 128, 0.15));
+      color: var(--text-primary);
+    }
+  }
+}
+
+.pairing-dialog__body {
+  padding: 0 16px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+// ---- 段落标题（手机扫码连接）----
+
+.pairing-dialog__section {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.pairing-dialog__section-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text-primary);
+
+  .codicon { font-size: 15px; color: var(--text-secondary); }
+}
+
+.pairing-dialog__section-desc {
+  font-size: 12px;
+  color: var(--text-secondary);
+  padding-left: 23px;
+}
+
+// ---- 状态卡（连接状态独立展示）----
+
+.pairing-card {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 14px;
+  border: 1px solid var(--border-primary);
+  border-radius: 8px;
+  background: var(--bg-secondary, rgba(128, 128, 128, 0.06));
+}
+
+.pairing-card__main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.pairing-card__title-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.pairing-card__state {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-primary);
+  flex-shrink: 0;
+}
+
+.pairing-card__dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+
+  &--connecting { background: #d7a13b; animation: pairing-pulse 1.2s ease-in-out infinite; }
+  &--waiting { background: #d7a13b; }
+  &--paired { background: #3fb950; }
+  &--error, &--kicked { background: #f85149; }
+  &--off, &--idle { background: var(--text-secondary); }
+}
+
+@keyframes pairing-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.35; }
+}
+
+.pairing-card__device {
+  font-size: 11px;
+  color: var(--text-secondary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pairing-card__desc {
+  font-size: 12px;
+  color: var(--text-secondary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+}
+
+.pairing-card__action {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+  padding: 6px 12px;
+  border-radius: 6px;
+  font-size: 12px;
+  cursor: pointer;
+  border: 1px solid var(--border-primary);
+  background: transparent;
+  color: var(--text-primary);
+
+  .codicon { font-size: 13px; }
+
+  &:hover { background: var(--bg-hover, rgba(128, 128, 128, 0.15)); }
+}
+
+// ---- 备用链接卡（无法扫码？打开链接 / 刷新二维码 / 复制链接）----
+
+.pairing-fallback {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 14px;
+  border: 1px solid var(--border-primary);
+  border-radius: 8px;
+}
+
+.pairing-fallback__title {
+  flex: 1;
+  min-width: 0;
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.pairing-fallback__actions {
+  display: flex;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.pairing-fallback__btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 10px;
+  border-radius: 6px;
+  font-size: 12px;
+  cursor: pointer;
+  border: 1px solid var(--border-primary);
+  background: transparent;
+  color: var(--text-secondary);
+  white-space: nowrap;
+
+  .codicon { font-size: 13px; }
+
+  &:hover:not(:disabled) {
+    background: var(--bg-hover, rgba(128, 128, 128, 0.15));
+    color: var(--text-primary);
+  }
+
+  &:disabled { opacity: 0.45; cursor: default; }
+
+  &--ok { color: #3fb950; border-color: rgba(63, 185, 80, 0.4); }
+  &--fail { color: #f85149; }
+}
+
+// ---- 恒定 QR 区（有码渲染码，无码占位）----
+
+.pairing-qr-panel {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  padding: 20px 16px 14px;
+  border: 1px solid var(--border-primary);
+  border-radius: 8px;
+}
+
+.pairing-qr-panel__code {
+  width: 232px;
+  height: 232px;
+  background: #ffffff; // QR 需要白底保证暗色主题可扫
+  border-radius: 10px;
+  padding: 10px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+
+  svg {
+    width: 100%;
+    height: 100%;
+  }
+}
+
+.pairing-qr-panel__placeholder {
+  width: 232px;
+  height: 232px;
+  border: 1px dashed var(--border-primary);
+  border-radius: 10px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  font-size: 12px;
+  color: var(--text-secondary);
+  text-align: center;
+  padding: 0 20px;
+
+  .codicon { font-size: 28px; opacity: 0.6; }
+}
+
+.pairing-qr-panel__note {
+  font-size: 11px;
+  color: var(--text-secondary);
+  text-align: center;
+}
+
+// ---- footer（解除配对）----
+
+.pairing-dialog__footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  padding: 10px 16px 14px;
+  border-top: 1px solid var(--border-primary);
+}
+
+.pairing-dialog__btn {
+  padding: 6px 14px;
+  border-radius: 6px;
+  font-size: 13px;
+  cursor: pointer;
+  border: 1px solid var(--border-primary);
+  background: transparent;
+  color: var(--text-primary);
+
+  &:hover { background: var(--bg-hover, rgba(128, 128, 128, 0.15)); }
+  &:disabled { opacity: 0.45; cursor: default; }
+}
+
+.pairing-dialog__btn--ghost {
+  color: var(--text-secondary);
+}
+
+.pairing-dialog__btn--danger-confirm {
+  border-color: #f85149;
+  color: #f85149;
+}

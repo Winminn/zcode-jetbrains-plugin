@@ -1769,6 +1769,19 @@ flowchart LR
       return { op: 'appearanceSave' }
     case 'kvSave':
       return { op: 'kvSave' }
+    case 'remotePairStart':
+    case 'remoteStatus':
+      // mock：waiting 态 + 假 QR URL（dev 模式弹窗 UI 验收用；QR 内容非真实凭据）
+      return {
+        op: 'remoteState',
+        state: 'waiting',
+        deviceName: 'ZCode-IDEA (mock)',
+        qrUrl: 'https://zcode.z.ai/remote/v4?sid=mock-sid&hash=mock-hash&t=0&mid=mock&name=mock&app_version=3.8.1&theme=dark',
+      }
+    case 'remoteStop':
+      return { op: 'remoteState', state: 'off' }
+    case 'remoteUnpair':
+      return { op: 'remoteState', state: 'off' }
     case 'askUserResponse':
       // mock：无服务端可应答，仅回执关闭弹窗
       return { op: 'askUserAck' }

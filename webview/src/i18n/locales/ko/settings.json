@@ -10,7 +10,8 @@
     "agents": "서브 에이전트",
     "mcp": "MCP",
     "browser": "브라우저",
-    "other": "기타 설정"
+    "other": "기타 설정",
+    "remote": "휴대폰 원격"
   },
   "theme": {
     "label": "UI 테마",

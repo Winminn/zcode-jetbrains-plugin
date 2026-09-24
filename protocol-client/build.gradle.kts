@@ -27,9 +27,9 @@ kotlin {
     jvmToolchain(17)
 }
 
-// 独立可运行的验证入口
+// 独立可运行的验证入口（-PmainClass=... 可覆盖，如 relay 冒烟）
 application {
-    mainClass.set("com.zcode.ideaplugin.protocol.MainKt")
+    mainClass.set(providers.gradleProperty("mainClass").orElse("com.zcode.ideaplugin.protocol.MainKt"))
     // 默认跑冒烟测试
     applicationDefaultJvmArgs = listOf("-Dfile.encoding=UTF-8")
 }

@@ -252,13 +252,51 @@ describe('压缩回合结束 + 排队消息：延迟 flush 到快照落地后', 
     expect(useStore.getState().messages.some((m) => m.info.id === 'm_sum')).toBe(true)
   })
 
-  it('兜底：快照迟迟不回，1.5s 后照常 flush（队列不卡死）', () => {
+  it('兜底：快照请求死亡，在途超 5s 后照常 flush（队列不卡死）', () => {
     queuedSpec()
 
-    // 不推快照响应，推进过兜底超时
-    vi.advanceTimersByTime(2000)
+    // 300ms 善后批发出 messages 重拉（在途标记置位）但响应永不到达
+    vi.advanceTimersByTime(400)
+    expect(sentRequests.some((r) => r.op === 'messages')).toBe(true)
+
+    // 1.5s 兜底触发但快照在途（<5s）→ 续等不抢跑
+    vi.advanceTimersByTime(1200)
+    expect(sentRequests.some((r) => r.op === 'send')).toBe(false)
+
+    // 在途超 5s（t=300 起算，兜底多轮续等到 t=6000）→ 硬 flush
+    vi.advanceTimersByTime(4600)
     expect(sentRequests.some((r) => r.op === 'send' && r.text === '压缩完继续这个问题')).toBe(true)
     expect(useStore.getState().queuedMessages).toHaveLength(0)
+  })
+
+  it('大快照慢到达：兜底续等不抢跑，快照落地后正路径 flush（2026-08-24 复现）', () => {
+    // 复现：727 条/7.7MB 会话快照端到端 1.7s > 1.5s 兜底窗，旧逻辑兜底先 flush →
+    // 排队消息开启新 turn streaming → 慢到的快照被守卫丢弃 → 摘要卡整轮缺失
+    queuedSpec()
+
+    // 300ms 善后批的 messages 重拉发出（在途标记置位）
+    vi.advanceTimersByTime(400)
+    expect(sentRequests.some((r) => r.op === 'messages')).toBe(true)
+
+    // 1.5s 兜底触发：快照在途 → 续等而非 flush
+    vi.advanceTimersByTime(1200)
+    expect(sentRequests.some((r) => r.op === 'send')).toBe(false)
+
+    // 慢到的快照响应（模拟 t≈1.7s 注入完成）：落地摘要卡后正路径 flush
+    messageHandler!({
+      op: 'messages',
+      sessionId: SID,
+      messages: [
+        {
+          info: { id: 'm_sum', sessionID: SID, role: 'user', time: { created: 1 }, summary: { title: 'Compact summary', body: 'Summary: …' } },
+          parts: [{ type: 'text', text: 'This session is being continued…', synthetic: true }],
+        },
+      ],
+    })
+    const st = useStore.getState()
+    expect(st.messages.some((m) => m.info.id === 'm_sum')).toBe(true)
+    expect(sentRequests.some((r) => r.op === 'send' && r.text === '压缩完继续这个问题')).toBe(true)
+    expect(st.queuedMessages).toHaveLength(0)
   })
 
   it('切会话后延迟意图作废：不代发别的会话上下文的队列', () => {
@@ -266,7 +304,7 @@ describe('压缩回合结束 + 排队消息：延迟 flush 到快照落地后', 
 
     // 用户在快照回来前切走（延迟 flush 登记的是旧会话）
     useStore.setState({ currentSessionId: 'sess_other', queuedMessages: [] })
-    vi.advanceTimersByTime(2000)
+    vi.advanceTimersByTime(6100)
     expect(sentRequests.some((r) => r.op === 'send')).toBe(false)
   })
 })

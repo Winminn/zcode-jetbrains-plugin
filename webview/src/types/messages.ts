@@ -523,6 +523,14 @@ export type JavaRequest =  | { op: 'askUserPendingState' }
   /** 调系统浏览器打开外链。无 url = 打开本项目 GitHub 仓库（设置页开源支持区块）；
    *  带 url = 网页工具卡/来源链接/markdown 链接的跳转（Java 侧 http/https 白名单二次校验）*/
   | { op: 'openExternal'; url?: string }
+  /** 手机远程：开始连接 relay（幂等，已在连接则只回状态）*/
+  | { op: 'remotePairStart' }
+  /** 手机远程：断开 relay 连接（凭据保留，重连免换码）*/
+  | { op: 'remoteStop' }
+  /** 手机远程：查询当前状态（QR URL / 连接态）*/
+  | { op: 'remoteStatus' }
+  /** 手机远程：解除配对（清除 PasswordSafe 凭据，下次连接重新注册设备）*/
+  | { op: 'remoteUnpair' }
 
 /** 可切换的模型选项（来自 ~/.zcode/v2/config.json 的 provider 注册表）*/
 export interface ModelOption {
@@ -953,6 +961,7 @@ export type JavaResponse =
    *  会话列表红点角标数据源——本地方案（官方 pendingInteractionSummary 在 v4
    *  sessions-index topic 订阅里，需常驻占 v4 订阅槽） */
   | { op: 'pendingInteractions'; counts: Record<string, number> }
+  | { op: 'sessionTurnPhase'; sessionId: string; phase: 'running' | 'ended' }
   /** steerMessage 应答：accepted=true 时 UI 由 turn.steerQueued/steerDrained 事件驱动；error=受理失败（清 chip + 横幅）。queueItemId=queue_<commandId>（前端已预置，ack 仅核对）*/
   | { op: 'steerMessage'; sessionId: string; accepted?: boolean; delivery?: string; queueItemId?: string; error?: string }
   /** cancelSteer 应答：removed=true 已撤销（清 chip + 队列条目回插）；false=已注入落位（queue.itemMissing），提示不可撤 */
@@ -1015,6 +1024,8 @@ export type JavaResponse =
   | { op: 'permissionRequestRefresh'; requestId: string }
   /** 反向请求终结确认；requestId 缺省 = 旧格式兜底全清（正常路径都带 id 精确关窗）*/
   | { op: 'askUserAck'; requestId?: string }
+  /** 手机远程状态（op 响应 / 状态变化广播同构体；qrUrl 仅 waiting 态携带）*/
+  | { op: 'remoteState'; state: 'off' | 'connecting' | 'waiting' | 'paired' | 'error' | 'kicked'; deviceName?: string; qrUrl?: string; error?: string }
   | { op: 'tabCreating' }
   | { op: 'externalOpened' }
   | { op: 'browserPaneToggled'; visible: boolean }

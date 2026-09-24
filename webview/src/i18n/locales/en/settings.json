@@ -10,7 +10,8 @@
     "agents": "Subagents",
     "mcp": "MCP",
     "browser": "Browser",
-    "other": "Other"
+    "other": "Other",
+    "remote": "Phone Remote"
   },
   "theme": {
     "label": "UI Theme",

@@ -1,0 +1,49 @@
+{
+  "title": "Phone Remote",
+  "close": "Close",
+  "state": {
+    "connecting": "Connecting to cloud…",
+    "waiting": "Waiting for phone scan",
+    "paired": "Phone connected",
+    "error": "Connection error",
+    "kicked": "Replaced by another instance",
+    "off": "Disconnected"
+  },
+  "hint": {
+    "scan": "Scan with your phone to view IDE sessions in ZCode web",
+    "secret": "QR contains device pairing credentials — do not share",
+    "paired": "Connected. View and send session messages from your phone",
+    "connecting": "Connecting to relay…",
+    "noQr": "No pairing code (try reconnect)"
+  },
+  "action": {
+    "disconnect": "Disconnect",
+    "unpair": "Unpair",
+    "unpairConfirm": "Unpair? (rescan required next time)",
+    "copyLink": "Copy link",
+    "copied": "Copied",
+    "reconnect": "Reconnect",
+    "stop": "Stop",
+    "refreshQr": "Refresh QR"
+  },
+  "settings": {
+    "desc": "After pairing, view and message IDE sessions from the ZCode web page on your phone (via cloud relay, works across networks).",
+    "showQr": "Show pairing code",
+    "disconnect": "Disconnect",
+    "unpair": "Unpair",
+    "note": "Credentials are stored in the IDE password safe; after unpairing you must scan again.",
+    "unpairConfirmTitle": "Unpair phone?",
+    "unpairConfirmMsg": "This clears stored device credentials. Your phone will need to scan the pairing code again."
+  },
+  "section": {
+    "title": "Scan with phone",
+    "desc": "Scan with your phone camera to open this workspace on mobile."
+  },
+  "card": {
+    "waitingDesc": "Scan the code, or open the link on your phone.",
+    "offDesc": "Connect to generate a pairing code for phone access."
+  },
+  "fallback": {
+    "title": "Can't scan? Open the link on your phone."
+  }
+}

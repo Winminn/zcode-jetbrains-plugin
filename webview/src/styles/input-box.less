@@ -120,6 +120,14 @@
   }
 }
 
+/* 手机远程入口字形定稿 codicon-remote（扁平方形）+ 13px：原 device-mobile 瘦高
+   与工具条不协调（用户两轮反馈「太高」「不协调」）；remote 字形 14px 偏大，
+   用户对比定稿 13px。双类选择器压 .context-tool-btn 字号（单类同特异性会被
+   原样压掉，实踩见上） */
+.context-tool-btn .phone-entry__icon {
+  font-size: 13px;
+}
+
 /* ===== 引用 chips 区（cc-gui ChatInputBoxHeader 的 AttachmentList 位置：
        MessageQueue 之下、ContextBar 之上，不贴输入框）===== */
 .input-box__refs {

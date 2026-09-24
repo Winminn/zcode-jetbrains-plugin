@@ -1597,6 +1597,16 @@ export function InputBox({ onSend, isStreaming = false, onStop, disabled = false
           >
             <span className="codicon codicon-attach" />
           </button>
+          {/* 手机远程配对（QR 弹窗）：附件按钮右侧、定时任务之前。字形用 codicon-remote
+              （扁平方形，device-mobile 瘦高与工具条不协调——用户两轮反馈后换字形） */}
+          <button
+            type="button"
+            className="context-tool-btn"
+            onClick={() => useStore.getState().openRemotePairing()}
+            data-tip={t('chat.header.phoneRemote')}
+          >
+            <span className="codicon codicon-remote phone-entry__icon" />
+          </button>
           {/* 引用会话（#）：不设附件栏入口（非高频），输入框 # 直接触发补全 */}
           {/* 定时任务（日历）：上下文圆环左侧排列；角标=待执行任务总数 */}
           <div className="schedule-entry">

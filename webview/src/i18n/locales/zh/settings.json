@@ -10,7 +10,8 @@
     "agents": "子智能体",
     "mcp": "MCP",
     "browser": "浏览器",
-    "other": "其他设置"
+    "other": "其他设置",
+    "remote": "手机远程"
   },
   "theme": {
     "label": "界面主题",

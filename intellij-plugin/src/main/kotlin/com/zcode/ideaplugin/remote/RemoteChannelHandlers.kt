@@ -1,0 +1,934 @@
+package com.zcode.ideaplugin.remote
+
+import com.intellij.openapi.diagnostic.Logger
+import com.intellij.openapi.project.Project
+import com.zcode.ideaplugin.protocol.ZCodeProtocolClient
+import com.zcode.ideaplugin.protocol.model.Workspace
+import com.zcode.ideaplugin.protocol.relay.ChannelCodec
+import com.zcode.ideaplugin.protocol.relay.ChannelCodec.ChValue
+import com.zcode.ideaplugin.protocol.relay.RelayClient
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.contentOrNull
+import kotlinx.serialization.json.jsonArray
+import kotlinx.serialization.json.jsonPrimitive
+import kotlinx.serialization.json.put
+
+/**
+ * readSession 响应体积上限（字节）：H5 浏览器解析/渲染上限。
+ * 2026-08-25 真机 HAR 实测：9.7MB（messageBytes=9733651，relay 13 分片）的
+ * zcode-session.readSession 响应直接压垮 H5（页面刷新）+ relay recovery 重放
+ * 死循环（bridge 积压消息随新连接全量重放，H5 崩→重连→再重放）。官方 H5 历史
+ * 消息走 v4RowsRange 分页，readSession 只承载最近消息基线——超限从后往前保留
+ * 最近消息至预算耗尽，并带 truncated 标记（供桥侧诊断）。
+ */
+private const val READ_SESSION_BUDGET_BYTES = 512 * 1024
+
+/** 僵尸桥判定（后台兜底）：超过该时长无任何 channel 活动的桥视为已关闭 */
+private const val STALE_BRIDGE_MS = 10 * 60_000L
+
+/** 新桥建立时的收紧阈值：H5 单页单桥，刷新/重连后旧桥不再活动（recoveryId 每次都换，
+ *  同 id 匹配不可依赖）——真机实测 30s 可推 100+ 死帧，90s 足够覆盖并发 open 间隔 */
+private const val STALE_BRIDGE_ON_OPEN_MS = 90_000L
+
+/** 裁剪 session/read 响应：messages 超预算时仅保留最近消息。
+ * 单条消息本身超预算时无条件保留最新一条（H5 至少能渲染出会话尾巴）。 */
+internal fun trimSessionMessages(state: JsonObject, budgetBytes: Int = READ_SESSION_BUDGET_BYTES): JsonObject {
+    val messages = state["messages"] as? kotlinx.serialization.json.JsonArray ?: return state
+    var used = 0
+    val kept = mutableListOf<kotlinx.serialization.json.JsonElement>()
+    for (i in messages.size - 1 downTo 0) {
+        val el = messages[i]
+        val sz = el.toString().length
+        if (kept.isNotEmpty() && used + sz > budgetBytes) break
+        kept.add(el)
+        used += sz
+    }
+    if (kept.size == messages.size) return state
+    kept.reverse()
+    val out = state.toMutableMap()
+    out["messages"] = kotlinx.serialization.json.JsonArray(kept)
+    out["truncated"] = kotlinx.serialization.json.JsonPrimitive(true)
+    out["truncatedReason"] = kotlinx.serialization.json.JsonPrimitive("read-session-size-limit")
+    out["totalMessages"] = kotlinx.serialization.json.JsonPrimitive(messages.size)
+    return JsonObject(out)
+}
+
+/**
+ * 官方 mode 选项（asar chunk-QSBP2774 Qu 常量）：build/edit/plan/yolo 固定四项
+ */
+private val REMOTE_MODE_OPTIONS = listOf(
+    Triple("build", "Ask before changes", "Ask before each file changes."),
+    Triple("edit", "Edit automatically", "Edit selected files or relevant workspace files automatically."),
+    Triple("plan", "Plan mode", "Inspect the code and present a plan before editing."),
+    Triple("yolo", "Full access", "Edit and run commands with fewer confirmations."),
+)
+
+/** 官方 Nh（formatZCodeModelRef）：providerId/modelId，variant 时追加 $variant */
+internal fun formatZCodeModelRef(ref: JsonObject): String {
+    val providerId = ref["providerId"]?.jsonPrimitive?.contentOrNull ?: ""
+    val modelId = ref["modelId"]?.jsonPrimitive?.contentOrNull ?: ""
+    val variant = ref["variant"]?.jsonPrimitive?.contentOrNull
+    val base = "$providerId/$modelId"
+    return if (!variant.isNullOrEmpty()) "$base\$$variant" else base
+}
+
+/** 官方 cP（normalizeAvailableZCodeMode）：不在可用 mode 集时回退 build */
+internal fun normalizeRemoteMode(current: String?): String =
+    if (REMOTE_MODE_OPTIONS.any { it.first == current }) current!! else "build"
+
+/**
+ * 官方 BL（zcodeSessionSettingsToZCodeConfigOptions）：workspace settings →
+ * configOptions 配置项数组（Model/Mode/[Thought Level]）。H5 输入框模型选择器
+ * 依赖此形状——此前 stub 返回 {settings:{}} 导致输入框不渲染（2026-08-25 真机 HAR）。
+ */
+internal fun buildRemoteConfigOptions(settings: JsonObject): kotlinx.serialization.json.JsonArray {
+    val model = settings["model"]?.jsonObject
+    val modelItem = buildJsonObject {
+        put("id", "model"); put("name", "Model"); put("category", "model"); put("type", "select")
+        put("currentValue", model?.get("current")?.jsonObject?.let { formatZCodeModelRef(it) } ?: "")
+        put("options", kotlinx.serialization.json.JsonArray(
+            model?.get("available")?.jsonArray?.mapNotNull { el ->
+                val r = el.jsonObject ?: return@mapNotNull null
+                val ref = r["ref"]?.jsonObject ?: return@mapNotNull null
+                val reasoning = r["reasoning"]?.jsonObject
+                val levels = reasoning?.let { rj ->
+                    if (rj["enabled"]?.jsonPrimitive?.content == "true")
+                        rj["levels"]?.jsonArray?.mapNotNull { it.jsonObject["value"]?.jsonPrimitive?.contentOrNull } ?: emptyList()
+                    else emptyList()
+                }
+                buildJsonObject {
+                    put("value", formatZCodeModelRef(ref))
+                    put("name", r["label"]?.jsonPrimitive?.contentOrNull ?: "")
+                    r["description"]?.jsonPrimitive?.contentOrNull?.let { put("description", it) }
+                    put("modelProviderId", ref["providerId"]?.jsonPrimitive?.contentOrNull ?: "")
+                    put("modelProviderName", r["providerLabel"]?.jsonPrimitive?.contentOrNull
+                        ?: ref["providerId"]?.jsonPrimitive?.contentOrNull ?: "")
+                    if (levels != null) put("modelThoughtLevels", kotlinx.serialization.json.JsonArray(levels.map { kotlinx.serialization.json.JsonPrimitive(it) }))
+                    val dl = reasoning?.get("defaultLevel")?.jsonPrimitive?.contentOrNull
+                    if (dl != null && levels?.contains(dl) == true) put("modelDefaultThoughtLevel", kotlinx.serialization.json.JsonPrimitive(dl))
+                }
+            } ?: emptyList(),
+        ))
+    }
+    val modeItem = buildJsonObject {
+        put("id", "mode"); put("name", "Mode"); put("category", "mode"); put("type", "select")
+        put("currentValue", normalizeRemoteMode(settings["mode"]?.jsonObject?.get("current")?.jsonPrimitive?.contentOrNull))
+        put("options", kotlinx.serialization.json.JsonArray(REMOTE_MODE_OPTIONS.map {
+            buildJsonObject { put("value", it.first); put("name", it.second); put("description", it.third) }
+        }))
+    }
+    val items = mutableListOf(modelItem, modeItem)
+    val tl = settings["thoughtLevel"]?.jsonObject
+    if (tl?.get("enabled")?.jsonPrimitive?.content == "true") {
+        val avail = tl["available"]?.jsonArray?.mapNotNull { it.jsonObject } ?: emptyList()
+        val default = tl["defaultLevel"]?.jsonPrimitive?.contentOrNull
+            ?.takeIf { d -> avail.any { it["value"]?.jsonPrimitive?.contentOrNull == d } }
+        items.add(buildJsonObject {
+            put("id", "thought_level"); put("name", "Thought Level"); put("category", "thought_level"); put("type", "select")
+            put("currentValue", tl["current"]?.jsonPrimitive?.contentOrNull
+                ?: default
+                ?: avail.firstOrNull()?.get("value")?.jsonPrimitive?.contentOrNull
+                ?: "")
+            put("options", kotlinx.serialization.json.JsonArray(avail.map {
+                buildJsonObject {
+                    put("value", it["value"]?.jsonPrimitive?.contentOrNull ?: "")
+                    put("name", it["label"]?.jsonPrimitive?.contentOrNull ?: "")
+                    it["description"]?.jsonPrimitive?.contentOrNull?.let { d -> put("description", d) }
+                }
+            }))
+        })
+    }
+    return kotlinx.serialization.json.JsonArray(items)
+}
+
+/**
+ * 手机远程 channel 语义层（M0 报告映射表实现，混合路线）：
+ * - 发消息走经典 session/send（成熟通道），流式走 v4/conversation/subscribe 直通
+ *   （v4 帧零转换经 EventFire 回推，见 ZCodeRemoteService 的事件泵）
+ * - 首屏基础调用（setting/oauth/model-provider）以最小合法应答 stub，H5 有容错
+ * - 未实现方法回 "Method not found"（H5 fallback 渲染）
+ *
+ * 全部在 zcode-remote-channel 线程池执行（app-server 调用可阻塞）。
+ */
+class RemoteChannelHandlers(private val service: ZCodeRemoteService) {
+
+    private val log = Logger.getInstance("ZCodePlugin")
+    private val json = Json { ignoreUnknownKeys = true }
+
+    /** 每个活跃 bridge 的 v4 连接上下文（connectionId 由桥分配，clientId 来自 initializeConversationV4） */
+    class BridgeV4Context(val connectionId: String) {
+        var clientId: String? = null
+        /** H5 桥身份（bridge-open 携带）：同 recoveryId 的新桥建立=同一逻辑会话恢复，旧桥即僵尸 */
+        @Volatile var recoveryId: String? = null
+        /** 最近一次收到该桥任何 channel 请求的时间（僵尸淘汰判据：H5 刷新/关闭后旧桥永不再活动） */
+        @Volatile var lastActiveMs: Long = System.currentTimeMillis()
+        /** topic → app-server 订阅（subscriptionId + EventFire listenerId） */
+        val subscriptions = java.util.concurrent.ConcurrentHashMap<String, V4Subscription>()
+    }
+
+    class V4Subscription(val topic: String, val subscriptionId: String, val listenerIds: MutableSet<Long>)
+
+    private val bridgeContexts = java.util.concurrent.ConcurrentHashMap<String, BridgeV4Context>()
+
+    fun context(bridgeSessionId: String): BridgeV4Context? = bridgeContexts[bridgeSessionId]
+
+    fun activeContexts(): Map<String, BridgeV4Context> = bridgeContexts.toMap()
+
+    fun clearBridge(bridgeSessionId: String) {
+        val ctx = bridgeContexts.remove(bridgeSessionId) ?: return
+        val client = service.appServer(null) ?: return
+        for (sub in ctx.subscriptions.values) {
+            runCatching { client.v4ConversationUnsubscribe(sub.topic, sub.subscriptionId, ctx.connectionId) }
+        }
+    }
+
+    /**
+     * 僵尸桥淘汰（新桥建立时调用）：H5 刷新/重连后 bridge-open 带**新 recoveryId**开新桥，
+     * 旧桥上下文若不清理，v4 帧泵会持续向死桥推 EventFire（真机实测 30s 推 100+ 帧、
+     * 三代僵尸桥并存轰炸）。淘汰两类：①同 recoveryId 的旧桥（同一逻辑会话的恢复，新桥
+     * 必然替代）；②超 [STALE_BRIDGE_MS] 无任何 channel 活动的桥（H5 页面已关闭）。
+     */
+    fun retireStaleBridges(keepBridgeId: String, newRecoveryId: String?) {
+        val now = System.currentTimeMillis()
+        for ((id, ctx) in bridgeContexts) {
+            if (id == keepBridgeId) continue
+            // H5 单页单桥：新 bridge-open 意味着旧桥已被页面刷新/重连抛弃（实测每次刷新
+            // recoveryId 都会换，同 recoveryId 匹配不可依赖）——open 时收紧到 90s 无活动
+            // 即淘汰；日常后台巡检按 STALE_BRIDGE_MS 兜底
+            val stale = now - ctx.lastActiveMs > STALE_BRIDGE_ON_OPEN_MS
+            if (stale) {
+                log.info("retiring stale bridge $id (idle=${now - ctx.lastActiveMs}ms)")
+                clearBridge(id)
+            }
+        }
+    }
+
+    fun touchBridge(bridgeSessionId: String) {
+        bridgeContexts[bridgeSessionId]?.let { it.lastActiveMs = System.currentTimeMillis() }
+    }
+
+    /**
+     * 清空全部桥上下文（disconnect/unpair 时调用）：桥生命周期绑定 pair 会话。
+     * 跨 pair 存活的僵尸桥实测危害极大——relay 对 terminal 断连按「活跃桥×channel」
+     * 逐个发 INTERNAL 清算通知，9 个僵尸桥即放大成每秒 70 条 error 帧风暴，且污染
+     * 新 terminal 初始化使其在 bridge-open 前反复断连（此时无任何路径能触发
+     * retireStaleBridges，死循环无解，直到下一个成功 bridge-open 顺带清桥才中断）。
+     */
+    fun clearAllBridges(reason: String) {
+        if (bridgeContexts.isEmpty()) return
+        log.info("clearing ${bridgeContexts.size} bridge(s): $reason")
+        for (id in bridgeContexts.keys.toList()) clearBridge(id)
+    }
+
+    /** 后台巡检兜底：清 idle 超 [STALE_BRIDGE_MS] 的桥（H5 页面已关闭、无新
+     *  bridge-open 触发 retireStaleBridges 时的唯一清理路径） */
+    fun sweepStaleBridges() {
+        val now = System.currentTimeMillis()
+        for ((id, ctx) in bridgeContexts) {
+            if (now - ctx.lastActiveMs > STALE_BRIDGE_MS) {
+                log.info("retiring stale bridge $id (idle=${now - ctx.lastActiveMs}ms, sweep)")
+                clearBridge(id)
+            }
+        }
+    }
+
+    /** channel.method 分发主入口（RemoteChannelRouter.handleChannelRequest 的 channelHandler） */
+    fun handle(project: Project?, bridgeSessionId: String, request: ChannelCodec.ChannelRequest, responder: RelayClient.ChannelResponder) {
+        val method = request.method ?: return responder.error("method missing")
+        touchBridge(bridgeSessionId)
+        val args0 = request.args.firstOrNull()?.let { argJson(it) } ?: JsonObject(emptyMap())
+
+        when (request.channel) {
+            "setting" -> handleSetting(method, responder)
+            "oauth" -> handleOauth(method, responder)
+            "model-provider" -> handleModelProvider(method, responder)
+            "zcode-agent" -> handleAgent(project, bridgeSessionId, method, args0, request.args, responder)
+            "zcode-task" -> handleTask(project, bridgeSessionId, method, args0, responder)
+            "zcode-session" -> handleSession(project, method, args0, responder)
+            "window-controller" -> handleWindowController(project, bridgeSessionId, method, args0, responder)
+            "git" -> when (method) {
+                // H5 workspace 视图的 git 状态刷新（回最小成功态；真实 git 集成二期）
+                "refresh" -> responder.success(ChValue.Obj(buildJsonObject { put("ok", true) }))
+                "getRepositorySummary" -> responder.success(ChValue.Obj(buildJsonObject {
+                    put("workspacePath", args0["workspacePath"]?.jsonPrimitive?.content ?: "")
+                    put("repoRoot", args0["workspacePath"]?.jsonPrimitive?.content ?: "")
+                    put("workspaceInRepoPath", ".")
+                    put("isGitAvailable", false)
+                    put("isRepository", false)
+                }))
+                else -> responder.error("Method not found: git.$method")
+            }
+            "usage-stats" -> when (method) {
+                // H5 coding-plan 配额重置面板（官方真实实现调 BigModel HTTP /status）；
+                // 桥不承载，空态应答（字段名对齐官方返回）。回 Method not found 会让
+                // H5 侧报错（装机 HAR ERR id=44 实证）
+                "getCodingPlanResetStatus" -> responder.success(ChValue.Obj(buildJsonObject {
+                    put("availableFiveHourResets", kotlinx.serialization.json.JsonArray(emptyList()))
+                    put("availableWeekResets", kotlinx.serialization.json.JsonArray(emptyList()))
+                    put("latestFiveHourResetHistory", null as String?)
+                    put("latestWeekResetHistory", null as String?)
+                }))
+                // 权益快照：coding-plan 回「有订阅」模板（HAR id=26 形状，remaining.
+                // isShow=false 避开假额度数字）；其余 provider 回 no_plan 形状（id=37）。
+                // 回 authenticated:false 会让 H5 把 coding-plan provider 从模型下拉过滤
+                //（smoke 五轮实证）。真额度接入（HTTP quota API）留后续版本
+                "getEntitlementSnapshot" -> {
+                    val preferred = args0["preferredProviderId"]?.jsonPrimitive?.contentOrNull
+                    responder.success(ChValue.Obj(buildJsonObject {
+                        put("generatedAt", System.currentTimeMillis())
+                        put("authenticated", true)
+                        if (preferred == "builtin:bigmodel-coding-plan") {
+                            put("context", buildJsonObject {
+                                put("scope", "personal"); put("productId", "product-d46f8b"); put("displayName", "GLM Coding Max")
+                            })
+                            put("provider", buildJsonObject {
+                                put("id", preferred); put("name", "BigModel - Coding Plan")
+                            })
+                            put("remaining", buildJsonObject {
+                                put("count", 5000); put("isShow", false); put("percentage", 5)
+                                put("nextResetTime", System.currentTimeMillis() + 86400_000L)
+                            })
+                            put("subscription", buildJsonObject {
+                                put("identityType", "unknown"); put("identityMasked", null as String?)
+                                // details 空=H5 判「无有效订阅」→自动弹 CodingPlanUpgradeDialog
+                                // →对话框内 e.find 崩；照官方模板放一条（expire 造未来时间）
+                                put("details", kotlinx.serialization.json.JsonArray(listOf(buildJsonObject {
+                                    put("productId", "product-d46f8b")
+                                    put("productName", "GLM Coding Max")
+                                    put("purchaseTime", null as String?); put("beginTime", null as String?)
+                                    put("billingCycle", "annually")
+                                    put("renewTime", java.time.Instant.ofEpochMilli(System.currentTimeMillis() + 31536000_000L).toString())
+                                    put("expireTime", java.time.Instant.ofEpochMilli(System.currentTimeMillis() + 63072000_000L).toString())
+                                })))
+                            })
+                            put("quota", buildJsonObject {
+                                put("level", "max"); put("limits", kotlinx.serialization.json.JsonArray(emptyList()))
+                            })
+                        } else {
+                            put("unavailableReason", "no_plan")
+                            put("context", buildJsonObject { put("scope", "personal") })
+                            put("provider", buildJsonObject {
+                                put("id", preferred ?: ""); put("name", preferred ?: "")
+                            })
+                            put("remaining", null as String?)
+                        }
+                    }))
+                }
+                else -> responder.error("Method not found: usage-stats.$method")
+            }
+            "coding-plan-subscription" -> when (method) {
+                // 订阅价格类调用：桥不承载，空应答消噪（H5 容错）
+                "getOffPeakClientConfig", "getBillingDiscount" -> responder.success(ChValue.Obj(buildJsonObject {}))
+                "getEnterprisePricing" -> responder.success(ChValue.Obj(buildJsonObject {
+                    put("productList", kotlinx.serialization.json.JsonArray(emptyList()))
+                }))
+                else -> responder.error("Method not found: coding-plan-subscription.$method")
+            }
+            "off-peak-task" -> when (method) {
+                "getCodingPlanSupport" -> responder.success(ChValue.Obj(buildJsonObject {}))
+                "list" -> responder.success(ChValue.Obj(kotlinx.serialization.json.JsonArray(emptyList())))
+                else -> responder.error("Method not found: off-peak-task.$method")
+            }
+            // H5 输入框 @ 引用与 / 命令的来源（agents md / 技能扫描器真实化留后续）：
+            // 空列表合法（H5 无可选项容错）
+            "subagents" -> when (method) {
+                "list" -> responder.success(ChValue.Obj(buildJsonObject {
+                    put("agents", kotlinx.serialization.json.JsonArray(emptyList()))
+                }))
+                else -> responder.error("Method not found: subagents.$method")
+            }
+            "skills" -> when (method) {
+                "list" -> responder.success(ChValue.Obj(buildJsonObject {
+                    put("skills", kotlinx.serialization.json.JsonArray(emptyList()))
+                }))
+                else -> responder.error("Method not found: skills.$method")
+            }
+            "client-scenes" -> when (method) {
+                "list" -> responder.success(ChValue.Obj(kotlinx.serialization.json.JsonArray(emptyList())))
+                else -> responder.error("Method not found: client-scenes.$method")
+            }
+            "settings-sync" -> when (method) {
+                // {handled:true} 抑制 H5 首启引导弹窗（null 会触发 FirstRunPrompt）
+                "getFirstRunPromptState" -> responder.success(ChValue.Obj(buildJsonObject { put("handled", true) }))
+                "markFirstRunPromptHandled" -> responder.success(ChValue.Undefined)
+                else -> responder.error("Method not found: settings-sync.$method")
+            }
+            "bots" -> when (method) {
+                // 偏好同步：桥不承载 bot 运行时，回空态（H5 容错）
+                "syncAppRuntimePreferences" -> responder.success(ChValue.Undefined)
+                else -> responder.error("Method not found: bots.$method")
+            }
+            else -> responder.error("Method not found: ${request.channel}.$method")
+        }
+    }
+
+    // ---- 首屏基础 stub ----
+
+    /**
+     * 同源读 `~/.zcode/v2/setting.json`（官方桌面端/CLI 共享设置真身；HAR 实测官方
+     * setting.get 应答里的 modelProviderFamilyModes / familySelectedKeys /
+     * providerFamilyDomain 等模型选择状态即存于此文件）。H5 对缺失键有 Vdn fallback。
+     */
+    private fun sharedSettingJson(): JsonObject? = runCatching {
+        val f = java.io.File(System.getProperty("user.home"), ".zcode/v2/setting.json")
+        if (f.exists()) Json.parseToJsonElement(f.readText()).jsonObject else null
+    }.getOrNull()
+
+    private fun handleSetting(method: String, responder: RelayClient.ChannelResponder) {
+        when (method) {
+            "get" -> responder.success(ChValue.Obj(buildJsonObject {
+                val src = sharedSettingJson()
+                src?.forEach { (k, v) -> put(k, v) }
+                // 形状对齐 H5 Vdn fallback：setting.get 期望对象（recentProjects/locale）
+                if (src == null || !src.containsKey("recentProjects")) put("recentProjects", kotlinx.serialization.json.JsonArray(emptyList()))
+                if (src == null || !src.containsKey("locale")) put("locale", "zh-CN")
+            }))
+            "update", "updateDataBaseDir", "ensureDefaultProject" -> responder.success(ChValue.Obj(buildJsonObject {}))
+            else -> responder.error("Method not found: setting.$method")
+        }
+    }
+
+    private fun handleOauth(method: String, responder: RelayClient.ChannelResponder) {
+        when (method) {
+            // smoke 四轮实证（2026-08-25）：setting.json 的 familyModes bigmodel='oauth'
+            // 使 H5 过滤链要求 oauth 会话 authenticated——signed-out 会把 oauth 系
+            // provider（GLM coding-plan）全部过滤、模型选择器不渲染。凭证实际由
+            // app-server 自管（config.json apiKey），故回 authenticated+中性 userInfo
+            "restoreCachedSessionState" -> responder.success(ChValue.Obj(buildJsonObject {
+                put("status", "authenticated")
+                put("userInfo", buildJsonObject {
+                    put("id", "zcode-idea-host")
+                    put("username", "IDE")
+                    put("displayName", "IDE")
+                    put("avatarUrl", "")
+                })
+            }))
+            "restoreCachedSession" -> responder.success(ChValue.Obj(Json.parseToJsonElement("null")))
+            // 官方回 family 名字符串（HAR 实测 'bigmodel'，源=setting.json 的 providerFamilyDomain，
+            // H5 过滤链 cee({providerId, activeOAuthProvider}) 消费）；回 null 会导致 oauth 系
+            // provider 在模型下拉被过滤。与 setting 同源读，无配置则 null
+            "getActiveProvider" -> {
+                val family = sharedSettingJson()?.get("providerFamilyDomain")?.jsonPrimitive?.contentOrNull
+                if (family != null) responder.success(ChValue.Str(family))
+                else responder.success(ChValue.Obj(Json.parseToJsonElement("null")))
+            }
+            else -> responder.error("Method not found: oauth.$method")
+        }
+    }
+
+    private fun handleModelProvider(method: String, responder: RelayClient.ChannelResponder) {
+        when (method) {
+            // getAllCached 回退数组（与 getAll 同形）：官方 {providerIds,updatedAt} 形状
+            // 实测让 H5 首渲染把对象灌进 provider store → Xut e.find 崩（smoke 十~十四
+            // 轮 IAB 定案）；数组形态 H5 容错（find 不到当空）
+            "getAll", "getAllCached" -> responder.success(
+                ChValue.Obj(kotlinx.serialization.json.JsonArray(modelProviderList())),
+            )
+            "getDisplayOrder" -> responder.success(ChValue.Obj(buildJsonObject {}))
+            // H5 发送门禁（v4-draft-readiness）唯一数据源：resolveZCodeAgentStartupReadiness
+            // 要求 providers 里存在 baseURL 非空 + 有凭证 + models 含非 disabled 项的条目，
+            // 否则判 missing → 输入框上方弹「当前没有可用模型」+ 点发送被 UI admission
+            // 静默拒绝（2026-08-25 装机 HAR+bundle 定案，空 providers 是发送无反应的根因）。
+            // registry 条目字段名与 getAll 不同（providerId 非 id、models[].modelId），
+            // 形状对齐官方 buildProviderRegistrySnapshot/convertModelProviderConfigToZCodeProviderInput
+            "getProviderRegistrySnapshot" -> responder.success(ChValue.Obj(buildJsonObject {
+                val providers = modelProviderList()
+                put("generatedAt", System.currentTimeMillis())
+                put("revision", "sha256-${providers.size}-${System.currentTimeMillis() / 600_000L}")
+                put("providers", kotlinx.serialization.json.JsonArray(providers.mapNotNull { p ->
+                    val pv = p as? JsonObject ?: return@mapNotNull null
+                    val baseURL = pv["endpoints"]?.jsonObject?.get("baseURL")?.jsonPrimitive?.contentOrNull
+                        ?.takeIf { it.isNotBlank() } ?: return@mapNotNull null
+                    buildJsonObject {
+                        put("providerId", pv["id"]?.jsonPrimitive?.contentOrNull ?: "")
+                        pv["name"]?.jsonPrimitive?.contentOrNull?.takeIf { it.isNotBlank() }?.let { put("label", it) }
+                        put("apiFormat", "anthropic-messages")
+                        put("apiKeyRequired", true)
+                        put("baseURL", baseURL)
+                        put("kind", "anthropic")
+                        // 凭证形态走 credential（key 非空即满足 hasRuntimeCredential），
+                        // 避免把 config.json 的明文 apiKey 再灌进 H5 端存储/HAR
+                        put("apiKey", buildJsonObject { put("source", "credential"); put("key", "config.json") })
+                        put("source", pv["source"]?.jsonPrimitive?.contentOrNull ?: "custom")
+                        put("models", pv["models"]?.let { models ->
+                            kotlinx.serialization.json.JsonArray(models.jsonArray.mapNotNull { m ->
+                                val mv = m as? JsonObject ?: return@mapNotNull null
+                                buildJsonObject {
+                                    put("modelId", mv["id"]?.jsonPrimitive?.contentOrNull ?: return@buildJsonObject)
+                                    mv["name"]?.jsonPrimitive?.contentOrNull?.let { put("label", it) }
+                                }
+                            })
+                        } ?: kotlinx.serialization.json.JsonArray(emptyList()))
+                    }
+                }))
+            }))
+            // 官方对已配 key 的 provider 回 null（HAR id=28/29/45 实测）；key 已在
+            // getAll 应答里（config.json 同源），无需刷新
+            "refreshCodingPlanApiKey" -> responder.success(ChValue.Obj(Json.parseToJsonElement("null")))
+            else -> responder.error("Method not found: model-provider.$method")
+        }
+    }
+
+    /**
+     * config.json（v2）provider 聚合。形状逐字段对齐官方宿主 getAll 应答
+     * （2026-08-25 官方宿主 HAR 抓包定案，8 provider 与本机 config 一一对应）：
+     * - provider = {id, name, enabled, endpoints:{baseURL, paths:{anthropic}}, apiFormat,
+     *   source, apiKey, defaultKind, models, createdAt, updatedAt}
+     * - model = {id, name?, kinds, defaultKind, modalities, contextWindow,
+     *   maxOutputTokens?, reasoning?, priority?, modified?}——无 modelId（H5 内部派生）
+     * 多余键有被 H5 zod strict 校验丢弃整个对象的风险：endpoints.anthropic、
+     * authenticated、modelId 均为实测踩坑（模型下拉只剩「管理模型」的根因候选）。
+     * disabled provider 官方也返回（H5 按 enabled 过滤），apiKey 必须是 string：
+     * H5 coding-plan 恢复链裸调 n.apiKey.trim()，缺失即整页崩溃；空 apiKey 串合法
+     * （trim 后长度 0 = 该 provider 无凭证，H5 会过滤） */
+    private fun modelProviderList(): List<kotlinx.serialization.json.JsonElement> = runCatching {
+        val configFile = com.zcode.ideaplugin.protocol.Credentials.defaultConfigPath().toFile()
+        if (!configFile.exists()) return emptyList()
+        val providers = Json.parseToJsonElement(configFile.readText()).jsonObject["provider"]?.jsonObject
+            ?: return emptyList()
+        val now = System.currentTimeMillis()
+        providers.mapNotNull { (providerId, providerEl) ->
+            val pv = providerEl.jsonObject
+            val enabled = pv["enabled"]?.jsonPrimitive?.content?.toBoolean() ?: true
+            val opts = pv["options"]?.jsonObject
+            val apiKey = opts?.get("apiKey")?.jsonPrimitive?.contentOrNull ?: ""
+            val baseURL = opts?.get("baseURL")?.jsonPrimitive?.contentOrNull ?: ""
+            val models = pv["models"]?.jsonObject?.mapNotNull { (modelId, modelEl) ->
+                val m = modelEl.jsonObject
+                buildJsonObject {
+                    // 模型对象消费链有多条且字段名不一致（2026-08-25 浏览器复现实测定案，
+                    // 权威形状=src chunk 的 zod schema md：id/kinds/modalities/contextWindow 必填）：
+                    // - NU 过滤链 Fi(t)&&t.id.trim()：id 必须 string——缺失=任务会话区 bdt
+                    //   "reading 'trim'" 崩（本缺陷根因，field id 非 modelId）
+                    // - NU 映射链 r.kinds.includes(kind)：kinds 必须数组——缺失=下一崩点
+                    // - name 仅 config 显式配置才放（官方 GLM-5.2 应答即无 name）
+                    put("id", modelId)
+                    m["name"]?.jsonPrimitive?.contentOrNull?.let { put("name", it) }
+                    put("kinds", kotlinx.serialization.json.JsonArray(listOf(kotlinx.serialization.json.JsonPrimitive("anthropic"))))
+                    put("defaultKind", "anthropic")
+                    put("modalities", buildJsonObject {
+                        put("input", kotlinx.serialization.json.JsonArray(listOf(kotlinx.serialization.json.JsonPrimitive("text"))))
+                        put("output", kotlinx.serialization.json.JsonArray(listOf(kotlinx.serialization.json.JsonPrimitive("text"))))
+                    })
+                    put("contextWindow", m["limit"]?.jsonObject?.get("context")?.jsonPrimitive?.content?.toLongOrNull() ?: 200000L)
+                    m["limit"]?.jsonObject?.get("output")?.jsonPrimitive?.content?.toLongOrNull()?.let { put("maxOutputTokens", it) }
+                    put("modified", false)
+                }
+            } ?: emptyList()
+            buildJsonObject {
+                put("id", providerId)
+                put("name", pv["name"]?.jsonPrimitive?.content ?: providerId)
+                put("enabled", enabled)
+                put("endpoints", buildJsonObject {
+                    put("baseURL", baseURL)
+                    put("paths", buildJsonObject { put("anthropic", "/v1/messages") })
+                })
+                put("apiFormat", "anthropic-messages")
+                put("source", "custom")
+                put("apiKey", apiKey)
+                put("defaultKind", "anthropic")
+                put("models", kotlinx.serialization.json.JsonArray(models))
+                put("createdAt", now)
+                put("updatedAt", now)
+            }
+        }
+    }.getOrDefault(emptyList())
+
+    // ---- zcode-agent：v4 网关桥 ----
+
+    private fun handleAgent(
+        project: Project?, bridgeSessionId: String, method: String, args: JsonObject,
+        rawArgs: List<ChValue>, responder: RelayClient.ChannelResponder,
+    ) {
+        when (method) {
+            "helloConversationV4" -> {
+                val ctx = bridgeContexts.getOrPut(bridgeSessionId) { BridgeV4Context("zcodeidea-${java.util.UUID.randomUUID().toString().take(13)}") }
+                responder.success(ChValue.Obj(buildJsonObject {
+                    put("kind", "hello")
+                    put("protocolVersion", 3)
+                    put("connectionId", ctx.connectionId)
+                    put("clientMode", "web-remote-replayable")
+                    put("deliveryProfile", "replayable")
+                    put("serverTime", System.currentTimeMillis())
+                    put("capabilities", buildJsonObject {
+                        put("nativeDialogs", false)
+                        put("localTerminal", false)
+                        put("binaryFrames", false)
+                        put("compression", "none")
+                        put("workspaceHookReview", false)
+                    })
+                    put("auth", buildJsonObject {})
+                }))
+            }
+            "initializeConversationV4" -> {
+                val ctx = bridgeContexts[bridgeSessionId]
+                val clientId = args["clientId"]?.jsonPrimitive?.content
+                if (ctx == null || clientId.isNullOrBlank()) {
+                    responder.error("fault.connection.helloRequired")
+                } else {
+                    ctx.clientId = clientId
+                    responder.success(ChValue.Undefined)
+                }
+            }
+            // H5 发消息/建会话都走 v4 命令信封（官方 zcodeAgentService.sendConversationCommandV4
+            // 本体即 client.request(v4/command, envelope)）——宿主透传，缺它发送按钮永远无反应
+            // （2026-09-22 真机抓帧定案：H5 每轮恢复链都调，此前 Method not found）
+            "sendConversationCommandV4" -> {
+                val ctx = bridgeContexts[bridgeSessionId]
+                    ?: return responder.error("fault.connection.helloRequired")
+                val client = service.appServer(project)
+                    ?: return responder.error("app-server unavailable")
+                // 官方 params={envelope, clientMode?, workspacePath?...}；envelope 缺失时
+                // 防御性把 args 本身当信封（H5 版本差异兜底）
+                val envelope = args["envelope"] as? JsonObject ?: args
+                val ack = runCatching { client.v4CommandRaw(envelope) }.getOrElse { e ->
+                    return responder.error("command failed: ${e.message?.take(160)}")
+                }
+                emitRemoteUserBubble(client, envelope)
+                responder.success(ChValue.Obj(ack))
+            }
+            "subscribeConversationV4", "subscribeSessionsIndexV4" -> {
+                val ctx = bridgeContexts[bridgeSessionId]
+                    ?: return responder.error("fault.connection.helloRequired")
+                val client = service.appServer(project)
+                    ?: return responder.error("app-server unavailable")
+                val sessionId = args["sessionId"]?.jsonPrimitive?.content
+                val topic = when {
+                    sessionId != null -> "conversation/$sessionId"
+                    method.endsWith("SessionsIndexV4") -> {
+                        val ws = args["workspacePath"]?.jsonPrimitive?.content
+                            ?: project?.basePath ?: return responder.error("workspacePath required")
+                        "sessions-index/$ws"
+                    }
+                    else -> return responder.error("sessionId required")
+                }
+                try {
+                    val ack = client.v4ConversationSubscribe(topic, ctx.connectionId, workspacePath = project?.basePath ?: args["workspacePath"]?.jsonPrimitive?.content)
+                    val subId = ack["ack"]?.jsonObject?.get("subscriptionId")?.jsonPrimitive?.content ?: ""
+                    ctx.subscriptions.getOrPut(topic) { V4Subscription(topic, subId, java.util.concurrent.ConcurrentHashMap.newKeySet()) }
+                    // 应答形状对齐桌面（{ack} 包装）；EventFire 监听由 listen 侧登记
+                    responder.success(ChValue.Obj(buildJsonObject { put("ack", ack["ack"] ?: buildJsonObject {}) }))
+                    // 订阅成功即有 initial 快照帧——由事件泵从 app-server 通知转推，此处无需处理
+                } catch (e: Exception) {
+                    responder.error("subscribe failed: ${e.message?.take(120)}")
+                }
+            }
+            // H5 索引恢复重同步：ack.subscriptionId 必须回请求值（H5 校验不等即
+            // resync-ack-mismatch）。走官方 resync RPC same-sub 恢复——此前静默重发
+            // subscribe 会产生新 subscriptionId，重推的快照帧带新 id，H5 按帧内 id
+            // 严格匹配即静默丢弃（2026-09-22 对照开源 zcodeAgentService 定案）
+            "resyncSessionsIndexV4" -> {
+                val ctx = bridgeContexts[bridgeSessionId]
+                    ?: return responder.error("fault.connection.helloRequired")
+                val subId = args["subscriptionId"]?.jsonPrimitive?.content
+                    ?: return responder.error("subscriptionId required")
+                val ws = args["workspacePath"]?.jsonPrimitive?.content ?: project?.basePath
+                    ?: return responder.error("workspacePath required")
+                val client = service.appServer(project)
+                    ?: return responder.error("app-server unavailable")
+                val result = runCatching {
+                    client.v4ConversationResync("sessions-index/$ws", subId, ctx.connectionId, workspacePath = project?.basePath ?: ws)
+                }.getOrElse { e ->
+                    return responder.error("resync failed: ${e.message?.take(120)}")
+                }
+                responder.success(ChValue.Obj(buildJsonObject { put("ack", result["ack"] ?: result) }))
+            }
+            // conversation 订阅的同构恢复（H5 恢复链会话详情重同步）
+            "resyncConversationV4" -> {
+                val ctx = bridgeContexts[bridgeSessionId]
+                    ?: return responder.error("fault.connection.helloRequired")
+                val subId = args["subscriptionId"]?.jsonPrimitive?.content
+                    ?: return responder.error("subscriptionId required")
+                val sessionId = args["sessionId"]?.jsonPrimitive?.content
+                    ?: return responder.error("sessionId required")
+                val client = service.appServer(project)
+                    ?: return responder.error("app-server unavailable")
+                val result = runCatching {
+                    client.v4ConversationResync("conversation/$sessionId", subId, ctx.connectionId, workspacePath = project?.basePath)
+                }.getOrElse { e ->
+                    return responder.error("resync failed: ${e.message?.take(120)}")
+                }
+                responder.success(ChValue.Obj(buildJsonObject { put("ack", result["ack"] ?: result) }))
+            }
+            "unsubscribeConversationV4" -> {
+                val ctx = bridgeContexts[bridgeSessionId] ?: return responder.success(ChValue.Undefined)
+                val client = service.appServer(project) ?: return responder.success(ChValue.Undefined)
+                val sessionId = args["sessionId"]?.jsonPrimitive?.content ?: return responder.success(ChValue.Undefined)
+                val topic = "conversation/$sessionId"
+                ctx.subscriptions.remove(topic)?.let {
+                    runCatching { client.v4ConversationUnsubscribe(topic, it.subscriptionId, ctx.connectionId) }
+                }
+                responder.success(ChValue.Undefined)
+            }
+            "readWorkspaceState" -> {
+                // workspace 级状态读取：app-server 无独立 RPC（session/read 需活跃会话），
+                // 桥给最小合法应答（slashCommands 空——H5 容错）
+                responder.success(ChValue.Obj(buildJsonObject {
+                    put("settings", buildJsonObject {})
+                    put("slashCommands", kotlinx.serialization.json.JsonArray(emptyList()))
+                }))
+            }
+            "syncAppRuntimePreferences" -> responder.success(ChValue.Undefined)
+            "initialize" -> responder.success(ChValue.Obj(buildJsonObject {
+                put("available", true)
+                put("workspaceKey", args["workspacePath"]?.jsonPrimitive?.content ?: "")
+            }))
+            "disposeAll" -> {
+                clearBridge(bridgeSessionId)
+                responder.success(ChValue.Undefined)
+            }
+            else -> responder.error("Method not found: zcode-agent.$method")
+        }
+    }
+
+    /**
+     * 远程发信成功后就地合成 turn.userInput 注入 IDE 事件面（2026-09-22 真机缺陷）：
+     * 手机经 v4/command 发的用户消息在 IDE 侧没有实时气泡通道——乐观回显只在本地发送
+     * 路径、v4 实时帧的 userInput 行被主会话 title 门禁丢弃，AI delta 走 legacy 广播正常
+     * 而用户消息要等轮末全量重拉才补出。合成事件走 pushStreamEvent 既有门禁（IDE 正订阅
+     * 该会话才推），webview turn.userInput 按 messageId 幂等去重，轮末重拉由服务端真身
+     * 对账顶替（commandId 命名空间仅存活于回合中窗口）。
+     */
+    private fun emitRemoteUserBubble(client: ZCodeProtocolClient, envelope: JsonObject) {
+        runCatching {
+            if (envelope["type"]?.jsonPrimitive?.contentOrNull != "sendText") return
+            val sessionId = envelope["sessionId"]?.jsonPrimitive?.contentOrNull ?: return
+            val text = (envelope["payload"] as? JsonObject)
+                ?.get("text")?.jsonPrimitive?.contentOrNull ?: return
+            if (text.isBlank()) return
+            client.emitSyntheticEvent(com.zcode.ideaplugin.protocol.model.SessionEvent(
+                type = "turn.userInput",
+                seq = 0,
+                sessionId = sessionId,
+                timestamp = System.currentTimeMillis(),
+                traceId = null,
+                turnId = null,
+                deliveryKind = null,
+                payload = buildJsonObject {
+                    put("messageId", envelope["commandId"]?.jsonPrimitive?.contentOrNull
+                        ?: "remote_u_${System.currentTimeMillis()}")
+                    put("text", text)
+                },
+            ))
+        }
+    }
+
+    // ---- zcode-task：会话操作（经典通道直通） ----
+
+    /** task index 扁平行（桌面 adapter listTasks 返回=task index 原始 meta 透传；
+     *  H5 消费 taskId/title/status/workspacePath/createdAt/updatedAt，unreadAt 可选） */
+    private fun taskIndexRow(s: com.zcode.ideaplugin.protocol.model.SessionInfo, workspacePath: String) = buildJsonObject {
+        put("taskId", s.sessionId)
+        put("title", s.title.ifBlank { "session" })
+        // 运行中覆写：session/list 快照滞后于回合事件（pushControllerSnapshot 同口径）
+        put("status", if (s.status == "running" || service.isSessionRunning(s.sessionId)) "running" else "completed")
+        put("workspacePath", (s.workspace?.workspacePath ?: workspacePath).replace('\\', '/'))
+        put("workspaceKind", "local")
+        put("createdAt", s.createdAt)
+        put("updatedAt", s.updatedAt)
+        s.archivedAt?.takeIf { it > 0 }?.let { put("archivedAt", it) }
+    }
+
+    private fun handleTask(
+        project: Project?, bridgeSessionId: String, method: String, args: JsonObject,
+        responder: RelayClient.ChannelResponder,
+    ) {
+        val client = service.appServer(project) ?: return responder.error("app-server unavailable")
+        val workspacePath = args["workspacePath"]?.jsonPrimitive?.content ?: project?.basePath ?: ""
+        try {
+            when (method) {
+                "prepareWorkspace" -> responder.success(ChValue.Obj(buildJsonObject {
+                    put("workspacePath", workspacePath)
+                    put("preparedSessionId", "")
+                    put("version", "ZCode Protocol/1")
+                    put("provider", "glm")
+                    put("configOptions", kotlinx.serialization.json.JsonArray(emptyList()))
+                    put("slashCommands", kotlinx.serialization.json.JsonArray(emptyList()))
+                }))
+                // H5 任务列表消费链（lGt）对 listTasks/listArchivedTasks/listPinnedTasks
+                // 期望**裸数组**（t3 包装 items=service 返回值再 .flat()；桌面 adapter 即
+                // 返回数组）——回 {items,total,hasMore} 会让 items=undefined → throw
+                // "task 行读取不完整"。仅 listTaskList 是 {items,total,hasMore} 分页形状。
+                // 行内 workspacePath 统一正斜杠：H5 kFe 按当前工作区（basePath 正斜杠）
+                // 严格字符串匹配，反斜杠（app-server 返回）全被滤掉=列表 0
+                "listTaskList" -> {
+                    val sessions = runCatching { client.listSessions(workspacePath) }.getOrDefault(emptyList())
+                    // 归档/软删过滤（IDE 历史列表同口径）：session/list 不认 tasks-index 归档
+                    val hidden = runCatching { client.hiddenSessionIds() }.getOrDefault(emptySet())
+                    val tasks = sessions.filter { it.status != null && it.sessionId !in hidden }
+                        .sortedByDescending { it.updatedAt }
+                        .take(ZCodeRemoteService.TASK_SNAPSHOT_LIMIT)
+                        .map { s -> taskIndexRow(s, workspacePath) }
+                    responder.success(ChValue.Obj(buildJsonObject {
+                        put("items", kotlinx.serialization.json.JsonArray(tasks))
+                        put("total", tasks.size)
+                        put("hasMore", false)
+                    }))
+                }
+                // H5 任务列表三源 merge（lGt）：listTasks/listArchivedTasks/listPinnedTasks
+                // 任一 reject 即 throw"tasks-index task 行读取不完整"→ 任务区域错误边界
+                //（2026-08-25 装机日志定案）。归档源走 app-server 归档列表（与主列表同源过滤）
+                // 大会话库限流：只下发最近 TASK_SNAPSHOT_LIMIT 条（全量 500+ 行打爆 H5 手机端）
+                "listTasks" -> responder.success(ChValue.Obj(kotlinx.serialization.json.JsonArray(
+                    runCatching { client.listSessions(workspacePath) }.getOrDefault(emptyList())
+                        .filter { it.status != null }
+                        .let { list ->
+                            val hidden = runCatching { client.hiddenSessionIds() }.getOrDefault(emptySet())
+                            if (hidden.isEmpty()) list else list.filter { it.sessionId !in hidden }
+                        }
+                        .sortedByDescending { it.updatedAt }
+                        .take(ZCodeRemoteService.TASK_SNAPSHOT_LIMIT)
+                        .map { s -> taskIndexRow(s, workspacePath) }
+                )))
+                "listArchivedTasks" -> responder.success(ChValue.Obj(kotlinx.serialization.json.JsonArray(
+                    runCatching { client.listArchivedSessions(workspacePath) }.getOrDefault(emptyList())
+                        .map { s -> taskIndexRow(s, workspacePath) }
+                )))
+                "listPinnedTasks" -> responder.success(
+                    ChValue.Obj(kotlinx.serialization.json.JsonArray(emptyList())),
+                )
+                // 可选源（H5 失败容错）：空应答消噪
+                "listPinnedTaskIds", "listDeletedTaskIds" -> responder.success(
+                    ChValue.Obj(kotlinx.serialization.json.JsonArray(emptyList())),
+                )
+                "createTask" -> {
+                    val sid = client.createSession(
+                        com.zcode.ideaplugin.protocol.model.Workspace(workspacePath),
+                        com.zcode.ideaplugin.protocol.model.PermissionMode.BUILD,
+                    )
+                    responder.success(ChValue.Obj(buildJsonObject { put("taskId", sid); put("sessionId", sid) }))
+                }
+                "sendPrompt" -> {
+                    val sessionId = args["taskId"]?.jsonPrimitive?.content
+                        ?: args["sessionId"]?.jsonPrimitive?.content
+                        ?: return responder.error("taskId required")
+                    val content = args["content"]?.jsonPrimitive?.content
+                        ?: return responder.error("content required")
+                    // 主链路同款时序：先 subscribe 再 send（send 对未激活会话撞 -32004）
+                    runCatching { client.subscribe(sessionId) }
+                    client.send(sessionId, content)
+                    responder.success(ChValue.Obj(buildJsonObject { put("ok", true) }))
+                }
+                "stopGeneration" -> {
+                    val sessionId = args["taskId"]?.jsonPrimitive?.content ?: return responder.error("taskId required")
+                    client.stop(sessionId)
+                    responder.success(ChValue.Undefined)
+                }
+                "closeTask" -> {
+                    val sessionId = args["taskId"]?.jsonPrimitive?.content ?: return responder.success(ChValue.Undefined)
+                    runCatching { client.closeSession(sessionId) }
+                    responder.success(ChValue.Undefined)
+                }
+                "getTaskMeta" -> responder.success(ChValue.Obj(Json.parseToJsonElement("null")))
+                // 会话文件路径类查询（官方形状）：exists=false 走 H5「无文件」容错分支
+                "getTaskSessionFilePath" -> responder.success(ChValue.Obj(buildJsonObject {
+                    val tid = args["taskId"]?.jsonPrimitive?.contentOrNull ?: ""
+                    put("path", "$workspacePath/$tid.zcode-session")
+                    put("exists", false)
+                }))
+                "getTaskNativeSessionLogFile" -> responder.success(ChValue.Obj(buildJsonObject {
+                    put("provider", "glm"); put("path", ""); put("exists", false)
+                }))
+                // 官方形状 {provider, path, exists}（asar 实测）：path=请求的 workspacePath
+                "getWorkspaceProviderConfigFile" -> responder.success(ChValue.Obj(buildJsonObject {
+                    put("provider", "glm")
+                    put("path", workspacePath)
+                    put("exists", false)
+                }))
+                "getTaskSnapshot", "getTaskSnapshotWithEtag" -> {
+                    // 快照读取：v4 initial 帧（订阅时事件泵已推）承担实时态；此处给最小合法空快照
+                    responder.success(ChValue.Obj(buildJsonObject { put("snapshot", Json.parseToJsonElement("null")) }))
+                }
+                "renameTask" -> responder.success(ChValue.Undefined) // 标题落库由 tasks-index 维护，桥不透写
+                // H5 切模型后的工作区进程重启请求：app-server 进程由 ZCodeService 管理，
+                // 模型切换即时生效无需重启，回成功打通切换链
+                "restartWorkspaceProcess" -> responder.success(ChValue.Obj(buildJsonObject { put("ok", true) }))
+                else -> responder.error("Method not found: zcode-task.$method")
+            }
+        } catch (e: Exception) {
+            responder.error("${method} failed: ${e.message?.take(150)}")
+        }
+    }
+
+    // ---- zcode-session ----
+
+    private fun handleSession(project: Project?, method: String, args: JsonObject, responder: RelayClient.ChannelResponder) {
+        val client = service.appServer(project) ?: return responder.error("app-server unavailable")
+        try {
+            when (method) {
+                "readSession" -> {
+                    val sid = args["sessionId"]?.jsonPrimitive?.content ?: return responder.error("sessionId required")
+                    // H5 固定带 messageLimit（官方语义 slice(-t)，zcode.cjs Gpa 定案）；
+                    // 此前忽略返回全量（9.7MB 压垮 H5 / 93 条渲染异常，缺陷V）
+                    val limit = args["messageLimit"]?.jsonPrimitive?.contentOrNull?.toIntOrNull()
+                    val state = client.readSessionFull(sid, messageLimit = limit)
+                    // 体积兜底（单条超大消息仍可能超 H5 承受）
+                    responder.success(ChValue.Obj(trimSessionMessages(state)))
+                }
+                // H5 输入框渲染依赖：官方 readWorkspaceState = workspace/readState 应答
+                // 形状 {workspacePath, preparedSessionId, version, provider, configOptions,
+                // slashCommands}（asar host readWorkspaceState 定案）。此前 stub 回
+                // {settings:{}} 导致模型选择器/输入框不渲染（2026-08-25 真机 HAR）
+                "readWorkspaceState" -> {
+                    val wsPath = args["workspacePath"]?.jsonPrimitive?.contentOrNull
+                        ?: project?.basePath ?: return responder.error("workspacePath required")
+                    val state = client.workspaceReadState(Workspace(wsPath))
+                    val settings = state["settings"]?.jsonObject ?: JsonObject(emptyMap())
+                    responder.success(ChValue.Obj(buildJsonObject {
+                        put("workspacePath", wsPath)
+                        put("preparedSessionId", "")
+                        put("version", "ZCode Protocol/1")
+                        put("provider", "glm")
+                        put("configOptions", buildRemoteConfigOptions(settings))
+                        put("slashCommands", state["slashCommands"]
+                            ?: kotlinx.serialization.json.JsonArray(emptyList()))
+                    }))
+                }
+                // H5 发送前设默认模型（model:{providerId, modelId…}）；app-server 无
+                // workspace 级 setModel RPC，桥回成功打通发送链（会话实际模型由
+                // session/setModel 与 send 上下文决定）
+                "setWorkspaceDefaultModel" -> responder.success(ChValue.Obj(buildJsonObject {}))
+                "closeSession" -> {
+                    val sid = args["sessionId"]?.jsonPrimitive?.content ?: return responder.success(ChValue.Undefined)
+                    runCatching { client.closeSession(sid) }
+                    responder.success(ChValue.Undefined)
+                }
+                else -> responder.error("Method not found: zcode-session.$method")
+            }
+        } catch (e: Exception) {
+            responder.error("${method} failed: ${e.message?.take(120)}")
+        }
+    }
+
+    // ---- window-controller：自聚合 controller 帧 ----
+
+    private fun handleWindowController(project: Project?, bridgeSessionId: String, method: String, args: JsonObject, responder: RelayClient.ChannelResponder) {
+        when (method) {
+            "subscribeControllerV4" -> {
+                val topic = args["topic"]?.jsonPrimitive?.content ?: return responder.error("topic required")
+                val subId = "wc-${java.util.UUID.randomUUID().toString().take(13)}"
+                // 登记：回合翻转时 ZCodeRemoteService 按此重推快照帧（H5 列表实时相位）
+                service.registerControllerSub(subId, bridgeSessionId, topic)
+                // ack：{subscriptionId, mode, logEpoch}（对齐 app-server ack 形状）
+                responder.success(ChValue.Obj(buildJsonObject {
+                    put("ack", buildJsonObject {
+                        put("subscriptionId", subId)
+                        put("mode", "snapshot")
+                        put("logEpoch", "zcodeidea")
+                    })
+                }))
+                // 立即推 initial 快照帧（EventFire）——task 列表当前值
+                service.pushControllerSnapshot(bridgeSessionId, subId, topic)
+            }
+            else -> responder.error("Method not found: window-controller.$method")
+        }
+    }
+
+    private fun argJson(value: ChValue): JsonObject? = when (value) {
+        is ChValue.Obj -> value.json as? JsonObject
+        else -> null
+    }
+}

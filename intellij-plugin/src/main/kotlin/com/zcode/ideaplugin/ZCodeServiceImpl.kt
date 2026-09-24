@@ -34,6 +34,9 @@ import kotlin.concurrent.withLock
 @Service(Service.Level.PROJECT)
 class ZCodeServiceImpl(private val project: Project) : ZCodeService, com.intellij.openapi.Disposable {
 
+    /** 所属项目（手机远程桥做 bridge→project 路由用） */
+    val ownerProject: Project get() = project
+
     private val log = com.intellij.openapi.diagnostic.Logger.getInstance("ZCodePlugin")
 
     companion object {
@@ -118,6 +121,18 @@ class ZCodeServiceImpl(private val project: Project) : ZCodeService, com.intelli
 
         /** 活跃 Service 实例（多项目并开各一个）；宿主探针聚合判定用，dispose 移除 */
         private val activeInstances = java.util.concurrent.CopyOnWriteArrayList<ZCodeServiceImpl>()
+
+        /** 跨项目广播到全部面板（手机远程等 APPLICATION 级服务调用） */
+        fun broadcastToAllPanels(msg: kotlinx.serialization.json.JsonObject) {
+            activeInstances.forEach { instance ->
+                instance.panels.forEach { panel ->
+                    runCatching { panel.pushToWebview(msg) }
+                }
+            }
+        }
+
+        /** 活跃 Service 实例快照（手机远程桥取各项目 app-server 用） */
+        fun activeProjectServices(): List<ZCodeServiceImpl> = activeInstances.toList()
 
         /**
          * interaction/requestUserInput 等待用户
@@ -406,6 +421,23 @@ class ZCodeServiceImpl(private val project: Project) : ZCodeService, com.intelli
             // 不匹配保住新回合刚弹出的弹窗（2026-08-27 实测：重试弹窗被迟到清理顶掉）。
             // 正常应答路径 pending 已清空，此处 no-op 无副作用
             c.addGlobalEventListener { event ->
+                // 回合相位 → 所有标签的会话列表行（手机远程驱动的会话在 IDE 无本地
+                // streaming 状态，列表只能靠这个实时通道翻转运行中/复位，官方桌面同语义）
+                when (event.type) {
+                    "turn.started" -> {
+                        com.zcode.ideaplugin.ui.ZCodeToolWindowPanel
+                            .broadcastTurnPhase(event.sessionId, "running")
+                        // 手机 H5 首页任务行同源相位（运行集合覆写 + 防抖重推快照帧）
+                        runCatching { com.zcode.ideaplugin.remote.ZCodeRemoteService.getInstance()
+                            .onSessionTurnPhase(event.sessionId, true) }
+                    }
+                    "turn.completed", "turn.failed" -> {
+                        com.zcode.ideaplugin.ui.ZCodeToolWindowPanel
+                            .broadcastTurnPhase(event.sessionId, "ended")
+                        runCatching { com.zcode.ideaplugin.remote.ZCodeRemoteService.getInstance()
+                            .onSessionTurnPhase(event.sessionId, false) }
+                    }
+                }
                 if (event.type == "turn.started") {
                     // 轮末排队消息 flush 开的新回合（issue #24 误报修复）：
                     // 取消刚挂起的「任务完成」通知——任务还在继续

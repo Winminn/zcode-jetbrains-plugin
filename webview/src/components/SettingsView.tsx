@@ -23,11 +23,12 @@ import { SkillListView } from './SkillListView'
 import { McpListView } from './McpListView'
 import { ModelListView } from './ModelListView'
 import { BrowserSettingsView } from './BrowserSettingsView'
+import { RemoteSettingsView } from './RemoteSettingsView'
 import { AgentListView } from './AgentListView'
 import { isInJcef } from '@/ipc/bridge'
 import '../styles/settings.less'
 
-type SettingsTab = 'basic' | 'models' | 'usage' | 'memory' | 'skills' | 'agents' | 'mcp' | 'browser' | 'other'
+type SettingsTab = 'basic' | 'models' | 'usage' | 'memory' | 'skills' | 'agents' | 'mcp' | 'browser' | 'remote' | 'other'
 
 const cx = (...c: (string | false | null | undefined)[]) => c.filter(Boolean).join(' ')
 
@@ -41,7 +42,7 @@ export function SettingsView({ onBack }: Props) {
   // JCEF 内 hash 恒空不影响生产
   const hashTab = window.location.hash.replace('#', '').split('/')[0] as SettingsTab
   const initialTab: SettingsTab =
-    !isInJcef() && ['basic', 'models', 'usage', 'memory', 'skills', 'agents', 'mcp', 'browser', 'other'].includes(hashTab)
+    !isInJcef() && ['basic', 'models', 'usage', 'memory', 'skills', 'agents', 'mcp', 'browser', 'remote', 'other'].includes(hashTab)
       ? hashTab
       : 'basic'
   const [tab, setTab] = useState<SettingsTab>(initialTab)
@@ -66,6 +67,7 @@ export function SettingsView({ onBack }: Props) {
     { key: 'agents', icon: 'codicon-robot' },
     { key: 'mcp', icon: 'codicon-plug' },
     { key: 'browser', icon: 'codicon-globe' },
+    { key: 'remote', icon: 'codicon-device-mobile' },
     { key: 'other', icon: 'codicon-ellipsis' },
   ]
 
@@ -106,6 +108,7 @@ export function SettingsView({ onBack }: Props) {
           {tab === 'agents' && <AgentListView />}
           {tab === 'mcp' && <McpListView />}
           {tab === 'browser' && <BrowserSettingsView />}
+          {tab === 'remote' && <RemoteSettingsView />}
           {tab === 'other' && <OtherSettingsView />}
         </main>
       </div>

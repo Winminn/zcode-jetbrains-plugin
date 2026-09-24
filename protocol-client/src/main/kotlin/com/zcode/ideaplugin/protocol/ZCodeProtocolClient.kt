@@ -58,6 +58,17 @@ class ZCodeProtocolClient private constructor(
     /** ZCode 客户端任务索引（归档/恢复与客户端共写同一数据源，见 TaskIndexStore） */
     val taskIndex = TaskIndexStore(nodePath, Path.of(System.getProperty("user.home"), ".zcode", "v2", "tasks-index.sqlite"))
 
+    /**
+     * 归档/软删会话排除集合（tasks-index 与 ZCode 客户端同源，task_id=会话 id）。
+     * IDE 历史列表与手机远程各列表出口共用：session/list 只认 db.sqlite 的旧
+     * time_archived 列，插件归档（写 tasks-index.sqlite）后 session/list 仍返回，
+     * 不过滤则大会员几百条归档任务全量泄漏给 H5 首页。fail-soft：schema 不兼容
+     * 返回空集合（宁多显示不漏显示，同 handleListSessions 口径）
+     */
+    fun hiddenSessionIds(): Set<String> = runCatching {
+        taskIndex.listTasks().filter { it.archived || it.deleted }.map { it.taskId }.toSet()
+    }.getOrDefault(emptySet())
+
     // 请求 ID 生成器
     private val idCounter = AtomicLong(0)
 
@@ -779,8 +790,11 @@ class ZCodeProtocolClient private constructor(
             }
         }
         // v4/conversation/frame：v4 订阅会话的增量帧（子会话实时流根治通道）。
-        // topic=conversation/<sessionId>；只对主动 v4 订阅过的会话映射，防与 legacy 流双写
+        // topic=conversation/<sessionId>；只对主动 v4 订阅过的会话映射，防与 legacy 流双写。
+        // 手机远程桥的原始帧透传挂在映射链最前（onV4FrameListeners）：映射链对标题订阅/
+        // 未订阅会话多处早退（return），桥需要全量帧，必须先于任何 return 分发
         else if (method == "v4/conversation/frame") {
+            v4FrameListeners.forEach { runCatching { it(params) } }
             val topic = params["topic"]?.jsonPrimitive?.jsonStringOrNull ?: return
             val sid = topic.removePrefix("conversation/")
             if (sid.length == topic.length) return
@@ -855,6 +869,138 @@ class ZCodeProtocolClient private constructor(
         globalListeners.forEach { it(event) }
     }
 
+    /**
+     * 注入合成会话事件（走与真实通知完全相同的分发链）。远程桥用：手机经 v4/command
+     * 发的消息在 legacy 面没有独立事件，宿主就地合成 turn.userInput 补 IDE 侧实时气泡。
+     * seq=0/turnId=null 合成标记；下游按 payload.messageId 幂等去重，重放安全。
+     */
+    fun emitSyntheticEvent(event: SessionEvent) = dispatchSessionEvent(event)
+
+    // ============ v4 网关（手机远程会话流式底座） ============
+
+    /** v4 帧监听器（params = v4/conversation/frame 的完整通知参数，含 topic/subscriptionId/frame） */
+    private val v4FrameListeners = ConcurrentHashMap.newKeySet<(JsonObject) -> Unit>()
+
+    fun addV4FrameListener(listener: (JsonObject) -> Unit): () -> Unit {
+        v4FrameListeners.add(listener)
+        return { v4FrameListeners.remove(listener) }
+    }
+
+    /**
+     * 订阅会话帧流（ack={subscriptionId, mode, logEpoch}）。workspacePath 对齐官方宿主
+     * subscribeConversationV4 形状（{topic, connectionId, clientMode, workspace}）——
+     * app-server 的 sessions-index topic 按工作区路由，缺 workspace 可能无初始快照帧
+     * （2026-09-22 真机：新桥订阅后零下行帧）。
+     */
+    fun v4ConversationSubscribe(
+        topic: String,
+        connectionId: String,
+        clientMode: String = "web-remote-replayable",
+        workspacePath: String? = null,
+    ): JsonObject = requestResult("v4/conversation/subscribe") {
+        put("topic", topic)
+        put("connectionId", connectionId)
+        put("clientMode", clientMode)
+        workspacePath?.let {
+            put("workspace", buildJsonObject {
+                put("workspacePath", it)
+                put("workspaceKey", it)
+            })
+        }
+    }
+
+    fun v4ConversationUnsubscribe(
+        topic: String,
+        subscriptionId: String,
+        connectionId: String,
+        workspacePath: String? = null,
+    ): JsonObject = requestResult("v4/conversation/unsubscribe") {
+        put("topic", topic)
+        put("subscriptionId", subscriptionId)
+        put("connectionId", connectionId)
+        workspacePath?.let {
+            put("workspace", buildJsonObject {
+                put("workspacePath", it)
+                put("workspaceKey", it)
+            })
+        }
+    }
+
+    /** 会话行分页读取（历史消息；返回 {rows, atSeq, atLogEpoch, hasMore}） */
+    fun v4RowsRange(sessionId: String, connectionId: String, limit: Int = 200): JsonObject =
+        request(
+            "v4/conversation/rowsRange",
+            buildJsonObject {
+                put("sessionId", sessionId)
+                put("connectionId", connectionId)
+                put("limit", limit)
+            },
+        )
+
+    /**
+     * 同订阅恢复重同步（官方 zcodeAgentService.resyncConversationV4 同款语义）：
+     * subscriptionId 精确命中现有订阅、**不新建 id**——重订阅会产生新 id，H5 按帧内
+     * id 与已注册值严格匹配，失配即静默丢弃重推的快照（2026-09-22 对照开源定案）。
+     * base=null + forceSnapshot=true = 放弃增量水位、整段重放快照。
+     * 快照帧经 v4/conversation/frame 通知到达（帧泵已透传）。
+     */
+    fun v4ConversationResync(
+        topic: String,
+        subscriptionId: String,
+        connectionId: String,
+        forceSnapshot: Boolean = true,
+        workspacePath: String? = null,
+    ): JsonObject = requestResult("v4/conversation/resync") {
+        put("topic", topic)
+        put("subscriptionId", subscriptionId)
+        put("connectionId", connectionId)
+        put("base", kotlinx.serialization.json.JsonNull)
+        if (forceSnapshot) put("forceSnapshot", true)
+        workspacePath?.let {
+            put("workspace", buildJsonObject {
+                put("workspacePath", it)
+                put("workspaceKey", it)
+            })
+        }
+    }
+
+    /**
+     * v4/command 信封透传（手机远程 sendConversationCommandV4 桥用）：H5 侧自构造
+     * 命令信封（sendText/createSession 等），宿主只做透传——官方
+     * zcodeAgentService.sendConversationCommandV4 本体即 client.request(V4_COMMANDS.command, envelope)。
+     * 信封形状由 H5 保证（含 commandId/clientId/sessionId/type/payload/CAS 基准）。
+     */
+    fun v4CommandRaw(envelope: JsonObject, timeoutMs: Long = 30_000): JsonObject =
+        requestResultRaw("v4/command", envelope, timeoutMs)
+
+    /**
+     * session/read 完整结果（手机远程桥用：settings/runtime/消息基线一次取齐）。
+     * @param messageLimit 官方语义（zcode.cjs Gpa）：>0 时仅返回最近 N 条消息（H5
+     *   readSession 请求固定带 messageLimit=1——桥此前忽略该参数返回全量，H5 渲染异常）
+     */
+    fun readSessionFull(sessionId: String, timeoutMs: Long = 10000, messageLimit: Int? = null): JsonObject {
+        val params = buildJsonObject {
+            put("sessionId", sessionId)
+            messageLimit?.let { put("messageLimit", it) }
+        }
+        val r = requestWithRetry("session/read", params, timeoutMs, maxAttempts = 2, backoffMs = longArrayOf(500))
+        r["error"]?.let { throw ZCodeProtocolException.fromError(it) }
+        return r["result"]?.jsonObject ?: JsonObject(emptyMap())
+    }
+
+    /** workspace/readState（手机远程 readWorkspaceState 桥：settings/slashCommands 权威源） */
+    fun workspaceReadState(workspace: Workspace, timeoutMs: Long = 10000): JsonObject {
+        val params = buildJsonObject {
+            put("workspace", buildJsonObject {
+                put("workspacePath", workspace.workspacePath)
+                put("workspaceKey", workspace.workspaceKey)
+            })
+        }
+        val r = requestWithRetry("workspace/readState", params, timeoutMs, maxAttempts = 2, backoffMs = longArrayOf(500))
+        r["error"]?.let { throw ZCodeProtocolException.fromError(it) }
+        return r["result"]?.jsonObject ?: JsonObject(emptyMap())
+    }
+
     // ============ 底层发送 ============
 
     /**
@@ -892,6 +1038,22 @@ class ZCodeProtocolClient private constructor(
     }
 
     /** 发送客户端请求并等待响应 */
+    /** request + 解包 result（error 抛 ZCodeProtocolException）——v4 网关方法族专用。
+     *  此前 v4ConversationSubscribe 直接回完整响应，handler 按解包后形状取 ack["ack"]
+     *  恒为空 → H5 收到空 ack 判订阅失败，v4 渲染门禁不放行（会话页空白的直接根因，
+     *  2026-09-22 真机 CDP 帧对照官方宿主定位）。 */
+    private fun requestResult(method: String, timeoutMs: Long = 20_000, params: kotlinx.serialization.json.JsonObjectBuilder.() -> Unit): JsonObject {
+        val r = request(method, buildJsonObject(params), timeoutMs)
+        r["error"]?.let { throw ZCodeProtocolException.fromError(it) }
+        return r["result"]?.jsonObject ?: JsonObject(emptyMap())
+    }
+
+    private fun requestResultRaw(method: String, params: JsonObject, timeoutMs: Long = 20_000): JsonObject {
+        val r = request(method, params, timeoutMs)
+        r["error"]?.let { throw ZCodeProtocolException.fromError(it) }
+        return r["result"]?.jsonObject ?: JsonObject(emptyMap())
+    }
+
     private fun request(method: String, params: JsonObject, timeoutMs: Long = 20000): JsonObject {
         val id = idCounter.incrementAndGet()
         val future = CompletableFuture<JsonObject>()

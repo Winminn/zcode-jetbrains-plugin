@@ -1,5 +1,9 @@
 package com.zcode.ideaplugin.ui
 
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.jsonPrimitive
+import kotlinx.serialization.json.put
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNotNull
@@ -26,13 +30,13 @@ class McpConfigReaderTest {
 
     @Test
     fun `marketplaces 市场索引不算已配置`() {
-        // marketplaces/claude-plugins-official/external_plugins/ 下有 context7/discord 等
-        // 市场清单，未安装时扫描结果不应包含。断言只用确认未安装的条目（discord）：
-        // context7 等会被官方客户端随升级安装（plugins/data 启用判据，2026-08-25 环境实证），
-        // 出现在扫描结果是正确行为，不能当"未安装代表"
+        // marketplaces/ 下是市场清单（未安装），扫描结果不应包含它们。
+        // 环境敏感断言：只检查本机确认未安装的条目（context7 等已被实际安装，
+        // 出现在扫描结果是正确行为——plugins 三棵树语义见记忆 zcode-plugins-dir-semantics）
         val servers = McpConfigReader.scan(null)
         val names = servers.map { it.name }.toSet()
-        assertTrue("discord" !in names, "市场索引条目不应出现: $names")
+        val marketOnly = listOf("discord").filter { it in names }
+        assertTrue(marketOnly.isEmpty(), "市场索引条目不应出现: $names")
     }
 
     @Test
@@ -63,4 +67,78 @@ class McpConfigReaderTest {
         )
         assertNull(McpConfigReader.toProtocolParam(s, "G:/ws"))
     }
+
+    // ============ 运行时命名空间归并（同一服务两条注册路径不重复展示） ============
+
+    private fun pluginEntry(name: String, pluginName: String?) = McpConfigReader.McpServerInfo(
+        name = name, scope = "plugin", transport = "http", command = null,
+        args = emptyList(), url = "https://example.com", envKeys = emptyList(),
+        envValues = emptyMap(), headerValues = emptyMap(),
+        enabled = true, configPath = "C:/x/.mcp.json", pluginName = pluginName,
+        status = null, toolCount = null, statusError = null, updatedAt = null,
+    )
+
+    private fun st(status: String, toolCount: Int) = buildJsonObject {
+        put("status", status)
+        put("toolCount", toolCount)
+    }
+
+    @Test
+    fun `命名空间 key 按 插件名-服务名 拼接`() {
+        assertEquals("plugin:context7:context7", McpConfigReader.namespacedRuntimeKey(pluginEntry("context7", "context7")))
+        assertEquals("plugin:document-skills:image_search", McpConfigReader.namespacedRuntimeKey(pluginEntry("image_search", "document-skills")))
+        assertNull(McpConfigReader.namespacedRuntimeKey(pluginEntry("web-search", null)), "非插件条目无命名空间形态")
+    }
+
+    @Test
+    fun `pickStatus 命名空间 connected 者胜`() {
+        // 直接名 failed + 命名空间 connected → 用命名空间（服务实际可用）
+        val statuses = JsonObject(
+            mapOf(
+                "image_search" to st("failed", 0),
+                "plugin:document-skills:image_search" to st("connected", 5),
+            )
+        )
+        val picked = assertNotNull(McpConfigReader.pickStatus(pluginEntry("image_search", "document-skills"), statuses))
+        assertEquals("connected", picked.str("status"))
+        assertEquals(5, picked.str("toolCount")?.toInt())
+    }
+
+    @Test
+    fun `pickStatus 双 connected 或双 failed 以直接 key 为准`() {
+        val statuses = JsonObject(
+            mapOf(
+                "context7" to st("connected", 2),
+                "plugin:context7:context7" to st("connected", 2),
+            )
+        )
+        val s = pluginEntry("context7", "context7")
+        val picked = assertNotNull(McpConfigReader.pickStatus(s, statuses))
+        assertTrue(picked === statuses["context7"], "双 connected 用直接条目对象")
+
+        val failBoth = JsonObject(
+            mapOf(
+                "image_search" to st("failed", 0),
+                "plugin:document-skills:image_search" to st("failed", 0),
+            )
+        )
+        val picked2 = assertNotNull(McpConfigReader.pickStatus(pluginEntry("image_search", "document-skills"), failBoth))
+        assertTrue(picked2 === failBoth["image_search"], "双 failed 用直接条目（贴近配置文件路径）")
+    }
+
+    @Test
+    fun `pickStatus 直接名缺失回退命名空间 两者皆无返回 null`() {
+        val statuses = JsonObject(mapOf("plugin:context7:context7" to st("connected", 2)))
+        val s = pluginEntry("context7", "context7")
+        assertEquals("connected", McpConfigReader.pickStatus(s, statuses)?.str("status"))
+
+        assertNull(McpConfigReader.pickStatus(s, JsonObject(emptyMap())), "两者皆无 → null")
+        assertNull(
+            McpConfigReader.pickStatus(pluginEntry("web-search", null), JsonObject(mapOf("plugin:x:web-search" to st("connected", 1)))),
+            "非插件条目只看直接名，不回退命名空间"
+        )
+    }
+
+    private fun JsonObject.str(key: String): String? =
+        runCatching { this[key]!!.jsonPrimitive.content }.getOrNull()
 }

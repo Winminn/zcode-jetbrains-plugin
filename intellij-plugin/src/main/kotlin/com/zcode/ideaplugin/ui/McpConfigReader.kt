@@ -278,6 +278,30 @@ object McpConfigReader {
         return File(File(home, ".zcode/cli/plugins/data"), plugin).absolutePath
     }
 
+    // ============ 运行时状态归并（handleListMcpServers 合并用） ============
+
+    /**
+     * 运行时命名空间 key：app-server 把插件贡献的 MCP 以 plugin:<插件名>:<服务名>
+     * 上报（与磁盘 .mcp.json 条目是同一服务的两条注册路径，如 context7 插件的
+     * context7 服务器）。非插件条目（pluginName=null）无命名空间形态。
+     */
+    fun namespacedRuntimeKey(s: McpServerInfo): String? =
+        s.pluginName?.takeIf { it.isNotBlank() }?.let { "plugin:$it:${s.name}" }
+
+    /**
+     * mcp/list 状态选择：磁盘条目在 statuses 里可能同时存在直接名与命名空间
+     * 两个 key。任一 connected 者胜（服务实际可用为准），否则以直接 key 为准
+     * （贴近用户配置文件的注册路径）。
+     */
+    fun pickStatus(s: McpServerInfo, statuses: JsonObject): JsonObject? {
+        val direct = statuses[s.name]?.jsonObject
+        val namespaced = namespacedRuntimeKey(s)?.let { statuses[it]?.jsonObject }
+        if (direct == null) return namespaced
+        if (namespaced == null) return direct
+        if (str(direct["status"]) != "connected" && str(namespaced["status"]) == "connected") return namespaced
+        return direct
+    }
+
     /** rel 形如 cache/marketplace/<plugin>/<version>/.mcp.json → 取版本段上一层 */
     private fun pluginNameFromPath(rel: String): String? {
         val parts = rel.split('/')

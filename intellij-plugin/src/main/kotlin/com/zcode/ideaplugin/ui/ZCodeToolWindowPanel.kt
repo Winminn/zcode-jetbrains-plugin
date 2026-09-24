@@ -297,6 +297,28 @@ class ZCodeToolWindowPanel(
                 }
             }
         }
+
+        /**
+         * 回合相位广播（ZCodeServiceImpl 全局事件监听 → 所有已开标签）：会话列表行
+         * 运行中/复位的实时数据源。手机远程驱动的会话在 IDE 无本地 streaming 状态，
+         * 列表行只能停在旧快照值（表现为运行中却显示已完成）；本地回合同样受益
+         * （列表页不在前台时回合照跑，行状态随相位实时翻转）。低频（每回合两次）。
+         */
+        fun broadcastTurnPhase(sessionId: String, phase: String) {
+            SwingUtilities.invokeLater {
+                activePanels.forEach { panel ->
+                    try {
+                        panel.pushToWebview(buildJsonObject {
+                            put("op", "sessionTurnPhase")
+                            put("sessionId", sessionId)
+                            put("phase", phase)
+                        })
+                    } catch (_: Exception) {
+                        // 未初始化/销毁中的标签跳过
+                    }
+                }
+            }
+        }
     }
 
     /** 读取外观配置 JSON（fontScale/themePref/chatBg/chatBar/userMsg），无配置返回 null */
@@ -321,6 +343,19 @@ class ZCodeToolWindowPanel(
             } ?: JsonObject(emptyMap()),
         )
     }
+
+    /** 手机远程 op 转发（APPLICATION 级服务，连接/状态/断开/解绑） */
+    private fun handleRemote(action: (com.zcode.ideaplugin.remote.ZCodeRemoteService) -> JsonObject): JsonObject =
+        try {
+            action(com.zcode.ideaplugin.remote.ZCodeRemoteService.getInstance())
+        } catch (e: Exception) {
+            log.warn("remote op failed: ${e.message}")
+            buildJsonObject {
+                put("op", "remoteState")
+                put("state", "error")
+                put("error", e.message?.take(200) ?: e.javaClass.simpleName)
+            }
+        }
 
     private fun persistBrowserWidthState(expanded: Boolean, base: Int) {
         try {
@@ -946,6 +981,10 @@ if (!window.__ZCODE_LOG_HOOK__) {
                         "appearanceSave" -> handleAppearanceSave(msg)
                         "kvSave" -> handleKvSave(msg)
                         "kvLoad" -> handleKvLoad()
+                        "remotePairStart" -> handleRemote { it.connect() }
+                        "remoteStop" -> handleRemote { it.disconnect() }
+                        "remoteStatus" -> handleRemote { it.statusJson() }
+                        "remoteUnpair" -> handleRemote { it.unpair() }
                         "checkEnv" -> handleCheckEnv()
                         "envSave" -> handleEnvSave(msg)
                         else -> errorResponse("未知 op: $op")
@@ -6255,10 +6294,12 @@ if (!window.__ZCODE_LOG_HOOK__) {
                     client.listMcpServers(basePath, mode, timeout)["statuses"]?.jsonObject ?: JsonObject(emptyMap())
                 }
 
-                // 配置条目合并状态（transport/status 以 RPC 为准，command/url 等保留配置）
+                // 配置条目合并状态（transport/status 以 RPC 为准，command/url 等保留配置）；
+                // 插件条目在 RPC 里可能同时以直接名与 plugin:<插件名>:<服务名> 命名空间
+                // 出现（同一服务两条注册路径），pickStatus 归并择优（connected 者胜）
                 val logs = runCatching { McpLogReader.readRecent(500) }.getOrDefault(emptyList())
                 servers.replaceAll { s ->
-                    val st = statuses[s.name]?.jsonObject
+                    val st = McpConfigReader.pickStatus(s, statuses)
                     val inferred = inferFromLogs(s.name, logs)
                     val status = when {
                         st != null -> st["status"]?.jsonPrimitive?.contentOrNull
@@ -6276,8 +6317,11 @@ if (!window.__ZCODE_LOG_HOOK__) {
                         updatedAt = st["updatedAt"]?.jsonPrimitive?.contentOrNull,
                     )
                 }
-                // RPC 有但磁盘配置没有的 → 运行时条目（如会话临时注入的服务器）
-                val known = servers.map { it.name }.toSet()
+                // RPC 有但磁盘配置没有的 → 运行时条目（如会话临时注入的服务器）；
+                // plugin:<插件名>:<服务名> 命名空间条目已由 pickStatus 并回对应
+                // 磁盘条目（同一服务不重复展示），从新增集合排除
+                val known = servers.map { it.name }.toSet() +
+                        servers.mapNotNull(McpConfigReader::namespacedRuntimeKey)
                 statuses.forEach { (name, st) ->
                     if (name in known) return@forEach
                     val so = runCatching { st.jsonObject }.getOrNull() ?: return@forEach

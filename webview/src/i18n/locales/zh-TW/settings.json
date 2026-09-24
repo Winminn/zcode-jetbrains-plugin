@@ -10,7 +10,8 @@
     "agents": "子智慧體",
     "mcp": "MCP",
     "browser": "瀏覽器",
-    "other": "其他設定"
+    "other": "其他設定",
+    "remote": "手機遠程"
   },
   "theme": {
     "label": "介面主題",

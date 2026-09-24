@@ -468,16 +468,27 @@ let compactingServerConfirmed = false
  * 到快照落地之后；快照迟迟未回由兜底超时照常 flush（队列不卡死）。 */
 let deferredCompactFlushSid: string | null = null
 let deferredCompactFlushTimer: ReturnType<typeof setTimeout> | null = null
-/** 压缩回合结束：登记延迟 flush（快照落地即触发；1.5s 兜底防快照丢失卡队列）*/
+/** 压缩结束后重拉快照的请求发出时刻（0=不在途）：大历史会话快照端到端可远超
+ *  兜底窗口（实测 727 条/7.7MB 耗 1.7s），兜底须在途续等而非抢跑 flush */
+let compactSnapshotInFlightAt = 0
+/** 压缩回合结束：登记延迟 flush（快照落地即触发；1.5s 兜底防快照丢失卡队列）。
+ *  兜底触发时若快照仍在途（发出未回）则续等——快照到达走落地正路径 flush；
+ *  仅在途超 5s（请求死亡）才硬 flush（2026-08-24 实测：大快照 1.7s 到达晚于
+ *  1.5s 兜底，抢跑 flush 让 streaming 守卫丢弃快照、摘要卡整轮缺失） */
 function scheduleDeferredCompactFlush(sessionId: string): void {
   deferredCompactFlushSid = sessionId
   if (deferredCompactFlushTimer) clearTimeout(deferredCompactFlushTimer)
   deferredCompactFlushTimer = setTimeout(() => {
     deferredCompactFlushTimer = null
     const sid = deferredCompactFlushSid
+    if (sid === null) return
+    if (compactSnapshotInFlightAt > 0 && Date.now() - compactSnapshotInFlightAt < 5000) {
+      scheduleDeferredCompactFlush(sid) // 续等一轮（落地正路径到达会清掉本意图）
+      return
+    }
     deferredCompactFlushSid = null
     // 切会话后不代发（队列随会话切换处理，旧会话的延迟意图作废）
-    if (sid && sid === useStore.getState().currentSessionId) {
+    if (sid === useStore.getState().currentSessionId) {
       useStore.getState().flushQueue()
     }
   }, 1500)
@@ -633,6 +644,16 @@ interface StoreState {
   markdownPreview: { title: string; meta?: string; markdown: string } | null
   /** 版本更新弹窗（What's New）开关：升级后首次打开自动弹 / 欢迎页角标 / 设置页手动打开 */
   changelogOpen: boolean
+  /** 手机远程：配对弹窗开关（QR 展示 + 连接状态）*/
+  remotePairingOpen: boolean
+  /** 手机远程：relay 连接状态（'idle'=尚未查询过；广播/响应同构体 remoteState）*/
+  remoteState: 'idle' | 'off' | 'connecting' | 'waiting' | 'paired' | 'error' | 'kicked'
+  /** 手机远程：配对 QR URL（waiting 态携带，含敏感 passHash 仅弹窗内展示）*/
+  remoteQrUrl: string | null
+  /** 手机远程：宿主设备名（状态卡展示，如 "ZCode-IDEA (IntelliJ IDEA)"）*/
+  remoteDeviceName: string | null
+  /** 手机远程：错误信息（error/kicked 态）*/
+  remoteError: string | null
   /** 子会话完整消息缓存（childSessionId → messages，详情弹窗"原始过程"）*/
   childMessages: Record<string, ZCodeMessage[]>
   childMessagesLoading: boolean
@@ -952,6 +973,9 @@ interface StoreState {
   connectivityResults: Record<string, { ok: boolean; error?: string }>
   /** 会话待交互计数（审批/提问挂起；pendingInteractions 全量快照推送，红点角标）*/
   pendingInteractionCounts: Record<string, number>
+  /** 回合运行中的会话集合（sessionTurnPhase 相位广播维护；值=startedAt），
+   * 防列表快照把远程驱动的运行中会话降级回已完成 */
+  remoteRunningTurns: Record<string, number>
   mcpLogsLoading: boolean
 
   // 用量明细曲线（model-usage / tool-usage）
@@ -1233,6 +1257,16 @@ interface StoreState {
   openChangelog: () => void
   /** 关闭版本更新弹窗 */
   closeChangelog: () => void
+  /** 打开手机远程配对弹窗（顺带触发连接与状态拉取）*/
+  openRemotePairing: () => void
+  /** 关闭手机远程配对弹窗（连接保持，后台仍可收推送）*/
+  closeRemotePairing: () => void
+  /** 拉取手机远程状态（op=remoteStatus）*/
+  refreshRemoteState: () => void
+  /** 手机远程断开连接（op=remoteStop）*/
+  stopRemote: () => void
+  /** 手机远程解除配对（清除凭据，op=remoteUnpair）*/
+  unpairRemote: () => void
   /**
    * 拉取子会话完整消息（详情弹窗"原始过程"）。
    * silent = true：弹窗运行中 3s 轮询用——不置 loading/error（避免空态文案与
@@ -1346,6 +1380,11 @@ export const useStore = create<StoreState>((set, get) => ({
   markdownPreview: null,
   askUserReview: null,
   changelogOpen: false,
+  remotePairingOpen: false,
+  remoteState: 'idle',
+  remoteQrUrl: null,
+  remoteDeviceName: null,
+  remoteError: null,
   childMessages: {},
   childMessagesLoading: false,
   childMessagesError: null,
@@ -1460,6 +1499,7 @@ export const useStore = create<StoreState>((set, get) => ({
   connectivityTestingId: null,
   connectivityResults: {},
   pendingInteractionCounts: {},
+  remoteRunningTurns: {},
   modelProvidersReordering: false,
   modelUsage: null,
   toolUsage: null,
@@ -2912,6 +2952,16 @@ export const useStore = create<StoreState>((set, get) => ({
   openChangelog: () => set({ changelogOpen: true }),
   closeChangelog: () => set({ changelogOpen: false }),
 
+  openRemotePairing: () => {
+    set({ remotePairingOpen: true })
+    // 幂等连接 + 拉状态（已在连接/已配对时后端直接回当前态）
+    sendToJava({ op: 'remotePairStart' })
+  },
+  closeRemotePairing: () => set({ remotePairingOpen: false }),
+  refreshRemoteState: () => sendToJava({ op: 'remoteStatus' }),
+  stopRemote: () => sendToJava({ op: 'remoteStop' }),
+  unpairRemote: () => sendToJava({ op: 'remoteUnpair' }),
+
   loadChildMessages: (childSessionId, silent = false) => {
     if (silent) {
       // 静默轮询：标记本次请求，响应侧跳过 loading/error（见 case 'subagentMessages'）
@@ -2926,6 +2976,13 @@ export const useStore = create<StoreState>((set, get) => ({
     })
   },
 }))
+
+let turnEndListRefreshTimer = 0
+/** 相位 ended 后的列表对账重拉（防抖 300ms：同会话连续回合/批量广播只拉最后一次） */
+function scheduleTurnEndListRefresh(get: () => StoreState) {
+  window.clearTimeout(turnEndListRefreshTimer)
+  turnEndListRefreshTimer = window.setTimeout(() => get().loadSessions(), 300)
+}
 
 /** 用量查询时间窗计算：start=当天 00:00:00，end=当天 23:59:59 */
 function pad2(n: number): string {
@@ -3406,7 +3463,15 @@ export function handleResponse(
       // 时间倒序统一收口：服务端快照整体有序，但本地的补插项（staleLocal 追加在尾、
       // 乐观新建插在头）会破坏全局顺序 → 按更新时间倒序重排（稳定排序，同时间戳保持原序）
       merged.sort((a, b) => (b.updatedAt ?? 0) - (a.updatedAt ?? 0))
-      set({ sessions: merged, provisionalTitles: nextProvisionals })
+      // 回合运行中的行强制 running：快照是「请求发出时刻」的服务端值，可能早于回合
+      // 开始（或存量行本就回 idle）——直接透传会把运行中会话闪回已完成，相位广播为准
+      const runningIds = Object.keys(get().remoteRunningTurns)
+      set({
+        sessions: runningIds.length
+          ? merged.map((s) => (runningIds.includes(s.sessionId) ? { ...s, status: 'running' } : s))
+          : merged,
+        provisionalTitles: nextProvisionals,
+      })
 
       // 会话恢复（仅多标签体系）：仅当标签有注入的初始会话（重启恢复）且会话仍存在时选中它。
       // 懒创建：新标签（无注入）/ 注入会话已删 → 保持无会话待命态，发首条消息时再建
@@ -3959,6 +4024,8 @@ export function handleResponse(
         break
       }
       if (msg.sessionId === get().currentSessionId) {
+        // 快照响应到达（无论落地还是被守卫丢弃）：压缩延迟 flush 的在途标记解除
+        compactSnapshotInFlightAt = 0
         // 流式进行中到达的重拉响应 = 可能是过期快照：turn 结束触发的 300ms 延迟
         // 重拉，会落后于排队消息自动发出后已开启的新 turn（idea.log 2026-08-15 时序
         // 证据：completed → flushQueue 发送 → 新 turn.started → 旧重拉才 resume/返回）。
@@ -4324,6 +4391,16 @@ export function handleResponse(
       })
       break
     }
+
+    case 'remoteState':
+      // 手机远程状态（连接中/等待扫码/已配对/异常；广播与响应同构体）
+      set({
+        remoteState: msg.state,
+        remoteQrUrl: msg.qrUrl ?? null,
+        remoteDeviceName: msg.deviceName ?? null,
+        remoteError: msg.error ?? null,
+      })
+      break
 
     case 'ideTheme':
     case 'files':
@@ -4974,6 +5051,28 @@ export function handleResponse(
       // 待交互计数全量快照（协议客户端反向请求计数，Kotlin 广播）：直接覆盖
       set({ pendingInteractionCounts: msg.counts ?? {} })
       break
+
+    case 'sessionTurnPhase': {
+      // 回合相位广播（Kotlin 全局事件监听，含手机远程驱动的会话）：列表行实时翻转
+      // 运行中/复位——远程会话在 IDE 无本地 streaming 状态，此前列表只能停在旧快照
+      // 值（运行中却显示已完成）。running 记入集合防后续旧快照降级；ended 复位并
+      // 防抖重拉对账真实状态与 updatedAt 排序（重拉时集合已删该行，快照值正常落地）
+      const phaseSid = msg.sessionId as string
+      if (phaseSid && !phaseSid.startsWith('sess_subagent')) {
+        const running = msg.phase === 'running'
+        const remoteRunningTurns = { ...get().remoteRunningTurns }
+        if (running) remoteRunningTurns[phaseSid] = Date.now()
+        else delete remoteRunningTurns[phaseSid]
+        set({
+          remoteRunningTurns,
+          sessions: get().sessions.map((s) =>
+            s.sessionId === phaseSid ? { ...s, status: running ? 'running' : 'idle' } : s,
+          ),
+        })
+        if (!running) scheduleTurnEndListRefresh(get)
+      }
+      break
+    }
 
     case 'modelRemigrated':
       // 重迁回包：结果进弹窗（names=迁入渠道名，空=无可迁移）；成功顺手全量重拉
@@ -5758,6 +5857,8 @@ function handleStreamBatchDirect(
       }
     }
     setTimeout(() => {
+      // 压缩延迟 flush 场景：标记快照在途（兜底触发时据此续等，防抢跑）
+      if (deferredCompactFlushSid === sessionId) compactSnapshotInFlightAt = Date.now()
       sendToJava({ op: 'messages', sessionId, workspacePath: get().currentWorkspacePath })
       // 刷新会话列表：CLI 会根据对话内容更新标题（sess_xxx → 用户问题）
       get().loadSessions()
@@ -6077,6 +6178,8 @@ function handleStreamEvent(
       get().flushQueue()
     }
     setTimeout(() => {
+      // 压缩延迟 flush 场景：标记快照在途（兜底触发时据此续等，防抢跑）
+      if (deferredCompactFlushSid === sessionId) compactSnapshotInFlightAt = Date.now()
       sendToJava({
         op: 'messages',
         sessionId,

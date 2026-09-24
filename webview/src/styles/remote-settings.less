@@ -1,0 +1,88 @@
+/**
+ * 手机远程设置页（状态卡 + 操作行 + 说明），布局对齐 browser-settings 的卡片风格。
+ */
+
+.remote-settings {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.remote-settings__status {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 14px;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-primary);
+  border-radius: 8px;
+
+  .remote-settings__state-text {
+    font-size: 13px;
+    color: var(--text-primary);
+    font-weight: 600;
+  }
+
+  .remote-settings__error {
+    font-size: 12px;
+    color: var(--text-secondary);
+    flex: 1;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+}
+
+.remote-settings__dot {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  flex-shrink: 0;
+
+  &--connecting { background: #d7a13b; animation: remote-pulse 1.2s ease-in-out infinite; }
+  &--waiting { background: #d7a13b; }
+  &--paired { background: #3fb950; }
+  &--error, &--kicked { background: #f85149; }
+  &--off, &--idle { background: var(--text-secondary); }
+}
+
+@keyframes remote-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.35; }
+}
+
+.remote-settings__desc,
+.remote-settings__note {
+  font-size: 12px;
+  color: var(--text-secondary);
+  line-height: 1.6;
+}
+
+.remote-settings__actions {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.remote-settings__btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 14px;
+  border-radius: 6px;
+  font-size: 13px;
+  cursor: pointer;
+  border: 1px solid var(--border-primary);
+  background: transparent;
+  color: var(--text-primary);
+
+  .codicon { font-size: 14px; }
+
+  &:hover:not(:disabled) { background: var(--bg-hover, rgba(128, 128, 128, 0.15)); }
+  &:disabled { opacity: 0.45; cursor: default; }
+
+  &--danger {
+    border-color: #f85149;
+    color: #f85149;
+  }
+}

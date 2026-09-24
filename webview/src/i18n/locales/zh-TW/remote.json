@@ -1,0 +1,49 @@
+{
+  "title": "手機遠程",
+  "close": "關閉",
+  "state": {
+    "connecting": "正在連線雲端…",
+    "waiting": "等待手機掃碼",
+    "paired": "手機已連線",
+    "error": "連線異常",
+    "kicked": "連線被其他執行個體取代",
+    "off": "未連線"
+  },
+  "hint": {
+    "scan": "用手機掃碼，在 ZCode 手機頁查看本機會話",
+    "secret": "二維碼包含裝置配對憑證，請勿截圖外傳",
+    "paired": "已連線，可在手機上查看與傳送會話訊息",
+    "connecting": "正在連線雲端 relay…",
+    "noQr": "暫無配對碼（可嘗試斷開後重連）"
+  },
+  "action": {
+    "disconnect": "斷開連線",
+    "unpair": "解除配對",
+    "unpairConfirm": "確認解除？（下次需重新掃碼）",
+    "copyLink": "複製連結",
+    "copied": "已複製",
+    "reconnect": "重新連線",
+    "stop": "停止",
+    "refreshQr": "重新整理二維碼"
+  },
+  "settings": {
+    "desc": "掃碼連接手機後，可在手機的 ZCode 網頁上查看本機會話並傳送訊息（經雲端中轉，跨網路可用）。",
+    "showQr": "顯示配對碼",
+    "disconnect": "斷開連線",
+    "unpair": "解除配對",
+    "note": "連線憑證保存在 IDE 密碼庫；解除配對後下次連線需重新掃碼。",
+    "unpairConfirmTitle": "解除手機配對？",
+    "unpairConfirmMsg": "將清除已保存的裝置憑證，手機端下次連線需要重新掃碼配對。"
+  },
+  "section": {
+    "title": "手機掃碼連線",
+    "desc": "用手機相機掃碼，在手機上開啟這個工作區。"
+  },
+  "card": {
+    "waitingDesc": "用手機掃碼，或在手機上開啟連結。",
+    "offDesc": "連線後產生配對碼，手機掃碼即可存取本機會話。"
+  },
+  "fallback": {
+    "title": "無法掃碼？可以在手機上開啟連結。"
+  }
+}

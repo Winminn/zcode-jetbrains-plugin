@@ -1,0 +1,49 @@
+{
+  "title": "手机远程",
+  "close": "关闭",
+  "state": {
+    "connecting": "正在连接云端…",
+    "waiting": "等待手机扫码",
+    "paired": "手机已连接",
+    "error": "连接异常",
+    "kicked": "连接被其他实例取代",
+    "off": "未连接"
+  },
+  "hint": {
+    "scan": "用手机扫码，在 ZCode 手机页查看本机会话",
+    "secret": "二维码包含设备配对凭据，请勿截图外传",
+    "paired": "已连接，可在手机上查看与发送会话消息",
+    "connecting": "正在连接云端 relay…",
+    "noQr": "暂无配对码（可尝试断开后重连）"
+  },
+  "action": {
+    "disconnect": "断开连接",
+    "unpair": "解除配对",
+    "unpairConfirm": "确认解除？（下次需重新扫码）",
+    "copyLink": "复制链接",
+    "copied": "已复制",
+    "reconnect": "重新连接",
+    "stop": "停止",
+    "refreshQr": "刷新二维码"
+  },
+  "settings": {
+    "desc": "扫码连接手机后，可在手机的 ZCode 网页上查看本机会话并发送消息（经云端中转，跨网络可用）。",
+    "showQr": "显示配对码",
+    "disconnect": "断开连接",
+    "unpair": "解除配对",
+    "note": "连接凭据保存在 IDE 密码库；解除配对后下次连接需重新扫码。",
+    "unpairConfirmTitle": "解除手机配对？",
+    "unpairConfirmMsg": "将清除已保存的设备凭据，手机端下次连接需要重新扫码配对。"
+  },
+  "section": {
+    "title": "手机扫码连接",
+    "desc": "用手机相机扫码，在手机上打开这个工作区。"
+  },
+  "card": {
+    "waitingDesc": "用手机扫码，或在手机上打开链接。",
+    "offDesc": "连接后生成配对码，手机扫码即可访问本机会话。"
+  },
+  "fallback": {
+    "title": "无法扫码？可以在手机上打开链接。"
+  }
+}
