@@ -268,4 +268,82 @@ class AccountProviderBridgeTest {
             ),
         )
     }
+
+    @Test
+    fun `brandOf 派生品牌短名`() {
+        assertEquals("BigModel", AccountProviderBridge.brandOf("account:bigmodel-individual-coding-plan", "x"))
+        assertEquals("BigModel", AccountProviderBridge.brandOf("account:bigmodel-offpeak-idle-plan", "x"))
+        assertEquals("Z.ai", AccountProviderBridge.brandOf("account:zai-team-coding-plan", "x"))
+        // 非账号渠道回退原名（自定义渠道显示用户命名）
+        assertEquals("千问", AccountProviderBridge.brandOf("3556624f-xxx", "千问"))
+    }
+
+    @Test
+    fun `accessModeOf 派生官方 mode 枚举`() {
+        assertEquals("individual-coding-plan", AccountProviderBridge.accessModeOf("account:bigmodel-individual-coding-plan"))
+        assertEquals("team-coding-plan", AccountProviderBridge.accessModeOf("account:zai-team-coding-plan"))
+        assertEquals("start-plan", AccountProviderBridge.accessModeOf("account:bigmodel-start-plan"))
+        assertEquals("off-peak", AccountProviderBridge.accessModeOf("account:bigmodel-offpeak-idle-plan"))
+        // 非账号渠道无 mode（H5 投影不伪装账号身份）
+        assertNull(AccountProviderBridge.accessModeOf("builtin:bigmodel-coding-plan"))
+        assertNull(AccountProviderBridge.accessModeOf("3556624f-xxx"))
+    }
+
+    // ===== overlayModelIds（账号渠道 personal 覆盖合并，2026-09-24 渠道重复修复）=====
+
+    /** provider_config.json account:* 规则 config 节同构样本 */
+    private fun ruleConfig(json: String): kotlinx.serialization.json.JsonObject =
+        kotlinx.serialization.json.Json.parseToJsonElement(json).jsonObject
+
+    @Test
+    fun `无覆盖规则返回目录 builtinModelIds 原序`() {
+        val builtin = listOf("GLM-5.3", "GLM-5.3-Flash")
+        assertEquals(builtin, AccountProviderBridge.overlayModelIds(null, builtin))
+        assertEquals(builtin, AccountProviderBridge.overlayModelIds(ruleConfig("{}"), builtin))
+    }
+
+    @Test
+    fun `modelOrder 完整序当权威（真机客户端写入形态）`() {
+        // 客户端新增 flashx 后写入的完整序：合并结果恰为 3 条、无重复
+        assertEquals(
+            listOf("GLM-5.3", "GLM-5.3-Flash", "glm-5.3-flashx"),
+            AccountProviderBridge.overlayModelIds(
+                ruleConfig("""{"personalModelIds":["glm-5.3-flashx"],"modelOrder":["GLM-5.3","GLM-5.3-Flash","glm-5.3-flashx"]}"""),
+                listOf("GLM-5.3", "GLM-5.3-Flash"),
+            ),
+        )
+    }
+
+    @Test
+    fun `modelOrder 缺省退化为 builtin 加 personal 追加`() {
+        assertEquals(
+            listOf("GLM-5.3", "GLM-5.3-Flash", "glm-5.3-flashx"),
+            AccountProviderBridge.overlayModelIds(
+                ruleConfig("""{"personalModelIds":["glm-5.3-flashx"]}"""),
+                listOf("GLM-5.3", "GLM-5.3-Flash"),
+            ),
+        )
+    }
+
+    @Test
+    fun `modelOrder 漏项时未收录模型按序补尾且去重`() {
+        assertEquals(
+            listOf("glm-5.3-flashx", "GLM-5.3", "GLM-5.3-Flash"),
+            AccountProviderBridge.overlayModelIds(
+                ruleConfig("""{"modelOrder":["glm-5.3-flashx"],"personalModelIds":["glm-5.3-flashx"]}"""),
+                listOf("GLM-5.3", "GLM-5.3-Flash"),
+            ),
+        )
+    }
+
+    @Test
+    fun `空白条目过滤`() {
+        assertEquals(
+            listOf("GLM-5.3"),
+            AccountProviderBridge.overlayModelIds(
+                ruleConfig("""{"personalModelIds":["","  "],"modelOrder":["GLM-5.3"]}"""),
+                emptyList(),
+            ),
+        )
+    }
 }

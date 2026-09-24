@@ -1263,6 +1263,8 @@ interface StoreState {
   closeRemotePairing: () => void
   /** 拉取手机远程状态（op=remoteStatus）*/
   refreshRemoteState: () => void
+  /** 强制重出码（op=remoteRefreshQr，新时间戳同配对）*/
+  refreshRemoteQr: () => void
   /** 手机远程断开连接（op=remoteStop）*/
   stopRemote: () => void
   /** 手机远程解除配对（清除凭据，op=remoteUnpair）*/
@@ -2959,6 +2961,8 @@ export const useStore = create<StoreState>((set, get) => ({
   },
   closeRemotePairing: () => set({ remotePairingOpen: false }),
   refreshRemoteState: () => sendToJava({ op: 'remoteStatus' }),
+  // 强制重出码（弹窗「刷新二维码」）：remotePairStart 已连接时幂等返回旧码不会刷新
+  refreshRemoteQr: () => sendToJava({ op: 'remoteRefreshQr' }),
   stopRemote: () => sendToJava({ op: 'remoteStop' }),
   unpairRemote: () => sendToJava({ op: 'remoteUnpair' }),
 

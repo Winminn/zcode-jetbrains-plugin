@@ -114,7 +114,7 @@ object ProviderConfigWriterV2 {
      */
     fun updateProvider(path: Path, providerId: String, f: ProviderConfigWriter.UpdateFields): String? =
         synchronized(WRITE_LOCK) {
-            updateLocked(path) { root ->
+            accountGuard(providerId) ?: updateLocked(path) { root ->
                 val rules = rulesOf(root) ?: throw IllegalStateException("缺少 providerRules")
                 val idx = rules.indexOfFirst { it.str("providerId") == providerId }
                 if (idx < 0) throw IllegalStateException("渠道不存在: $providerId")
@@ -138,7 +138,7 @@ object ProviderConfigWriterV2 {
     /** 删除渠道（rule + providerOrder + providerModelRules 三处同步清理）*/
     fun removeProvider(path: Path, providerId: String): String? =
         synchronized(WRITE_LOCK) {
-            updateLocked(path) { root ->
+            accountGuard(providerId) ?: updateLocked(path) { root ->
                 val rules = rulesOf(root) ?: throw IllegalStateException("缺少 providerRules")
                 if (rules.none { it.str("providerId") == providerId }) {
                     throw IllegalStateException("渠道不存在: $providerId")
@@ -154,7 +154,7 @@ object ProviderConfigWriterV2 {
     /** 启停渠道（rule.enabled；false 时 registry 整体排除该渠道，实验 B 验证）*/
     fun toggleProvider(path: Path, providerId: String, enabled: Boolean): String? =
         synchronized(WRITE_LOCK) {
-            updateLocked(path) { root ->
+            accountGuard(providerId) ?: updateLocked(path) { root ->
                 val rules = rulesOf(root) ?: throw IllegalStateException("缺少 providerRules")
                 val idx = rules.indexOfFirst { it.str("providerId") == providerId }
                 if (idx < 0) throw IllegalStateException("渠道不存在: $providerId")
@@ -303,6 +303,16 @@ object ProviderConfigWriterV2 {
     }
 
     // ============ 读改写骨架 ============
+
+    /**
+     * account:* 渠道写保护（2026-09-24）：该前缀规则是 ZCode 客户端托管的账号渠道
+     * personal 覆盖（modelOrder/personalModelIds），插件只读展示（账号卡 modelManage
+     * 归内置区只读），误写会破坏客户端数据。null = 放行，非 null = 拒绝文案。
+     */
+    private fun accountGuard(providerId: String): String? =
+        if (providerId.startsWith(AccountProviderBridge.ACCOUNT_RULE_PREFIX)) {
+            "账号渠道由 ZCode 客户端托管，请在客户端中修改后回来刷新"
+        } else null
 
     private fun rulesOf(root: JsonObject): List<JsonObject>? =
         (root["config"]?.jsonObject?.get("providerConfigRules")?.jsonObject?.get("providerRules")

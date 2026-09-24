@@ -35,10 +35,6 @@
     "unpairConfirmTitle": "Unpair phone?",
     "unpairConfirmMsg": "This clears stored device credentials. Your phone will need to scan the pairing code again."
   },
-  "section": {
-    "title": "Scan with phone",
-    "desc": "Scan with your phone camera to open this workspace on mobile."
-  },
   "card": {
     "waitingDesc": "Scan the code, or open the link on your phone.",
     "offDesc": "Connect to generate a pairing code for phone access."

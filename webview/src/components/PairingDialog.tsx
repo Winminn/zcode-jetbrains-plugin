@@ -7,7 +7,7 @@ import '@/styles/pairing-dialog.less'
 
 /**
  * 手机远程配对弹窗（对齐 ZCode 客户端「移动远程控制」布局）：
- * 段落标题 → 状态卡（连接状态独立展示+主操作）→ 备用链接卡 → 恒定 QR 区。
+ * 状态卡（连接状态独立展示+主操作）→ 备用链接卡 → 恒定 QR 区。
  * QR URL 内嵌 passHash（设备配对凭据），仅在弹窗内渲染展示，不落日志不外传。
  */
 export function PairingDialog() {
@@ -108,14 +108,6 @@ export function PairingDialog() {
         </div>
 
         <div className="pairing-dialog__body">
-          <div className="pairing-dialog__section">
-            <div className="pairing-dialog__section-title">
-              <span className="codicon codicon-device-mobile" />
-              {t('remote.section.title')}
-            </div>
-            <div className="pairing-dialog__section-desc">{t('remote.section.desc')}</div>
-          </div>
-
           <div className={`pairing-card pairing-card--${state}`}>
             <div className="pairing-card__main">
               <div className="pairing-card__title-row">
@@ -134,7 +126,7 @@ export function PairingDialog() {
           <div className="pairing-fallback">
             <div className="pairing-fallback__title">{t('remote.fallback.title')}</div>
             <div className="pairing-fallback__actions">
-              <button className="pairing-fallback__btn" onClick={() => useStore.getState().openRemotePairing()}>
+              <button className="pairing-fallback__btn" onClick={() => useStore.getState().refreshRemoteQr()}>
                 <span className="codicon codicon-refresh" />
                 {t('remote.action.refreshQr')}
               </button>

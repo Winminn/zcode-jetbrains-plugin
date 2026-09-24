@@ -31,6 +31,7 @@ import { useStore } from '@/store/useStore'
 import { FileRef } from './FileRef'
 import { SkillRef } from './SkillRef'
 import { ModelSelect } from './ModelSelect'
+import { PlanBadge } from './PlanBadge'
 import { ThoughtLevelSelect } from './ThoughtLevelSelect'
 import { ModeSelect } from './ModeSelect'
 import { ContextRing } from './ContextRing'
@@ -1731,7 +1732,9 @@ export function InputBox({ onSend, isStreaming = false, onStop, disabled = false
                           </div>
                           {scheduleModelGroups.map(([pid, items]) => (
                             <div key={pid} className="selector-dropdown-group">
-                              <div className="selector-dropdown-group-title">{items[0]?.providerName ?? pid}</div>
+                              <div className="selector-dropdown-group-title">{items[0]?.providerName ?? pid}
+                                <PlanBadge plan={items[0]?.plan} />
+                              </div>
                               {items.map((m) => (
                                 <div
                                   key={`${m.providerId}/${m.modelId}`}

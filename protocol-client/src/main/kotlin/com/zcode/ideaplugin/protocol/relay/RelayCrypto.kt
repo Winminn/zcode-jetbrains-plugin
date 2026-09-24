@@ -37,12 +37,14 @@ object RelayCrypto {
 
     /**
      * 配对 QR 指向的 H5 URL（H5 gE() 逆向 + 实测接受）。base64 的 +/= 必须 percent-encode。
+     * appVersion 为 null 时不出 app_version 参数（宿主版本读不到的场景；实测 H5 无该
+     * 参数可正常加载，服务端按未知版本走默认分支，胜过硬编码过期版本号）。
      */
     fun buildQrUrl(
         credentials: RelayCredentials,
         deviceName: String,
         origin: String = Relay.DEFAULT_ORIGIN,
-        appVersion: String = Relay.APP_VERSION,
+        appVersion: String? = Relay.APP_VERSION,
         theme: String = "dark",
         timestampMs: Long = System.currentTimeMillis(),
     ): String {
@@ -54,7 +56,7 @@ object RelayCrypto {
             append("&t=").append(timestampMs)
             append("&mid=").append(enc(credentials.deviceMid))
             append("&name=").append(enc(deviceName))
-            append("&app_version=").append(enc(appVersion))
+            if (!appVersion.isNullOrEmpty()) append("&app_version=").append(enc(appVersion))
             append("&theme=").append(theme)
         }
     }

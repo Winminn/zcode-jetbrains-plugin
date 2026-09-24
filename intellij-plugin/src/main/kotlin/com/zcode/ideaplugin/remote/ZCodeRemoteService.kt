@@ -78,11 +78,9 @@ class ZCodeRemoteService : Disposable {
         // 宿主版本 = 本机 ZCode App 版本（app_version 语义是客户端 3.x 体系，非 CLI
         // 包版本 0.16.x——旧值触发 H5 侧拉 cdn.zcode-ai.com 兼容配置，该 CDN 不可用
         // → 手机页面反复刷新，缺陷CZ）。asar 读 package.json，mtime 缓存零重复解析；
-        // 手动配置 CLI（无 App 安装）返回 null 走兜底常量
-        val hostAppVersion = runCatching {
-            com.zcode.ideaplugin.protocol.relay.DesktopAppVersion
-                .read(com.zcode.ideaplugin.protocol.ZCodeLocator.detect())
-        }.getOrNull() ?: Relay.APP_VERSION
+        // 读不到时 QR URL 不带该参数（实测 H5 正常加载），auth_init 仍走兜底常量
+        val detectedAppVersion = resolveHostAppVersion()
+        val hostAppVersion = detectedAppVersion ?: Relay.APP_VERSION
         val relayClient = RelayClient(
             config = RelayClient.RelayConfig(deviceName = deviceName.take(64), appVersion = hostAppVersion),
             credentials = credentials,
@@ -95,7 +93,7 @@ class ZCodeRemoteService : Disposable {
             when (state) {
                 RelayState.WAITING_TERMINAL -> {
                     lastQrUrl = relayClient.credentials.deviceSid?.let {
-                        RelayCrypto.buildQrUrl(relayClient.credentials, deviceName.take(64), appVersion = hostAppVersion)
+                        RelayCrypto.buildQrUrl(relayClient.credentials, deviceName.take(64), appVersion = detectedAppVersion)
                     }
                     uiState = UiState.WAITING
                 }
@@ -127,9 +125,9 @@ class ZCodeRemoteService : Disposable {
                 val bridgeId = payload["bridgeSessionId"]?.jsonPrimitive?.content
                 if (bridgeId != null) {
                     val recoveryId = payload["recoveryId"]?.jsonPrimitive?.content
-                    // 淘汰同 recoveryId 旧桥与超时死桥（H5 刷新后新桥建立，旧桥上下文若不清
-                    // 理会被帧泵持续轰炸——真机 30s 推 100+ 帧、三代僵尸桥并存）
-                    handlers.retireStaleBridges(bridgeId, recoveryId)
+                    // 单页单桥：新桥建立即全量淘汰旧桥（旧「90s 无活动」判据永不命中，
+                    // 僵尸桥双推帧放大流量是页面偶发刷新根因之一，缺陷 DH）
+                    handlers.retireStaleBridges(bridgeId)
                     handlers.context(bridgeId)?.let { it.recoveryId = recoveryId }
                     relayClient.sendChannelMessage(bridgeId, ChannelCodec.encodeInitialize())
                 }
@@ -147,17 +145,14 @@ class ZCodeRemoteService : Disposable {
         }
         relayClient.onChannelEventDispose = { listenerId -> router.handleEventDispose(listenerId) }
         relayClient.onTerminalChurn = {
-            // terminal 互顶循环自愈：重置 pair（同凭据重连）打断 H5 的零退避重连循环
-            // ——循环期间会话应答被 relay 的 terminal 切换丢弃（点会话打不开的根因），
-            // 重置后 relay 重建 pair，最先重连的页面成为唯一 terminal，系统回稳。
-            // 异步执行：回调在 WS 读线程，同步 close 自己的 WS 会卡 close 握手。
-            // 重置只能打断一次，多页面持续互顶须用户关闭多余页面（通知提示）
-            log.info("terminal churn → resetting pair to break the loop")
+            // 只通知、不再自动重置 pair（2026-09-23 真机实锤重置是伤害放大器）：
+            // 重置会重注册换新 deviceSid，已扫码页面 URL 里的旧 sid 追不上 → 手机页
+            // 被踢断后重连风暴 → 凑满下一轮 churn → 再重置，反馈循环永不停机。
+            // 且单页弱网同样产生真实翻转（WS 微断 + pair_status ACK 抖动 + 桥重建），
+            // churn 无法区分「多页互顶」与「单页弱网」，误伤率不可接受。
+            // 多页互顶的正确处置只有用户关闭多余页面（通知提示，5min 去抖）
+            log.info("terminal churn detected → notify only (pair reset removed)")
             notifyTerminalChurn()
-            channelExecutor.execute {
-                runCatching { disconnect() }
-                runCatching { connect() }
-            }
         }
 
         client = relayClient
@@ -197,6 +192,25 @@ class ZCodeRemoteService : Disposable {
         return runCatching { connect() }.getOrElse { statusJson() }
     }
 
+    /** 宿主 App 版本原始读取（可空；QR URL 读不到不传参，auth_init 由调用方兜底） */
+    private fun resolveHostAppVersion(): String? = runCatching {
+        com.zcode.ideaplugin.protocol.relay.DesktopAppVersion
+            .read(com.zcode.ideaplugin.protocol.ZCodeLocator.detect())
+    }.getOrNull()
+
+    /**
+     * 强制重出码（弹窗「刷新二维码」）：connect() 已运行时幂等返回旧码，二维码过期后
+     * 用户点刷新无效。重算 buildQrUrl（sid/hash 不变=同一配对，仅 t 时间戳刷新）并广播。
+     */
+    @Synchronized
+    fun refreshQr(): JsonObject {
+        val creds = client?.credentials
+        if (creds?.deviceSid == null) return statusJson()
+        lastQrUrl = RelayCrypto.buildQrUrl(creds, deviceName.take(64), appVersion = resolveHostAppVersion())
+        broadcastState()
+        return statusJson()
+    }
+
     fun statusJson(): JsonObject = buildJsonObject {
         put("op", "remoteState")
         put("state", uiState.name.lowercase())
@@ -229,8 +243,9 @@ class ZCodeRemoteService : Disposable {
 
     /** 回合运行中的会话集合：session/list 快照的 status 只在订阅/拉取时刻刷新，
      *  回合期间 H5 首页恒显示「已完成」而官方客户端转圈（2026-09-23 用户实测）。
-     *  事件源与 webview broadcastTurnPhase 同一个全局监听器 */
-    private val runningSessionIds: MutableSet<String> = java.util.concurrent.ConcurrentHashMap.newKeySet()
+     *  事件源=ZCodeServiceImpl 全局监听（legacy turn.*）+ v4 帧扫描（turnHeader 行）。
+     *  值=最近一次相位更新时刻，供 sweep 超时兜底（终态事件丢失时防永久运行中） */
+    private val runningSessionIds: java.util.concurrent.ConcurrentMap<String, Long> = java.util.concurrent.ConcurrentHashMap()
 
     private class ControllerSub(val bridgeSessionId: String, val topic: String) {
         /** 帧序号（官方宿主同构：toSeq 随每帧递增）。H5 消费端 `toSeq<=已应用seq`
@@ -252,13 +267,22 @@ class ZCodeRemoteService : Disposable {
         controllerSubs[subscriptionId] = ControllerSub(bridgeSessionId, topic)
     }
 
+    /** 桥淘汰的路由侧清理（RemoteChannelHandlers.clearBridge 调用）：RelayBridge 的
+     *  桥行/EventFire 监听登记 + controller 订阅随桥移除——否则 repush 的 hasListener
+     *  判据对死桥恒真，快照帧持续双推（缺陷 DH） */
+    fun clearBridgeRouting(bridgeSessionId: String) {
+        router.bridge.clearBridge(bridgeSessionId)
+        controllerSubs.entries.removeIf { it.value.bridgeSessionId == bridgeSessionId }
+    }
+
     fun isSessionRunning(sessionId: String): Boolean = sessionId in runningSessionIds
 
     /** 回合相位入口：集合翻转 + 防抖重推 controller 快照（推完即置位，期间新变化可再排） */
     fun onSessionTurnPhase(sessionId: String, running: Boolean) {
         // 子代理会话不在任务列表（同 webview sessionTurnPhase 口径）
         if (sessionId.startsWith("sess_subagent")) return
-        val changed = if (running) runningSessionIds.add(sessionId) else runningSessionIds.remove(sessionId)
+        val changed = if (running) runningSessionIds.put(sessionId, System.currentTimeMillis()) == null
+                      else runningSessionIds.remove(sessionId) != null
         if (!changed || controllerSubs.isEmpty()) return
         if (!repushPending.compareAndSet(false, true)) return
         bridgeSweeper.schedule({
@@ -267,23 +291,17 @@ class ZCodeRemoteService : Disposable {
         }, 400, java.util.concurrent.TimeUnit.MILLISECONDS)
     }
 
-    /** 运行集合权威校验（sweep 兜底）：终态帧若丢失（op 形态演进/state.updated 等
-     *  扫描盲区），集合残留会让列表行永久「运行中」——以 app-server session/list
-     *  的 status 为权威纠偏，校正后如有移除触发重推 */
+    /** 超时兜底（sweep）：session/list 的 status 恒 idle（db 无 status 列，app-server
+     *  内存合成、不反映回合相位，scripts/diag-sessionlist-running-status.py 实测
+     *  500 条全 idle）——不能作为纠偏权威，retainAll(空权威) 曾把真跑着的会话
+     *  每分钟清一遍，相位修复全出口失效（缺陷 DD，18:18:32 running=1 → 18:19:29
+     *  running=0 与 60s sweep 网格对齐实锤）。终态丢失防御降级为时间阈值：
+     *  超过 2h 无任何相位帧刷新才移除（误清代价=列表显示已完成，可接受） */
     private fun sweepRunningSessions() {
         if (runningSessionIds.isEmpty()) return
-        val authoritative = HashSet<String>()
-        for (impl in com.zcode.ideaplugin.ZCodeServiceImpl.activeProjectServices()) {
-            if (!impl.isStarted()) continue
-            val c = runCatching { impl.getClient() }.getOrNull() ?: continue
-            val ws = impl.ownerProject.basePath ?: continue
-            runCatching { c.listSessions(ws) }.getOrDefault(emptyList())
-                .filter { it.status == "running" }
-                .forEach { authoritative.add(it.sessionId) }
-        }
-        val before = runningSessionIds.size
-        runningSessionIds.retainAll(authoritative)
-        if (runningSessionIds.size != before && controllerSubs.isNotEmpty()) {
+        val now = System.currentTimeMillis()
+        val stale = runningSessionIds.entries.removeIf { now - it.value > RUNNING_ENTRY_TTL_MS }
+        if (stale && controllerSubs.isNotEmpty()) {
             channelExecutor.execute { runCatching { repushControllerSnapshots() } }
         }
     }
@@ -600,9 +618,11 @@ class ZCodeRemoteService : Disposable {
         }.onFailure { log.warn("remote notify failed: ${it.message}") }
     }
 
-    /** 多页面互顶告警（5 分钟冷却）：churn 重置只能打断一次，多个旧页面持续重连
-     *  会继续互顶（手机/浏览器侧行为，device 无法代为关闭）——必须提示用户关闭
-     *  多余页面，否则页面反复刷新、会话加载时断时续（2026-09-23 用户真机实锤） */
+    /** 多页面互顶告警（5 分钟冷却）：旧页面持续重连会互顶（手机/浏览器侧行为，
+     *  device 无法代为关闭）——必须提示用户关闭多余页面，否则页面反复刷新、
+     *  会话加载时断时续（2026-09-23 用户真机实锤）。
+     *  注意：单页弱网也会凑满 churn 阈值（见 onTerminalChurn 注释），本通知
+     *  可能误报，文案只作提示不作断言 */
     @Volatile private var lastChurnNotifyAt: Long = 0
 
     private fun notifyTerminalChurn() {
@@ -613,7 +633,7 @@ class ZCodeRemoteService : Disposable {
             com.intellij.notification.NotificationGroupManager.getInstance()
                 .getNotificationGroup("ZCode")
                 .createNotification(
-                    "检测到多个远程页面互抢连接：请关闭手机和浏览器上多余的远程页面，只保留一个",
+                    "远程页面连接频繁断开重连：若手机/浏览器开着多个远程页面请只保留一个；若只有一个页面，多为移动网络不稳，页面会自动重连",
                     com.intellij.notification.NotificationType.WARNING,
                 )
                 .notify(null)
@@ -625,6 +645,10 @@ class ZCodeRemoteService : Disposable {
 
         /** H5 列表/快照下发上限：会话库大会员（500+）全量下发打爆 H5 端（崩溃重连循环） */
         internal const val TASK_SNAPSHOT_LIMIT = 150
+
+        /** sweep 超时兜底阈值：相位事件正常每回合至少一次翻转（started/completed），
+         *  长跑回合按 v4 turnHeader 流也会持续刷新；2h 无刷新=事件源已丢 */
+        private const val RUNNING_ENTRY_TTL_MS = 2 * 60 * 60 * 1000L
 
         @JvmStatic
         fun getInstance(): ZCodeRemoteService = ApplicationManager.getApplication().getService(ZCodeRemoteService::class.java)

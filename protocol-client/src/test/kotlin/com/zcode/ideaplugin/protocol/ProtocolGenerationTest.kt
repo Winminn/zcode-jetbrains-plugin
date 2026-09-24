@@ -137,6 +137,21 @@ class ProtocolGenerationTest {
     }
 
     @Test
+    fun `小写模型id命中大写专属规则（自定义渠道手填id，缺陷DJ）`() {
+        // 真实目录形态：泛化 glm-5 规则小写、GLM-5.2 专属规则大写（大小写混杂）。
+        // 服务端按大小写不敏感解析（自定义渠道小写 glm-5.2 被按 GLM-5.2 规则集校验），
+        // 目录匹配必须同口径，否则小写 id 掉泛化规则拿错级别集
+        writeCatalog(
+            """{"modelMatch":".*","config":{"optionSpecs":{"reasoningLevel":{"values":["disabled","enabled"]}}}},
+                {"modelMatch":".*glm-5(?:[.\\-:/\\[].*)?","config":{"optionSpecs":{"reasoningLevel":{"values":["disabled","enabled"]}}}},
+                {"modelMatch":".*GLM-5\\.2(?:[.\\-:/\\[].*)?","config":{"optionSpecs":{"reasoningLevel":{"values":["disabled","high","max"]}}}}"""
+        )
+        assertEquals(listOf("disabled", "high", "max"), BuiltinModelCatalog.reasoningValues("glm-5.2", null, home.toString()))
+        assertEquals(listOf("disabled", "high", "max"), BuiltinModelCatalog.reasoningValues("GLM-5.2", null, home.toString()))
+        assertEquals("max", BuiltinModelCatalog.defaultReasoningLevel("glm-5.2", null, home.toString()))
+    }
+
+    @Test
     fun `真实样式目录冒烟（存在才跑）`() {
         val real = Path.of(System.getProperty("user.home"), ".zcode", "v2", "runtime", "provider")
         if (!Files.isDirectory(real)) return

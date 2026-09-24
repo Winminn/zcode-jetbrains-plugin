@@ -248,17 +248,22 @@ class RelayClient(
     private fun setState(next: RelayState) {
         if (state == next) return
         state = next
+        // 翻转计数挂在真实状态变化上：心跳 pair_status_query 的 ACK 每 10s 一条，
+        // 若在 ACK 分支无条件计数，60s 窗口必凑满阈值——churn 假阳性每 40s 重置
+        // 一次 pair 反复踢断手机页（2026-09-23 晚「会话加载不出来」实锤，21:46-48 四连击）
+        if (next == RelayState.PAIRED || next == RelayState.WAITING_TERMINAL) recordPairFlip(next)
         println("[zcode-relay] 状态 → $next")
         runCatching { onStateChange?.invoke(next) }
             .onFailure { println("[zcode-relay] onStateChange 异常: ${it.message}") }
     }
 
     /**
-     * terminal 互顶循环检测：滑窗 [Relay.TERMINAL_CHURN_WINDOW_MS] 内 pair 翻转
-     * ≥ [Relay.TERMINAL_CHURN_FLIPS] 次即告警（每次告警后冷却一个窗口防重入）。
-     * 正常使用（单页面开关/偶发断连）窗口内翻转 1-2 次；互顶循环实测每秒 2-4 次。
+     * terminal 互顶循环检测：滑窗 [Relay.TERMINAL_CHURN_WINDOW_MS] 内 pair 真实
+     * 翻转（仅 setState 的 PAIRED↔WAITING_TERMINAL 变化沿，见调用处）≥
+     * [Relay.TERMINAL_CHURN_FLIPS] 次即告警（每次告警后冷却一个窗口防重入）。
+     * 正常使用（单页面开关/偶发断连）窗口内翻转 1-2 次。
      */
-    private fun recordPairFlip(@Suppress("UNUSED_PARAMETER") next: RelayState) {
+    private fun recordPairFlip(next: RelayState) {
         val now = System.currentTimeMillis()
         pairFlipTimestamps.add(now)
         while (pairFlipTimestamps.isNotEmpty() && now - pairFlipTimestamps.peek() > Relay.TERMINAL_CHURN_WINDOW_MS) {
@@ -337,12 +342,10 @@ class RelayClient(
                 when ((msg["pair_status"] as? JsonPrimitive)?.content) {
                     "matched" -> {
                         reconnectAttempt = 0 // 会话真正建立：退避归零（否则闪断几次后每次都等 60s）
-                        recordPairFlip(RelayState.PAIRED)
                         setState(RelayState.PAIRED)
                     }
                     "waiting" -> {
                         reconnectAttempt = 0
-                        recordPairFlip(RelayState.WAITING_TERMINAL)
                         setState(RelayState.WAITING_TERMINAL)
                     }
                     else -> setState(RelayState.AUTHENTICATING)

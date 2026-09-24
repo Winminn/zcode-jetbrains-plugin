@@ -1,9 +1,11 @@
 package com.zcode.ideaplugin.protocol
 
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
+import kotlinx.serialization.json.put
 import java.nio.file.Files
 import kotlin.io.path.readText
 import kotlin.test.Test
@@ -312,5 +314,43 @@ class ProviderConfigWriterV2Test {
         }
         assertTrue(Files.isRegularFile(p.resolveSibling("provider_config.json.bak.1")))
         assertTrue(Files.isRegularFile(p.resolveSibling("provider_config.json.bak.2")))
+    }
+
+    // ============ account:* 写保护（2026-09-24 渠道重复修复）============
+
+    @Test
+    fun `account 渠道拒绝改删启停且文件不动`() {
+        val p = tmpProviderConfig()
+        // 混入一条客户端托管的 account:* 覆盖规则（真机形态：仅 modelOrder+personalModelIds）
+        val root = readRoot(p)
+        val accountRule = Json.parseToJsonElement(
+            """{"providerId":"account:bigmodel-individual-coding-plan","config":{
+               "modelOrder":["GLM-5.3","GLM-5.3-Flash","glm-5.3-flashx"],
+               "personalModelIds":["glm-5.3-flashx"]}}""",
+        ).jsonObject
+        val cfg = root["config"]!!.jsonObject
+        val rules = cfg["providerConfigRules"]!!.jsonObject["providerRules"]!!.jsonArray
+        val merged = buildJsonObject {
+            root.forEach { (k, v) -> if (k != "config") put(k, v) }
+            put("config", buildJsonObject {
+                cfg.forEach { (k, v) -> if (k != "providerRules") put(k, v) }
+                put("providerRules", kotlinx.serialization.json.JsonArray(rules + accountRule))
+            })
+        }
+        Files.write(p, merged.toString().toByteArray())
+        val before = p.readText()
+
+        val msg = "客户端托管"
+        assertTrue(ProviderConfigWriterV2.toggleProvider(p, "account:bigmodel-individual-coding-plan", false)!!.contains(msg))
+        assertTrue(ProviderConfigWriterV2.removeProvider(p, "account:bigmodel-individual-coding-plan")!!.contains(msg))
+        assertTrue(
+            ProviderConfigWriterV2.updateProvider(
+                p, "account:bigmodel-individual-coding-plan",
+                ProviderConfigWriter.UpdateFields(name = "x", kind = null, baseURL = null, apiKey = null, models = null, enabled = null),
+            )!!.contains(msg),
+        )
+        assertEquals(before, p.readText(), "三次被拒后文件逐字节不动")
+        // 非账号渠道不受影响
+        assertEquals(null, ProviderConfigWriterV2.toggleProvider(p, "deepseek", true))
     }
 }

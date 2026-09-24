@@ -90,9 +90,12 @@ object Relay {
     const val HEARTBEAT_DEAD_MS = 30_000L
 
     /** terminal 互顶循环判定窗口与阈值：多页面互顶时 H5 零退避重连（KICKED 帧竞速
-     *  失败送不到），pair 翻转每秒 2-4 次持续不断；正常使用 10s 内 1-2 次 */
-    const val TERMINAL_CHURN_WINDOW_MS = 10_000L
-    const val TERMINAL_CHURN_FLIPS = 8
+     *  失败送不到）。实测节奏是「阵发式」——4 次翻转一阵、歇 80s 左右再来（20:50-52
+     *  互顶风暴实录），不是持续的每秒 2-4 次；原 8 次/10s 阈值一次都凑不齐=自愈
+     *  形同虚设。窗口拉到 60s 覆盖间歇阵发，6 次≈一阵半（单阵 4 次不误报，
+     *  正常单页面断连重连 1-2 次远低于阈值） */
+    const val TERMINAL_CHURN_WINDOW_MS = 60_000L
+    const val TERMINAL_CHURN_FLIPS = 6
 }
 
 /** 设备配对凭据（deviceSid 由 relay 注册后分配；持久化责任在宿主，生产走 IDE PasswordSafe） */

@@ -23,6 +23,7 @@
 import { useMemo, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { SettingToggle } from './SettingToggle'
+import { PlanBadge } from './PlanBadge'
 import { readNotifyConfig, writeNotifyConfig } from '@/utils/notifyConfig'
 import { readEnhanceConfig, writeEnhanceConfig, type EnhanceModel } from '@/utils/enhanceConfig'
 import { readTurnCollapseConfig, writeTurnCollapseConfig, type TurnCollapseConfig } from '@/utils/turnCollapseConfig'
@@ -157,7 +158,9 @@ export function BehaviorSettings() {
                 </div>
                 {groups.map(([providerId, items]) => (
                   <div key={providerId} className="selector-dropdown-group">
-                    <div className="selector-dropdown-group-title">{items[0]?.providerName ?? providerId}</div>
+                    <div className="selector-dropdown-group-title">{items[0]?.providerName ?? providerId}
+                      <PlanBadge plan={items[0]?.plan} />
+                    </div>
                     {items.map((m) => (
                       <div
                         key={`${m.providerId}/${m.modelId}`}

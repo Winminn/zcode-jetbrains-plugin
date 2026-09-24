@@ -118,15 +118,11 @@ class RemoteChannelRouter {
     }
 
     companion object {
-        /** M0 报告方法面已知、将由本桥实现的 channel 集；其余直接 Method not found。
-         *  白名单必须覆盖 handle() when 分支的全部 channel（oauth/settings-sync/bots 曾
-         *  漏——handler 实现被挡在门外全回 Method not found，2026-08-25 装机日志定案） */
-        val KNOWN_CHANNELS = setOf(
-            "zcode-task", "zcode-agent", "zcode-session", "system", "broadcast",
-            "model-provider", "usage-stats", "skills", "subagents", "plugins",
-            "memory", "commands", "hooks", "setting", "oauth", "settings-sync",
-            "bots", "file", "git", "window-controller",
-            "coding-plan-subscription", "off-peak-task", "client-scenes",
+        /** 白名单 = handler 已实现集（单一权威源，RemoteChannelHandlers.CHANNELS 派生，
+         *  杜绝双源漂移）+ M0 方法面预留未实现集。预留项过白名单后走 handler else
+         *  分支回 Method not found——与 miss 同响应，仅日志 call/miss 形态不同 */
+        val KNOWN_CHANNELS = RemoteChannelHandlers.CHANNELS + setOf(
+            "system", "broadcast", "plugins", "memory", "commands", "hooks", "file",
         )
     }
 }

@@ -35,10 +35,6 @@
     "unpairConfirmTitle": "解除手机配对？",
     "unpairConfirmMsg": "将清除已保存的设备凭据，手机端下次连接需要重新扫码配对。"
   },
-  "section": {
-    "title": "手机扫码连接",
-    "desc": "用手机相机扫码，在手机上打开这个工作区。"
-  },
   "card": {
     "waitingDesc": "用手机扫码，或在手机上打开链接。",
     "offDesc": "连接后生成配对码，手机扫码即可访问本机会话。"

@@ -29,10 +29,6 @@ private const val READ_SESSION_BUDGET_BYTES = 512 * 1024
 /** 僵尸桥判定（后台兜底）：超过该时长无任何 channel 活动的桥视为已关闭 */
 private const val STALE_BRIDGE_MS = 10 * 60_000L
 
-/** 新桥建立时的收紧阈值：H5 单页单桥，刷新/重连后旧桥不再活动（recoveryId 每次都换，
- *  同 id 匹配不可依赖）——真机实测 30s 可推 100+ 死帧，90s 足够覆盖并发 open 间隔 */
-private const val STALE_BRIDGE_ON_OPEN_MS = 90_000L
-
 /** 裁剪 session/read 响应：messages 超预算时仅保留最近消息。
  * 单条消息本身超预算时无条件保留最新一条（H5 至少能渲染出会话尾巴）。 */
 internal fun trimSessionMessages(state: JsonObject, budgetBytes: Int = READ_SESSION_BUDGET_BYTES): JsonObject {
@@ -155,6 +151,19 @@ internal fun buildRemoteConfigOptions(settings: JsonObject): kotlinx.serializati
  */
 class RemoteChannelHandlers(private val service: ZCodeRemoteService) {
 
+    companion object {
+        /** handle() when 分支覆盖的全部 channel——**单一权威源**，路由白名单由此派生。
+         *  双源漂移已三次把 handler 实现挡在白名单外（oauth/settings-sync/bots、
+         *  model-selection/provider-settings），漏项全回 Method not found 且装包才
+         *  复现（H5「加载失败」，2026-09-23 真机日志实锤） */
+        val CHANNELS = setOf(
+            "setting", "oauth", "model-provider", "model-selection", "provider-settings",
+            "zcode-agent", "zcode-task", "zcode-session", "window-controller", "git",
+            "usage-stats", "coding-plan-subscription", "off-peak-task", "subagents",
+            "skills", "client-scenes", "settings-sync", "bots",
+        )
+    }
+
     private val log = Logger.getInstance("ZCodePlugin")
     private val json = Json { ignoreUnknownKeys = true }
 
@@ -178,31 +187,34 @@ class RemoteChannelHandlers(private val service: ZCodeRemoteService) {
     fun activeContexts(): Map<String, BridgeV4Context> = bridgeContexts.toMap()
 
     fun clearBridge(bridgeSessionId: String) {
-        val ctx = bridgeContexts.remove(bridgeSessionId) ?: return
-        val client = service.appServer(null) ?: return
-        for (sub in ctx.subscriptions.values) {
-            runCatching { client.v4ConversationUnsubscribe(sub.topic, sub.subscriptionId, ctx.connectionId) }
+        val ctx = bridgeContexts.remove(bridgeSessionId)
+        val client = service.appServer(null)
+        if (ctx != null && client != null) {
+            for (sub in ctx.subscriptions.values) {
+                runCatching { client.v4ConversationUnsubscribe(sub.topic, sub.subscriptionId, ctx.connectionId) }
+            }
         }
+        // 路由簿无论 ctx 是否存在都要清：RelayBridge 的桥行/EventFire 监听在
+        // bridge-open/listen 时登记，可先于 helloConversationV4 建 ctx；不清则
+        // controller 重推的 hasListener 判据恒真，死桥持续收快照帧（缺陷 DH）
+        service.clearBridgeRouting(bridgeSessionId)
     }
 
     /**
-     * 僵尸桥淘汰（新桥建立时调用）：H5 刷新/重连后 bridge-open 带**新 recoveryId**开新桥，
-     * 旧桥上下文若不清理，v4 帧泵会持续向死桥推 EventFire（真机实测 30s 推 100+ 帧、
-     * 三代僵尸桥并存轰炸）。淘汰两类：①同 recoveryId 的旧桥（同一逻辑会话的恢复，新桥
-     * 必然替代）；②超 [STALE_BRIDGE_MS] 无任何 channel 活动的桥（H5 页面已关闭）。
+     * 僵尸桥淘汰（新桥建立时调用）：H5 单页单桥——新 bridge-open 意味着其余旧桥
+     * 已被页面刷新/WS 重连抛弃，**立即全量淘汰**。
+     * 旧「90s 无活动」判据实测永不命中（缺陷 DH，2026-09-24 IAB 复现）：旧桥被
+     * 抛弃前一刻通常还在处理请求（idle 恒为秒级），僵尸桥因此存活至 10min 兜底
+     * 巡检，期间事件泵对新旧桥双推——每帧事件重复两份、流量翻倍，弱网手机端被
+     * 放大流量压垮遭 relay 踢断，重连又开新桥，代际叠加滚雪球（页面反复刷新）。
+     * recoveryId/bridgeGeneration 均不可作保序判据（页面重载即重置），但单设备
+     * WS 有序投递下「最后 open 的桥即活桥」成立。
      */
-    fun retireStaleBridges(keepBridgeId: String, newRecoveryId: String?) {
-        val now = System.currentTimeMillis()
-        for ((id, ctx) in bridgeContexts) {
+    fun retireStaleBridges(keepBridgeId: String) {
+        for (id in bridgeContexts.keys.toList()) {
             if (id == keepBridgeId) continue
-            // H5 单页单桥：新 bridge-open 意味着旧桥已被页面刷新/重连抛弃（实测每次刷新
-            // recoveryId 都会换，同 recoveryId 匹配不可依赖）——open 时收紧到 90s 无活动
-            // 即淘汰；日常后台巡检按 STALE_BRIDGE_MS 兜底
-            val stale = now - ctx.lastActiveMs > STALE_BRIDGE_ON_OPEN_MS
-            if (stale) {
-                log.info("retiring stale bridge $id (idle=${now - ctx.lastActiveMs}ms)")
-                clearBridge(id)
-            }
+            log.info("retiring replaced bridge $id (new bridge opened)")
+            clearBridge(id)
         }
     }
 
@@ -245,6 +257,18 @@ class RemoteChannelHandlers(private val service: ZCodeRemoteService) {
             "setting" -> handleSetting(method, responder)
             "oauth" -> handleOauth(method, responder)
             "model-provider" -> handleModelProvider(method, responder)
+            "model-selection" -> when (method) {
+                // H5 3.14.x 新协议路径的模型选择器唯一数据源（宿主版本对齐真实客户端后
+                // 启用；旧 3.8.1 假版本走 model-provider.getAll 兼容路径）。getView miss
+                // → H5 指数退避重试后模型选择器「加载失败」（2026-09-23 真机日志实锤）
+                "getView" -> responder.success(ChValue.Obj(modelSelectionView(args0)))
+                else -> responder.error("Method not found: model-selection.$method")
+            }
+            "provider-settings" -> when (method) {
+                // H5 3.14.x 设置面数据源；miss 同样触发指数退避重试（真机 6 次刷屏）
+                "getView", "refresh" -> responder.success(ChValue.Obj(providerSettingsView()))
+                else -> responder.error("Method not found: provider-settings.$method")
+            }
             "zcode-agent" -> handleAgent(project, bridgeSessionId, method, args0, request.args, responder)
             "zcode-task" -> handleTask(project, bridgeSessionId, method, args0, responder)
             "zcode-session" -> handleSession(project, method, args0, responder)
@@ -484,6 +508,305 @@ class RemoteChannelHandlers(private val service: ZCodeRemoteService) {
      * disabled provider 官方也返回（H5 按 enabled 过滤），apiKey 必须是 string：
      * H5 coding-plan 恢复链裸调 n.apiKey.trim()，缺失即整页崩溃；空 apiKey 串合法
      * （trim 后长度 0 = 该 provider 无凭证，H5 会过滤） */
+    /** H5 按 revision 丢弃回退帧（`revision < 已应用 → 丢弃`），视图版本必须单调递增 */
+    private val modelViewRevision = java.util.concurrent.atomic.AtomicLong(0)
+
+    /**
+     * H5 3.14.x 模型选择 view（model-selection.getView 应答）。
+     * 形状逆向自官方 app.asar（freezeView + effectiveSelection 解析链）+ H5 bundle 消费面：
+     * providers[].models[].config.optionSpecs.reasoningLevel.values 必读（级别合法性校验
+     * 与下拉），preferredSelection 缺 options.reasoningLevel 判 ready-empty（不预选）。
+     * 模型清单与 IDE 输入框下拉同源（面板 listModels：账号渠道+自定义渠道），面板不可用
+     * 回退 config.json 直读。
+     *
+     * input.selection 回显契约（官方 facades.ts getView(input) → resolveEffectiveModelSelection）：
+     * H5 点选模型只更新本地草稿，随即带 {selection:草稿} 重调 getView，**显示层以应答的
+     * effectiveSelection 为权威覆盖草稿**——宿主必须校验并回显请求的 selection，否则 UI
+     * 立刻回弹旧模型、提交也带旧值（2026-09-23 IAB 实锤「切模型不生效」根因：此前忽略
+     * 入参恒回 kv 解析值）。校验失败按官方 selectionIssue 码回 null（provider-not-found/
+     * model-not-found）；无入参时回退 kv preferredSelection（老调用面兼容）。
+     */
+    private fun modelSelectionView(input: JsonObject): JsonObject {
+        val zcodePath = runCatching { com.zcode.ideaplugin.protocol.ZCodeLocator.detect() }.getOrNull()
+        val levelsByKey = mutableMapOf<Pair<String, String>, List<String>>()
+        val rows = bridgeModelRows()
+        val providers = rows.groupBy { it.first }.mapNotNull { (provider, models) ->
+            val viewModels = models.mapNotNull { row ->
+                modelSelectionModel(row.second, provider, zcodePath, levelsByKey)
+            }
+            if (viewModels.isEmpty()) return@mapNotNull null
+            buildJsonObject {
+                put("providerId", provider)
+                put("providerName", models.first().third ?: provider)
+                put("config", buildJsonObject {
+                    put("visibility", "visible")
+                    // H5 工具栏模型列表构建（HH→nSt）判 t.config.api?.type：缺失=整个
+                    // provider 被过滤=「管理模型」空列表（2026-09-23 IAB 实锤）。'glm'
+                    // 分支只要求 type 非空（sa('glm') 恒真，官方硬编码 selectedProvider='glm'）
+                    put("api", buildJsonObject { put("type", "anthropic-messages") })
+                    // 账号渠道必须带 access.mode：H5 rSt(providerId, access) 按 mode 派生
+                    // 渠道徽标（Individual/Team/Free）与短名查表；缺失时 zod safeParse
+                    // 失败掉 providerName 兜底=长全名无徽标（2026-09-23 IAB 实测「BigModel
+                    // Individual Coding Plan」vs 官方「BigModel 个人」）。自定义渠道不
+                    // 伪装账号身份，同一兜底显示用户命名
+                    com.zcode.ideaplugin.protocol.AccountProviderBridge.accessModeOf(provider)?.let { mode ->
+                        put("access", buildJsonObject {
+                            put("type", "zhipu-account")
+                            put("mode", mode)
+                        })
+                    }
+                })
+                put("models", kotlinx.serialization.json.JsonArray(viewModels))
+            }
+        }
+        val selection = resolveModelSelection(levelsByKey, zcodePath)
+        val effective = resolveRequestedSelection(input["selection"] as? JsonObject, levelsByKey, zcodePath)
+            ?: selection
+        return buildJsonObject {
+            put("revision", modelViewRevision.incrementAndGet())
+            put("providers", kotlinx.serialization.json.JsonArray(providers))
+            if (selection != null) {
+                put("preferredSelection", selection)
+            } else {
+                put("preferredSelection", kotlinx.serialization.json.JsonNull)
+            }
+            if (effective != null) {
+                put("effectiveSelection", effective)
+            } else {
+                put("effectiveSelection", kotlinx.serialization.json.JsonNull)
+                put("selectionIssue", "selection-missing")
+            }
+        }
+    }
+
+    /**
+     * 官方 getView(input) 的 resolveEffectiveModelSelection 对齐：H5 传入的草稿 selection
+     * 命中当前清单即归一化回显（reasoningLevel 非法回退目录默认）。未命中（provider 已
+     * 删/清单未就绪）返回 null 走 kv preferredSelection 兜底——官方此处回
+     * provider-not-found 等 selectionIssue + null，但 H5 消费面 effectiveSelection=null
+     * 会判 submission-not-ready 阻断发送，兜底旧值比阻断更符合宿主单渠道事实
+     */
+    private fun resolveRequestedSelection(
+        req: JsonObject?,
+        levelsByKey: Map<Pair<String, String>, List<String>>,
+        zcodePath: java.nio.file.Path?,
+    ): JsonObject? {
+        if (req == null) return null
+        val pid = req["providerId"]?.jsonPrimitive?.contentOrNull ?: return null
+        val mid = req["modelId"]?.jsonPrimitive?.contentOrNull ?: return null
+        val values = levelsByKey[pid to mid] ?: return null
+        val reqLevel = (req["options"] as? JsonObject)?.get("reasoningLevel")?.jsonPrimitive?.contentOrNull
+        val level = reqLevel?.takeIf { it in values }
+            ?: runCatching {
+                com.zcode.ideaplugin.protocol.BuiltinModelCatalog.defaultReasoningLevel(mid, zcodePath)
+            }.getOrNull()?.takeIf { it in values }
+            ?: values.lastOrNull()
+        return buildJsonObject {
+            put("providerId", pid)
+            put("modelId", mid)
+            if (level != null) put("options", buildJsonObject { put("reasoningLevel", level) })
+        }
+    }
+
+    /**
+     * 归一化模型行 Triple(providerId, 行JSON, providerName?)：与 IDE 输入框下拉同源
+     * （面板 listModels 行字段 providerId/providerName?/modelId/modelName?/contextWindow?/
+     * maxOutput?/supportsImages?）。无活跃面板回退 config.json 直读（旧路径同源）。
+     */
+    private fun bridgeModelRows(): List<Triple<String, JsonObject, String?>> {
+        val fromPanel = runCatching {
+            com.zcode.ideaplugin.ZCodeServiceImpl.modelsListFromAnyPanel()
+        }.getOrNull()?.get("models")?.jsonArray
+        if (fromPanel != null) {
+            return fromPanel.mapNotNull { el ->
+                val m = el as? JsonObject ?: return@mapNotNull null
+                val pid = m["providerId"]?.jsonPrimitive?.contentOrNull ?: return@mapNotNull null
+                val mid = m["modelId"]?.jsonPrimitive?.contentOrNull ?: return@mapNotNull null
+                Triple(pid, m, m["providerName"]?.jsonPrimitive?.contentOrNull)
+            }.distinctBy { it.first to it.second["modelId"]?.jsonPrimitive?.content }
+        }
+        return modelProviderList().mapNotNull { el ->
+            val p = el as? JsonObject ?: return@mapNotNull null
+            val pid = p["id"]?.jsonPrimitive?.contentOrNull ?: return@mapNotNull null
+            val enabled = p["enabled"]?.jsonPrimitive?.content?.toBoolean() ?: true
+            val apiKey = p["apiKey"]?.jsonPrimitive?.contentOrNull ?: ""
+            if (!enabled || apiKey.isBlank()) return@mapNotNull null
+            val name = p["name"]?.jsonPrimitive?.contentOrNull
+            p["models"]?.jsonArray?.mapNotNull { me ->
+                val m = me as? JsonObject ?: return@mapNotNull null
+                val mid = m["id"]?.jsonPrimitive?.contentOrNull ?: return@mapNotNull null
+                Triple(pid, buildJsonObject {
+                    put("providerId", pid)
+                    put("modelId", mid)
+                    m["contextWindow"]?.let { put("contextWindow", it) }
+                }, name)
+            }
+        }.flatten().distinctBy { it.first to it.second["modelId"]?.jsonPrimitive?.content }
+    }
+
+    /** 单模型 view 条目：config 按官方 cs schema 全量给（H5 侧有 zod 级 config store）*/
+    private fun modelSelectionModel(
+        m: JsonObject,
+        providerId: String,
+        zcodePath: java.nio.file.Path?,
+        levelsByKey: MutableMap<Pair<String, String>, List<String>>,
+    ): JsonObject? {
+        val mid = m["modelId"]?.jsonPrimitive?.contentOrNull ?: return null
+        return buildJsonObject {
+            put("modelId", mid)
+            put("config", modelConfig(m, providerId, zcodePath, levelsByKey))
+        }
+    }
+
+    /** 模型 config 块（model-selection 与 provider-settings 两 view 共用，官方同源形状） */
+    private fun modelConfig(
+        m: JsonObject,
+        providerId: String,
+        zcodePath: java.nio.file.Path?,
+        levelsByKey: MutableMap<Pair<String, String>, List<String>>,
+    ): JsonObject {
+        val mid = m["modelId"]?.jsonPrimitive?.contentOrNull ?: ""
+        val values = runCatching {
+            com.zcode.ideaplugin.protocol.BuiltinModelCatalog.reasoningValues(mid, zcodePath)
+        }.getOrNull()
+        val default = runCatching {
+            com.zcode.ideaplugin.protocol.BuiltinModelCatalog.defaultReasoningLevel(mid, zcodePath)
+        }.getOrNull()
+        val levels = values?.takeIf { it.isNotEmpty() } ?: listOf(default ?: "max")
+        levelsByKey[providerId to mid] = levels
+        val caps = runCatching {
+            com.zcode.ideaplugin.protocol.BuiltinModelCatalog.modelCaps(mid, zcodePath)
+        }.getOrNull()
+        val contextWindow = m["contextWindow"]?.jsonPrimitive?.contentOrNull?.toLongOrNull()
+            ?: caps?.contextWindow ?: 200_000L
+        val maxOut = m["maxOutput"]?.jsonPrimitive?.contentOrNull?.toLongOrNull()
+            ?: runCatching {
+                com.zcode.ideaplugin.protocol.BuiltinModelCatalog.maxOutputTokensMax(mid, zcodePath)
+            }.getOrNull()
+        val supportsImage = m["supportsImages"]?.jsonPrimitive?.content?.toBoolean() == true || caps?.supportsImage == true
+        return buildJsonObject {
+            put("enabled", true)
+            put("properties", buildJsonObject {
+                put("requiresMfjsToolSchema", false)
+                put("contextWindow", contextWindow)
+                put("inputFormat", buildJsonObject {
+                    put("supportsText", true)
+                    put("supportsImage", supportsImage)
+                    put("supportsVideo", caps?.supportsVideo == true)
+                    put("supportsAudio", false)
+                    put("supportsPdf", caps?.supportsPdf == true)
+                })
+                put("outputFormat", buildJsonObject { put("supportsText", true) })
+                put("supportsToolCall", true)
+                put("supportsJsonSchemaOutput", false)
+                put("supportsNativeWebSearch", false)
+                put("supportsMidConversationSystem", false)
+            })
+            put("optionSpecs", buildJsonObject {
+                put("reasoningLevel", buildJsonObject {
+                    put("values", kotlinx.serialization.json.JsonArray(levels.map { kotlinx.serialization.json.JsonPrimitive(it) }))
+                    put("map", buildJsonObject {})
+                })
+                maxOut?.let {
+                    put("maxOutputTokens", buildJsonObject {
+                        put("max", it)
+                        put("map", buildJsonObject {})
+                    })
+                }
+            })
+        }
+    }
+
+    /**
+     * 首选模型解析：kv（zcode.currentModel/zcode.thoughtLevel，IDE 输入框切换时写入）
+     * 命中清单即用；kv 级别不在该模型级别集时回退目录默认。无记录/不在清单返回 null
+     * 保持 ready-empty——发送走宿主侧默认模型，不越权代选（账号套餐渠道不在
+     * config.json 时尤为关键）。
+     */
+    private fun resolveModelSelection(
+        levelsByKey: Map<Pair<String, String>, List<String>>,
+        zcodePath: java.nio.file.Path?,
+    ): JsonObject? {
+        var ref: Pair<String, String>? = null
+        var kvLevel: String? = null
+        runCatching {
+            val kv = com.intellij.ide.util.PropertiesComponent.getInstance()
+                .getValue(com.zcode.ideaplugin.ui.ZCodeLanguageService.KEY_WEBVIEW_KV) ?: return@runCatching
+            val root = Json.parseToJsonElement(kv).jsonObject
+            root["zcode.currentModel"]?.jsonPrimitive?.contentOrNull?.let { cur ->
+                runCatching {
+                    val o = Json.parseToJsonElement(cur).jsonObject
+                    val pid = o["providerId"]?.jsonPrimitive?.contentOrNull
+                    val mid = o["modelId"]?.jsonPrimitive?.contentOrNull
+                    if (pid != null && mid != null) ref = pid to mid
+                }
+            }
+            kvLevel = root["zcode.thoughtLevel"]?.jsonPrimitive?.contentOrNull
+        }
+        val ref0 = ref
+        if (ref0 == null || !levelsByKey.containsKey(ref0)) return null
+        val (providerId, modelId) = ref0
+        val values = levelsByKey[ref0].orEmpty()
+        val level = kvLevel?.takeIf { it in values }
+            ?: runCatching {
+                com.zcode.ideaplugin.protocol.BuiltinModelCatalog.defaultReasoningLevel(modelId, zcodePath)
+            }.getOrNull()?.takeIf { it in values }
+            ?: values.lastOrNull()
+        return buildJsonObject {
+            put("providerId", providerId)
+            put("modelId", modelId)
+            if (level != null) put("options", buildJsonObject { put("reasoningLevel", level) })
+        }
+    }
+
+    /**
+     * H5 3.14.x 设置面 view（provider-settings.getView/refresh 应答）。形状逐字段对齐
+     * 官方 createProviderSettingsView（app.asar OY 投影）：providers 必带 **effectiveConfig**
+     * （H5 套餐入口 i7e/XT 与设置页 TA 全部裸读 `effectiveConfig.access/group`，缺字段=
+     * 「reading 'access'」整页错误边界，2026-09-23 真机堆栈 X9e 实锤）；models 必带
+     * kind/builtin/effectiveBuiltinConfig/effectiveConfig/enabled/executable/selectable/issues
+     * （kEn 投影消费面）。access 不声明（null）=不伪装 zhipu-account 套餐身份，H5 套餐
+     * 入口走空态容错。
+     */
+    private fun providerSettingsView(): JsonObject {
+        val zcodePath = runCatching { com.zcode.ideaplugin.protocol.ZCodeLocator.detect() }.getOrNull()
+        val rows = bridgeModelRows()
+        return buildJsonObject {
+            put("revision", modelViewRevision.incrementAndGet())
+            put("providerTemplates", kotlinx.serialization.json.JsonArray(emptyList()))
+            put("providerOrder", kotlinx.serialization.json.JsonArray(emptyList()))
+            put("providers", kotlinx.serialization.json.JsonArray(rows.groupBy { it.first }.map { (provider, models) ->
+                val levelMap = mutableMapOf<Pair<String, String>, List<String>>()
+                buildJsonObject {
+                    put("providerId", provider)
+                    models.first().third?.let { put("providerName", it) }
+                    put("templateId", null as String?)
+                    put("enabled", true)
+                    put("executable", true)
+                    put("effectiveConfig", buildJsonObject {
+                        put("visibility", "visible")
+                        put("access", null as String?)
+                    })
+                    put("issues", kotlinx.serialization.json.JsonArray(emptyList()))
+                    put("models", kotlinx.serialization.json.JsonArray(models.map { row ->
+                        val cfg = modelConfig(row.second, provider, zcodePath, levelMap)
+                        buildJsonObject {
+                            put("kind", "anthropic")
+                            put("modelId", row.second["modelId"]?.jsonPrimitive?.contentOrNull ?: "")
+                            put("builtin", true)
+                            put("effectiveBuiltinConfig", cfg)
+                            put("effectiveConfig", cfg)
+                            put("enabled", true)
+                            put("executable", true)
+                            put("selectable", true)
+                            put("issues", kotlinx.serialization.json.JsonArray(emptyList()))
+                        }
+                    }))
+                }
+            }))
+        }
+    }
+
     private fun modelProviderList(): List<kotlinx.serialization.json.JsonElement> = runCatching {
         val configFile = com.zcode.ideaplugin.protocol.Credentials.defaultConfigPath().toFile()
         if (!configFile.exists()) return emptyList()

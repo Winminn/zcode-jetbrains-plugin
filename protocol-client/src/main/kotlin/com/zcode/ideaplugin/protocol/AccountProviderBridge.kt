@@ -4,6 +4,7 @@ import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.contentOrNull
+import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
@@ -64,6 +65,62 @@ object AccountProviderBridge {
     /** 凭证文件：config.json 同目录口径（跟随 dataBaseDir 迁移，与 [Credentials.familyOAuthToken] 一致） */
     fun credentialsPath(configPath: Path = Credentials.defaultConfigPath()): Path =
         configPath.resolveSibling("credentials.json")
+
+    // ============ 展示名与 mode 派生（H5 picker 对齐，2026-09-23）============
+
+    /**
+     * 账号渠道展示名=品牌短名（官方 picker 形态「BigModel 个人」：短名由这里派生，
+     * 套餐徽标按 mode 另行渲染）。zcode-builtin.json 的 providerName 是全名
+     * （「BigModel Individual Coding Plan」），官方客户端 own 表同场景给的是
+     * providerName:'BigModel' 短名——下拉/设置卡/远程 H5 投影统一走本函数。
+     * 非账号渠道原样返回 fallback。
+     */
+    fun brandOf(providerId: String, fallback: String): String = when {
+        providerId.startsWith("account:bigmodel") -> "BigModel"
+        providerId.startsWith("account:zai") -> "Z.ai"
+        else -> fallback
+    }
+
+    /**
+     * 从 providerId 派生官方 access.mode（model-selection view 的 config.access 必带——
+     * H5 rSt 按它派生渠道徽标（Individual/Team/Free），缺失时 zod safeParse 失败
+     * 掉 providerName 兜底=长全名无徽标）。mode 枚举=ZUe：start-plan / individual-
+     * coding-plan / team-coding-plan / off-peak；id 形如 account:<family>-<mode 全文>
+     * （off-peak 变体 account:<family>-offpeak-idle-plan）。
+     */
+    fun accessModeOf(providerId: String): String? {
+        if (!providerId.startsWith("account:")) return null
+        return when {
+            providerId.endsWith("-individual-coding-plan") -> "individual-coding-plan"
+            providerId.endsWith("-team-coding-plan") -> "team-coding-plan"
+            providerId.endsWith("-start-plan") -> "start-plan"
+            providerId.contains("offpeak") -> "off-peak"
+            else -> null
+        }
+    }
+
+    // ============ 账号渠道 personal 覆盖合并（provider_config.json account:* 规则）============
+
+    /**
+     * 账号渠道的最终模型序（官方客户端 overlay 语义，2026-09-24 渠道重复修复）：
+     * 用户在客户端给账号渠道「添加模型/排序」时，客户端在 provider_config.json 写
+     * **同 id** 的 account:* 规则——modelOrder 是含内置在内的完整展示序，
+     * personalModelIds 是用户新增模型。该规则是账号渠道的 personal 覆盖而非独立
+     * 渠道：合并规则 = modelOrder 当权威序在前，目录 builtinModelIds 与
+     * personalModelIds 中未收录的按序补尾（去重保序）；modelOrder 缺省退化为
+     * builtin + personal 追加。[personalRuleConfig] null（渠道无覆盖规则）返回
+     * builtinModelIds 原序。
+     */
+    fun overlayModelIds(personalRuleConfig: JsonObject?, builtinModelIds: List<String>): List<String> {
+        fun idsOf(key: String): List<String> =
+            personalRuleConfig?.get(key)?.jsonArray
+                ?.mapNotNull { (it as? kotlinx.serialization.json.JsonPrimitive)?.contentOrNull?.takeIf { s -> s.isNotBlank() } }
+                ?: emptyList()
+        return (idsOf("modelOrder") + builtinModelIds + idsOf("personalModelIds")).distinct()
+    }
+
+    /** account:* 规则前缀（客户端托管的账号渠道 personal 覆盖；插件只读不写） */
+    const val ACCOUNT_RULE_PREFIX = "account:"
 
     // ============ 凭证表 ============
 

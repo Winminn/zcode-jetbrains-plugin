@@ -982,6 +982,7 @@ if (!window.__ZCODE_LOG_HOOK__) {
                         "kvSave" -> handleKvSave(msg)
                         "kvLoad" -> handleKvLoad()
                         "remotePairStart" -> handleRemote { it.connect() }
+                        "remoteRefreshQr" -> handleRemote { it.refreshQr() }
                         "remoteStop" -> handleRemote { it.disconnect() }
                         "remoteStatus" -> handleRemote { it.statusJson() }
                         "remoteUnpair" -> handleRemote { it.unpair() }
@@ -2417,6 +2418,14 @@ if (!window.__ZCODE_LOG_HOOK__) {
         else -> k.take(6) + "••••" + k.takeLast(4)
     }
 
+    /**
+     * 手机远程 model-selection 视图数据源（RemoteChannelHandlers 调）：与 IDE 输入框
+     * 下拉完全同源（handleListModels，账号渠道+自定义渠道归一化行）。返回
+     * {op:'models', models:[...]} 原样，桥按行重建 H5 视图。
+     */
+    fun buildModelsListForBridge(): JsonObject =
+        handleListModels(buildJsonObject { put("op", "listModels") })
+
     /** op=listModels — 读取 config.json 的 provider 注册表，返回可切换的模型列表 */
     private fun handleListModels(msg: JsonObject): JsonObject {
         // 新版 CLI：config.json 已废弃，模型 = 用户在官方客户端自建的自定义供应商
@@ -2677,16 +2686,27 @@ if (!window.__ZCODE_LOG_HOOK__) {
     private fun newCliContextWindows(): Map<Pair<String, String>, Long> =
         newCliModelRules().mapNotNull { (k, v) -> v.contextWindow?.let { k to it } }.toMap()
 
-    /** v2 启用渠道的模型清单（providerId to 模型 ids；modelOrder 优先 personalModelIds 兜底） */
+    /** v2 启用渠道的模型清单（providerId to 模型 ids；激活账号渠道（overlay 合并序）置顶，
+     *  自定义渠道随后；modelOrder 优先 personalModelIds 兜底） */
     private fun newCliEnabledProviderModels(): List<Pair<String, List<String>>> =
-        readNewCliProviderRules().filter { it["enabled"]?.jsonPrimitive?.contentOrNull != "false" }.mapNotNull { rule ->
-            val pid = rule["providerId"]?.jsonPrimitive?.contentOrNull ?: return@mapNotNull null
-            val cfg = rule["config"]?.jsonObject
-            val mids = (cfg?.get("modelOrder")?.jsonArray ?: cfg?.get("personalModelIds")?.jsonArray)
-                ?.mapNotNull { (it as? JsonPrimitive)?.contentOrNull?.takeIf { m -> m.isNotBlank() } }
-                ?.distinct() ?: return@mapNotNull null
-            pid to mids
-        }
+        // 账号渠道置顶（订阅套餐是主用渠道，与下拉 accountModelRows 置顶同序）：此前
+        // 本清单只读 provider_config.json 规则——渠道无 personal 覆盖规则时账号模型
+        // 全部判无效（newCliValidModel），generateText/标题透传被误回退；纯账号环境下
+        // 首选回退模型也与官方 defaultModelSelection（账号渠道首模型）同向
+        newCliAccountChannelModels() + readNewCliProviderRules()
+            .filter { it["enabled"]?.jsonPrimitive?.contentOrNull != "false" }
+            .mapNotNull { rule ->
+                val pid = rule["providerId"]?.jsonPrimitive?.contentOrNull ?: return@mapNotNull null
+                // account:* 规则是账号渠道的 personal 覆盖，模型集已并入上方账号渠道行
+                if (pid.startsWith(com.zcode.ideaplugin.protocol.AccountProviderBridge.ACCOUNT_RULE_PREFIX)) {
+                    return@mapNotNull null
+                }
+                val cfg = rule["config"]?.jsonObject
+                val mids = (cfg?.get("modelOrder")?.jsonArray ?: cfg?.get("personalModelIds")?.jsonArray)
+                    ?.mapNotNull { (it as? JsonPrimitive)?.contentOrNull?.takeIf { m -> m.isNotBlank() } }
+                    ?.distinct() ?: return@mapNotNull null
+                pid to mids
+            }
 
     /** (pid, mid) 是否为 v2 启用渠道的已登记模型（generateText/标题生成透传前的校验） */
     private fun newCliValidModel(pid: String?, mid: String?): Boolean =
@@ -2707,10 +2727,32 @@ if (!window.__ZCODE_LOG_HOOK__) {
     }
 
     /**
+     * 激活账号渠道的最终模型集（官方 overlay 合并后）：pid to 完整模型序。
+     * 渠道行（mode/brand/凭证判定）与模型序的唯一共用入口——下拉、设置页、发送守卫
+     * 三方同源不漂移。
+     */
+    private fun newCliAccountChannelModels(): List<Pair<String, List<String>>> {
+        val zcodePath = com.zcode.ideaplugin.env.ZCodeEnvChecker.resolveCliPathForOps()
+        val overlay = readNewCliProviderRules().mapNotNull { rule ->
+            val pid = rule["providerId"]?.jsonPrimitive?.contentOrNull ?: return@mapNotNull null
+            if (!pid.startsWith(com.zcode.ideaplugin.protocol.AccountProviderBridge.ACCOUNT_RULE_PREFIX)) {
+                return@mapNotNull null
+            }
+            pid to rule["config"]?.jsonObject
+        }.toMap()
+        return com.zcode.ideaplugin.protocol.AccountProviderBridge
+            .activatableAccountChannels(zcodePath)
+            .map { e -> e.providerId to com.zcode.ideaplugin.protocol.AccountProviderBridge
+                .overlayModelIds(overlay[e.providerId], e.builtinModelIds) }
+    }
+
+    /**
      * 账号渠道的模型/渠道条目（listModels 下拉与 modelManage 设置页共用）。
-     * 能力位（contextWindow/supportsImages）取 BuiltinModelCatalog.modelCaps——模型规则
-     * 正则链与 providerId 无关，账号渠道与自定义渠道的同名模型能力一致（GLM-5.3→1M、
-     * GLM-5.3-Flash→1M+视觉，`.*` 兜底 200K）。
+     * 能力位 = 目录链 BuiltinModelCatalog.modelCaps ⊕ provider_config per-model 规则
+     * 字段级覆盖（客户端编辑弹窗写入的 inputFormat/contextWindow 必须被尊重；未声明
+     * 保持目录值）。模型序走 [newCliAccountChannelModels]（官方 overlay 合并，含客户端
+     * 写入的 account:* 规则——此前规则被当独立自定义渠道二次输出，同 providerId 拼出
+     * 重复模型，2026-09-24 修复）。
      */
     private fun accountModelRows(
         zcodePath: java.nio.file.Path?,
@@ -2718,31 +2760,51 @@ if (!window.__ZCODE_LOG_HOOK__) {
     ): List<JsonObject> {
         val channels = com.zcode.ideaplugin.protocol.AccountProviderBridge
             .activatableAccountChannels(zcodePath)
+        if (channels.isEmpty()) return emptyList()
+        val overlay = readNewCliProviderRules().mapNotNull { rule ->
+            val pid = rule["providerId"]?.jsonPrimitive?.contentOrNull ?: return@mapNotNull null
+            if (!pid.startsWith(com.zcode.ideaplugin.protocol.AccountProviderBridge.ACCOUNT_RULE_PREFIX)) {
+                return@mapNotNull null
+            }
+            pid to rule["config"]?.jsonObject
+        }.toMap()
+        val perModelRules = newCliModelRules()
         return channels.flatMap { e ->
             val plan = accountPlanOf(e.mode)
-            e.builtinModelIds.map { mid ->
+            // 展示名=品牌短名（官方 picker 形态「BigModel 个人」；全名在 zcode-builtin
+            // providerName，徽标走 plan 字段——输入框下拉与设置页渠道卡同源）
+            val brand = com.zcode.ideaplugin.protocol.AccountProviderBridge.brandOf(e.providerId, e.providerName)
+            val mids = com.zcode.ideaplugin.protocol.AccountProviderBridge
+                .overlayModelIds(overlay[e.providerId], e.builtinModelIds)
+            mids.map { mid ->
                 val caps = com.zcode.ideaplugin.protocol.BuiltinModelCatalog.modelCaps(mid, zcodePath)
+                // per-model 规则字段级覆盖（声明才覆盖，sparse 未声明保持目录值）
+                val pr = perModelRules[e.providerId to mid]
+                val ctx = pr?.contextWindow ?: caps?.contextWindow
+                val img = pr?.supportsImages ?: (caps?.supportsImage == true)
+                val vid = pr?.supportsVideo ?: (caps?.supportsVideo == true)
+                val pdf = pr?.supportsPdf ?: (caps?.supportsPdf == true)
                 if (asProviderCards) {
                     buildJsonObject {
                         put("providerId", e.providerId)
-                        put("providerName", e.providerName)
+                        put("providerName", brand)
                         put("modelId", mid)
                         put("modelName", mid)
                         plan?.let { put("plan", it) }
-                        caps?.contextWindow?.let { put("contextWindow", it) }
-                        if (caps?.supportsImage == true) put("supportsImages", true)
-                        if (caps?.supportsVideo == true) put("supportsVideo", true)
-                        if (caps?.supportsPdf == true) put("supportsPdf", true)
+                        ctx?.let { put("contextWindow", it) }
+                        if (img) put("supportsImages", true)
+                        if (vid) put("supportsVideo", true)
+                        if (pdf) put("supportsPdf", true)
                     }
                 } else {
                     buildJsonObject {
                         put("providerId", e.providerId)
-                        put("providerName", e.providerName)
+                        put("providerName", brand)
                         put("modelId", mid)
                         put("modelName", mid)
                         plan?.let { put("plan", it) }
-                        caps?.contextWindow?.let { put("contextWindow", it) }
-                        if (caps?.supportsImage == true) put("supportsImages", true)
+                        ctx?.let { put("contextWindow", it) }
+                        if (img) put("supportsImages", true)
                     }
                 }
             }
@@ -2766,12 +2828,15 @@ if (!window.__ZCODE_LOG_HOOK__) {
     /** providerModelRules 条目的模型级覆盖（contextWindow + 输入能力位，编辑弹窗回填同源） */
     private class NewCliModelRule(
         val contextWindow: Long?,
-        val supportsImages: Boolean,
-        val supportsVideo: Boolean,
-        val supportsPdf: Boolean,
+        // Boolean? null = 规则未声明该键：overlay 到目录链能力位时「未声明」保持目录值，
+        // 「显式 false」才覆盖——账号渠道 personal 规则常见形态 {enabled:true} 无
+        // inputFormat，非可空布尔会把目录链的视觉位错杀（2026-09-24 渠道重复修复）
+        val supportsImages: Boolean?,
+        val supportsVideo: Boolean?,
+        val supportsPdf: Boolean?,
     )
 
-    /** provider_config.json 的 per-model rules（inputFormat 三键 sparse：缺省即 false） */
+    /** provider_config.json 的 per-model rules（inputFormat 三键 sparse：缺省 null=未声明） */
     private fun newCliModelRules(): Map<Pair<String, String>, NewCliModelRule> {
         val path = Credentials.personalProviderConfigPath()
         if (!java.nio.file.Files.isRegularFile(path)) return emptyMap()
@@ -2786,9 +2851,9 @@ if (!window.__ZCODE_LOG_HOOK__) {
                 val input = props?.get("inputFormat")?.jsonObject
                 NewCliModelRule(
                     contextWindow = props?.get("contextWindow")?.jsonPrimitive?.contentOrNull?.toLongOrNull(),
-                    supportsImages = input?.get("supportsImage")?.jsonPrimitive?.contentOrNull == "true",
-                    supportsVideo = input?.get("supportsVideo")?.jsonPrimitive?.contentOrNull == "true",
-                    supportsPdf = input?.get("supportsPdf")?.jsonPrimitive?.contentOrNull == "true",
+                    supportsImages = input?.get("supportsImage")?.jsonPrimitive?.contentOrNull?.toBooleanStrictOrNull(),
+                    supportsVideo = input?.get("supportsVideo")?.jsonPrimitive?.contentOrNull?.toBooleanStrictOrNull(),
+                    supportsPdf = input?.get("supportsPdf")?.jsonPrimitive?.contentOrNull?.toBooleanStrictOrNull(),
                 ).let { (pid to mid) to it }
             }.toMap()
         } catch (e: Exception) {
@@ -2803,6 +2868,11 @@ if (!window.__ZCODE_LOG_HOOK__) {
             // disabled 渠道 registry 整体排除（实验 B），下拉同步过滤防选中即 -32031
             if (rule["enabled"]?.jsonPrimitive?.contentOrNull == "false") return@flatMap emptyList()
             val pid = rule["providerId"]?.jsonPrimitive?.contentOrNull ?: return@flatMap emptyList()
+            // account:* 规则 = 客户端写入的账号渠道 personal 覆盖（modelOrder/personalModelIds），
+            // 已由 accountModelRows 并入账号渠道行；再展平会拼出同 id 重复模型（2026-09-24 修复）
+            if (pid.startsWith(com.zcode.ideaplugin.protocol.AccountProviderBridge.ACCOUNT_RULE_PREFIX)) {
+                return@flatMap emptyList()
+            }
             val pname = rule["providerName"]?.jsonPrimitive?.contentOrNull ?: pid
             val cfg = rule["config"]?.jsonObject
             val mids = (cfg?.get("modelOrder")?.jsonArray ?: cfg?.get("personalModelIds")?.jsonArray)
@@ -2817,8 +2887,8 @@ if (!window.__ZCODE_LOG_HOOK__) {
                     rules[pid to mid]?.let { r ->
                         r.contextWindow?.let { put("contextWindow", it) }
                         // 视觉徽章数据源（输入框模型下拉 ModelSelect 同设置页口径）：
-                        // providerModelRules inputFormat，sparse 缺省 false
-                        if (r.supportsImages) put("supportsImages", true)
+                        // providerModelRules inputFormat，sparse 缺省=未声明不亮
+                        if (r.supportsImages == true) put("supportsImages", true)
                     }
                 }
             }
@@ -2851,31 +2921,53 @@ if (!window.__ZCODE_LOG_HOOK__) {
         val rules = newCliModelRules()
         val zcodePath = com.zcode.ideaplugin.env.ZCodeEnvChecker.resolveCliPathForOps()
         // 账号渠道（account:*）：与下拉同源的渠道卡形态（plan 徽章+能力位），归设置页
-        // 内置区只读展示——凭证在 credentials.json 托管，不走自定义渠道的编辑/删除链
+        // 内置区只读展示——凭证在 credentials.json 托管，不走自定义渠道的编辑/删除链。
+        // 模型序 = 官方 overlay 合并（客户端写入的同 id account:* 规则），此前目录 2 模型
+        // 与规则 3 模型各出一张卡（2026-09-24 修复）
+        val overlay = readNewCliProviderRules().mapNotNull { rule ->
+            val pid = rule["providerId"]?.jsonPrimitive?.contentOrNull ?: return@mapNotNull null
+            if (!pid.startsWith(com.zcode.ideaplugin.protocol.AccountProviderBridge.ACCOUNT_RULE_PREFIX)) {
+                return@mapNotNull null
+            }
+            pid to rule["config"]?.jsonObject
+        }.toMap()
+        val perModelRules = newCliModelRules()
         val accountProviders = com.zcode.ideaplugin.protocol.AccountProviderBridge
             .activatableAccountChannels(zcodePath)
             .map { e ->
+                val mids = com.zcode.ideaplugin.protocol.AccountProviderBridge
+                    .overlayModelIds(overlay[e.providerId], e.builtinModelIds)
                 buildJsonObject {
                     put("providerId", e.providerId)
-                    put("providerName", e.providerName)
+                    put("providerName", com.zcode.ideaplugin.protocol.AccountProviderBridge.brandOf(e.providerId, e.providerName))
                     put("enabled", true)
                     accountPlanOf(e.mode)?.let { put("plan", it) }
                     put("account", true)
-                    put("models", JsonArray(e.builtinModelIds.map { mid ->
+                    put("models", JsonArray(mids.map { mid ->
                         val caps = com.zcode.ideaplugin.protocol.BuiltinModelCatalog.modelCaps(mid, zcodePath)
+                        val pr = perModelRules[e.providerId to mid]
+                        val ctx = pr?.contextWindow ?: caps?.contextWindow
+                        val img = pr?.supportsImages ?: (caps?.supportsImage == true)
+                        val vid = pr?.supportsVideo ?: (caps?.supportsVideo == true)
+                        val pdf = pr?.supportsPdf ?: (caps?.supportsPdf == true)
                         buildJsonObject {
                             put("modelId", mid)
                             put("modelName", mid)
-                            caps?.contextWindow?.let { put("contextWindow", it) }
-                            if (caps?.supportsImage == true) put("supportsImages", true)
-                            if (caps?.supportsVideo == true) put("supportsVideo", true)
-                            if (caps?.supportsPdf == true) put("supportsPdf", true)
+                            ctx?.let { put("contextWindow", it) }
+                            if (img) put("supportsImages", true)
+                            if (vid) put("supportsVideo", true)
+                            if (pdf) put("supportsPdf", true)
                         }
                     }))
                 }
             }
         val providerArr = JsonArray(accountProviders + readNewCliProviderRules().mapNotNull { rule ->
             val pid = rule["providerId"]?.jsonPrimitive?.contentOrNull ?: return@mapNotNull null
+            // account:* 规则 = 账号渠道 personal 覆盖（客户端托管），已并入上方账号卡，
+            // 不再作自定义渠道卡二次展示（与 listModelsNewCli 去重同口径）
+            if (pid.startsWith(com.zcode.ideaplugin.protocol.AccountProviderBridge.ACCOUNT_RULE_PREFIX)) {
+                return@mapNotNull null
+            }
             val cfg = rule["config"]?.jsonObject
             val mids = (cfg?.get("modelOrder")?.jsonArray ?: cfg?.get("personalModelIds")?.jsonArray)
                 ?.mapNotNull { (it as? JsonPrimitive)?.contentOrNull?.takeIf { m -> m.isNotBlank() } }

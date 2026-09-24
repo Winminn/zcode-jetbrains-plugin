@@ -35,10 +35,6 @@
     "unpairConfirmTitle": "解除手機配對？",
     "unpairConfirmMsg": "將清除已保存的裝置憑證，手機端下次連線需要重新掃碼配對。"
   },
-  "section": {
-    "title": "手機掃碼連線",
-    "desc": "用手機相機掃碼，在手機上開啟這個工作區。"
-  },
   "card": {
     "waitingDesc": "用手機掃碼，或在手機上開啟連結。",
     "offDesc": "連線後產生配對碼，手機掃碼即可存取本機會話。"

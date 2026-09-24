@@ -525,6 +525,8 @@ export type JavaRequest =  | { op: 'askUserPendingState' }
   | { op: 'openExternal'; url?: string }
   /** 手机远程：开始连接 relay（幂等，已在连接则只回状态）*/
   | { op: 'remotePairStart' }
+  /** 手机远程：强制重出码（重算 QR 时间戳，sid/hash 不变）*/
+  | { op: 'remoteRefreshQr' }
   /** 手机远程：断开 relay 连接（凭据保留，重连免换码）*/
   | { op: 'remoteStop' }
   /** 手机远程：查询当前状态（QR URL / 连接态）*/

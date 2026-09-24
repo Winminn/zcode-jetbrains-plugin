@@ -135,6 +135,16 @@ class ZCodeServiceImpl(private val project: Project) : ZCodeService, com.intelli
         fun activeProjectServices(): List<ZCodeServiceImpl> = activeInstances.toList()
 
         /**
+         * 手机远程 model-selection 视图数据源：任一活跃面板的 listModels 口径
+         * （与 IDE 输入框下拉同源——账号渠道+自定义渠道）。无活跃面板返回 null，
+         * 调用方走 config.json 直读兜底。
+         */
+        fun modelsListFromAnyPanel(): kotlinx.serialization.json.JsonObject? =
+            activeInstances.firstOrNull()?.panels?.firstOrNull()?.let { panel ->
+                runCatching { panel.buildModelsListForBridge() }.getOrNull()
+            }
+
+        /**
          * interaction/requestUserInput 等待用户
          * 应答的超时：超时自动 decline 并关弹窗。仅普通提问（「提问自动继续」开）与
          * 权限审批使用；ExitPlanMode 审批无超时（不推 deadlineMs，future 无限等）。

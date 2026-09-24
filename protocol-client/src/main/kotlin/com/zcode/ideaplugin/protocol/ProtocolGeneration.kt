@@ -167,7 +167,7 @@ object BuiltinModelCatalog {
         val rules = loadRules(zcodePath, home) ?: return null
         var max: Long? = null
         for (r in rules) {
-            if (!r.match.matches(modelId) && !r.match.matches(modelId.lowercase())) continue
+            if (!r.match.matches(modelId)) continue
             r.maxOutputTokens?.let { max = it }
         }
         return max
@@ -178,8 +178,11 @@ object BuiltinModelCatalog {
         val rules = loadRules(zcodePath, home) ?: return null
         var values: List<String>? = null
         for (r in rules) {
-            // 规则大小写混杂（GLM-5.2 大写、glm-5 小写），modelId 双形态各试一次
-            if (!r.match.matches(modelId) && !r.match.matches(modelId.lowercase())) continue
+            // 规则大小写混杂（GLM-5.2 专属规则大写、glm-5 泛化规则小写），匹配一律大小写
+            // 不敏感（loadRules 编译时统一 IGNORE_CASE）：服务端即同口径解析——自定义渠道
+            // 手填小写 glm-5.2 被按 GLM-5.2 规则集校验（缺陷DJ，敏感匹配会掉泛化规则
+            // 拿错级别集，H5 侧直接外显）
+            if (!r.match.matches(modelId)) continue
             r.reasoningValues?.let { values = it }
         }
         return values
@@ -196,7 +199,7 @@ object BuiltinModelCatalog {
         val rules = loadRules(zcodePath, home) ?: return null
         var caps = ModelCaps(null, null, null, null)
         for (r in rules) {
-            if (!r.match.matches(modelId) && !r.match.matches(modelId.lowercase())) continue
+            if (!r.match.matches(modelId)) continue
             caps = ModelCaps(
                 r.contextWindow ?: caps.contextWindow,
                 r.supportsImage ?: caps.supportsImage,
@@ -346,7 +349,7 @@ object BuiltinModelCatalog {
             val rules = (root["config"]?.jsonObject?.get("modelConfigRules")?.jsonObject?.get("modelRules")?.jsonArray
                 ?: return null).mapNotNull { el ->
                     val o = el as? JsonObject ?: return@mapNotNull null
-                    val match = o["modelMatch"]?.jsonPrimitive?.content?.let { runCatching { Regex(it) }.getOrNull() }
+                    val match = o["modelMatch"]?.jsonPrimitive?.content?.let { runCatching { Regex(it, RegexOption.IGNORE_CASE) }.getOrNull() }
                         ?: return@mapNotNull null
             val values = o["config"]?.jsonObject?.get("optionSpecs")?.jsonObject
                 ?.get("reasoningLevel")?.jsonObject?.get("values")?.jsonArray
