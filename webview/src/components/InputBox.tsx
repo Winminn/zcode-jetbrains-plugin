@@ -192,6 +192,8 @@ export function InputBox({ onSend, isStreaming = false, onStop, disabled = false
   // 底部状态栏折叠开关（工具条右侧按钮，收起/展开 StatusPanel 本体）
   const statusPanelCollapsed = useStore((s) => s.statusPanelCollapsed)
   const toggleStatusPanel = useStore((s) => s.toggleStatusPanel)
+  // 手机远程 relay 状态——入口图标颜色联动（绿=手机已连接，黄=运行中等待扫描）
+  const remoteState = useStore((s) => s.remoteState)
   useEffect(() => {
     resetNav()
     setGhostSuffix('')
@@ -1599,14 +1601,24 @@ export function InputBox({ onSend, isStreaming = false, onStop, disabled = false
             <span className="codicon codicon-attach" />
           </button>
           {/* 手机远程配对（QR 弹窗）：附件按钮右侧、定时任务之前。字形用 codicon-remote
-              （扁平方形，device-mobile 瘦高与工具条不协调——用户两轮反馈后换字形） */}
+              （扁平方形，device-mobile 瘦高与工具条不协调——用户两轮反馈后换字形）。
+              颜色随 relay 状态联动：paired 绿、运行中（connecting/waiting）黄、
+              停止/异常保持默认色 */}
           <button
             type="button"
             className="context-tool-btn"
             onClick={() => useStore.getState().openRemotePairing()}
             data-tip={t('chat.header.phoneRemote')}
           >
-            <span className="codicon codicon-remote phone-entry__icon" />
+            <span
+              className={`codicon codicon-remote phone-entry__icon${
+                remoteState === 'paired'
+                  ? ' phone-entry__icon--paired'
+                  : remoteState === 'connecting' || remoteState === 'waiting'
+                    ? ' phone-entry__icon--waiting'
+                    : ''
+              }`}
+            />
           </button>
           {/* 引用会话（#）：不设附件栏入口（非高频），输入框 # 直接触发补全 */}
           {/* 定时任务（日历）：上下文圆环左侧排列；角标=待执行任务总数 */}

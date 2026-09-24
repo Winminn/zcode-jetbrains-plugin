@@ -213,16 +213,22 @@ class RelayClient(
      */
     fun sendChannelMessage(bridgeSessionId: String, inner: ByteArray) {
         val ctx = bridgesOut[bridgeSessionId]
-        val messageSeq = ctx?.nextMessageSeq?.incrementAndGet() ?: fallbackSeq.incrementAndGet()
-        val fragments = FrameFragmenter.fragment(
-            bridgeSessionId,
-            nextSeq = { ctx?.nextSeq?.incrementAndGet() ?: fallbackSeq.incrementAndGet() },
-            messageSeq = messageSeq,
-            data = inner,
-            bridgeGeneration = ctx?.generation,
-            recoveryId = ctx?.recoveryId,
-        )
-        for (fragment in fragments) sendPayload(fragment)
+        // seq/messageSeq 分配必须与实际上线同锁(可重入):H5 对两序号均做连续性
+        // 校验,分配后若被并发帧抢先上线,H5 判空洞立即 recover 重建桥——手机端
+        // 「点进会话偶发不断刷新」即此竞态(2026-09-24 IAB 帧级实锤:应答 mseq
+        // 95→97 缺 96,1ms 后 H5 发 recover-start 断桥重连)
+        synchronized(sendLock) {
+            val messageSeq = ctx?.nextMessageSeq?.incrementAndGet() ?: fallbackSeq.incrementAndGet()
+            val fragments = FrameFragmenter.fragment(
+                bridgeSessionId,
+                nextSeq = { ctx?.nextSeq?.incrementAndGet() ?: fallbackSeq.incrementAndGet() },
+                messageSeq = messageSeq,
+                data = inner,
+                bridgeGeneration = ctx?.generation,
+                recoveryId = ctx?.recoveryId,
+            )
+            for (fragment in fragments) sendPayload(fragment)
+        }
     }
 
     /** 便捷：EventFire(listenerId, data) 推送 */

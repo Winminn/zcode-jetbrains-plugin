@@ -26,6 +26,9 @@ class ZCodeProjectActivity : ProjectActivity {
     override suspend fun execute(project: Project) {
         ZCodeAutoArchiveService.getInstance(project)
         withContext(Dispatchers.IO) { migrateV1BuiltinsOnce(project) }
+        // 手机远程重启恢复（2026-09-24 用户需求）：上次退出时开着 → 自动重连。
+        // 服务内部自判开关+凭据、后台线程执行；多项目打开幂等（connect 已运行守卫短路）
+        com.zcode.ideaplugin.remote.ZCodeRemoteService.getInstance().restoreIfEnabled()
     }
 
     companion object {

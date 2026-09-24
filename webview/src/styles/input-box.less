@@ -128,6 +128,16 @@
   font-size: 13px;
 }
 
+/* 入口图标颜色随 relay 状态联动（用户需求）：绿=手机已连接、黄=运行中等待扫描、
+   停止/异常不着色保持默认。双类选择器压 .codicon 单类（同特异性源序不可靠，
+   同上实踩）；取主题变量自适应深浅色 */
+.context-tool-btn .phone-entry__icon--paired {
+  color: var(--status-success);
+}
+.context-tool-btn .phone-entry__icon--waiting {
+  color: var(--status-warning);
+}
+
 /* ===== 引用 chips 区（cc-gui ChatInputBoxHeader 的 AttachmentList 位置：
        MessageQueue 之下、ContextBar 之上，不贴输入框）===== */
 .input-box__refs {

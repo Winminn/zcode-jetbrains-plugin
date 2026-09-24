@@ -69,11 +69,21 @@ class ZCodeRemoteService : Disposable {
 
     // ============ 对外操作（webview op → 这里） ============
 
+    /** 远程开启开关持久化（IDE 重启后恢复连接状态，2026-09-24 用户需求）：
+     *  发起连接即记开、显式断开记关——unpair 内部 disconnect→connect 最终仍为开 */
+    private fun persistEnabled(enabled: Boolean) {
+        runCatching {
+            com.intellij.ide.util.PropertiesComponent.getInstance().setValue(PERSIST_KEY_ENABLED, enabled, false)
+        }.onFailure { log.warn("remote persist enabled=$enabled failed: ${it.message}") }
+    }
+
     @Synchronized
     fun connect(): JsonObject {
         if (client != null && client!!.currentState != RelayState.CLOSED && client!!.currentState != RelayState.KICKED) {
             return statusJson() // 已在运行
         }
+        persistEnabled(true)
+        pendingFollows.clear() // 新配对周期：旧待联动作废（上一轮手机页已随断连消失）
         val credentials = loadOrCreateCredentials()
         // 宿主版本 = 本机 ZCode App 版本（app_version 语义是客户端 3.x 体系，非 CLI
         // 包版本 0.16.x——旧值触发 H5 侧拉 cdn.zcode-ai.com 兼容配置，该 CDN 不可用
@@ -133,6 +143,7 @@ class ZCodeRemoteService : Disposable {
                 }
             }
         }
+
         relayClient.onChannelRequest = { bridgeId, request, responder ->
             channelExecutor.execute {
                 router.handleChannelRequest(bridgeId, request, responder) { project, req, resp ->
@@ -178,7 +189,31 @@ class ZCodeRemoteService : Disposable {
         lastQrUrl = null
         lastError = null
         uiState = UiState.OFF
+        pendingFollows.clear() // 主动停远程：不弹标签（延迟交接随之作废）
+        persistEnabled(false)
         return statusJson()
+    }
+
+    /**
+     * 启动恢复（项目打开 Activity 调用，多项目打开会多次触发、幂等）：上次退出时
+     * 远程开着 → 自动重连。仅在「开关开 + 已有配对凭据」时发起——从没用过远程的
+     * 用户不会被静默注册新设备（loadOrCreateCredentials 的兜底创建只留给显式操作）。
+     * PasswordSafe 读取与 relay 握手都放后台线程，不阻塞启动。
+     */
+    fun restoreIfEnabled() {
+        ApplicationManager.getApplication().executeOnPooledThread {
+            runCatching {
+                val enabled = com.intellij.ide.util.PropertiesComponent.getInstance().getBoolean(PERSIST_KEY_ENABLED, false)
+                if (!enabled) return@executeOnPooledThread
+                val stored = PasswordSafe.instance.get(credentialAttributes())
+                if (stored == null) {
+                    log.info("remote restore skipped (enabled but no credentials)")
+                    return@executeOnPooledThread
+                }
+                log.info("remote restore: reconnecting after restart")
+                connect()
+            }.onFailure { log.warn("remote restore failed: ${it.message}") }
+        }
     }
 
     /** 清除配对（凭据重置为全新设备，下次 connect 重新注册） */
@@ -236,7 +271,7 @@ class ZCodeRemoteService : Disposable {
     private val bridgeSweeper = java.util.concurrent.ScheduledThreadPoolExecutor(1) { r ->
         Thread(r, "zcode-remote-bridge-sweeper").apply { isDaemon = true }
     }.apply {
-        scheduleWithFixedDelay({ runCatching { handlers.sweepStaleBridges(); sweepRunningSessions() } }, 60_000L, 60_000L, java.util.concurrent.TimeUnit.MILLISECONDS)
+        scheduleWithFixedDelay({ runCatching { handlers.sweepStaleBridges(); sweepRunningSessions(); sweepPendingFollows() } }, 60_000L, 60_000L, java.util.concurrent.TimeUnit.MILLISECONDS)
     }
 
     // ============ H5 首页任务行实时相位 ============
@@ -289,6 +324,35 @@ class ZCodeRemoteService : Disposable {
             repushPending.set(false)
             channelExecutor.execute { runCatching { repushControllerSnapshots() } }
         }, 400, java.util.concurrent.TimeUnit.MILLISECONDS)
+        if (running) startPhaseTickerIfNeeded()
+    }
+
+    /**
+     * 运行期周期补推（15s 一轮，2026-09-24 用户实测归档）：回合翻转瞬间只推一帧，
+     * 手机发消息短回合（2~5s）用户根本看不到「运行中」；列表页停留时若恰好错过
+     * 翻转帧也要等下一轮翻转才更新。H5 消费端对 snapshot 帧无条件接受（fromSeq=0
+     * 全量替换），周期补推成本可控（≤150 行），让列表页 15s 内必然追平运行态。
+     * 无运行会话或无订阅者即自停，下一轮 running 翻转重启链。
+     */
+    private val phaseTickerActive = java.util.concurrent.atomic.AtomicBoolean(false)
+
+    private fun startPhaseTickerIfNeeded() {
+        if (!phaseTickerActive.compareAndSet(false, true)) return
+        bridgeSweeper.schedule({ tickPhaseOnce() }, 15_000, java.util.concurrent.TimeUnit.MILLISECONDS)
+    }
+
+    private fun tickPhaseOnce() {
+        val cont = !runningSessionIds.isEmpty() && !controllerSubs.isEmpty()
+        if (!cont) {
+            phaseTickerActive.set(false)
+            return
+        }
+        runCatching { repushControllerSnapshots() }
+        if (!runningSessionIds.isEmpty() && !controllerSubs.isEmpty()) {
+            bridgeSweeper.schedule({ tickPhaseOnce() }, 15_000, java.util.concurrent.TimeUnit.MILLISECONDS)
+        } else {
+            phaseTickerActive.set(false)
+        }
     }
 
     /** 超时兜底（sweep）：session/list 的 status 恒 idle（db 无 status 列，app-server
@@ -309,12 +373,14 @@ class ZCodeRemoteService : Disposable {
     /** 向全部存活的 tasks-index 订阅重推快照（桥已清/无监听者的订阅顺带淘汰） */
     private fun repushControllerSnapshots() {
         log.info("remote controller repush: subs=${controllerSubs.size} running=${runningSessionIds.size}")
+        // 相位盲区取证（协议号修复后仍不显示时用）：淘汰与推送逐条落日志
         for ((subId, sub) in controllerSubs) {
             if (!sub.topic.endsWith("tasks-index")) continue
             val hasListener = router.bridge.subscriptionsFor(sub.bridgeSessionId).any {
                 it.value.channel == "window-controller" && it.value.event == "onDynamicControllerFrame"
             }
             if (!hasListener) {
+                log.info("remote controller repush: drop sub $subId (no window-controller listener on bridge ${sub.bridgeSessionId})")
                 controllerSubs.remove(subId)
                 continue
             }
@@ -332,6 +398,83 @@ class ZCodeRemoteService : Disposable {
             ?: return null
         if (impl.isStarted()) impl.getClient() else null
     }.getOrNull()
+
+    /**
+     * 手机端→桌面跟随：H5 发送用户消息（sendPrompt/sendConversationCommandV4 受理成功）
+     * 时联动桌面——已有绑定该会话的标签则选中，没有则新建标签恢复该会话。只在发送时
+     * 联动：浏览/切换会话不联动（每点进一个会话就开标签页会让标签数量失控，2026-09-24
+     * 用户定案「有发送用户消息才激活」）；工作区归属本工程才联动（H5 可浏览多工作区，
+     * 多窗口按 basePath 归一比较路由到匹配的工程窗口）。
+     */
+    fun followMobileSend(workspacePath: String?, sessionId: String) {
+        if (sessionId.isBlank() || sessionId.startsWith("sess_subagent")) return
+        val wsKey = workspacePath?.replace('\\', '/')?.trimEnd('/')
+        // 桌面 legacy resume 会重建 app-server 会话 runtime,同一毫秒向 H5 重推
+        // 换代 subscriptionId 的 initial 帧(H5 会话 store 无法消化→转录区空态
+        // 报错页,点「重新连接」才恢复,IAB 帧级实锤:resume 与 H5 活跃 v4 订阅
+        // 互斥)。会话正被 H5 订阅时开桌面标签=当场打断手机页面——记作待联动,
+        // H5 退订该会话(回列表/关页)后由 [onH5ConversationUnsubscribed] 延迟
+        // 触发,手机看着时桌面不抢、手机一离开桌面立刻接手。根治=桌面会话
+        // 视图 v4 化(主界面 v4 迁移)。
+        val h5Subscribed = runCatching { handlers.activeContexts() }.getOrNull()
+            ?.any { it.value.subscriptions.containsKey("conversation/$sessionId") } == true
+        if (h5Subscribed) {
+            pendingFollows[sessionId] = PendingFollow(wsKey ?: "", System.currentTimeMillis())
+            log.info("mobile send follow deferred (h5 v4 subscribed, resume would break h5): $sessionId")
+            return
+        }
+        followByWsKey(wsKey ?: "", sessionId)
+    }
+
+    /** 待联动表（H5 活跃订阅时压入，退订后触发开标签）：sessionId → 工作区键+时刻 */
+    private class PendingFollow(val wsKey: String, val at: Long)
+
+    private val pendingFollows = java.util.concurrent.ConcurrentHashMap<String, PendingFollow>()
+
+    /** H5 退订 conversation/{sessionId}（unsubscribeConversationV4 / 桥拆除 / 页关闭）：
+     *  有待联动则延迟复查后开桌面标签。3s 复查窗防「退订→立即重订阅」（页面刷新
+     *  =dispose→新订阅同会话）误开——重订阅了说明手机还在看着，保留待联动等下次退订 */
+    fun onH5ConversationUnsubscribed(sessionId: String) {
+        val hasPending = pendingFollows.containsKey(sessionId)
+        log.info("h5 conversation unsubscribed: sid=$sessionId pending=$hasPending")
+        if (!hasPending) return
+        bridgeSweeper.schedule({
+            runCatching {
+                val pending = pendingFollows[sessionId] ?: return@runCatching
+                val resubscribed = runCatching { handlers.activeContexts() }.getOrNull()
+                    ?.any { it.value.subscriptions.containsKey("conversation/$sessionId") } == true
+                log.info("deferred follow recheck: sid=$sessionId resubscribed=$resubscribed")
+                if (resubscribed) return@runCatching
+                if (pendingFollows.remove(sessionId) == null) return@runCatching
+                followByWsKey(pending.wsKey, sessionId)
+            }.onFailure { log.warn("deferred mobile follow failed: ${it.message?.take(120)}") }
+        }, 3000, java.util.concurrent.TimeUnit.MILLISECONDS)
+    }
+
+    /** 待联动表兜底清理：超过 10min 未退订的条目（手机停在会话页不放）移除，防表膨胀 */
+    private fun sweepPendingFollows() {
+        val now = System.currentTimeMillis()
+        pendingFollows.entries.removeIf { now - it.value.at > 10 * 60_000L }
+    }
+
+    /** 按工作区键路由工程窗口并开/激活标签（EDT 执行） */
+    private fun followByWsKey(wsKey: String, sessionId: String) {
+        val impl = runCatching { ZCodeServiceImpl.activeProjectServices() }.getOrNull()
+            ?.firstOrNull { svc ->
+                val base = svc.ownerProject.basePath?.replace('\\', '/')?.trimEnd('/') ?: return@firstOrNull false
+                wsKey.isBlank() || wsKey == base
+            }
+        if (impl == null) {
+            log.warn("mobile send follow no project match (wsKey='$wsKey'): $sessionId")
+            return
+        }
+        log.info("mobile send follow → session tab $sessionId")
+        ApplicationManager.getApplication().invokeLater {
+            runCatching {
+                com.zcode.ideaplugin.ui.ZCodeToolWindowFactory.openSessionTab(impl.ownerProject, sessionId)
+            }.onFailure { log.warn("mobile send follow failed: ${it.message?.take(150)}") }
+        }
+    }
 
     private fun handleKnownChannel(
         project: com.intellij.openapi.project.Project?,
@@ -484,7 +627,6 @@ class ZCodeRemoteService : Disposable {
                         put("mode", s.mode)
                         put("provider", "glm")
                         put("status", status)
-                        put("target", null as String?)
                     })
                     put("membership", buildJsonObject {
                         put("pinned", false)
@@ -513,7 +655,11 @@ class ZCodeRemoteService : Disposable {
         // workspaces topic 推 {workspaces}、tasks-index topic 推 {tasks}（官方两 topic
         // 快照内容不同，HAR 实测；外层帧字段 fromSeq/toSeq 对齐官方）
         val snapshotContent = buildJsonObject {
-            put("protocolVersion", 3)
+            // protocolVersion 必须为 1：H5 window-controller 快照 zod schema 字面量
+            // la(1)（z.literal），发 3 → 整帧 strict 校验失败静默丢弃——任务列表实时
+            // 相位翻转文件全盲（IDEA 侧跑回合手机列表恒「已完成」，2026-09-24 逆向
+            // H5 bundle 实锤：sue=Ta({protocolVersion:la(1),logEpoch,tasks}).strict()）
+            put("protocolVersion", 1)
             put("logEpoch", "zcodeidea")
             if (topic.endsWith("tasks-index")) {
                 put("tasks", kotlinx.serialization.json.JsonArray(limited))
@@ -539,6 +685,10 @@ class ZCodeRemoteService : Disposable {
             put("logEpoch", "zcodeidea")
             put("fromSeq", 0)
             put("toSeq", seq)
+            // sentAt 必填：H5 window-controller 帧的 zod schema sentAt 为必填数字
+            // （缺省=整帧静默丢弃，任务列表实时相位全盲——IDEA 侧跑回合手机列表
+            // 恒「已完成」，2026-09-24 IAB 帧级对照官方快照实锤，官方恒带 sentAt）
+            put("sentAt", System.currentTimeMillis())
             put("payload", buildJsonObject {
                 put("kind", "snapshot")
                 put("snapshot", snapshotContent)
@@ -551,6 +701,9 @@ class ZCodeRemoteService : Disposable {
                 }
             }
         }
+        // 相位盲区取证：快照实际推送内容概要（running 会话 id、行数、协议号）
+        val runIds = runningSessionIds.keys.take(3).joinToString(",")
+        log.info("remote controller snapshot pushed: topic=$topic toSeq=$seq tasks=${limited.size} running=[$runIds] proto=${snapshotContent["protocolVersion"]}")
     }
 
     // ============ 凭据（PasswordSafe 首次引入） ============
@@ -642,6 +795,9 @@ class ZCodeRemoteService : Disposable {
 
     companion object {
         private const val SERVICE_NAME = "zcode.remote.relay"
+
+        /** 远程开启开关持久化键（应用级 PropertiesComponent，重启恢复用） */
+        private const val PERSIST_KEY_ENABLED = "zcode.remote.enabled"
 
         /** H5 列表/快照下发上限：会话库大会员（500+）全量下发打爆 H5 端（崩溃重连循环） */
         internal const val TASK_SNAPSHOT_LIMIT = 150

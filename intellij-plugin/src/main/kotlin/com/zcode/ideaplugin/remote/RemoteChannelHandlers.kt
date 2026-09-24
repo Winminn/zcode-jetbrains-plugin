@@ -188,6 +188,14 @@ class RemoteChannelHandlers(private val service: ZCodeRemoteService) {
 
     fun clearBridge(bridgeSessionId: String) {
         val ctx = bridgeContexts.remove(bridgeSessionId)
+        // 桥拆除（页关闭/僵尸淘汰/断连清理）即 H5 全退订：挨个通知待联动
+        if (ctx != null) {
+            for (sub in ctx.subscriptions.values) {
+                if (sub.topic.startsWith("conversation/")) {
+                    service.onH5ConversationUnsubscribed(sub.topic.removePrefix("conversation/"))
+                }
+            }
+        }
         val client = service.appServer(null)
         if (ctx != null && client != null) {
             for (sub in ctx.subscriptions.values) {
@@ -911,6 +919,14 @@ class RemoteChannelHandlers(private val service: ZCodeRemoteService) {
                     return responder.error("command failed: ${e.message?.take(160)}")
                 }
                 emitRemoteUserBubble(client, envelope)
+                // 手机端发送用户消息（v4 sendText）→ 桌面联动打开/激活该会话标签页。
+                // H5 发消息实际走这条 v4 通道（sendPrompt 经典通道 H5 不用，留作兜底）
+                if (envelope["type"]?.jsonPrimitive?.contentOrNull == "sendText") {
+                    service.followMobileSend(
+                        args["workspacePath"]?.jsonPrimitive?.contentOrNull ?: project?.basePath,
+                        envelope["sessionId"]?.jsonPrimitive?.contentOrNull ?: "",
+                    )
+                }
                 responder.success(ChValue.Obj(ack))
             }
             "subscribeConversationV4", "subscribeSessionsIndexV4" -> {
@@ -984,6 +1000,9 @@ class RemoteChannelHandlers(private val service: ZCodeRemoteService) {
                 ctx.subscriptions.remove(topic)?.let {
                     runCatching { client.v4ConversationUnsubscribe(topic, it.subscriptionId, ctx.connectionId) }
                 }
+                // 退订 = 手机离开会话（回列表/关页）——有待联动的桌面标签此刻才安全
+                // （活跃订阅时开标签会 resume 打爆 H5，见 followMobileSend 注释）
+                service.onH5ConversationUnsubscribed(sessionId)
                 responder.success(ChValue.Undefined)
             }
             "readWorkspaceState" -> {
@@ -1133,6 +1152,9 @@ class RemoteChannelHandlers(private val service: ZCodeRemoteService) {
                     // 主链路同款时序：先 subscribe 再 send（send 对未激活会话撞 -32004）
                     runCatching { client.subscribe(sessionId) }
                     client.send(sessionId, content)
+                    // 手机端主动发起任务 → 桌面联动打开/激活该会话标签页。只在发送时
+                    // 联动（浏览/切会话不联动，否则每点一个开一个标签页数量失控）
+                    service.followMobileSend(workspacePath, sessionId)
                     responder.success(ChValue.Obj(buildJsonObject { put("ok", true) }))
                 }
                 "stopGeneration" -> {

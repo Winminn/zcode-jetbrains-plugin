@@ -207,4 +207,41 @@ class RelayClientStateMachineTest {
         ws.sent.poll() // ack
         client.close()
     }
+
+    @Test
+    fun `并发 sendChannelMessage 时 wire 顺序与 messageSeq 分配一致`() {
+        val ws = FakeWebSocket()
+        val client = RelayClient(
+            config = RelayClient.RelayConfig(deviceName = "test-ide", reconnectBackoffMs = longArrayOf()),
+            credentials = RelayCredentials(deviceMid = "m", deviceSid = "s", passHash = "h"),
+            transportFactory = { _, _, listener -> ws.listener = listener; listener.onOpen(ws); ws },
+        )
+        client.connect()
+        ws.sent.poll() // auth_init
+        client.registerBridgeOutbound("br1", 1L, null)
+        ws.sent.clear()
+
+        val total = 400
+        val threads = (1..4).map { t ->
+            Thread {
+                repeat(total / 4) { i ->
+                    client.sendChannelMessage(
+                        "br1",
+                        ChannelCodec.encodeMessage(listOf(ChValue.Str("t$t-$i"))),
+                    )
+                }
+            }
+        }
+        threads.forEach { it.start() }
+        threads.forEach { it.join() }
+
+        // H5 对 messageSeq/seq 做连续性校验:分配序号与实际上线顺序不一致时,
+        // H5 判空洞立即 recover 重建桥(手机端点进会话偶发不断刷新的根因)
+        val seqs = ws.sent.mapNotNull { sentPayload(it) }
+            .filter { (it["zcode_type"] as? kotlinx.serialization.json.JsonPrimitive)?.content == Relay.PAYLOAD_RPC_FRAME }
+            .map { (it["messageSeq"] as kotlinx.serialization.json.JsonPrimitive).content.toLong() }
+        assertEquals(total, seqs.size)
+        assertEquals((1L..total.toLong()).toList(), seqs, "wire 顺序必须与 messageSeq 分配一致")
+        client.close()
+    }
 }

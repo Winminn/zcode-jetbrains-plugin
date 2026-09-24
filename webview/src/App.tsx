@@ -108,6 +108,13 @@ export default function App() {
     if (currentView !== 'chat') setSearchOpen(false)
   }, [currentView])
 
+  // 手机远程状态初始拉取：入口图标颜色随 relay 状态联动，面板打开时要先取到
+  // 当前态（重启自动恢复连接发生在面板打开之前，Kotlin 广播无人接收，须主动拉）；
+  // 后续状态翻转由 Kotlin 侧 broadcastState 推送
+  useEffect(() => {
+    useStore.getState().refreshRemoteState()
+  }, [])
+
   // Ctrl+F / Cmd+F 打开会话内搜索（capture 阶段拦截；跳过 IME 组合态）
   useEffect(() => {
     if (currentView !== 'chat') return
