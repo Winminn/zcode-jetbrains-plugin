@@ -1803,6 +1803,12 @@ export const useStore = create<StoreState>((set, get) => ({
         text,
         workspacePath: wsPath,
         ...(finalModel ? { providerId: finalModel.providerId, modelId: finalModel.modelId } : {}),
+        // 缺陷CX：UI 当前思考档随 send 喂给协议端缓存——懒创建首条消息路径（待命态
+        // 预选档位直接发送）webview 从不下发 setThoughtLevel（防 -32603 赛跑的旧守卫），
+        // 协议端缓存必 miss，send 只能带目录默认档 max，回合跑完 UI 即被顶回最高。
+        // 档位随 send 的 modelSelection 一同到达，无「先到对旧模型非法」问题；UI 显示
+        // 值本身由 settings 响应服务端校准，稳态 UI=服务端
+        ...(finalModel && get().thoughtLevel?.enabled ? { thoughtLevel: get().thoughtLevel?.current } : {}),
         ...(attachments?.length ? { attachments } : {}),
       })
       // 定时消息真发上报：Java 记入已发历史（持久化），历史重拉/重启后按 sessionId+text

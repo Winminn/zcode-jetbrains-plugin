@@ -4270,6 +4270,11 @@ if (!window.__ZCODE_LOG_HOOK__) {
         // 避免恢复链路静默切回默认 provider（个人套餐）；缺省时协议端走原有默认路径
         var providerId = msg["providerId"]?.jsonPrimitive?.content
         var modelId = msg["modelId"]?.jsonPrimitive?.content
+        // 前端 UI 当前思考档（缺陷CX）：随 send 喂进协议端会话档缓存——懒创建首条消息
+        // 路径（待命态预选档位直接发送）webview 从不下发 setThoughtLevel（防 -32603
+        // 赛跑的旧守卫），协议端缓存必 miss，send 只能带目录默认档 max 把预选档冲掉。
+        // 仅作缓存写入不发独立 RPC；模型字段被下方死引用兜底丢弃时一并丢弃
+        var thoughtLevel = msg["thoughtLevel"]?.jsonPrimitive?.content
         // v2 死引用防御（缺陷BZ）：前端 currentModel/modelMemory 可能存着 v1 渠道
         //（builtin:bigmodel-coding-plan 等，v2 registry 已无此渠道）。v2 下 send 带
         // 无效模型引用时 RPC 本身成功但回合立即 prompt_failed（错误只走 telemetry），
@@ -4296,6 +4301,7 @@ if (!window.__ZCODE_LOG_HOOK__) {
                     log.warn("send: dead provider ref $providerId/$modelId and no v2 provider available, dropping model fields")
                     providerId = null
                     modelId = null
+                    thoughtLevel = null
                 }
             }
         }
@@ -4305,7 +4311,7 @@ if (!window.__ZCODE_LOG_HOOK__) {
         val client = project.zCodeService().getClient()
 
         val accepted = try {
-            client.send(sessionId, text, workspacePath, providerId = providerId, modelId = modelId, attachments = attachments)
+            client.send(sessionId, text, workspacePath, providerId = providerId, modelId = modelId, thoughtLevel = thoughtLevel, attachments = attachments)
         } catch (e: ZCodeProtocolException) {
             // 冷会话 send：CLI 升级/重启后的新进程里会话未激活（-32004 Session is not
             // active）。与 resumeAndReadMessages 同一模式——先 resume 激活再重试一次，
@@ -4344,7 +4350,7 @@ if (!window.__ZCODE_LOG_HOOK__) {
                     runCatching { client.subscribe(sessionId, onEvent = null) }
                         .onSuccess { subscribedSessions.add(sessionId) }
                 }
-                client.send(sessionId, text, workspacePath, providerId = providerId, modelId = modelId, attachments = attachments)
+                client.send(sessionId, text, workspacePath, providerId = providerId, modelId = modelId, thoughtLevel = thoughtLevel, attachments = attachments)
             } catch (e2: Exception) {
                 // -32004（槽位满时 LRU 踢掉刚 resume 的会话自己，缺陷BA）：恢复链路内
                 // 的预期失败降级 warn 不带堆栈，防 IDE 红色错误弹窗（新会话发送也走这里）

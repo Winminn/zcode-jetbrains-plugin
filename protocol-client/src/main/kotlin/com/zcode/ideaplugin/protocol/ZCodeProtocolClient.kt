@@ -1581,8 +1581,16 @@ class ZCodeProtocolClient private constructor(
         timeoutMs: Long = 10000,
         providerId: String? = null,
         modelId: String? = null,
+        thoughtLevel: String? = null,
         attachments: List<AttachmentInput>? = null,
     ): JsonObject {
+        // 前端 UI 当前档随 send 喂进会话档缓存（缺陷CX）：懒创建首条消息路径 webview
+        // 从不下发 setThoughtLevel（防 -32603 赛跑的旧守卫），缓存必 miss——没有这一步，
+        // 首回合 modelSelection 只能带目录默认档 max，把用户待命态预选的档位冲掉。
+        // 仅写本地缓存不发独立 RPC（协议 send schema strict 无 thoughtLevel 字段，
+        // 档位只能搭 modelSelection.options 同行）；值集合法性由 modelSelectionJson
+        // 内 resolver 裁决，UI 值陈旧/跨模型非法时自动回退目录默认档
+        thoughtLevel?.takeIf { it.isNotBlank() }?.let { sessionThoughtLevels[sessionId] = it }
         // 模型字段按代分支（代际由 start() 判定，无试错）：
         // - OLD：runtimeModel（协议原生形态，对齐官方客户端按回合携带模型）——首条消息即
         //   注册 provider 并让本回合直接跑在目标模型上。setModel 与新建会话首回合在服务端

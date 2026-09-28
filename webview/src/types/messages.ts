@@ -371,7 +371,7 @@ export type JavaRequest =  | { op: 'askUserPendingState' }
   | { op: 'messages'; sessionId: string; workspacePath?: string; reconcile?: boolean; goalRefresh?: boolean }
   | { op: 'subagents'; sessionId: string }
   | { op: 'subagentMessages'; sessionId: string; workspacePath?: string }
-  | { op: 'send'; sessionId: string; text: string; workspacePath?: string; providerId?: string; modelId?: string; attachments?: ImageAttachmentInput[] }
+  | { op: 'send'; sessionId: string; text: string; workspacePath?: string; providerId?: string; modelId?: string; thoughtLevel?: string; attachments?: ImageAttachmentInput[] }
   /** 剪贴板兜底：JCEF 偶发不把图片暴露给 clipboardData（CC-GUI 用 IDE action 兜底，
    *  我们用按需桥更轻）——Java 读 AWT 剪贴板 DataFlavor.imageFlavor → PNG base64 返回 */
   | { op: 'getClipboardImage' }
