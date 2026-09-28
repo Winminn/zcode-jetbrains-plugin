@@ -1046,6 +1046,7 @@ class ZCodeProtocolClient private constructor(
                 timeoutMs = 15_000,
             )
             requireOk(result)
+            accountOverlayPushed = true
             val payload = result["result"]?.jsonObject
             val status = payload?.get("status")?.jsonPrimitive?.jsonStringOrNull ?: "?"
             val count = payload?.get("providerCount")?.jsonPrimitive?.contentOrNull ?: "?"
@@ -1053,6 +1054,24 @@ class ZCodeProtocolClient private constructor(
         } catch (e: Exception) {
             println("[ZCodeAccountOverlay] push failed (fail-soft, account channels stay unavailable): ${e.message}")
         }
+    }
+
+    /** updateAccountConfig 已成功落地（幂等去重用；后台推送线程与同步 ensure 竞态无害，
+     *  CLI 按 revision 去重返回 unchanged） */
+    @Volatile
+    private var accountOverlayPushed = false
+
+    /**
+     * 同步确保账号渠道激活推送已落地（幂等，可重复调用）。
+     *
+     * start() 的推送是后台异步的——主 client 靠「spawn 到首次发消息」的自然间隔掩盖，
+     * 但润色等首次请求立刻就发的调用方会在推送落地前撞 -32603「Provider Registry
+     * 中不存在」（0.3.8 实测：推送比首条 generateText 晚 70ms）。轻任务专用实例
+     * start 后、首个 generateText 前调用本方法。
+     */
+    fun ensureAccountOverlayPushed(zcodePath: Path) {
+        if (accountOverlayPushed || generation != ProtocolGeneration.NEW) return
+        pushAccountOverlay(zcodePath)
     }
 
     /** 发送客户端请求并等待响应 */
@@ -1815,6 +1834,7 @@ class ZCodeProtocolClient private constructor(
         workspacePath: String?,
         credentialsOverride: ZCodeCredentials? = null,
         timeoutMs: Long = 120_000,
+        processHook: ((Process) -> Unit)? = null,
     ): JsonObject {
         val args = mutableListOf(
             nodePath, zcodePath.toString(),
@@ -1831,6 +1851,7 @@ class ZCodeProtocolClient private constructor(
         pb.redirectErrorStream(false)
 
         val proc = pb.start()
+        processHook?.invoke(proc)
         val errText = StringBuilder()
         Thread({
             runCatching {
@@ -1862,6 +1883,21 @@ class ZCodeProtocolClient private constructor(
     }
 
     /**
+     * 轻任务（润色/标题）快速通道的首选思考档：disabled > low > null（null=不传，
+     * 服务端落目录默认档）。默认档 max 的思考时长把短输入也拖到 13s+（2026-09-28
+     * diag 实测：短输入 max 13s vs low 3s，长输入压线 45s 超时），润色/标题类
+     * 不需要深思考；模型值集不含两者时回退默认（resolveSelectionReasoningLevel 兜底）。
+     */
+    fun lightReasoningLevel(modelId: String): String? {
+        val values = BuiltinModelCatalog.reasoningValues(modelId, zcodePath) ?: return null
+        return when {
+            "disabled" in values -> "disabled"
+            "low" in values -> "low"
+            else -> null
+        }
+    }
+
+    /**
      * workspace/generateText — 常驻 app-server 上的一次性文本生成（无会话、无 agent 系统上下文）。
      *
      * 与 CLI -p 通道的本质差异（2026-08-26 协议直连实测）：裸 AI SDK generateText，
@@ -1884,6 +1920,8 @@ class ZCodeProtocolClient private constructor(
         systemPrompt: String? = null,
         querySource: String = "workspace_prompt_enhance",
         timeoutMs: Long = 60000,
+        reasoningLevel: String? = null,
+        operationId: String? = null,
     ): JsonObject {
         val nativePath = workspacePath.replace('/', File.separatorChar)
         val params = buildJsonObject {
@@ -1895,8 +1933,9 @@ class ZCodeProtocolClient private constructor(
             val key = if (generation == ProtocolGeneration.NEW) "selection" else "modelRef"
             if (generation == ProtocolGeneration.NEW) {
                 // v2 selection 必带 options.reasoningLevel（缺失报 "Reasoning level is
-                // required"，润色/标题快速通道曾因此全量降级 CLI）
-                put(key, modelSelectionJson(providerId, modelId))
+                // required"，润色/标题快速通道曾因此全量降级 CLI）；显式传轻量档时按值
+                // 传递（值集不含时 resolveSelectionReasoningLevel 回退默认档）
+                put(key, modelSelectionJson(providerId, modelId, reasoningLevel))
             } else {
                 put(key, buildJsonObject {
                     put("providerId", providerId)
@@ -1924,10 +1963,30 @@ class ZCodeProtocolClient private constructor(
                 put("prompt", prompt)
             }
             put("querySource", querySource)
+            // 取消句柄：服务端按 operationId 注册 AbortController，workspace/cancelGenerateText
+            // 传同 id 即中止（schema strict 可选字段；重复 operationId 报 -32600 already active）
+            if (operationId != null) {
+                put("operationId", operationId)
+            }
         }
         val r = request("workspace/generateText", params, timeoutMs)
         requireOk(r)
         return r["result"]?.jsonObject ?: JsonObject(emptyMap())
+    }
+
+    /**
+     * workspace/cancelGenerateText — 中止在途的 generateText（插队旁路，不用等串行队列）。
+     *
+     * @return 服务端回执 cancelled：true=已中止在途请求；false=无此 operationId 的在途请求
+     */
+    fun cancelGenerateText(operationId: String, timeoutMs: Long = 5000): Boolean {
+        val r = request(
+            "workspace/cancelGenerateText",
+            buildJsonObject { put("operationId", operationId) },
+            timeoutMs,
+        )
+        requireOk(r)
+        return r["result"]?.jsonObject?.get("cancelled")?.jsonPrimitive?.booleanOrNull ?: false
     }
 
     /**

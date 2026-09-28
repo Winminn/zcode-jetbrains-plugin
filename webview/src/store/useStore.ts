@@ -927,7 +927,9 @@ interface StoreState {
 
   // 提示词润色（InputBox 润色按钮 → generateText/CLI 通道 → 对比确认弹窗）
   enhancing: boolean
-  /** 润色结果弹窗数据（null = 关闭；error 非 null = 失败态；model = 实际润色模型）*/
+  /** 弹窗可见性（与结果数据解耦：润色中关弹窗不弃请求，再点按钮复用在途/既有结果）*/
+  enhanceDialogOpen: boolean
+  /** 润色结果弹窗数据（null = 无；error 非 null = 失败态；model = 实际润色模型）*/
   enhanceResult: { original: string; text?: string; error?: string; model?: string } | null
 
   // 子智能体定义清单（磁盘扫描 + 发送选择；数据与 ZCode 客户端共用 agents/*.md，
@@ -1162,9 +1164,13 @@ interface StoreState {
   toggleSkill: (path: string, enabled: boolean) => void
 
   // ============ 提示词润色 ============
-  /** 触发润色（一次性 CLI headless 调用；结果经 enhancePromptResult 回填弹窗）*/
+  /** 触发润色（在途再点=复用开弹窗；同文已有结果再点=复用结果；否则发新请求）*/
   enhancePrompt: (text: string) => void
-  /** 关闭润色弹窗（保留原始或使用增强后的清理动作）*/
+  /** 仅关弹窗（润色继续在途/结果保留，可再点按钮复现）*/
+  closeEnhanceDialog: () => void
+  /** 用户取消润色：通知后端中止在途请求并清场（与关弹窗不同，这是真终止）*/
+  cancelEnhance: () => void
+  /** 整体重置（使用润色回填后清场：关弹窗+弃结果+作废代际）*/
   clearEnhanceResult: () => void
 
   // ============ 子智能体 ============
@@ -1474,6 +1480,7 @@ export const useStore = create<StoreState>((set, get) => ({
 
   skills: null,
   enhancing: false,
+  enhanceDialogOpen: false,
   enhanceResult: null,
   subagentDefs: null,
   selectedAgent: null,
@@ -2699,14 +2706,27 @@ export const useStore = create<StoreState>((set, get) => ({
 
   // ============ 提示词润色 ============
   enhancePrompt: (text) => {
-    if (!text.trim() || get().enhancing) return
+    if (!text.trim()) return
+    // 润色在途中再点按钮：同文本=复用在途请求（重新打开弹窗看进度），不重发；
+    // 改了文本=旧润色已过时，走下方新请求（latest-wins 顶掉旧代）。协议层
+    // generateText/CLI 无法真正取消，同文重发只会白白多跑一趟（issue #22 交互反馈）
+    const inflight = get().enhanceResult
+    if (get().enhancing && inflight && inflight.original === text) {
+      set({ enhanceDialogOpen: true })
+      return
+    }
+    // 同文本已有完整结果（上次关了弹窗没用）：直接复用展示，不重烧一次模型
+    if (inflight && !get().enhancing && !inflight.error && inflight.text && inflight.original === text) {
+      set({ enhanceDialogOpen: true })
+      return
+    }
     // 模型优先级：设置→行为的润色专用模型 > 会话当前所选模型（专用模型失效由
     // 后端兜底回退默认 provider，结果回包 model 字段带实际用到的模型）
     const dedicated = readEnhanceConfig().enhanceModel
     const cm = dedicated ?? get().currentModel
     const seq = ++enhanceSeqCounter
     enhanceActiveSeq = seq
-    set({ enhancing: true, enhanceResult: { original: text, model: cm?.modelId } })
+    set({ enhancing: true, enhanceDialogOpen: true, enhanceResult: { original: text, model: cm?.modelId } })
     sendToJava({
       op: 'enhancePrompt',
       seq,
@@ -2728,12 +2748,29 @@ export const useStore = create<StoreState>((set, get) => ({
     }, 180_000)
   },
 
+  closeEnhanceDialog: () => {
+    // 仅藏弹窗：在途请求继续（结果落地进 enhanceResult，弹窗不自动复活），
+    // 再点润色按钮可复现（在途=看进度；已有结果=直接展示）
+    set({ enhanceDialogOpen: false })
+  },
+
+  cancelEnhance: () => {
+    // 真终止：通知后端中止（generateText 协议取消/CLI 进程销毁）；作废代际让
+    // 迟到的中止错误回包被守卫丢弃，本地即刻清场（再点同文=全新请求）
+    if (enhanceActiveSeq !== null) {
+      sendToJava({ op: 'cancelEnhancePrompt', seq: enhanceActiveSeq })
+    }
+    cancelEnhanceTimer()
+    enhanceActiveSeq = null
+    set({ enhancing: false, enhanceDialogOpen: false, enhanceResult: null })
+  },
+
   clearEnhanceResult: () => {
     cancelEnhanceTimer()
     // 作废活动代：在途润色（协议层 generateText 无法中断，算完即弃）的迟到
-    // 回包经 reducer 代际守卫丢弃，弹窗不会重新弹出
+    // 回包经 reducer 代际守卫丢弃
     enhanceActiveSeq = null
-    set({ enhancing: false, enhanceResult: null })
+    set({ enhancing: false, enhanceDialogOpen: false, enhanceResult: null })
   },
 
   // ============ 子智能体 ============
@@ -4995,7 +5032,8 @@ export function handleResponse(
       set({
         enhancing: false,
         enhanceResult: {
-          original: msg.original ?? '',
+          // 错误回包（异常/busy）不带 original，保留弹窗当前原文而非落空串
+          original: msg.original ?? get().enhanceResult?.original ?? '',
           model: msg.model ?? get().enhanceResult?.model,
           ...(msg.error
             ? { error: msg.error }

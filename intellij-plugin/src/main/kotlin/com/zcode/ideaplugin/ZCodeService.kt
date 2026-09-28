@@ -24,6 +24,16 @@ interface ZCodeService {
     fun getClient(): ZCodeProtocolClient
 
     /**
+     * 润色/标题等轻任务的专用协议客户端（懒启动，独立 app-server 进程）。
+     *
+     * app-server 串行处理请求（2026-09-28 diag 实证：generateText 在途 31s 期间
+     * session/list 排队 30.2s，完成后 0s）——润色这类可达 10~30s 的裸生成若与
+     * 会话流量同进程，历史列表/发消息全部被拖住。独立实例只跑 generateText，
+     * 慢请求在专用进程内排队；随项目 dispose 一并关闭。
+     */
+    fun getEnhanceClient(): ZCodeProtocolClient
+
+    /**
      * 服务端会话驻留水位账本（缺陷BA 缓解）：app-server 驻留会话 16 上限，超限
      * 淘汰且有"踢刚载入会话自己"的排序缺陷（打开历史会话报 -32004 的根因）。
      * 面板 resume 成功后记账、打开新会话前查水位，越过阈值提醒用户。

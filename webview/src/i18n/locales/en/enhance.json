@@ -6,6 +6,9 @@
   "original": "Original prompt",
   "enhanced": "Enhanced prompt",
   "loading": "Enhancing…",
+  "cancel": "Cancel",
+  "elapsed": "{{seconds}}s elapsed",
+  "patienceHint": "Long text may take 10–30s; feel free to close this dialog and reopen it from the enhance button anytime",
   "keepOriginal": "Keep original",
   "useEnhanced": "Use enhanced",
   "timeout": "Enhancement timed out, please retry"

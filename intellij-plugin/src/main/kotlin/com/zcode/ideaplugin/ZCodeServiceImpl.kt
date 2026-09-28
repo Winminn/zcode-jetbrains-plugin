@@ -489,10 +489,51 @@ class ZCodeServiceImpl(private val project: Project) : ZCodeService, com.intelli
 
     override fun isStarted(): Boolean = client?.isAlive() == true
 
+    /**
+     * 润色/标题轻任务专用 client（懒启动）：只跑 workspace/generateText，与主
+     * app-server 进程隔离——app-server 串行处理请求，generateText 在途会拖住
+     * session/list/send（用户实测「润色中历史列表加载不出来」的根因）。
+     * 无会话流量，不注册交互 handler，不参与归档扫描；随 shutdown 一并关闭。
+     */
+    private var enhanceClient: ZCodeProtocolClient? = null
+
+    override fun getEnhanceClient(): ZCodeProtocolClient {
+        enhanceClient?.let { if (it.isAlive()) return it }
+        return lock.withLock {
+            enhanceClient?.let { if (it.isAlive()) return it }
+            val env = com.zcode.ideaplugin.env.ZCodeEnvChecker.resolveForStart()
+            com.zcode.ideaplugin.env.ZCodeProviderBootstrap.ensureBuiltinProvider(env.zcodePath)
+            val started = ZCodeProtocolClient.start(
+                zcodePath = env.zcodePath,
+                credentials = env.credentials,
+                nodePath = env.nodePath,
+            )
+            log.info("[enhance] dedicated app-server started (isolates generateText from session traffic)")
+            // 无会话一般不会被问，但防御性挂上 fail-soft 应答，避免专用进程万一收到
+            // runtimePreferences 反向请求时无人应答卡死
+            started.runtimePreferencesResponder = { _, _ ->
+                val p = com.zcode.ideaplugin.ui.ZCodeClientSettingStore.readRuntimePrefs()
+                com.zcode.ideaplugin.protocol.model.RuntimePreferences(
+                    nativeSearchEnhancementsEnabled = p.nativeSearchEnhancementsEnabled,
+                    memoryEnabled = p.memoryEnabled,
+                    askUserQuestionAutoResolutionEnabled = false,
+                )
+            }
+            // 同步等账号 overlay 推送落地再返回：start() 的推送是后台异步的，首条
+            // generateText 立刻就发，竞态下（推送晚 70ms 实测）报 -32603 Registry
+            // 不存在、首次润色掉进 CLI 降级。幂等，与后台推送线程并发无害
+            started.ensureAccountOverlayPushed(env.zcodePath)
+            enhanceClient = started
+            started
+        }
+    }
+
     override fun shutdown() {
         lock.withLock {
             client?.close()
             client = null
+            enhanceClient?.close()
+            enhanceClient = null
             // 进程将被杀，驻留集合随之消亡：账本清零（下次 getClient 重建亦会重置，双保险）
             residentLedger.invalidateAll()
             // handler 注册标志随旧实例作废：getClient 换代后 registerProtocolHandlersLocked

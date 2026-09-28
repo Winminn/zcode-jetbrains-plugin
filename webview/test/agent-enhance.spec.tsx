@@ -129,12 +129,15 @@ describe('润色状态机（store）', () => {
     expect(req2).toMatchObject({ providerId: 'builtin:bigmodel-coding-plan', modelId: 'GLM-5.2' })
   })
 
-  it('空文本不触发请求；enhancing 中防重入', () => {
+  it('空文本不触发请求；在途中改文再点=新请求（latest-wins）', () => {
     useStore.getState().enhancePrompt('   ')
     expect(sentRequests.filter((r) => r.op === 'enhancePrompt')).toHaveLength(0)
     useStore.getState().enhancePrompt('第一条')
+    // 在途中点不同文本：开新请求顶掉旧代，而非复用
     useStore.getState().enhancePrompt('第二条')
-    expect(sentRequests.filter((r) => r.op === 'enhancePrompt')).toHaveLength(1)
+    const reqs = sentRequests.filter((r) => r.op === 'enhancePrompt')
+    expect(reqs).toHaveLength(2)
+    expect(useStore.getState().enhanceResult?.original).toBe('第二条')
   })
 
   it('enhancePromptResult 成功落地：model 覆盖占位（后端兜底回退时徽标更新）', () => {
@@ -146,21 +149,23 @@ describe('润色状态机（store）', () => {
     expect(s.enhanceResult).toEqual({ original: '原文', text: '润色后', model: 'GLM-5.3' })
   })
 
-  it('enhancePromptResult 失败落地（错误态，model 保留占位）', () => {
+  it('enhancePromptResult 失败落地（错误态，model 保留占位；原文不丢）', () => {
     useStore.getState().enhancePrompt('原文')
     messageHandler!({ op: 'enhancePromptResult', seq: lastEnhanceSeq(), error: 'CLI 超时' })
     const s = useStore.getState()
     expect(s.enhancing).toBe(false)
     expect(s.enhanceResult?.error).toBe('CLI 超时')
+    expect(s.enhanceResult?.original).toBe('原文')
     expect(s.enhanceResult?.model).toBe('GLM-5.2')
   })
 
-  it('clearEnhanceResult 关弹窗', () => {
+  it('clearEnhanceResult 整体重置（关弹窗+弃结果+作废代际）', () => {
     useStore.getState().enhancePrompt('原文')
     messageHandler!({ op: 'enhancePromptResult', seq: lastEnhanceSeq(), original: '原文', text: '润色后' })
     useStore.getState().clearEnhanceResult()
     expect(useStore.getState().enhanceResult).toBeNull()
     expect(useStore.getState().enhancing).toBe(false)
+    expect(useStore.getState().enhanceDialogOpen).toBe(false)
   })
 })
 
@@ -170,22 +175,60 @@ function lastEnhanceSeq(): number {
   return req.seq ?? -1
 }
 
-describe('润色代际守卫（issue #22：关闭弹窗即放弃在途润色）', () => {
-  it('润色中关弹窗：迟到回包丢弃，弹窗不再被顶出来', () => {
+describe('润色弹窗复用（issue #22 交互：关弹窗不弃请求，再点按钮复现）', () => {
+  it('润色中关弹窗：仅藏弹窗不弃请求；迟到回包静默落地且弹窗不复活', () => {
     useStore.getState().enhancePrompt('原文')
     const seq = lastEnhanceSeq()
-    // loading 中点「保留原始」关闭（协议层 generateText 无法中断，算完即弃）
-    useStore.getState().clearEnhanceResult()
+    // loading 中点「保留原始」/Esc/点空白关闭（润色继续在途）
+    useStore.getState().closeEnhanceDialog()
+    expect(useStore.getState().enhanceDialogOpen).toBe(false)
+    expect(useStore.getState().enhancing).toBe(true)
+    // 迟到回包落地进状态（供复现），弹窗不自动顶出来
     messageHandler!({ op: 'enhancePromptResult', seq, original: '原文', text: '迟到的结果' })
     const s = useStore.getState()
-    expect(s.enhanceResult).toBeNull()
     expect(s.enhancing).toBe(false)
+    expect(s.enhanceDialogOpen).toBe(false)
+    expect(s.enhanceResult?.text).toBe('迟到的结果')
   })
 
-  it('关闭后重新发起：旧回包不覆盖新 loading 态，新回包正常落地', () => {
+  it('润色中再点按钮：复用在途请求重开弹窗，不重发', () => {
+    useStore.getState().enhancePrompt('原文')
+    const seq = lastEnhanceSeq()
+    useStore.getState().closeEnhanceDialog()
+    useStore.getState().enhancePrompt('原文')
+    expect(sentRequests.filter((r) => r.op === 'enhancePrompt')).toHaveLength(1)
+    const s = useStore.getState()
+    expect(s.enhanceDialogOpen).toBe(true)
+    expect(s.enhancing).toBe(true)
+    // 在途回包照常落到重开的弹窗
+    messageHandler!({ op: 'enhancePromptResult', seq, original: '原文', text: '结果' })
+    expect(useStore.getState().enhanceResult?.text).toBe('结果')
+  })
+
+  it('同文本已有完整结果再点：直接复用展示，不重烧模型', () => {
+    useStore.getState().enhancePrompt('原文')
+    messageHandler!({ op: 'enhancePromptResult', seq: lastEnhanceSeq(), original: '原文', text: '旧结果' })
+    useStore.getState().closeEnhanceDialog()
+    useStore.getState().enhancePrompt('原文')
+    expect(sentRequests.filter((r) => r.op === 'enhancePrompt')).toHaveLength(1)
+    const s = useStore.getState()
+    expect(s.enhanceDialogOpen).toBe(true)
+    expect(s.enhancing).toBe(false)
+    expect(s.enhanceResult?.text).toBe('旧结果')
+  })
+
+  it('同文本但上次是失败态再点：重新发起', () => {
+    useStore.getState().enhancePrompt('原文')
+    messageHandler!({ op: 'enhancePromptResult', seq: lastEnhanceSeq(), error: '润色失败' })
+    useStore.getState().closeEnhanceDialog()
+    useStore.getState().enhancePrompt('原文')
+    expect(sentRequests.filter((r) => r.op === 'enhancePrompt')).toHaveLength(2)
+    expect(useStore.getState().enhancing).toBe(true)
+  })
+
+  it('在途中点不同文本：新请求顶掉旧代，旧回包不覆盖新 loading 态', () => {
     useStore.getState().enhancePrompt('第一次')
     const seq1 = lastEnhanceSeq()
-    useStore.getState().clearEnhanceResult()
     useStore.getState().enhancePrompt('第二次')
     const seq2 = lastEnhanceSeq()
     expect(seq2).not.toBe(seq1)
@@ -207,21 +250,71 @@ describe('润色代际守卫（issue #22：关闭弹窗即放弃在途润色）'
     messageHandler!({ op: 'enhancePromptResult', text: '无代际' })
     expect(useStore.getState().enhancing).toBe(true)
   })
+
+  it('取消润色：通知后端中止 + 本地即刻清场，迟到回包被代际守卫丢弃', () => {
+    useStore.getState().enhancePrompt('原文')
+    const seq = lastEnhanceSeq()
+    useStore.getState().cancelEnhance()
+    // 通知后端带活动代际；本地全部复位
+    expect(sentRequests.some((r) => r.op === 'cancelEnhancePrompt' && (r as any).seq === seq)).toBe(true)
+    const s = useStore.getState()
+    expect(s.enhancing).toBe(false)
+    expect(s.enhanceDialogOpen).toBe(false)
+    expect(s.enhanceResult).toBeNull()
+    // 中止后的错误回包（已取消）不再复活任何状态
+    messageHandler!({ op: 'enhancePromptResult', seq, error: '已取消' })
+    expect(useStore.getState().enhanceResult).toBeNull()
+    expect(useStore.getState().enhancing).toBe(false)
+    // 取消后同文再点 = 全新请求
+    useStore.getState().enhancePrompt('原文')
+    expect(sentRequests.filter((r) => r.op === 'enhancePrompt')).toHaveLength(2)
+  })
+
+  it('busy/异常错误回包不带 original：保留弹窗原文不落空串', () => {
+    useStore.getState().enhancePrompt('第二次')
+    const seq = lastEnhanceSeq()
+    messageHandler!({ op: 'enhancePromptResult', seq, error: '润色进行中，请稍候' })
+    const s = useStore.getState()
+    expect(s.enhancing).toBe(false)
+    expect(s.enhanceResult?.error).toBe('润色进行中，请稍候')
+    expect(s.enhanceResult?.original).toBe('第二次')
+  })
 })
 
 describe('PromptEnhancerDialog 交互', () => {
-  it('loading 态：spinner + 两按钮禁用', () => {
+  it('loading 态：spinner + 计时/走条/耐心提示 + 取消按钮（点击回调 onCancel）', () => {
+    const onCancel = vi.fn()
     render(
       <PromptEnhancerDialog
         enhancing={true}
         result={{ original: '原文' }}
         onUse={() => {}}
         onClose={() => {}}
+        onCancel={onCancel}
       />,
     )
     expect(document.querySelector('.prompt-enhancer__loading')).toBeTruthy()
+    expect(document.querySelector('.prompt-enhancer__progress')).toBeTruthy()
+    expect(document.querySelector('.prompt-enhancer__hint')?.textContent).toContain('10~30')
+    expect(document.querySelector('.prompt-enhancer__elapsed')?.textContent).toMatch(/0/)
     expect((screen.getByRole('button', { name: /使用润色|Use enhanced/ }) as HTMLButtonElement).disabled).toBe(true)
-    expect((screen.getByRole('button', { name: /保留原始|Keep original/ }) as HTMLButtonElement).disabled).toBe(true)
+    expect((screen.getByRole('button', { name: /保留原始|Keep original/ }) as HTMLButtonElement).disabled).toBe(false)
+    // 取消按钮仅 loading 态渲染
+    fireEvent.click(screen.getByRole('button', { name: /取消润色|Cancel/ }))
+    expect(onCancel).toHaveBeenCalledTimes(1)
+  })
+
+  it('非 loading 态不渲染取消按钮', () => {
+    render(
+      <PromptEnhancerDialog
+        enhancing={false}
+        result={{ original: '原文', error: 'boom' }}
+        onUse={() => {}}
+        onClose={() => {}}
+        onCancel={() => {}}
+      />,
+    )
+    expect(screen.queryByRole('button', { name: /取消润色|Cancel/ })).toBeNull()
   })
 
   it('错误态：显示错误 + 只能关闭', () => {
@@ -231,6 +324,7 @@ describe('PromptEnhancerDialog 交互', () => {
         result={{ original: '原文', error: 'boom' }}
         onUse={() => {}}
         onClose={() => {}}
+        onCancel={() => {}}
       />,
     )
     expect(document.querySelector('.prompt-enhancer__error')?.textContent).toContain('boom')
@@ -239,11 +333,11 @@ describe('PromptEnhancerDialog 交互', () => {
 
   it('模型徽标：有 model 时标题行右侧渲染，无 model 不渲染', () => {
     const { rerender } = render(
-      <PromptEnhancerDialog enhancing={false} result={{ original: '原文', text: '结果', model: 'GLM-5.3' }} onUse={() => {}} onClose={() => {}} />,
+      <PromptEnhancerDialog enhancing={false} result={{ original: '原文', text: '结果', model: 'GLM-5.3' }} onUse={() => {}} onClose={() => {}} onCancel={() => {}} />,
     )
     expect(document.querySelector('.prompt-enhancer__model')?.textContent).toBe('GLM-5.3')
     rerender(
-      <PromptEnhancerDialog enhancing={false} result={{ original: '原文', text: '结果' }} onUse={() => {}} onClose={() => {}} />,
+      <PromptEnhancerDialog enhancing={false} result={{ original: '原文', text: '结果' }} onUse={() => {}} onClose={() => {}} onCancel={() => {}} />,
     )
     expect(document.querySelector('.prompt-enhancer__model')).toBeNull()
   })
@@ -257,6 +351,7 @@ describe('PromptEnhancerDialog 交互', () => {
         result={{ original: '原文', text: '润色结果' }}
         onUse={onUse}
         onClose={onClose}
+        onCancel={() => {}}
       />,
     )
     fireEvent.keyDown(window, { key: 'Enter' })

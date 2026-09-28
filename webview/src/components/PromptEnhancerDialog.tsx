@@ -6,7 +6,7 @@
  * 键盘：Enter = 使用润色（有结果时）、Escape = 关闭（window 级监听，焦点不在弹窗也能关）。
  */
 
-import { useEffect } from 'react'
+import { useEffect, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import '../styles/prompt-enhancer.less'
 
@@ -26,10 +26,22 @@ interface Props {
   onUse: (text: string) => void
   /** 关闭弹窗（保留原始）*/
   onClose: () => void
+  /** 取消润色（中止在途请求并清场，仅 loading 态渲染）*/
+  onCancel: () => void
 }
 
-export function PromptEnhancerDialog({ enhancing, result, onUse, onClose }: Props) {
+export function PromptEnhancerDialog({ enhancing, result, onUse, onClose, onCancel }: Props) {
   const { t } = useTranslation()
+
+  // 润色进行中秒级计时。协议层 workspace/generateText 是一次性 RPC（服务端不吐
+  // 增量、无流式方法），实时内容刷新做不了，进度感知 = 用时 + 阶段提示 + 走条
+  const [elapsed, setElapsed] = useState(0)
+  useEffect(() => {
+    if (!enhancing) { setElapsed(0); return }
+    setElapsed(0)
+    const timer = window.setInterval(() => setElapsed((s) => s + 1), 1000)
+    return () => window.clearInterval(timer)
+  }, [enhancing])
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -67,8 +79,15 @@ export function PromptEnhancerDialog({ enhancing, result, onUse, onClose }: Prop
           <div className="prompt-enhancer__section-title">{t('enhance.enhanced')}</div>
           {enhancing ? (
             <div className="prompt-enhancer__loading">
-              <span className="codicon codicon-loading codicon-modifier-spin" />
-              <span>{t('enhance.loading')}</span>
+              <div className="prompt-enhancer__loading-main">
+                <span className="codicon codicon-loading codicon-modifier-spin" />
+                <span>{t('enhance.loading')}</span>
+                <span className="prompt-enhancer__elapsed">{t('enhance.elapsed', { seconds: elapsed })}</span>
+              </div>
+              <div className="prompt-enhancer__progress" aria-hidden="true">
+                <div className="prompt-enhancer__progress-bar" />
+              </div>
+              <div className="prompt-enhancer__hint">{t('enhance.patienceHint')}</div>
             </div>
           ) : result.error ? (
             <div className="prompt-enhancer__error">
@@ -81,10 +100,18 @@ export function PromptEnhancerDialog({ enhancing, result, onUse, onClose }: Prop
         </div>
 
         <div className="modal-actions">
+          {enhancing && (
+            <button
+              className="modal-btn"
+              onClick={onCancel}
+              type="button"
+            >
+              {t('enhance.cancel')}
+            </button>
+          )}
           <button
             className="modal-btn"
             onClick={onClose}
-            disabled={enhancing}
             type="button"
             title="Escape"
           >

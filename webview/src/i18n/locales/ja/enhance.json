@@ -6,6 +6,9 @@
   "original": "元のプロンプト",
   "enhanced": "改善後のプロンプト",
   "loading": "改善中…",
+  "cancel": "改善をキャンセル",
+  "elapsed": "経過 {{seconds}} 秒",
+  "patienceHint": "長文は10〜30秒かかる場合があります。ダイアログを閉じても改善は続行され、ボタンでいつか再表示できます",
   "keepOriginal": "元のまま",
   "useEnhanced": "改善版を使用",
   "timeout": "改善がタイムアウトしました。再試行してください"

@@ -6,6 +6,9 @@
   "original": "原始提示词",
   "enhanced": "润色后提示词",
   "loading": "正在润色…",
+  "cancel": "取消润色",
+  "elapsed": "已用时 {{seconds}} 秒",
+  "patienceHint": "长内容约需 10~30 秒；可先关闭弹窗去忙别的，随时点润色按钮回来看进度",
   "keepOriginal": "保留原始",
   "useEnhanced": "使用润色",
   "timeout": "润色超时，请重试"

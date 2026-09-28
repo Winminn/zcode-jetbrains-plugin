@@ -233,8 +233,11 @@ export function InputBox({ onSend, isStreaming = false, onStop, disabled = false
 
   // ============ 提示词润色 ============
   const enhancing = useStore((s) => s.enhancing)
+  const enhanceDialogOpen = useStore((s) => s.enhanceDialogOpen)
   const enhanceResult = useStore((s) => s.enhanceResult)
   const enhancePromptAction = useStore((s) => s.enhancePrompt)
+  const closeEnhanceDialog = useStore((s) => s.closeEnhanceDialog)
+  const cancelEnhanceAction = useStore((s) => s.cancelEnhance)
   const clearEnhanceResult = useStore((s) => s.clearEnhanceResult)
 
   // 功能开关（设置→行为，默认关闭）：按钮仅在开启时渲染。初始读 localStorage，
@@ -297,9 +300,10 @@ export function InputBox({ onSend, isStreaming = false, onStop, disabled = false
     }
   }, [enhanceEnabled])
 
-  /** 润色按钮：取编辑器正文（与 doSend 同源的序列化），触发一次性 CLI 调用 */
+  /** 润色按钮：取编辑器正文（与 doSend 同源的序列化）。润色在途中再点=重新打开
+   *  弹窗复用在途请求（store 内分流），不重发；空文本交 store 拦截 */
   function handleEnhanceClick() {
-    if (enhancing || isStreaming) return
+    if (isStreaming) return
     const text = serializeEditor(editorRef.current ?? document.createElement('div'), {
       pasteText: pasteTextResolver,
     }).replace(/\s+$/, '')
@@ -1861,7 +1865,8 @@ export function InputBox({ onSend, isStreaming = false, onStop, disabled = false
                   className="enhance-prompt-button"
                   ref={enhanceBtnRef}
                   onClick={handleEnhanceClick}
-                  disabled={disabled || isStreaming || enhancing || !hasText}
+                  // 润色在途不禁用：再点=重新打开弹窗复用在途请求（store 分流），不重发
+                  disabled={disabled || isStreaming || !hasText}
                   type="button"
                 >
                   <span
@@ -2033,13 +2038,15 @@ export function InputBox({ onSend, isStreaming = false, onStop, disabled = false
         />
       )}
 
-      {/* 提示词润色对比弹窗（loading 转圈 / 错误态 / 结果确认回填）*/}
-      {enhanceResult && (
+      {/* 提示词润色对比弹窗（loading 转圈 / 错误态 / 结果确认回填）。
+          可见性与结果数据解耦：润色中点别处关闭不弃请求，再点按钮复现 */}
+      {enhanceDialogOpen && enhanceResult && (
         <PromptEnhancerDialog
           enhancing={enhancing}
           result={enhanceResult}
           onUse={applyEnhanced}
-          onClose={clearEnhanceResult}
+          onClose={closeEnhanceDialog}
+          onCancel={cancelEnhanceAction}
         />
       )}
     </div>

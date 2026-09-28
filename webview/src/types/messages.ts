@@ -445,6 +445,8 @@ export type JavaRequest =  | { op: 'askUserPendingState' }
   /** 提示词润色（一次性 CLI headless 调用，零会话污染；模型跟随当前选择）。
    *  seq=润色代际（发起时自增），回包原样透传，前端据此丢弃关闭弹窗后的迟到回包 */
   | { op: 'enhancePrompt'; seq: number; text: string; workspacePath?: string; providerId?: string; modelId?: string }
+  /** 用户取消润色：Kotlin 走 workspace/cancelGenerateText 即时中止在途请求（或销毁 CLI 子进程）*/
+  | { op: 'cancelEnhancePrompt'; seq: number }
   /** AI 重新生成会话标题（excerpt=全会话对话摘录；providerId/modelId=当前会话模型透传，
    *  generateText 跟随会话模型避免选中未注册渠道，Kotlin 走 generateText + v4 renameSession）*/
   | { op: 'regenerateSessionTitle'; sessionId: string; excerpt: string; providerId?: string; modelId?: string }
@@ -1122,6 +1124,8 @@ export type JavaResponse =
   /** op=enhancePrompt 的响应（error 非 nil = 失败，弹窗错误态）；seq 透传发起代际，
    *  与活动代不符（弹窗已关/已被新请求取代）时前端直接丢弃 */
   | { op: 'enhancePromptResult'; seq?: number; original?: string; text?: string; error?: string; model?: string }
+  /** op=cancelEnhancePrompt 的回执（取消已受理；被取消代的结果由 seq 守卫丢弃）*/
+  | { op: 'enhanceCancelResult'; seq?: number }
   /** op=regenerateSessionTitle 的响应（title 非空 = 成功并已应用；error = 失败提示）*/
   | { op: 'sessionTitleRegenerated'; sessionId: string; title?: string; error?: string }
   | { op: 'agents'; agents: AgentDef[] }
