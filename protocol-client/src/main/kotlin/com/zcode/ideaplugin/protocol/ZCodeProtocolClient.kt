@@ -1427,7 +1427,12 @@ class ZCodeProtocolClient private constructor(
      * IDE basePath 的正斜杠直传会产生正斜杠行，与历史数据撕裂；project_id 规范化
      * 折叠斜杠差异，两形态同 id，归一写入无归属风险）
      */
-    fun createSession(workspace: Workspace, mode: PermissionMode = PermissionMode.BUILD, timeoutMs: Long = 20000): String {
+    fun createSession(
+        workspace: Workspace,
+        mode: PermissionMode = PermissionMode.BUILD,
+        timeoutMs: Long = 20000,
+        thoughtLevel: String? = null,
+    ): String {
         val nativePath = workspace.workspacePath.replace('/', File.separatorChar)
         val params = buildJsonObject {
             put("workspace", buildJsonObject {
@@ -1435,9 +1440,24 @@ class ZCodeProtocolClient private constructor(
                 put("workspaceKey", nativePath)
             })
             put("mode", mode.value)
+            // 会话创建即落档（缺陷CX 闪最高治本）：create schema 有 thoughtLevel 可选字段
+            // （diag-thoughtlevel-create.py 实证）——不落档的话，create 后 webview 例行
+            // loadSettings 读到的是服务端初始默认档（max），赶在首条消息 modelSelection
+            // 写回之前，UI 出现「预选低→闪最高→回合后回低」的竞态抖动。非法值服务端
+            // 静默忽略落默认（fail-soft 实证），不炸建会话
+            thoughtLevel?.takeIf { it.isNotBlank() }?.let {
+                put("thoughtLevel", it)
+            }
         }
         val r = request("session/create", params, timeoutMs)
         requireOk(r)
+        // 会话档缓存写入（sessionId 此刻才可知；create 带档即缓存，供首条 send 的
+        // modelSelection 直接取用同值）
+        thoughtLevel?.takeIf { it.isNotBlank() }?.let { lvl ->
+            val created = r["result"]?.jsonObject
+            val sessionObj = created?.get("session")?.jsonObject ?: created
+            sessionObj?.get("sessionId")?.jsonPrimitive?.content?.let { sessionThoughtLevels[it] = lvl }
+        }
 
         val result = r["result"]?.jsonObject ?: throw ZCodeProtocolException("create 响应缺 result")
         // 规格书 §2：sessionId 在 result.session.sessionId（兼容顶层 result.sessionId）

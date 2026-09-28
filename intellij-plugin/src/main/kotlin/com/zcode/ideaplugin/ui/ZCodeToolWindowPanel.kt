@@ -1849,9 +1849,14 @@ if (!window.__ZCODE_LOG_HOOK__) {
     private fun handleCreateSession(msg: JsonObject): JsonObject {
         val workspacePath = effectiveWorkspacePath(msg)
         val client = project.zCodeService().getClient()
+        // 待命态预选的思考档随创建落档（缺陷CX 闪最高治本，diag-thoughtlevel-create.py
+        // 实证 create 带档合法即生效/非法静默落默认）：否则 create 后的例行 loadSettings
+        // 读到服务端初始默认档 max，赶在首条消息写回之前，UI 闪「最高」再回预选档
+        val thoughtLevel = msg["thoughtLevel"]?.jsonPrimitive?.content
         val sid = client.createSession(
             com.zcode.ideaplugin.protocol.model.Workspace(workspacePath),
-            com.zcode.ideaplugin.protocol.model.PermissionMode.YOLO
+            com.zcode.ideaplugin.protocol.model.PermissionMode.YOLO,
+            thoughtLevel = thoughtLevel
         )
         return buildJsonObject {
             put("op", "createSession")

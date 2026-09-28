@@ -2028,7 +2028,15 @@ export const useStore = create<StoreState>((set, get) => ({
     // 防重入：建会话请求进行中不重复发（懒创建 + 手动 + 按钮共用）
     if (get().creatingSession) return
     set({ creatingSession: true })
-    sendToJava({ op: 'createSession', workspacePath: get().projectPath })
+    // 待命态预选的思考档随创建落档（缺陷CX 闪最高治本）：否则 create 后的例行
+    // loadSettings 读到服务端初始默认档 max（赶在首条消息写回之前），UI 闪「最高」
+    // 再回预选档。预选值在 thoughtLevel.current（待命态 setThoughtLevel 乐观更新）
+    const tl = get().thoughtLevel
+    sendToJava({
+      op: 'createSession',
+      workspacePath: get().projectPath,
+      ...(tl?.enabled && tl.current ? { thoughtLevel: tl.current } : {}),
+    })
   },
 
   createSessionForSchedule: (text, fireAt, providerId?, modelId?, keepCurrent?) => {
