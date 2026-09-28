@@ -12,6 +12,7 @@ import {
   buildFileChipHTML,
   serializeEditor,
   hasAnyInlineChip,
+  insertPasteChipAtCursor,
 } from '../src/utils/inlineFileTags'
 
 function mount(html: string): HTMLElement {
@@ -84,5 +85,54 @@ describe('hasAnyInlineChip 四类 chip 判定', () => {
     expect(hasAnyInlineChip(mount(buildFileChipHTML('C:\\a\\b.ts')))).toBe(true)
     expect(hasAnyInlineChip(mount('纯文本正文'))).toBe(false)
     expect(hasAnyInlineChip(mount(''))).toBe(false)
+  })
+})
+
+describe('insertPasteChipAtCursor 光标位置', () => {
+  it('execCommand 成功路径：光标钉到尾随空格之后（空白编辑器 Chromium 会把光标收到 chip 前面）', () => {
+    const el = mount('')
+    document.body.appendChild(el)
+    const doc = document as Document & { execCommand?: unknown }
+    const orig = doc.execCommand
+    // 模拟浏览器 insertHTML：同步插入 html 并返回 true（jsdom 无 execCommand）
+    doc.execCommand = () => {
+      el.innerHTML = buildPasteChipHTML('p_caret', '粘贴文本 · 10 字', 'tip') + ' '
+      return true
+    }
+    try {
+      expect(insertPasteChipAtCursor(el, 'p_caret', '粘贴文本 · 10 字', 'tip')).toBe(true)
+    } finally {
+      doc.execCommand = orig
+    }
+    const chip = el.querySelector('[data-paste-id="p_caret"]') as HTMLElement
+    const sel = window.getSelection()!
+    expect(sel.rangeCount).toBe(1)
+    const r = sel.getRangeAt(0)
+    // 光标必须钉到 chip 之后的尾随空格之后（setStartAfter(space) → container=el、
+    // offset 越过 [chip, " "]），而非 chip 之前
+    expect(chip.nextSibling?.nodeType).toBe(Node.TEXT_NODE)
+    expect(r.startContainer).toBe(el)
+    expect(r.startOffset).toBe(2)
+    expect(r.collapsed).toBe(true)
+  })
+
+  it('execCommand 成功但尾随空格被浏览器清理：光标退而钉到 chip 之后', () => {
+    const el = mount('')
+    document.body.appendChild(el)
+    const doc = document as Document & { execCommand?: unknown }
+    const orig = doc.execCommand
+    doc.execCommand = () => {
+      el.innerHTML = buildPasteChipHTML('p_caret2', '标签', 'tip')
+      return true
+    }
+    try {
+      expect(insertPasteChipAtCursor(el, 'p_caret2', '标签', 'tip')).toBe(true)
+    } finally {
+      doc.execCommand = orig
+    }
+    const chip = el.querySelector('[data-paste-id="p_caret2"]') as HTMLElement
+    const r = window.getSelection()!.getRangeAt(0)
+    expect(r.startContainer).toBe(el)
+    expect(el.childNodes[r.startOffset - 1]).toBe(chip)
   })
 })

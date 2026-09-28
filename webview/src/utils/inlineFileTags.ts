@@ -363,7 +363,23 @@ export function insertPasteChipAtCursor(
   } catch {
     inserted = false
   }
-  if (inserted) return true
+  if (inserted) {
+    // execCommand 的光标落点由浏览器决定：空白编辑器下 Chromium 会把光标规范到
+    // contenteditable=false 的 chip 之前（现象=接着输入的字跑到 chip 前面）。
+    // 统一手动钉回尾随空格之后，与下方手动兜底路径及其他三类 chip 插入一致；
+    // 也保证连续粘贴第二个 chip 时插在空格之后，serialize 后两段原文不粘连。
+    const chip = el.querySelector(`[data-paste-id="${id}"]`)
+    if (chip && sel) {
+      const space = chip.nextSibling
+      const after = document.createRange()
+      if (space && space.nodeType === Node.TEXT_NODE) after.setStartAfter(space)
+      else after.setStartAfter(chip)
+      after.collapse(true)
+      sel.removeAllRanges()
+      sel.addRange(after)
+    }
+    return true
+  }
   if (!sel || sel.rangeCount === 0 || !el.contains(sel.anchorNode)) return false
   const range = sel.getRangeAt(0)
   range.deleteContents()
