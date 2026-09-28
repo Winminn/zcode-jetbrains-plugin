@@ -307,19 +307,21 @@ export function InputBox({ onSend, isStreaming = false, onStop, disabled = false
     enhancePromptAction(text)
   }
 
-  /** 使用润色结果：整体替换编辑器正文（路径文本回显内联 chip）*/
+  /** 使用润色结果：整体替换编辑器正文。清空后复用 insertPlainText（与粘贴同规则，
+   *  issue #22：长结果折叠为内联粘贴 chip 防撑满输入框，原文存映射发送时按位展开；
+   *  短结果纯文本落地并触发路径/会话引用转 chip），hasText 由其两分支各自维护 */
   function applyEnhanced(text: string) {
     const el = editorRef.current
     if (el) {
-      el.innerText = text
-      setHasText(!!text.trim())
+      el.innerHTML = ''
+      // 光标先落编辑器（focus）：insertPasteChipAtCursor 的 range 兜底与
+      // execCommand('insertText') 均依赖焦点/光标在编辑器内
+      placeCursorEnd(el)
+      insertPlainText(text)
       setMentionQuery(null)
       setMentionFiles([])
       setSlashQuery(null)
       setGhostSuffix('')
-      convertCompletedPaths(el, true)
-      convertCompletedSessionRefs(el, (id) => sessionTitleResolverRef.current(id))
-      placeCursorEnd(el)
     }
     clearEnhanceResult()
   }

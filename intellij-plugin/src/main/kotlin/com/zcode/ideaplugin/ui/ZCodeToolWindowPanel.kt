@@ -5851,29 +5851,32 @@ if (!window.__ZCODE_LOG_HOOK__) {
      * （generateText 通道不产生会话，workspace 用当前项目以复用会话的 warm app。）
      */
     private fun handleEnhancePrompt(msg: JsonObject): JsonObject {
+        // 润色代际透传：前端发起时自增，回包原样带回；弹窗关闭后前端按代丢弃迟到回包
+        val seq = msg["seq"]?.jsonPrimitive?.longOrNull ?: -1L
         val text = msg["text"]?.jsonPrimitive?.content
-            ?: return enhanceError("缺少 text")
-        if (text.isBlank()) return enhanceError("输入内容为空")
+            ?: return enhanceError("缺少 text", seq)
+        if (text.isBlank()) return enhanceError("输入内容为空", seq)
         if (!enhanceInProgress.compareAndSet(false, true)) {
-            return enhanceError("润色进行中，请稍候")
+            return enhanceError("润色进行中，请稍候", seq)
         }
         try {
             val providerId = msg["providerId"]?.jsonPrimitive?.contentOrNull
             val modelId = msg["modelId"]?.jsonPrimitive?.contentOrNull
             val result = enhanceViaGenerateText(providerId, modelId, text)
                 ?: enhanceViaCliOneShot(providerId, modelId, text)
-                    ?: return enhanceError("润色结果为空")
+                    ?: return enhanceError("润色结果为空", seq)
             val (enhanced, model) = result
             log.info("enhancePrompt done (${enhanced.length} chars, model=$model)")
             return buildJsonObject {
                 put("op", "enhancePromptResult")
+                put("seq", seq)
                 put("original", text)
                 put("text", enhanced)
                 put("model", model)
             }
         } catch (e: Exception) {
             log.warn("enhancePrompt failed: ${LogRedactor.redact(e.toString())}")
-            return enhanceError("润色失败: ${e.message}")
+            return enhanceError("润色失败: ${e.message}", seq)
         } finally {
             enhanceInProgress.set(false)
         }
@@ -6003,9 +6006,10 @@ if (!window.__ZCODE_LOG_HOOK__) {
         return enhanced to (credentialsOverride?.model ?: "default")
     }
 
-    /** 润色失败统一回包（专用 op：前端弹窗错误态与全局 error 栏分流）*/
-    private fun enhanceError(message: String): JsonObject = buildJsonObject {
+    /** 润色失败统一回包（专用 op：前端弹窗错误态与全局 error 栏分流；seq 透传代际）*/
+    private fun enhanceError(message: String, seq: Long = -1L): JsonObject = buildJsonObject {
         put("op", "enhancePromptResult")
+        put("seq", seq)
         put("error", message)
     }
 

@@ -1911,9 +1911,11 @@ flowchart LR
     case 'toggleSkill':
       return { op: 'skillToggled', path: req.path, enabled: req.enabled }
     case 'enhancePrompt':
-      // mock：同步返回（外层 200ms 延迟已能验收弹窗 loading 态）
+      // mock：同步返回（外层 200ms 延迟已能验收弹窗 loading 态）；seq 原样透传，
+      // 与 Java 回包同构（store 代际守卫按 seq 判迟到丢弃，不带会被当异常帧丢掉）
       return {
         op: 'enhancePromptResult',
+        seq: req.seq,
         original: req.text,
         text: `【润色】${req.text}\n\n（mock 结果：请补充目标产物的具体要求，例如输出格式、篇幅与读者对象。）`,
       }

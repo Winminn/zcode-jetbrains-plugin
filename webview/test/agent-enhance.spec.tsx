@@ -9,7 +9,7 @@
  */
 // @vitest-environment jsdom
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { render, screen, fireEvent, cleanup, waitFor } from '@testing-library/react'
+import { render, screen, fireEvent, cleanup, waitFor, act } from '@testing-library/react'
 
 let messageHandler: ((msg: unknown) => void) | null = null
 const sentRequests: Array<Record<string, unknown>> = []
@@ -26,7 +26,7 @@ vi.mock('@/ipc/bridge', () => ({
 }))
 
 import '@/i18n/config'
-import { useStore } from '@/store/useStore'
+import { useStore, handleResponse } from '@/store/useStore'
 import { PromptEnhancerDialog } from '@/components/PromptEnhancerDialog'
 import { AgentSelect } from '@/components/AgentSelect'
 import { InputBox } from '@/components/InputBox'
@@ -77,6 +77,11 @@ beforeEach(() => {
       },
     })
   }
+  // jsdom 未实现 execCommand（调用即抛 TypeError）：垫恒 false 桩，令 insertPlainText /
+  // insertPasteChipAtCursor 走手动 range 兜底——与真实环境 execCommand 失效时同路径
+  if (typeof document.execCommand !== 'function') {
+    ;(document as unknown as { execCommand: () => boolean }).execCommand = () => false
+  }
   useStore.getState().init()
   sentRequests.length = 0
   useStore.setState({
@@ -117,7 +122,7 @@ describe('润色状态机（store）', () => {
     expect(req).toMatchObject({ providerId: 'p-other', modelId: 'GLM-4.7' })
     expect(useStore.getState().enhanceResult?.model).toBe('GLM-4.7')
     // 专用模型格式坏（缺 providerId）：按未配置处理回退会话模型
-    messageHandler!({ op: 'enhancePromptResult', original: '用专用模型润色', text: 'ok' })
+    messageHandler!({ op: 'enhancePromptResult', seq: lastEnhanceSeq(), original: '用专用模型润色', text: 'ok' })
     storage.set('zcode.enhance.config', JSON.stringify({ enhanceEnabled: true, enhanceModel: { modelId: 'GLM-4.7' } }))
     useStore.getState().enhancePrompt('坏配置回退')
     const req2 = sentRequests.find((r) => r.op === 'enhancePrompt' && (r as any).text === '坏配置回退')
@@ -134,7 +139,8 @@ describe('润色状态机（store）', () => {
 
   it('enhancePromptResult 成功落地：model 覆盖占位（后端兜底回退时徽标更新）', () => {
     useStore.getState().enhancePrompt('原文')
-    messageHandler!({ op: 'enhancePromptResult', original: '原文', text: '润色后', model: 'GLM-5.3' })
+    const seq = lastEnhanceSeq()
+    messageHandler!({ op: 'enhancePromptResult', seq, original: '原文', text: '润色后', model: 'GLM-5.3' })
     const s = useStore.getState()
     expect(s.enhancing).toBe(false)
     expect(s.enhanceResult).toEqual({ original: '原文', text: '润色后', model: 'GLM-5.3' })
@@ -142,7 +148,7 @@ describe('润色状态机（store）', () => {
 
   it('enhancePromptResult 失败落地（错误态，model 保留占位）', () => {
     useStore.getState().enhancePrompt('原文')
-    messageHandler!({ op: 'enhancePromptResult', error: 'CLI 超时' })
+    messageHandler!({ op: 'enhancePromptResult', seq: lastEnhanceSeq(), error: 'CLI 超时' })
     const s = useStore.getState()
     expect(s.enhancing).toBe(false)
     expect(s.enhanceResult?.error).toBe('CLI 超时')
@@ -151,10 +157,55 @@ describe('润色状态机（store）', () => {
 
   it('clearEnhanceResult 关弹窗', () => {
     useStore.getState().enhancePrompt('原文')
-    messageHandler!({ op: 'enhancePromptResult', original: '原文', text: '润色后' })
+    messageHandler!({ op: 'enhancePromptResult', seq: lastEnhanceSeq(), original: '原文', text: '润色后' })
     useStore.getState().clearEnhanceResult()
     expect(useStore.getState().enhanceResult).toBeNull()
     expect(useStore.getState().enhancing).toBe(false)
+  })
+})
+
+/** 最近一次 enhancePrompt 请求的代际（Kotlin 回包按此透传 seq）*/
+function lastEnhanceSeq(): number {
+  const req = sentRequests.filter((r) => r.op === 'enhancePrompt').pop() as { seq?: number }
+  return req.seq ?? -1
+}
+
+describe('润色代际守卫（issue #22：关闭弹窗即放弃在途润色）', () => {
+  it('润色中关弹窗：迟到回包丢弃，弹窗不再被顶出来', () => {
+    useStore.getState().enhancePrompt('原文')
+    const seq = lastEnhanceSeq()
+    // loading 中点「保留原始」关闭（协议层 generateText 无法中断，算完即弃）
+    useStore.getState().clearEnhanceResult()
+    messageHandler!({ op: 'enhancePromptResult', seq, original: '原文', text: '迟到的结果' })
+    const s = useStore.getState()
+    expect(s.enhanceResult).toBeNull()
+    expect(s.enhancing).toBe(false)
+  })
+
+  it('关闭后重新发起：旧回包不覆盖新 loading 态，新回包正常落地', () => {
+    useStore.getState().enhancePrompt('第一次')
+    const seq1 = lastEnhanceSeq()
+    useStore.getState().clearEnhanceResult()
+    useStore.getState().enhancePrompt('第二次')
+    const seq2 = lastEnhanceSeq()
+    expect(seq2).not.toBe(seq1)
+    // 旧代回包：不碰新请求的 loading/占位，也不误杀其超时兜底
+    messageHandler!({ op: 'enhancePromptResult', seq: seq1, text: '旧结果' })
+    let s = useStore.getState()
+    expect(s.enhancing).toBe(true)
+    expect(s.enhanceResult?.original).toBe('第二次')
+    expect(s.enhanceResult?.text).toBeUndefined()
+    // 新代回包正常落地
+    messageHandler!({ op: 'enhancePromptResult', seq: seq2, original: '第二次', text: '新结果' })
+    s = useStore.getState()
+    expect(s.enhancing).toBe(false)
+    expect(s.enhanceResult?.text).toBe('新结果')
+  })
+
+  it('无 seq 回包（异常帧）丢弃，loading 不受影响', () => {
+    useStore.getState().enhancePrompt('原文')
+    messageHandler!({ op: 'enhancePromptResult', text: '无代际' })
+    expect(useStore.getState().enhancing).toBe(true)
   })
 })
 
@@ -297,6 +348,47 @@ describe('InputBox 发送拼装（@<name> 前缀）', () => {
     fireEvent.click(document.querySelector('.enhance-prompt-button')!)
     const req = sentRequests.find((r) => r.op === 'enhancePrompt')
     expect(req).toMatchObject({ text: '写一个排序函数' })
+  })
+
+  it('使用润色结果（issue #22）：长结果折叠为内联粘贴 chip 不撑满输入框，发送时按位展开', async () => {
+    const { onSend, editor } = setup(null)
+    editor.textContent = '短原文'
+    fireEvent.input(editor)
+    fireEvent.click(document.querySelector('.enhance-prompt-button')!)
+    // 超阈值结果（≥10 行）：沿用粘贴规则折叠为 chip。
+    // （InputBox mount 会覆盖 mock 的 messageHandler，回包须直调 store 分发链路）
+    const longText = Array.from({ length: 12 }, (_, i) => `润色结果第${i}行内容`).join('\n')
+    act(() => {
+      handleResponse(
+        { op: 'enhancePromptResult', seq: lastEnhanceSeq(), original: '短原文', text: longText },
+        useStore.setState,
+        useStore.getState,
+      )
+    })
+    fireEvent.click(screen.getByRole('button', { name: /使用润色|Use enhanced/ }))
+    expect(editor.querySelector('.paste-ref--inline')).toBeTruthy()
+    expect(editor.textContent).not.toContain('润色结果第3行内容')
+    // 发送时序列化按位展开全文
+    fireEvent.click(screen.getByRole('button', { name: /^发送 \(Enter\)$/ }))
+    await waitFor(() => expect(onSend).toHaveBeenCalled())
+    expect(onSend.mock.calls[0][0]).toContain('润色结果第3行内容')
+  })
+
+  it('使用润色结果：短结果直接替换编辑器正文（不折叠）', () => {
+    const { editor } = setup(null)
+    editor.textContent = '原文'
+    fireEvent.input(editor)
+    fireEvent.click(document.querySelector('.enhance-prompt-button')!)
+    act(() => {
+      handleResponse(
+        { op: 'enhancePromptResult', seq: lastEnhanceSeq(), original: '原文', text: '润色后的短结果' },
+        useStore.setState,
+        useStore.getState,
+      )
+    })
+    fireEvent.click(screen.getByRole('button', { name: /使用润色|Use enhanced/ }))
+    expect(editor.querySelector('.paste-ref--inline')).toBeNull()
+    expect(editor.textContent).toContain('润色后的短结果')
   })
 
   it('润色按钮悬浮提示：有文本=功能说明（portal 信息卡，JCEF 无原生 title）', () => {

@@ -378,6 +378,11 @@ function waitForModelSwitchSettled(maxWaitMs = 6000, sessionId?: string): Promis
  *  不取消的话，残留定时器可在下一次同类请求的在途窗口内命中
  *  `get().xxx` 在途标志，误杀 loading 并注入上一次的错误文案 */
 let enhanceTimer: number | undefined
+/** 润色代际守卫（issue #22：润色中关弹窗即放弃本次）：发起时自增并记为活动代，
+ *  关闭弹窗作废（置 null），Java 回包透传 seq，reducer 只认活动代——迟到的
+ *  在途回包直接丢弃，不把已关的弹窗再顶出来，也不覆盖/误杀下一次润色 */
+let enhanceSeqCounter = 0
+let enhanceActiveSeq: number | null = null
 const browserBusyTimers = new Map<string, number>()
 function cancelEnhanceTimer(): void {
   if (enhanceTimer !== undefined) {
@@ -2685,9 +2690,12 @@ export const useStore = create<StoreState>((set, get) => ({
     // 后端兜底回退默认 provider，结果回包 model 字段带实际用到的模型）
     const dedicated = readEnhanceConfig().enhanceModel
     const cm = dedicated ?? get().currentModel
+    const seq = ++enhanceSeqCounter
+    enhanceActiveSeq = seq
     set({ enhancing: true, enhanceResult: { original: text, model: cm?.modelId } })
     sendToJava({
       op: 'enhancePrompt',
+      seq,
       text,
       workspacePath: get().currentWorkspacePath ?? undefined,
       ...(cm ? { providerId: cm.providerId, modelId: cm.modelId } : {}),
@@ -2708,6 +2716,9 @@ export const useStore = create<StoreState>((set, get) => ({
 
   clearEnhanceResult: () => {
     cancelEnhanceTimer()
+    // 作废活动代：在途润色（协议层 generateText 无法中断，算完即弃）的迟到
+    // 回包经 reducer 代际守卫丢弃，弹窗不会重新弹出
+    enhanceActiveSeq = null
     set({ enhancing: false, enhanceResult: null })
   },
 
@@ -4962,7 +4973,10 @@ export function handleResponse(
 
     case 'enhancePromptResult':
       // 润色回包（含失败态）：关闭 loading，弹窗按 error 有无渲染错误/结果；
-      // 回包不带 model（CLI 降级通道）时保留发起时的占位模型；取消兜底定时器
+      // 回包不带 model（CLI 降级通道）时保留发起时的占位模型。
+      // 代际守卫须先于取消兜底定时器：迟到回包（弹窗已关/已被新请求取代）直接
+      // 丢弃——既不弹窗也不覆盖新请求状态，更不能误杀新请求的超时兜底
+      if (msg.seq !== enhanceActiveSeq) break
       cancelEnhanceTimer()
       set({
         enhancing: false,
