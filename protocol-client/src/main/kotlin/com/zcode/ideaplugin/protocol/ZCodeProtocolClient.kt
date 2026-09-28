@@ -190,13 +190,20 @@ class ZCodeProtocolClient private constructor(
 
     /**
      * NEW 代 modelSelection 对象（send 主路径 / -32031 重试 / generateText 三处共用）。
-     * 引用 + reasoningLevel 默认档（v2 必填，缺失 turn 在 model_creation 静默 failed）。
-     * 提取前三处内联已现漂移苗头（缺 personalModelIds 兜底之类），形状改动只改这里。
+     * 引用 + reasoningLevel（v2 必填，缺失 turn 在 model_creation 静默 failed）。
+     * [reasoningLevel] 传会话当前档位（缺陷CX：send 恒带目录默认档 max 会写回会话冲掉
+     * 用户设置；generateText 等无会话语义的调用传 null 走目录默认档）。合法性裁决见
+     * [resolveSelectionReasoningLevel]。提取前三处内联已现漂移苗头（缺 personalModelIds
+     * 兜底之类），形状改动只改这里。
      */
-    private fun modelSelectionJson(providerId: String, modelId: String): JsonObject = buildJsonObject {
+    private fun modelSelectionJson(providerId: String, modelId: String, reasoningLevel: String? = null): JsonObject = buildJsonObject {
         put("providerId", providerId)
         put("modelId", modelId)
-        BuiltinModelCatalog.defaultReasoningLevel(modelId, zcodePath)?.let {
+        resolveSelectionReasoningLevel(
+            reasoningLevel,
+            BuiltinModelCatalog.reasoningValues(modelId, zcodePath),
+            BuiltinModelCatalog.defaultReasoningLevel(modelId, zcodePath),
+        )?.let {
             put("options", buildJsonObject { put("reasoningLevel", it) })
         }
     }
@@ -257,6 +264,17 @@ class ZCodeProtocolClient private constructor(
         val snapshot = pendingInteractions.mapValues { it.value.size }.filterValues { it > 0 }
         onPendingInteractionsChanged?.invoke(snapshot)
     }
+
+    /**
+     * 会话思考档缓存（缺陷CX，issue#25）：NEW 代 send 的 modelSelection 若恒带目录默认档
+     * （GLM 恒 max），服务端回合装配会把它写回会话并持久化——用户设置的思考档每回合被
+     * 冲回最高，回合结束 webview 兜底重拉设置后 UI 显示「最高」。send 改带「最后已知会话
+     * 档位」替代。写入点=setThoughtLevel 成功 + readSettings 读回 current（服务端权威校准，
+     * 外部改档后回合结束的例行重拉即自愈）；读取点=send 的 modelSelection（含 -32031 重试）。
+     * 不为此发额外 RPC（拥堵面零扩大）；进程重启后缓存为空的首条消息走目录默认档（打开过
+     * 会话即有 getSettings 预热），下回合自愈。会话关闭不清理：同 id resume 档位仍有效。
+     */
+    private val sessionThoughtLevels = java.util.concurrent.ConcurrentHashMap<String, String>()
 
     // 进程是否还活着
     @Volatile
@@ -1585,8 +1603,10 @@ class ZCodeProtocolClient private constructor(
                 if (generation == ProtocolGeneration.NEW) {
                     // reasoningLevel 必填（diag-v2-send-silent-fail.py 实证：缺了 send RPC 仍
                     // 返回成功，但 turn 在 model_creation 阶段立即 failed——错误只走
-                    // v4/telemetry 事件不进 session/event 流，UI 表现为"一直没有响应"）
-                    put("modelSelection", modelSelectionJson(providerId, modelId))
+                    // v4/telemetry 事件不进 session/event 流，UI 表现为"一直没有响应"）。
+                    // 档位带会话当前值（缺陷CX）：恒带目录默认档 max 会被服务端回合装配
+                    // 写回会话，冲掉用户设置的思考档
+                    put("modelSelection", modelSelectionJson(providerId, modelId, sessionThoughtLevels[sessionId]))
                 } else if (sentRuntimeModel != null) {
                     put("runtimeModel", sentRuntimeModel)
                 }
@@ -1634,7 +1654,7 @@ class ZCodeProtocolClient private constructor(
                     val retryParams = buildJsonObject {
                         put("sessionId", sessionId)
                         put("content", content)
-                        put("modelSelection", modelSelectionJson(providerId, modelId))
+                        put("modelSelection", modelSelectionJson(providerId, modelId, sessionThoughtLevels[sessionId]))
                         if (!attachments.isNullOrEmpty()) {
                             put("attachments", buildAttachmentsJson(attachments))
                         }
@@ -2636,7 +2656,13 @@ class ZCodeProtocolClient private constructor(
         // 读类幂等，初始化并发拥堵易超时 → 走重试
         val r = requestWithRetry("session/read", params, timeoutMs, maxAttempts = 2, backoffMs = longArrayOf(500))
         requireOk(r)
-        return r["result"]?.jsonObject?.get("settings")?.jsonObject ?: JsonObject(emptyMap())
+        val settings = r["result"]?.jsonObject?.get("settings")?.jsonObject ?: JsonObject(emptyMap())
+        // 缺陷CX：读回的会话档位入缓存（send 的 modelSelection 数据源；服务端权威校准，
+        // 外部改档/切模型重置后随例行重拉自愈）
+        settings["thoughtLevel"]?.jsonObject?.get("current")?.jsonPrimitive?.contentOrNull?.let {
+            sessionThoughtLevels[sessionId] = it
+        }
+        return settings
     }
 
     /**
@@ -2674,6 +2700,9 @@ class ZCodeProtocolClient private constructor(
         // 重复设置同值幂等，初始化并发拥堵易超时 → 走重试
         val r = requestWithRetry("session/setThoughtLevel", params, timeoutMs, maxAttempts = 3, backoffMs = longArrayOf(300, 800))
         requireOk(r)
+        // 缺陷CX：成功档位入缓存（send 的 modelSelection 数据源；send 带目录默认档会
+        // 写回会话冲掉本设置——缺陷CX 根因）
+        sessionThoughtLevels[sessionId] = thoughtLevel
     }
 
     /** session/resume — 恢复会话为 active（inactive 会话 close 会 -32004，需先 resume）*/
