@@ -65,6 +65,13 @@ interface ZCodeService {
     fun findPanelForSession(sessionId: String): ZCodeToolWindowPanel?
 
     /**
+     * 会话标题缓存（sessionId → 标题，缺陷DZ）：轮末系统通知带「会话名」前缀，
+     * 多会话先后完成时气泡可分辨。填充源=历史列表加载批量刷新 + session.titleUpdated
+     * 实时事件；未命中回退纯正文，只增不减（会话删除残留条目无害）
+     */
+    val sessionTitleCache: java.util.concurrent.ConcurrentHashMap<String, String>
+
+    /**
      * 从 IDE 外部（右键菜单等）推送消息到当前激活标签的 webview。
      * 无面板时丢弃（调用方应先 show ToolWindow）。
      */

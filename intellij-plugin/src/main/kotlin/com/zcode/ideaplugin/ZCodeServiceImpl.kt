@@ -294,6 +294,10 @@ class ZCodeServiceImpl(private val project: Project) : ZCodeService, com.intelli
     /** 回合收尾提醒（全局事件线程调用；异常不影响事件链路）*/
     private fun notifyTurnEndIfWanted(event: com.zcode.ideaplugin.protocol.model.SessionEvent) {
         try {
+            // 子代理会话（sess_subagent_*）不提醒（缺陷DZ）：子代理是主回合内的执行
+            // 单元，它的收尾不是「任务完成」——主回合还在跑，主回合收尾另有自己的终态帧。
+            // 判据与 remote 推送/会话列表过滤同款前缀
+            if (com.zcode.ideaplugin.ui.ZCodeNotifyService.isSubagentSession(event.sessionId)) return
             val now = System.currentTimeMillis()
             // resume/回放的旧事件不提醒（timestamp 距今超 5 分钟视为回放帧）
             if (event.timestamp in 1..(now - 5 * 60_000L)) return
@@ -434,6 +438,12 @@ class ZCodeServiceImpl(private val project: Project) : ZCodeService, com.intelli
                 // 回合相位 → 所有标签的会话列表行（手机远程驱动的会话在 IDE 无本地
                 // streaming 状态，列表只能靠这个实时通道翻转运行中/复位，官方桌面同语义）
                 when (event.type) {
+                    // 标题实时入缓存（缺陷DZ）：AI 自动生成标题/手动改名后，轮末通知
+                    // 的「会话名」前缀才能跟上最新值（历史列表批量刷新只兜住静态面）
+                    "session.titleUpdated" -> {
+                        val t = event.payload["title"]?.jsonPrimitive?.contentOrNull
+                        if (!t.isNullOrBlank()) sessionTitleCache[event.sessionId] = t
+                    }
                     "turn.started" -> {
                         com.zcode.ideaplugin.ui.ZCodeToolWindowPanel
                             .broadcastTurnPhase(event.sessionId, "running")
@@ -613,6 +623,8 @@ class ZCodeServiceImpl(private val project: Project) : ZCodeService, com.intelli
 
     override fun findPanelForSession(sessionId: String): ZCodeToolWindowPanel? =
         panels.firstOrNull { it.isSubscribedTo(sessionId) }
+
+    override val sessionTitleCache = java.util.concurrent.ConcurrentHashMap<String, String>()
 
     override fun pushToWebview(msg: JsonObject) {
         val p = activePanel ?: run {

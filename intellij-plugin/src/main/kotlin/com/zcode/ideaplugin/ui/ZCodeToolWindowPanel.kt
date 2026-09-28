@@ -1825,6 +1825,13 @@ if (!window.__ZCODE_LOG_HOOK__) {
         val visible = if (hiddenIds.isEmpty()) filtered else filtered.filter { it.sessionId !in hiddenIds }
         log.info("workspace=$workspacePath filtered to ${filtered.size} session(s), ${filtered.size - visible.size} hidden by tasks-index")
 
+        // 通知标题缓存顺手刷新（缺陷DZ）：轮末系统通知带「会话名」前缀，多会话先后
+        // 完成时气泡可分辨；列表本身就是最廉价的批量标题源，标题实时增量另由
+        // session.titleUpdated 全局监听补（service 层）
+        visible.forEach { s ->
+            if (s.title.isNotBlank()) project.zCodeService().sessionTitleCache[s.sessionId] = s.title
+        }
+
         // 会话统计（消息数/内容大小，直读 db.sqlite；失败内部已降级空 map，字段缺省前端不显示）
         val stats: Map<String, SessionStat> = client.getSessionStats()
 

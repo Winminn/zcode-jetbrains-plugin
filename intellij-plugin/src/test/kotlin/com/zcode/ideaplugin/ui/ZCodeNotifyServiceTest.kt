@@ -53,4 +53,49 @@ class ZCodeNotifyServiceTest {
         val c = ZCodeNotifyService.parseConfig(raw)
         assertTrue(c.notifyEnabled)
     }
+
+    // ============ 轮末通知正文组装（缺陷DZ：会话名前缀）============
+
+    @Test
+    fun `带标题时正文前缀「会话名」`() {
+        val out = ZCodeNotifyService.turnEndNotificationContent("修复登录 bug", "改好了", "AI 已完成本轮任务")
+        assertEquals("「修复登录 bug」改好了", out)
+    }
+
+    @Test
+    fun `标题缺失或空白回退纯正文`() {
+        assertEquals("改好了", ZCodeNotifyService.turnEndNotificationContent(null, "改好了", "兜底"))
+        assertEquals("改好了", ZCodeNotifyService.turnEndNotificationContent("", "改好了", "兜底"))
+        assertEquals("改好了", ZCodeNotifyService.turnEndNotificationContent("   ", "改好了", "兜底"))
+    }
+
+    @Test
+    fun `正文空或纯空白回退兜底文案（前缀仍保留）`() {
+        assertEquals("「会话」AI 已完成本轮任务", ZCodeNotifyService.turnEndNotificationContent("会话", null, "AI 已完成本轮任务"))
+        assertEquals("「会话」AI 已完成本轮任务", ZCodeNotifyService.turnEndNotificationContent("会话", "   ", "AI 已完成本轮任务"))
+    }
+
+    @Test
+    fun `标题截30字正文截120字且先 trim`() {
+        val longTitle = "标".repeat(40)
+        val out = ZCodeNotifyService.turnEndNotificationContent("  $longTitle  ", "正".repeat(200), "兜底")
+        assertEquals("「${"标".repeat(30)}」${"正".repeat(120)}", out)
+    }
+
+    // ============ 子代理会话判据（缺陷DZ：子代理完成不通知）============
+
+    @Test
+    fun `sess_subagent 前缀命中子代理判据`() {
+        assertTrue(ZCodeNotifyService.isSubagentSession("sess_subagent_abc123"))
+        assertTrue(ZCodeNotifyService.isSubagentSession("sess_subagent"))
+    }
+
+    @Test
+    fun `主会话与空值不命中子代理判据`() {
+        assertFalse(ZCodeNotifyService.isSubagentSession("sess_abc123"))
+        assertFalse(ZCodeNotifyService.isSubagentSession(null))
+        assertFalse(ZCodeNotifyService.isSubagentSession(""))
+        // 前缀必须落在开头：中间出现的不是子代理会话
+        assertFalse(ZCodeNotifyService.isSubagentSession("sess_x_subagent"))
+    }
 }

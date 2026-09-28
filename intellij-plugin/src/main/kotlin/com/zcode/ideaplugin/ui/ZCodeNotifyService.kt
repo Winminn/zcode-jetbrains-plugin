@@ -25,6 +25,14 @@ object ZCodeNotifyService {
     /** kv 通道里的通知配置键（前端 utils/notifyConfig.ts 同源）*/
     const val KV_KEY = "zcode.notify.config"
 
+    /**
+     * 子代理会话判据（sess_subagent_* 前缀，与 remote 推送/会话列表过滤同款）：
+     * 子代理是主回合内的执行单元，它的 turn.completed 不是「任务完成」——主回合
+     * 还在跑，单独弹完成通知是误报（缺陷DZ）
+     */
+    internal fun isSubagentSession(sessionId: String?): Boolean =
+        sessionId != null && sessionId.startsWith("sess_subagent")
+
     /** 等待用户输入的通知形态（issue #24：AI 停下等选择时系统级提醒）*/
     enum class PendingInputKind {
         /** AskUserQuestion 提问 */
@@ -93,10 +101,15 @@ object ZCodeNotifyService {
                 val title = ZCodeBundle.message(
                     if (failed) "notify.turn.failed.title" else "notify.turn.completed.title"
                 )
-                val content = body?.trim()?.take(120)?.ifEmpty { null }
-                    ?: ZCodeBundle.message(
-                        if (failed) "notify.turn.failed.body" else "notify.turn.completed.body"
-                    )
+                val fallbackBody = ZCodeBundle.message(
+                    if (failed) "notify.turn.failed.body" else "notify.turn.completed.body"
+                )
+                // 会话名前缀（缺陷DZ）：多会话先后完成时两条气泡可分辨；
+                // 缓存未命中（会话从未出现在历史列表/标题事件）回退纯正文
+                val sessionTitle = runCatching {
+                    project.zCodeService().sessionTitleCache[sessionId]
+                }.getOrNull()
+                val content = turnEndNotificationContent(sessionTitle, body, fallbackBody)
                 val notification = NotificationGroupManager.getInstance()
                     .getNotificationGroup("ZCode")
                     .createNotification(title, content, if (failed) NotificationType.WARNING else NotificationType.INFORMATION)
@@ -114,6 +127,17 @@ object ZCodeNotifyService {
                     .warn("Turn-end notification failed: ${e.message}")
             }
         }
+    }
+
+    /**
+     * 轮末通知正文组装（纯函数，单测覆盖，缺陷DZ）：带会话标题前缀——后台多会话
+     * 先后完成时两条气泡可分辨；标题未知/空白回退纯正文或兜底文案。
+     * 标题截 30 字、正文截 120 字（总组成上限 152 字，有界）。
+     */
+    internal fun turnEndNotificationContent(sessionTitle: String?, body: String?, fallbackBody: String): String {
+        val bodyPart = body?.trim()?.take(120)?.ifEmpty { null } ?: fallbackBody
+        val prefix = sessionTitle?.trim()?.takeIf { it.isNotEmpty() }?.let { "「${it.take(30)}」" } ?: ""
+        return prefix + bodyPart
     }
 
     /** 显示工具窗并激活会话所在标签（多标签下精准定位；标签已关时仅显示工具窗）*/
