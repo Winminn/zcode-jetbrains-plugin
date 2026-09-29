@@ -83,7 +83,6 @@ class ZCodeRemoteService : Disposable {
             return statusJson() // 已在运行
         }
         persistEnabled(true)
-        pendingFollows.clear() // 新配对周期：旧待联动作废（上一轮手机页已随断连消失）
         val credentials = loadOrCreateCredentials()
         // 宿主版本 = 本机 ZCode App 版本（app_version 语义是客户端 3.x 体系，非 CLI
         // 包版本 0.16.x——旧值触发 H5 侧拉 cdn.zcode-ai.com 兼容配置，该 CDN 不可用
@@ -189,7 +188,6 @@ class ZCodeRemoteService : Disposable {
         lastQrUrl = null
         lastError = null
         uiState = UiState.OFF
-        pendingFollows.clear() // 主动停远程：不弹标签（延迟交接随之作废）
         persistEnabled(false)
         return statusJson()
     }
@@ -271,7 +269,7 @@ class ZCodeRemoteService : Disposable {
     private val bridgeSweeper = java.util.concurrent.ScheduledThreadPoolExecutor(1) { r ->
         Thread(r, "zcode-remote-bridge-sweeper").apply { isDaemon = true }
     }.apply {
-        scheduleWithFixedDelay({ runCatching { handlers.sweepStaleBridges(); sweepRunningSessions(); sweepPendingFollows() } }, 60_000L, 60_000L, java.util.concurrent.TimeUnit.MILLISECONDS)
+        scheduleWithFixedDelay({ runCatching { handlers.sweepStaleBridges(); sweepRunningSessions() } }, 60_000L, 60_000L, java.util.concurrent.TimeUnit.MILLISECONDS)
     }
 
     // ============ H5 首页任务行实时相位 ============
@@ -398,83 +396,6 @@ class ZCodeRemoteService : Disposable {
             ?: return null
         if (impl.isStarted()) impl.getClient() else null
     }.getOrNull()
-
-    /**
-     * 手机端→桌面跟随：H5 发送用户消息（sendPrompt/sendConversationCommandV4 受理成功）
-     * 时联动桌面——已有绑定该会话的标签则选中，没有则新建标签恢复该会话。只在发送时
-     * 联动：浏览/切换会话不联动（每点进一个会话就开标签页会让标签数量失控，2026-09-24
-     * 用户定案「有发送用户消息才激活」）；工作区归属本工程才联动（H5 可浏览多工作区，
-     * 多窗口按 basePath 归一比较路由到匹配的工程窗口）。
-     */
-    fun followMobileSend(workspacePath: String?, sessionId: String) {
-        if (sessionId.isBlank() || sessionId.startsWith("sess_subagent")) return
-        val wsKey = workspacePath?.replace('\\', '/')?.trimEnd('/')
-        // 桌面 legacy resume 会重建 app-server 会话 runtime,同一毫秒向 H5 重推
-        // 换代 subscriptionId 的 initial 帧(H5 会话 store 无法消化→转录区空态
-        // 报错页,点「重新连接」才恢复,IAB 帧级实锤:resume 与 H5 活跃 v4 订阅
-        // 互斥)。会话正被 H5 订阅时开桌面标签=当场打断手机页面——记作待联动,
-        // H5 退订该会话(回列表/关页)后由 [onH5ConversationUnsubscribed] 延迟
-        // 触发,手机看着时桌面不抢、手机一离开桌面立刻接手。根治=桌面会话
-        // 视图 v4 化(主界面 v4 迁移)。
-        val h5Subscribed = runCatching { handlers.activeContexts() }.getOrNull()
-            ?.any { it.value.subscriptions.containsKey("conversation/$sessionId") } == true
-        if (h5Subscribed) {
-            pendingFollows[sessionId] = PendingFollow(wsKey ?: "", System.currentTimeMillis())
-            log.info("mobile send follow deferred (h5 v4 subscribed, resume would break h5): $sessionId")
-            return
-        }
-        followByWsKey(wsKey ?: "", sessionId)
-    }
-
-    /** 待联动表（H5 活跃订阅时压入，退订后触发开标签）：sessionId → 工作区键+时刻 */
-    private class PendingFollow(val wsKey: String, val at: Long)
-
-    private val pendingFollows = java.util.concurrent.ConcurrentHashMap<String, PendingFollow>()
-
-    /** H5 退订 conversation/{sessionId}（unsubscribeConversationV4 / 桥拆除 / 页关闭）：
-     *  有待联动则延迟复查后开桌面标签。3s 复查窗防「退订→立即重订阅」（页面刷新
-     *  =dispose→新订阅同会话）误开——重订阅了说明手机还在看着，保留待联动等下次退订 */
-    fun onH5ConversationUnsubscribed(sessionId: String) {
-        val hasPending = pendingFollows.containsKey(sessionId)
-        log.info("h5 conversation unsubscribed: sid=$sessionId pending=$hasPending")
-        if (!hasPending) return
-        bridgeSweeper.schedule({
-            runCatching {
-                val pending = pendingFollows[sessionId] ?: return@runCatching
-                val resubscribed = runCatching { handlers.activeContexts() }.getOrNull()
-                    ?.any { it.value.subscriptions.containsKey("conversation/$sessionId") } == true
-                log.info("deferred follow recheck: sid=$sessionId resubscribed=$resubscribed")
-                if (resubscribed) return@runCatching
-                if (pendingFollows.remove(sessionId) == null) return@runCatching
-                followByWsKey(pending.wsKey, sessionId)
-            }.onFailure { log.warn("deferred mobile follow failed: ${it.message?.take(120)}") }
-        }, 3000, java.util.concurrent.TimeUnit.MILLISECONDS)
-    }
-
-    /** 待联动表兜底清理：超过 10min 未退订的条目（手机停在会话页不放）移除，防表膨胀 */
-    private fun sweepPendingFollows() {
-        val now = System.currentTimeMillis()
-        pendingFollows.entries.removeIf { now - it.value.at > 10 * 60_000L }
-    }
-
-    /** 按工作区键路由工程窗口并开/激活标签（EDT 执行） */
-    private fun followByWsKey(wsKey: String, sessionId: String) {
-        val impl = runCatching { ZCodeServiceImpl.activeProjectServices() }.getOrNull()
-            ?.firstOrNull { svc ->
-                val base = svc.ownerProject.basePath?.replace('\\', '/')?.trimEnd('/') ?: return@firstOrNull false
-                wsKey.isBlank() || wsKey == base
-            }
-        if (impl == null) {
-            log.warn("mobile send follow no project match (wsKey='$wsKey'): $sessionId")
-            return
-        }
-        log.info("mobile send follow → session tab $sessionId")
-        ApplicationManager.getApplication().invokeLater {
-            runCatching {
-                com.zcode.ideaplugin.ui.ZCodeToolWindowFactory.openSessionTab(impl.ownerProject, sessionId)
-            }.onFailure { log.warn("mobile send follow failed: ${it.message?.take(150)}") }
-        }
-    }
 
     private fun handleKnownChannel(
         project: com.intellij.openapi.project.Project?,
