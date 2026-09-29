@@ -315,7 +315,12 @@ class ZCodeRemoteService : Disposable {
         // 子代理会话不在任务列表（同 webview sessionTurnPhase 口径）
         if (sessionId.startsWith("sess_subagent")) return
         val changed = if (running) runningSessionIds.put(sessionId, System.currentTimeMillis()) == null
-                      else runningSessionIds.remove(sessionId) != null
+                      else {
+                          // 终态事件连带清复核确认条目：probe 捞回后若回合正常结束，
+                          // 不留 3min TTL 尾巴（列表多显示 3min 运行中）
+                          queryBackedRunning.remove(sessionId)
+                          runningSessionIds.remove(sessionId) != null
+                      }
         if (!changed || controllerSubs.isEmpty()) return
         if (!repushPending.compareAndSet(false, true)) return
         bridgeSweeper.schedule({
@@ -360,10 +365,13 @@ class ZCodeRemoteService : Disposable {
      *  running=0 与 60s sweep 网格对齐实锤）。终态丢失防御降级为时间阈值：
      *  超过 2h 无任何相位帧刷新才移除（误清代价=列表显示已完成，可接受） */
     private fun sweepRunningSessions() {
-        if (runningSessionIds.isEmpty()) return
+        if (runningSessionIds.isEmpty() && queryBackedRunning.isEmpty()) return
         val now = System.currentTimeMillis()
         val stale = runningSessionIds.entries.removeIf { now - it.value > RUNNING_ENTRY_TTL_MS }
-        if (stale && controllerSubs.isNotEmpty()) {
+        // 复核确认条目短 TTL：到期移除、下轮快照重新 probe 维持（真终态由事件正常移除，
+        // 本清理只防「probe 捞回后会话已结束而终态事件又丢」的永久运行中）
+        val probeStale = queryBackedRunning.entries.removeIf { now - it.value > QUERY_BACKED_TTL_MS }
+        if ((stale || probeStale) && controllerSubs.isNotEmpty()) {
             channelExecutor.execute { runCatching { repushControllerSnapshots() } }
         }
     }
@@ -520,6 +528,8 @@ class ZCodeRemoteService : Disposable {
         val relay = client ?: return
         // 每 project 用自己的 app-server 聚合（会话库全局共享，但 workspace 过滤按各自 basePath）
         val taskItems = ArrayList<kotlinx.serialization.json.JsonElement>()
+        // 查询复核候选：判 completed 但 updatedAt 很新（回合在跑而相位喂源丢失，缺陷EB兜底）
+        val probeCandidates = ArrayList<Pair<com.zcode.ideaplugin.protocol.ZCodeProtocolClient, String>>()
         for (impl in com.zcode.ideaplugin.ZCodeServiceImpl.activeProjectServices()) {
             if (!impl.isStarted()) continue
             val c = runCatching { impl.getClient() }.getOrNull() ?: continue
@@ -531,12 +541,22 @@ class ZCodeRemoteService : Disposable {
             for (s in runCatching { c.listSessions(ws) }.getOrDefault(emptyList())) {
                 if (s.sessionId in hidden) continue
                 // 运行中覆写：session/list 快照滞后且 status 恒 idle（缺陷 DD 实证不可作
-                // 权威）。三重判据=相位集合（事件喂源）+ mapper 活跃投影（桌面 v4 订阅
-                // 会话的兜底：集合条目因任何原因缺席时仍能覆写，H5 独立订阅的会话 mapper
-                // 无状态、靠快照相位恢复喂集合）
+                // 权威）。四重判据=相位集合（事件喂源）+ 查询复核确认（queryBackedRunning，
+                // 缺陷EB兜底）+ mapper 活跃投影（桌面 v4 订阅会话的兜底）
                 val turnActive = s.sessionId in runningSessionIds ||
+                    queryBackedRunning.containsKey(s.sessionId) ||
                     runCatching { c.isSessionTurnActive(s.sessionId) }.getOrDefault(false)
                 val status = if (turnActive || s.status == "running") "running" else "completed"
+                // 复核候选收集：事件/查询两源都说非 running，但 updatedAt 距今很新——
+                // 回合大概率在跑而 turn.started 事件丢了（计划批准续跑回合实测不发 legacy
+                // started，2026-09-29 真机日志实锤）。异步 probe 捞回，快照照常先推
+                if (status == "completed" &&
+                    System.currentTimeMillis() - s.updatedAt < PROBE_RECHECK_WINDOW_MS &&
+                    probeCandidates.size < PROBE_MAX_PER_ROUND &&
+                    (lastProbeAt[s.sessionId] ?: 0) < System.currentTimeMillis() - PROBE_MIN_INTERVAL_MS
+                ) {
+                    probeCandidates.add(c to s.sessionId)
+                }
                 // workspacePath 统一正斜杠：app-server 返回反斜杠，而 H5 按当前工作区
                 //（basePath 正斜杠）对 address.workspacePath 严格字符串匹配（kFe），
                 // 斜杠不一致=150 任务全被滤掉列表显示 0（2026-08-25 装机 HAR 定案）
@@ -634,7 +654,70 @@ class ZCodeRemoteService : Disposable {
         // 相位盲区取证：快照实际推送内容概要（running 会话 id、行数、协议号）
         val runIds = runningSessionIds.keys.take(3).joinToString(",")
         log.info("remote controller snapshot pushed: topic=$topic toSeq=$seq tasks=${limited.size} running=[$runIds] proto=${snapshotContent["protocolVersion"]}")
+        scheduleRunningProbe(probeCandidates)
     }
+
+    // ============ 查询式活性复核（缺陷EB兜底：事件喂源丢失时把运行中会话捞回） ============
+
+    /** 复核候选窗口：判 completed 但 updatedAt 距今在此内的才值得问（回合中的会话
+     *  updatedAt 随落库推进，diag-eb 实测；再老的会话运行概率趋零，控制 read 成本） */
+    private val PROBE_RECHECK_WINDOW_MS = 10 * 60_000L
+
+    /** 同会话两次复核的最小间隔（防 15s 周期快照每轮都打 read） */
+    private val PROBE_MIN_INTERVAL_MS = 60_000L
+
+    /** 单轮快照合成的复核上限（成本护栏） */
+    private val PROBE_MAX_PER_ROUND = 5
+
+    /** 复核确认条目的保鲜期：到期移除、下轮快照重新 probe 维持——事件终态若正常
+     *  到达则走 onSessionTurnPhase(false) 正常移除，本表条目不阻碍 */
+    private val QUERY_BACKED_TTL_MS = 3 * 60_000L
+
+    /** 复核确认仍在运行的会话（sessionId → 确认时刻）。独立于 runningSessionIds
+     * （事件喂源）：probe 单向捞回、不纠偏——事件说 running 而查询说 idle 时信事件
+     * （缺陷DD 教训：以 X 为权威纠偏须先实证 X 携带信息，这里查询只做增量捞回） */
+    private val queryBackedRunning = java.util.concurrent.ConcurrentHashMap<String, Long>()
+
+    /** 复核去抖簿记：sessionId → 上次 probe 时刻 */
+    private val lastProbeAt = java.util.concurrent.ConcurrentHashMap<String, Long>()
+
+    /**
+     * 异步复核候选会话的运行相位（session/read projection.status）。
+     * diag-eb 实证：回合中 status="running"、终态翻 "idle"，messageLimit=1 下返回体
+     * KB 级；H5 端会话页/官方客户端同源读取。命中 running → 写 queryBackedRunning +
+     * 走 onSessionTurnPhase(true) 正常通道（集合翻转+防抖重推快照，H5 列表翻运行中）。
+     * 桥线程零阻塞：read 放 bridgeSweeper 池执行（串行池阻塞几秒只推迟 sweep，无害）。
+     */
+    private fun scheduleRunningProbe(candidates: List<Pair<com.zcode.ideaplugin.protocol.ZCodeProtocolClient, String>>) {
+        if (candidates.isEmpty()) return
+        val now = System.currentTimeMillis()
+        for ((client, sessionId) in candidates) {
+            lastProbeAt[sessionId] = now // 无论结果如何都记，60s 内不重复问同一会话
+            bridgeSweeper.execute {
+                val running = runCatching {
+                    parseProjectionStatus(client.readSessionFull(sessionId, timeoutMs = 5_000, messageLimit = 1))
+                }.getOrNull()
+                when (running) {
+                    true -> {
+                        queryBackedRunning[sessionId] = System.currentTimeMillis()
+                        log.info("[eb-probe] session $sessionId confirmed running via session/read, restoring phase")
+                        onSessionTurnPhase(sessionId, true)
+                    }
+                    // 确认非运行：补偿节流到 ~5min（判定式再减 60s 间隔），防结束不久的
+                    // 会话在 10min 候选窗内每 60s 被白问一次
+                    false -> {
+                        lastProbeAt[sessionId] = System.currentTimeMillis() + 4 * 60_000L
+                        runCatching { queryBackedRunning.remove(sessionId) }
+                    }
+                    null -> log.info("[eb-probe] session $sessionId read failed (fail-soft, keep completed)")
+                }
+            }
+        }
+    }
+
+    /** session/read 结果 → 会话是否运行中（projection.status；结构变化/异常返回 null） */
+    private fun parseProjectionStatus(readResult: kotlinx.serialization.json.JsonObject): Boolean? =
+        parseSessionReadRunning(readResult)
 
     // ============ 凭据（PasswordSafe 首次引入） ============
 
@@ -739,4 +822,15 @@ class ZCodeRemoteService : Disposable {
         @JvmStatic
         fun getInstance(): ZCodeRemoteService = ApplicationManager.getApplication().getService(ZCodeRemoteService::class.java)
     }
+}
+
+/**
+ * session/read 结果 → 会话是否运行中（缺陷EB兜底的解析纯函数）：
+ * projection.status=="running" → true；其他已知值（idle 等）→ false；
+ * 节点缺失/结构变化 → null（调用方 fail-soft 保持原判）。
+ */
+internal fun parseSessionReadRunning(readResult: kotlinx.serialization.json.JsonObject): Boolean? {
+    val status = readResult["projection"]?.jsonObject
+        ?.get("status")?.jsonPrimitive?.contentOrNull ?: return null
+    return status == "running"
 }
