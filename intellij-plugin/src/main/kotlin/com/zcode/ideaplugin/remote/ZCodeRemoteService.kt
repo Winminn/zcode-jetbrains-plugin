@@ -529,7 +529,11 @@ class ZCodeRemoteService : Disposable {
     }
 
     /** v4 帧轻量相位扫描：turnHeader 行 state=running → 运行中；其余任何值 → 结束
-     *  （结构判据对齐 V4FrameMapper 行模型，快照帧不带实时相位直接跳过） */
+     *  （结构判据对齐 V4FrameMapper 行模型，快照帧不带实时相位直接跳过）。
+     *  注意：快照帧相位恢复曾在此实现（037834e），真机实锤触发 H5 resync 风暴
+     *  （105 次循环→relay 报 INTERNAL→桥 11~19s 周期性重建→会话页打不开），
+     *  已回滚——重连后列表相位修复换路（走 pushControllerSnapshot 的 mapper 兜底，
+     *  不碰帧泵路径），快照帧一律原样透传 */
     private fun scanTurnPhaseFromFrame(sessionId: String, frame: JsonObject) {
         // pumpV4Frame 入参是外层通知对象（{topic, subscriptionId, frame:{payload}}，
         // 对齐 trimSessionsIndexSnapshot 的 frame["frame"] 内层访问），payload 在内层
@@ -605,8 +609,13 @@ class ZCodeRemoteService : Disposable {
             val hidden = runCatching { c.hiddenSessionIds() }.getOrDefault(emptySet())
             for (s in runCatching { c.listSessions(ws) }.getOrDefault(emptyList())) {
                 if (s.sessionId in hidden) continue
-                // 运行中覆写：session/list 快照滞后于回合事件（快照只在订阅/拉取时刻刷新）
-                val status = if (s.sessionId in runningSessionIds || s.status == "running") "running" else "completed"
+                // 运行中覆写：session/list 快照滞后且 status 恒 idle（缺陷 DD 实证不可作
+                // 权威）。三重判据=相位集合（事件喂源）+ mapper 活跃投影（桌面 v4 订阅
+                // 会话的兜底：集合条目因任何原因缺席时仍能覆写，H5 独立订阅的会话 mapper
+                // 无状态、靠快照相位恢复喂集合）
+                val turnActive = s.sessionId in runningSessionIds ||
+                    runCatching { c.isSessionTurnActive(s.sessionId) }.getOrDefault(false)
+                val status = if (turnActive || s.status == "running") "running" else "completed"
                 // workspacePath 统一正斜杠：app-server 返回反斜杠，而 H5 按当前工作区
                 //（basePath 正斜杠）对 address.workspacePath 严格字符串匹配（kFe），
                 // 斜杠不一致=150 任务全被滤掉列表显示 0（2026-08-25 装机 HAR 定案）

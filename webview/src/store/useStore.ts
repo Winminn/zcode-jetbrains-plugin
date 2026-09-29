@@ -4101,7 +4101,11 @@ export function handleResponse(
         // subagent-message）只随快照到达，整丢会让卡片滞后到轮末（缺陷CI）：改为
         // 只摘新增通知卡插到流式气泡之前，其余内容仍等轮末权威落地——过期快照
         // 的既有消息同 id 去重不插入，不会把历史改写冲进流式。
-        if (get().streaming) {
+        // 豁免：loadingMessages=true（打开会话的首拉在途）时必须放行——重开运行中
+        // 会话时相位投影先于首拉应答把 streaming 置 true，守卫若照丢首拉永不落地
+        // （「加载消息中」卡到回合结束才被轮末重拉解围，2026-09-29 真机实锤）；
+        // 首拉场景气泡区为空，没有流式内容可抹，落地无断流/叠字风险。
+        if (get().streaming && !get().loadingMessages) {
           mergeNotificationsMidTurn(msg, set, get)
           break
         }
@@ -5133,8 +5137,14 @@ export function handleResponse(
         const remoteRunningTurns = { ...get().remoteRunningTurns }
         if (running) remoteRunningTurns[phaseSid] = Date.now()
         else delete remoteRunningTurns[phaseSid]
+        // 运行相位投影到流式标志（Kotlin 订阅完成补推，重开会话/切回会话）：
+        // 新 webview 没经历过该会话的 turn.started（快照回放有意不置流式=状态
+        // 重建非实时相位），实时流接上了但按钮停在发送态。仅当前会话且未在
+        // 流式中补置；streaming 翻 true 时订阅器自动重置看门狗基准
+        const projectStreaming = running && phaseSid === get().currentSessionId && !get().streaming
         set({
           remoteRunningTurns,
+          ...(projectStreaming ? { streaming: true } : {}),
           sessions: get().sessions.map((s) =>
             s.sessionId === phaseSid ? { ...s, status: running ? 'running' : 'idle' } : s,
           ),

@@ -1602,6 +1602,13 @@ class ZCodeProtocolClient private constructor(
         }
     }
 
+    /**
+     * 会话回合是否活跃（V4FrameMapper 权威投影，快照回放+实时帧共同维护）。
+     * 供订阅完成时补推运行相位：重开标签的 webview 没经历过进行中会话的
+     * turn.started（快照回放有意不置流式），靠这个知道「会话还在跑」。
+     */
+    fun isSessionTurnActive(sessionId: String): Boolean = v4FrameMapper.isSessionTurnActive(sessionId)
+
     /** 该会话是否已建立 v4 增量帧订阅（订阅幂等应答的 v4 标志数据源） */
     fun isConversationV4Subscribed(sessionId: String): Boolean = sessionId in v4SubscribedSessions
 

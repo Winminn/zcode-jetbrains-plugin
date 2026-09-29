@@ -350,6 +350,22 @@ class V4FrameMapperTest {
     }
 
     @Test
+    fun `isSessionTurnActive 随快照与实时相位翻转（订阅补推运行相位的权威）`() {
+        // 重开标签场景：快照抓到 running → 回合在跑
+        mapper.mapFrame(sid, snapshotFrame(turnHeader(1, "running")))
+        assertTrue(mapper.isSessionTurnActive(sid))
+        // 实时终态 → false（回到 idle，订阅补推不该再发 running 相位）
+        mapper.mapFrame(sid, frame(upserted(turnHeader(1, "completedSuccess"))))
+        assertTrue(!mapper.isSessionTurnActive(sid))
+        // 多会话隔离：B 会话从未见过帧 → false
+        assertTrue(!mapper.isSessionTurnActive("sess_other"))
+        // cleanup 清态 → false（退订场景）
+        mapper.mapFrame(sid, frame(upserted(turnHeader(1, "running"))))
+        mapper.cleanup(sid)
+        assertTrue(!mapper.isSessionTurnActive(sid))
+    }
+
+    @Test
     fun `迟到订阅自愈：无 turnHeader 的内容事件头插合成 turn started`() {
         // 复现 2026-08-31 用户实测：订阅落在回合中途（turnHeader 已过），首事件是
         // tool.updated——前端 streamingMessageId=null 会丢弃一切内容事件

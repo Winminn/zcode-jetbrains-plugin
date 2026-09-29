@@ -449,4 +449,12 @@ class V4FrameMapper {
         sessionRows.remove(sessionId)
         sessionTurnActive.remove(sessionId)
     }
+
+    /**
+     * 会话回合是否活跃（最近一帧 turnHeader 相位的权威投影）：快照回放与实时帧
+     * 共同维护（running/step间隙→true，一切终态→false）。供订阅完成时补推运行
+     * 相位——重开标签的新 webview 没经历过进行中会话的 turn.started，需要知道
+     * 「这个会话还在跑」。client 级状态，订阅永不退订，不随标签关闭丢失。
+     */
+    fun isSessionTurnActive(sessionId: String): Boolean = sessionTurnActive[sessionId] == true
 }

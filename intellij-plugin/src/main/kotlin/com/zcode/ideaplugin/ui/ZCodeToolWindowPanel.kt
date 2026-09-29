@@ -4720,6 +4720,7 @@ if (!window.__ZCODE_LOG_HOOK__) {
         // 每个 session 只 subscribe 一次（不 unsubscribe，避免切回时丢事件）
         if (sessionId in subscribedSessions) {
             log.info("session $sessionId already subscribed, skipping")
+            notifyRunningTurnIfActive(client, sessionId)
             return buildJsonObject {
                 put("op", "subscribed")
                 put("sessionId", sessionId)
@@ -4754,6 +4755,7 @@ if (!window.__ZCODE_LOG_HOOK__) {
             if (isTimeoutEx(e)) {
                 log.info("subscribe session $sessionId timed out in busy window (events still flow via global listener; busy-retry will confirm)")
                 scheduleSubscribeBusyRetry(sessionId)
+                notifyRunningTurnIfActive(client, sessionId)
                 return buildJsonObject {
                     put("op", "subscribed")
                     put("sessionId", sessionId)
@@ -4763,11 +4765,38 @@ if (!window.__ZCODE_LOG_HOOK__) {
             return errorResponse("订阅失败: ${e.message}")
         }
 
+        notifyRunningTurnIfActive(client, sessionId)
         return buildJsonObject {
             put("op", "subscribed")
             put("sessionId", sessionId)
             if (residentPoolWarning) put("residentPoolWarning", true)
         }
+    }
+
+    /**
+     * 订阅完成补推运行相位（重开会话/切回会话按钮态与事实一致）：回合在跑时补推
+     * sessionTurnPhase(running)，前端投影到 streaming——重开标签的新 webview 没经历
+     * 过该会话的 turn.started（快照回放有意不置流式=状态重建非实时相位），实时流
+     * 接上了但输入框按钮停在发送态，与本轮仍在执行的事实不符。
+     *
+     * 权威源两层（真机 23:40 复测教训：只查 mapper 对 legacy/H5 联动会话全盲）：
+     * - remote 运行集合（主）：legacy 全局监听器与 v4 帧泵两路相位都汇于
+     *   onSessionTurnPhase，全场景喂到；
+     * - V4FrameMapper 活跃投影（兜底）：仅覆盖桌面 v4 订阅的会话。
+     */
+    private fun notifyRunningTurnIfActive(client: com.zcode.ideaplugin.protocol.ZCodeProtocolClient, sessionId: String) {
+        if (sessionId.startsWith("sess_subagent")) return
+        val remoteRunning = runCatching {
+            com.zcode.ideaplugin.remote.ZCodeRemoteService.getInstance().isSessionRunning(sessionId)
+        }.getOrDefault(false)
+        val mapperActive = runCatching { client.isSessionTurnActive(sessionId) }.getOrDefault(false)
+        if (!remoteRunning && !mapperActive) return
+        log.info("[turn-phase] session $sessionId turn still active (remote=$remoteRunning mapper=$mapperActive), projecting running phase to webview")
+        pushToWebview(buildJsonObject {
+            put("op", "sessionTurnPhase")
+            put("sessionId", sessionId)
+            put("phase", "running")
+        })
     }
 
     /**
@@ -5236,8 +5265,21 @@ if (!window.__ZCODE_LOG_HOOK__) {
      * stopTask，local_bash→abort）。已随回合终止的任务取消返回 alreadyTerminal，幂等无害。
      */
     private fun scheduleStopSequence(sessionId: String, extraTaskIds: List<String> = emptyList()) {
-        if (!streamingTurns.containsKey(sessionId)) return // 空闲态点停止：无在途回合，不动作
-        val stoppedTurnId = streamingTurns[sessionId] // 可为 null（事件没带 turnId）
+        // 空闲守卫（缺陷ED 放宽）：簿记只由实时 turn.started 建立，回合在途时重开/
+        // 切回的会话收不到该事件、簿记恒空——只认簿记会把停止当"空闲态"静默吞掉。
+        // 与 notifyRunningTurnIfActive 同款双权威兜底：remote 运行集合 / mapper 投影
+        // 任一为真即证明回合在途，照常执行停止；三者皆无才是真空闲。
+        val tracked = streamingTurns.containsKey(sessionId)
+        val stoppedTurnId = if (tracked) streamingTurns[sessionId] else null
+        if (!tracked) {
+            val remoteRunning = runCatching {
+                com.zcode.ideaplugin.remote.ZCodeRemoteService.getInstance().isSessionRunning(sessionId)
+            }.getOrDefault(false)
+            val mapperActive = runCatching {
+                project.zCodeService().getClient().isSessionTurnActive(sessionId)
+            }.getOrDefault(false)
+            if (!remoteRunning && !mapperActive) return // 空闲态点停止：无在途回合，不动作
+        }
         Thread({
             if (disposed) return@Thread
             try {
