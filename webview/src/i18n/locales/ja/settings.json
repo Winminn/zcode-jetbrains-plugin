@@ -11,7 +11,29 @@
     "mcp": "MCP",
     "browser": "ブラウザ",
     "other": "その他",
-    "remote": "スマホリモート"
+    "processes": "プロセス"
+  },
+  "processesView": {
+    "desc": "常駐 app-server はプロジェクトウィンドウごとに 1 つ、タブ間で共有されます。プロセスを終了すると実行中のターンが中断されますが、次回利用時に自動的に再起動されます。",
+    "summary": "合計 {{total}} 件 · 孤立の可能性 {{orphan}} 件",
+    "refresh": "更新",
+    "groupAppServer": "常駐プロセス",
+    "groupOrphan": "孤立の可能性あり",
+    "roleEnhance": "潤色プロセス",
+    "kill": "プロセスを終了",
+    "killShort": "終了",
+    "cleanShort": "クリア",
+    "killAll": "すべてクリア",
+    "empty": "プラグイン関連の Node プロセスは見つかりません",
+    "orphanNote": "多くは IDE のクラッシュや強制終了後に残ったもので、メモリを占有し続け、セッション枠を消費し続ける可能性があります。終了前にコマンドラインを確認してください。",
+    "killServerTitle": "app-server プロセスを終了",
+    "killServerMsg": "「{{label}}」の app-server（PID {{pid}}）を終了すると、このプロジェクトで実行中のターンが中断されます。次回利用時に自動的に再起動されます。",
+    "killChildTitle": "子プロセスを終了",
+    "killChildMsg": "この子プロセス（PID {{pid}}）を終了すると、実行中のブラウザツールセッションが中断される可能性があります。続行しますか？",
+    "killAllTitle": "孤立プロセスをすべて終了",
+    "killAllMsg": "{{count}} 件の孤立プロセスを終了します。この操作は元に戻せません。",
+    "killed": "PID {{pid}} を終了しました",
+    "killFailed": "終了に失敗しました：{{error}}"
   },
   "theme": {
     "label": "UI テーマ",

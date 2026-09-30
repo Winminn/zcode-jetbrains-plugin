@@ -1,0 +1,270 @@
+/**
+ * Node 进程管理设置页：区块结构对齐 browser-settings（section 标题 + action 卡片 +
+ * 底部 hint），颜色字号一律走 variables.less 全局 token。
+ */
+
+.process-view {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+
+  &__section {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+
+  &__section-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    margin-bottom: 2px;
+  }
+
+  &__section-title {
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
+    margin: 0;
+    font-size: var(--fs-section-title);
+    font-weight: 600;
+    color: var(--text-secondary);
+
+    &--warn { color: var(--status-warning, #e0a428); }
+  }
+
+  &__count {
+    font-size: var(--fs-hint);
+    font-weight: 500;
+    padding: 0 7px;
+    line-height: 16px;
+    border-radius: 8px;
+    border: 1px solid var(--border-primary);
+    color: var(--text-tertiary);
+
+    &--warn {
+      border-color: var(--status-warning, #e0a428);
+      color: var(--status-warning, #e0a428);
+    }
+  }
+
+  &__icon-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 26px;
+    height: 26px;
+    border-radius: 6px;
+    border: none;
+    background: transparent;
+    color: var(--text-secondary);
+    cursor: pointer;
+
+    &:hover:not(:disabled) { background: var(--button-hover, rgba(128, 128, 128, 0.15)); }
+    &:disabled { opacity: 0.45; cursor: default; }
+
+    .codicon { font-size: 14px; }
+
+    &--kill {
+      width: 24px;
+      height: 24px;
+      flex-shrink: 0;
+
+      &:hover:not(:disabled) {
+        background: rgba(229, 84, 91, 0.1);
+        color: var(--error-color, #e5545b);
+      }
+    }
+  }
+
+  /* 进程卡片：常驻 = 图标瓦片 + 名称/元信息 + 操作按钮；子进程行内嵌其下 */
+  &__card {
+    border: 1px solid var(--border-primary);
+    border-radius: 8px;
+    background: var(--bg-secondary);
+    overflow: hidden;
+
+    & + .process-view__card { margin-top: 8px; }
+
+    &--orphan { border-left: 3px solid var(--status-warning, #e0a428); }
+  }
+
+  &__row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 9px 12px;
+
+    & + .process-view__row--child {
+      border-top: 1px solid var(--border-primary);
+    }
+
+    &--child { padding-left: 14px; }
+  }
+
+  &__tile {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 28px;
+    height: 28px;
+    border-radius: 6px;
+    background: var(--bg-tertiary, rgba(128, 128, 128, 0.14));
+    color: var(--accent-primary, #3574f0);
+    flex-shrink: 0;
+
+    .codicon { font-size: 15px; }
+
+    &--small {
+      width: 22px;
+      height: 22px;
+      border-radius: 5px;
+
+      .codicon { font-size: 12px; color: var(--text-tertiary); }
+    }
+
+    &--warn {
+      color: var(--status-warning, #e0a428);
+    }
+  }
+
+  &__body {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+
+    .process-view__row--child & {
+      flex-direction: row;
+      align-items: baseline;
+      gap: 8px;
+    }
+  }
+
+  &__name-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    min-width: 0;
+  }
+
+  &__name {
+    font-size: var(--fs-body);
+    font-weight: 600;
+    color: var(--text-primary);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+
+    &--child {
+      font-weight: 500;
+      color: var(--text-primary);
+    }
+  }
+
+  &__badge {
+    flex-shrink: 0;
+    font-style: normal;
+    font-size: var(--fs-hint);
+    padding: 0 6px;
+    line-height: 16px;
+    border-radius: 4px;
+    border: 1px solid var(--accent-primary, #3574f0);
+    color: var(--accent-primary, #3574f0);
+  }
+
+  &__meta {
+    font-size: var(--fs-hint);
+    color: var(--text-tertiary);
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+  }
+
+  &__cmdline {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    max-width: 380px;
+    user-select: text;
+  }
+
+  /* 文本按钮（结束 / 清理全部），形态对齐 browser-settings 的 action-btn */
+  &__btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    flex-shrink: 0;
+    padding: 4px 12px;
+    font-size: var(--fs-body);
+    border-radius: 6px;
+    border: 1px solid var(--border-primary);
+    background: var(--bg-tertiary, transparent);
+    color: var(--text-primary);
+    cursor: pointer;
+    transition: all 0.15s;
+
+    .codicon { font-size: 13px; }
+
+    &:hover:not(:disabled) {
+      background: var(--button-hover);
+      border-color: var(--border-hover);
+    }
+
+    &:disabled {
+      cursor: default;
+      opacity: 0.5;
+    }
+
+    &--danger {
+      color: var(--error-color, #e5545b);
+
+      &:hover:not(:disabled) {
+        border-color: var(--error-color, #e5545b);
+        background: rgba(229, 84, 91, 0.08);
+      }
+    }
+
+    &--ghost {
+      background: transparent;
+    }
+  }
+
+  &__empty {
+    font-size: var(--fs-body);
+    color: var(--text-tertiary);
+    padding: 14px 0;
+    text-align: center;
+  }
+
+  &__feedback {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: var(--fs-body);
+
+    .codicon { flex-shrink: 0; }
+
+    &.ok { color: var(--success-color, #5fb865); }
+    &.err { color: var(--error-color, #e5545b); }
+  }
+
+  &__hint {
+    display: flex;
+    align-items: flex-start;
+    gap: 6px;
+    font-size: var(--fs-hint);
+    color: var(--text-tertiary);
+    line-height: 1.5;
+
+    .codicon {
+      font-size: var(--fs-hint);
+      flex-shrink: 0;
+      margin-top: 1px;
+    }
+
+    &--warn {
+      color: var(--status-warning, #e0a428);
+    }
+  }
+}

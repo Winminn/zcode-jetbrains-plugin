@@ -52,6 +52,17 @@ class ZCodeProtocolClient private constructor(
 
     private val json = Json { ignoreUnknownKeys = true }
 
+    /** app-server 进程 pid（进程管理面板用；进程已退出/取不到时为 -1） */
+    val pid: Long
+        get() = try {
+            process.pid()
+        } catch (_: Exception) {
+            -1L
+        }
+
+    /** 进程启动时刻（epoch ms，进程管理面板运行时长用）。client 在 spawn 成功后立刻构造，误差毫秒级 */
+    val startedAtMillis: Long = System.currentTimeMillis()
+
     /** app-server 会话库（session/list 数据源；删除、旧归档迁移直写） */
     private val cliDbPath = Path.of(System.getProperty("user.home"), ".zcode", "cli", "db", "db.sqlite")
 

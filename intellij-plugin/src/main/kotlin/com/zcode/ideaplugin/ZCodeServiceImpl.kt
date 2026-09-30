@@ -505,6 +505,7 @@ class ZCodeServiceImpl(private val project: Project) : ZCodeService, com.intelli
      * session/list/send（用户实测「润色中历史列表加载不出来」的根因）。
      * 无会话流量，不注册交互 handler，不参与归档扫描；随 shutdown 一并关闭。
      */
+    @Volatile
     private var enhanceClient: ZCodeProtocolClient? = null
 
     override fun getEnhanceClient(): ZCodeProtocolClient {
@@ -555,6 +556,53 @@ class ZCodeServiceImpl(private val project: Project) : ZCodeService, com.intelli
             browserHandlerRegistered = false
             automationHandlerRegistered = false
         }
+    }
+
+    /**
+     * 本项目存活的常驻 app-server 进程引用（进程管理面板数据源）：
+     * 主进程 + 润色专用进程各至多一个，死进程不返回。
+     */
+    fun liveAppServers(): List<com.zcode.ideaplugin.ui.LiveAppServer> {
+        val out = mutableListOf<com.zcode.ideaplugin.ui.LiveAppServer>()
+        client?.takeIf { it.isAlive() && it.pid > 0 }
+            ?.let { out.add(com.zcode.ideaplugin.ui.LiveAppServer(it.pid, it.startedAtMillis, "main")) }
+        enhanceClient?.takeIf { it.isAlive() && it.pid > 0 }
+            ?.let { out.add(com.zcode.ideaplugin.ui.LiveAppServer(it.pid, it.startedAtMillis, "enhance")) }
+        return out
+    }
+
+    /**
+     * 按 pid 定向关闭常驻 app-server（进程管理面板 kill 动作）：
+     * pid 与当前 client 不符即拒绝（防按过期快照误杀换代后的新进程）。
+     * 主进程走 shutdown 同款簿记（handler 标志重置 + 账本清零），下次 getClient
+     * 懒重建；润色进程只关自己。返回是否命中并已关闭。
+     */
+    fun killAppServerByPid(pid: Long): Boolean = lock.withLock {
+        var killed = false
+        client?.let { c ->
+            if (c.isAlive() && c.pid == pid) {
+                c.close()
+                client = null
+                killed = true
+                residentLedger.invalidateAll()
+                userInputHandlerRegistered = false
+                permissionHandlerRegistered = false
+                browserHandlerRegistered = false
+                automationHandlerRegistered = false
+                log.info("[process-mgr] main app-server killed by user (pid=$pid), lazy respawn on next getClient")
+            }
+        }
+        if (!killed) {
+            enhanceClient?.let { c ->
+                if (c.isAlive() && c.pid == pid) {
+                    c.close()
+                    enhanceClient = null
+                    killed = true
+                    log.info("[process-mgr] enhance app-server killed by user (pid=$pid)")
+                }
+            }
+        }
+        killed
     }
 
     override fun registerPanel(panel: ZCodeToolWindowPanel) {

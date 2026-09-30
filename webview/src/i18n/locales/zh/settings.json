@@ -11,7 +11,29 @@
     "mcp": "MCP",
     "browser": "浏览器",
     "other": "其他设置",
-    "remote": "手机远程"
+    "processes": "进程"
+  },
+  "processesView": {
+    "desc": "常驻 app-server 每个项目窗口一个、多标签共享；结束进程会中断进行中的回合，下次使用时自动重新拉起。",
+    "summary": "共 {{total}} 个 · 疑似孤立 {{orphan}} 个",
+    "refresh": "刷新",
+    "groupAppServer": "常驻进程",
+    "groupOrphan": "疑似孤立进程",
+    "roleEnhance": "润色进程",
+    "kill": "结束进程",
+    "killShort": "结束",
+    "cleanShort": "清理",
+    "killAll": "清理全部",
+    "empty": "未发现插件相关的 node 进程",
+    "orphanNote": "多为 IDE 崩溃或强制退出后的遗留，会持续占用内存并可能继续消耗会话额度；结束前请核对命令行。",
+    "killServerTitle": "结束 app-server 进程",
+    "killServerMsg": "结束「{{label}}」的 app-server（PID {{pid}}）会中断该项目正在进行的回合，下次使用时自动重新拉起。",
+    "killChildTitle": "结束子进程",
+    "killChildMsg": "结束子进程（PID {{pid}}）可能中断正在进行的浏览器工具会话，确定结束吗？",
+    "killAllTitle": "清理全部孤立进程",
+    "killAllMsg": "将结束 {{count}} 个疑似孤立进程，此操作不可恢复。",
+    "killed": "已结束 PID {{pid}}",
+    "killFailed": "结束失败：{{error}}"
   },
   "theme": {
     "label": "界面主题",

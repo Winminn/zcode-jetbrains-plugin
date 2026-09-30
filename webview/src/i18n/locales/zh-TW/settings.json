@@ -11,7 +11,29 @@
     "mcp": "MCP",
     "browser": "瀏覽器",
     "other": "其他設定",
-    "remote": "手機遠程"
+    "processes": "處理程序"
+  },
+  "processesView": {
+    "desc": "常駐 app-server 每個專案視窗一個、多分頁共享；結束處理程序會中斷進行中的回合，下次使用時自動重新拉起。",
+    "summary": "共 {{total}} 個 · 疑似孤立 {{orphan}} 個",
+    "refresh": "重新整理",
+    "groupAppServer": "常駐處理程序",
+    "groupOrphan": "疑似孤立處理程序",
+    "roleEnhance": "潤飾處理程序",
+    "kill": "結束處理程序",
+    "killShort": "結束",
+    "cleanShort": "清理",
+    "killAll": "清理全部",
+    "empty": "未發現外掛相關的 node 處理程序",
+    "orphanNote": "多為 IDE 當機或強制結束後的遺留，會持續佔用記憶體並可能繼續消耗工作階段額度；結束前請核對命令列。",
+    "killServerTitle": "結束 app-server 處理程序",
+    "killServerMsg": "結束「{{label}}」的 app-server（PID {{pid}}）會中斷該專案正在進行的回合，下次使用時自動重新拉起。",
+    "killChildTitle": "結束子處理程序",
+    "killChildMsg": "結束子處理程序（PID {{pid}}）可能中斷正在進行的瀏覽器工具工作階段，確定結束嗎？",
+    "killAllTitle": "清理全部孤立處理程序",
+    "killAllMsg": "將結束 {{count}} 個疑似孤立處理程序，此操作無法復原。",
+    "killed": "已結束 PID {{pid}}",
+    "killFailed": "結束失敗：{{error}}"
   },
   "theme": {
     "label": "介面主題",

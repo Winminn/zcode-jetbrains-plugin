@@ -1782,6 +1782,31 @@ flowchart LR
       return { op: 'remoteState', state: 'off' }
     case 'remoteUnpair':
       return { op: 'remoteState', state: 'off' }
+    case 'getNodeProcesses':
+      // mock：两项目常驻 + 子进程 + 孤立各形态（验收进程管理 tab；appServer 带 process
+      // 真身短名，子进程按角色命名 zcode-plugin-host，孤立条目带 commandLine 供悬停核对）
+      return {
+        op: 'nodeProcesses',
+        snapshotAt: Date.now(),
+        totals: { appServer: 2, descendant: 2, orphan: 1 },
+        processes: [
+          { pid: 70152, kind: 'appServer', role: 'main', label: 'zcode-idea-plugin', process: 'node.exe', project: 'zcode-idea-plugin', startedAt: Date.now() - 165_000 },
+          { pid: 70153, kind: 'descendant', label: 'zcode-plugin-host', project: 'zcode-idea-plugin', parentPid: 70152, startedAt: Date.now() - 120_000 },
+          { pid: 70154, kind: 'descendant', label: 'msedge.exe', project: 'zcode-idea-plugin', parentPid: 70152, startedAt: Date.now() - 90_000 },
+          { pid: 70199, kind: 'appServer', role: 'enhance', label: 'mobile-app', process: 'node.exe', project: 'mobile-app', startedAt: Date.now() - 45 * 60_000 },
+          {
+            pid: 66331,
+            kind: 'orphan',
+            label: 'node.exe',
+            parentPid: 1234,
+            startedAt: Date.now() - 3 * 3600_000,
+            commandLine: 'C:\\Program Files\\nodejs\\node.exe C:\\Users\\mock\\AppData\\Local\\Programs\\ZCode\\resources\\glm\\zcode.cjs app-server',
+          },
+        ],
+      }
+    case 'killNodeProcess':
+      // mock：恒成功（失败态验收可临时改 ok:false）
+      return { op: 'nodeProcessKillResult', pid: req.pid, ok: true }
     case 'askUserResponse':
       // mock：无服务端可应答，仅回执关闭弹窗
       return { op: 'askUserAck' }

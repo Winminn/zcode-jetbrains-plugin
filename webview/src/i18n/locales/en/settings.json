@@ -11,7 +11,29 @@
     "mcp": "MCP",
     "browser": "Browser",
     "other": "Other",
-    "remote": "Phone Remote"
+    "processes": "Processes"
+  },
+  "processesView": {
+    "desc": "One resident app-server per project window, shared across tabs. Killing a process interrupts any running turn; it respawns automatically on next use.",
+    "summary": "{{total}} total · {{orphan}} likely orphaned",
+    "refresh": "Refresh",
+    "groupAppServer": "Resident processes",
+    "groupOrphan": "Likely orphaned",
+    "roleEnhance": "Enhance",
+    "kill": "Kill process",
+    "killShort": "Kill",
+    "cleanShort": "Clean",
+    "killAll": "Clean all",
+    "empty": "No plugin-related node processes found",
+    "orphanNote": "Usually left behind by an IDE crash or force quit — they keep consuming memory and may keep burning session quota. Double-check the command line before killing.",
+    "killServerTitle": "Kill app-server process",
+    "killServerMsg": "Killing the app-server of \"{{label}}\" (PID {{pid}}) interrupts any running turn in that project. It will be respawned automatically on next use.",
+    "killChildTitle": "Kill child process",
+    "killChildMsg": "Killing this child process (PID {{pid}}) may interrupt an in-flight browser tool session. Continue?",
+    "killAllTitle": "Kill all orphaned processes",
+    "killAllMsg": "This will kill {{count}} likely orphaned processes. This cannot be undone.",
+    "killed": "Killed PID {{pid}}",
+    "killFailed": "Kill failed: {{error}}"
   },
   "theme": {
     "label": "UI Theme",

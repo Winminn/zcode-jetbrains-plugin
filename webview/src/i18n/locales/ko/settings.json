@@ -11,7 +11,29 @@
     "mcp": "MCP",
     "browser": "브라우저",
     "other": "기타 설정",
-    "remote": "휴대폰 원격"
+    "processes": "프로세스"
+  },
+  "processesView": {
+    "desc": "상주 app-server는 프로젝트 창마다 하나씩 있으며 탭 간 공유됩니다. 프로세스를 종료하면 실행 중인 턴이 중단되지만, 다음 사용 시 자동으로 다시 시작됩니다.",
+    "summary": "총 {{total}}개 · 고아 가능 {{orphan}}개",
+    "refresh": "새로 고침",
+    "groupAppServer": "상주 프로세스",
+    "groupOrphan": "고아 가능성 있음",
+    "roleEnhance": "개선 프로세스",
+    "kill": "프로세스 종료",
+    "killShort": "종료",
+    "cleanShort": "정리",
+    "killAll": "모두 정리",
+    "empty": "플러그인 관련 Node 프로세스가 없습니다",
+    "orphanNote": "대부분 IDE 크래시나 강제 종료 후 남은 것으로, 메모리를 계속 점유하고 세션 한도를 계속 소모할 수 있습니다. 종료 전에 명령줄을 확인하세요.",
+    "killServerTitle": "app-server 프로세스 종료",
+    "killServerMsg": "\"{{label}}\"의 app-server(PID {{pid}})를 종료하면 해당 프로젝트에서 실행 중인 턴이 중단됩니다. 다음 사용 시 자동으로 다시 시작됩니다.",
+    "killChildTitle": "자식 프로세스 종료",
+    "killChildMsg": "이 자식 프로세스(PID {{pid}})를 종료하면 진행 중인 브라우저 도구 세션이 중단될 수 있습니다. 계속하시겠습니까?",
+    "killAllTitle": "고아 프로세스 모두 종료",
+    "killAllMsg": "고아로 판단된 {{count}}개 프로세스를 종료합니다. 이 작업은 되돌릴 수 없습니다.",
+    "killed": "PID {{pid}} 종료됨",
+    "killFailed": "종료 실패: {{error}}"
   },
   "theme": {
     "label": "UI 테마",

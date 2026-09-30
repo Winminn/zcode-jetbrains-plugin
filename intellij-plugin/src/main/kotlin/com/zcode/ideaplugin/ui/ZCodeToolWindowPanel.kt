@@ -915,6 +915,8 @@ if (!window.__ZCODE_LOG_HOOK__) {
                         "getProxyConfig" -> handleGetProxyConfig()
                         "setProxyConfig" -> handleSetProxyConfig(msg)
                         "restartAppServer" -> handleRestartAppServer()
+                        "getNodeProcesses" -> handleGetNodeProcesses()
+                        "killNodeProcess" -> handleKillNodeProcess(msg)
                         "browserConfig" -> handleBrowserConfig()
                         "clearBrowserData" -> handleClearBrowserData(msg)
                         "browserDataOverview" -> handleBrowserDataOverview()
@@ -5741,6 +5743,30 @@ if (!window.__ZCODE_LOG_HOOK__) {
         log.info("App-server restarted by user (proxy config apply)")
         return buildJsonObject {
             put("op", "appServerRestarted")
+        }
+    }
+
+    // ============ Node 进程管理（设置页「进程」条目）============
+
+    /**
+     * op=getNodeProcesses — 进程快照（常驻 app-server / 直接子进程 / 疑似孤立）。
+     * 聚合与判定逻辑见 NodeProcessRegistry 类注释；按需拉取，无后台轮询。
+     */
+    private fun handleGetNodeProcesses(): JsonObject = NodeProcessRegistry.snapshotJson()
+
+    /**
+     * op=killNodeProcess — 结束指定进程（{pid}）。所有权守卫在 registry 内：
+     * 重建快照校验 pid 在集合内才执行，防伪造 payload 杀任意进程。
+     */
+    private fun handleKillNodeProcess(msg: JsonObject): JsonObject {
+        val pid = msg["pid"]?.jsonPrimitive?.content?.toLongOrNull()
+            ?: return errorResponse("缺少 pid")
+        val (ok, error) = NodeProcessRegistry.killByPid(pid)
+        return buildJsonObject {
+            put("op", "nodeProcessKillResult")
+            put("pid", pid)
+            put("ok", ok)
+            if (!ok) put("error", error ?: "kill failed")
         }
     }
 

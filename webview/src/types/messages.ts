@@ -487,6 +487,11 @@ export type JavaRequest =  | { op: 'askUserPendingState' }
   | { op: 'setProxyConfig'; httpProxy: string; noProxy: string; caCertPath: string }
   /** 重启 app-server 让新代理 env 生效（用户主动触发，接受打断进行中的回合） */
   | { op: 'restartAppServer' }
+  // ============ Node 进程管理（设置页「进程」条目）============
+  /** 进程快照（常驻 app-server / 直接子进程 / 疑似孤立；按需拉取无轮询） */
+  | { op: 'getNodeProcesses' }
+  /** 结束指定进程（pid 必须在 Kotlin 侧最新快照内，所有权守卫拒绝集外 pid） */
+  | { op: 'killNodeProcess'; pid: number }
   // ============ 定时消息（权威列表在 Java 侧 ZCodeScheduledMessageService）============
   /** 新建定时消息（fireAt 绝对 epoch ms；过早由 Java 钳到 +10s；模型可空=跟随会话）*/
   | { op: 'scheduledCreate'; sessionId: string; workspacePath?: string; text: string; fireAt: number; providerId?: string; modelId?: string }
@@ -585,6 +590,25 @@ export interface ProviderSaveDraft {
   baseURL: string
   apiKey: string | null
   models: ProviderModelDraft[]
+}
+
+/** Node 进程管理条目（getNodeProcesses 响应载荷，设置页「进程」tab）*/
+export interface NodeProcessInfo {
+  pid: number
+  kind: 'appServer' | 'descendant' | 'orphan'
+  /** appServer 的进程角色：main=主进程 / enhance=润色进程 */
+  role?: 'main' | 'enhance'
+  /** 行内标签：appServer=项目名、descendant/orphan=可执行短名或角色名（zcode-plugin-host 等） */
+  label: string
+  /** 进程真身短名（appServer 行补显——label 是项目名，不补显看不出是 node，真机实测反馈） */
+  process?: string
+  project?: string
+  /** 父进程 pid（descendant=所属 app-server；orphan=残留父 pid，可能缺省） */
+  parentPid?: number
+  /** 启动时刻 epoch ms（缺省=平台取不到，前端显示占位） */
+  startedAt?: number
+  /** 完整命令行（仅 orphan 携带，结束前归属确认用） */
+  commandLine?: string
 }
 
 /** 模型管理 provider 分组（与聊天 listModels 的差异：不去重、含 disabled、保留无 baseURL 项）*/
@@ -1047,6 +1071,13 @@ export type JavaResponse =
   | { op: 'proxyConfigSaved'; httpProxy: string; noProxy: string; caCertPath: string; restartPending: boolean }
   /** app-server 已重启（restartAppServer 响应；下次请求懒重建带新 env）*/
   | { op: 'appServerRestarted' }
+  // ============ Node 进程管理（设置页「进程」条目）============
+  /** 进程条目：kind=appServer 常驻进程（role=main 主进程/enhance 润色进程，project 归属项目）、
+   *  descendant 常驻进程直接子进程、orphan 疑似孤立（IDE 崩溃遗留/换代泄漏）。
+   *  startedAt 缺省=平台取不到启动时刻；commandLine 仅 orphan 携带（归属确认用） */
+  | { op: 'nodeProcesses'; snapshotAt: number; totals: { appServer: number; descendant: number; orphan: number }; processes: NodeProcessInfo[] }
+  /** 结束进程回执（killNodeProcess 响应；ok=false 时附 error）*/
+  | { op: 'nodeProcessKillResult'; pid: number; ok: boolean; error?: string }
   | { op: 'ideTheme'; isDark: boolean }
   | { op: 'files'; files: string[] }
   | { op: 'commands'; commands: SlashCommand[] }
