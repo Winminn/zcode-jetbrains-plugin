@@ -5308,6 +5308,7 @@ if (!window.__ZCODE_LOG_HOOK__) {
             if (disposed) return@Thread
             try {
                 val client = project.zCodeService().getClient()
+                val stopStartMs = System.currentTimeMillis()
                 var v4Accepted = false
                 try {
                     val r = client.stopForegroundViaV4(sessionId)
@@ -5337,7 +5338,13 @@ if (!window.__ZCODE_LOG_HOOK__) {
                     }
                     Thread.sleep(2000)
                 }
-                if (!stillSameTurn(sessionId, stoppedTurnId)) return@Thread // 已终止或已是新回合
+                if (!stillSameTurn(sessionId, stoppedTurnId)) {
+                    // remote/mapper 守卫进入（簿记空）时本分支恒走：v4 stop 已受理即回合已死，
+                    // 但 NEW CLI 对被停回合可能不发任何终态帧（缺陷EH：1c8a4483 两次 stop 零终态），
+                    // 就地补相位清理防远程列表恒「运行中」
+                    if (v4Accepted && !tracked) clearRemotePhaseIfStale(sessionId, stopStartMs)
+                    return@Thread // 已终止或已是新回合
+                }
                 log.warn("stop sequence: no terminal frame after stop, synthesizing turn.completed: $sessionId")
                 pushStreamEvent(
                     sessionId,
@@ -5352,10 +5359,23 @@ if (!window.__ZCODE_LOG_HOOK__) {
                         payload = buildJsonObject { put("synthetic", true) }
                     )
                 )
+                // 合成事件只走面板私有通道（pushStreamEvent），不过全局监听器——
+                // 远程运行集合须就地清理，否则 H5 任务列表恒「运行中」直到 2h TTL（缺陷EH）
+                clearRemotePhaseIfStale(sessionId, stopStartMs)
             } catch (e: InterruptedException) {
                 Thread.currentThread().interrupt()
             }
         }, "zcode-stop-sequence").apply { isDaemon = true }.start()
+    }
+
+    /** stop 序列专用的远程相位补清：集合条目时刻早于 stopStartMs（stop 之后没有新相位
+     *  写入）才清——若用户 stop 后立即新发回合，turn.started 会把条目刷到晚于 stop，
+     *  此时跳过防误清新回合的运行态（缺陷EH） */
+    private fun clearRemotePhaseIfStale(sessionId: String, stopStartMs: Long) {
+        runCatching {
+            com.zcode.ideaplugin.remote.ZCodeRemoteService.getInstance()
+                .clearPhaseIfEntryBefore(sessionId, stopStartMs)
+        }
     }
 
     /** 回合仍处于被停止的那个回合（存在且 turnId 未变）；已终止或用户新开回合则为 false */

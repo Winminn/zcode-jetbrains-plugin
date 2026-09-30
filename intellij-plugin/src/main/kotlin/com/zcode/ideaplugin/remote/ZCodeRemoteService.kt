@@ -308,6 +308,7 @@ class ZCodeRemoteService : Disposable {
 
     fun registerControllerSub(subscriptionId: String, bridgeSessionId: String, topic: String) {
         controllerSubs[subscriptionId] = ControllerSub(bridgeSessionId, topic)
+        startPhaseFallbackIfNeeded() // 缺陷EJ：兜底快照链随订阅建立拉起（断连自停）
     }
 
     /** 桥淘汰的路由侧清理（RemoteChannelHandlers.clearBridge 调用）：RelayBridge 的
@@ -331,13 +332,35 @@ class ZCodeRemoteService : Disposable {
                           queryBackedRunning.remove(sessionId)
                           runningSessionIds.remove(sessionId) != null
                       }
-        if (!changed || controllerSubs.isEmpty()) return
+        if (!changed) return
+        scheduleRepushDebounced()
+        if (running) startPhaseTickerIfNeeded()
+    }
+
+    /** 相位翻转后的防抖重推（400ms 合并窗口，推完即置位，期间新变化可再排） */
+    private fun scheduleRepushDebounced() {
+        if (controllerSubs.isEmpty()) return
         if (!repushPending.compareAndSet(false, true)) return
         bridgeSweeper.schedule({
             repushPending.set(false)
             channelExecutor.execute { runCatching { repushControllerSnapshots() } }
         }, 400, java.util.concurrent.TimeUnit.MILLISECONDS)
-        if (running) startPhaseTickerIfNeeded()
+    }
+
+    /**
+     * 缺陷EH：stop 序列专用相位补清。NEW CLI 对被停回合可能不发任何终态帧
+     * （stop 合成收口只走面板通道、帧泵可能未挂载），远程运行集合会残留到 2h TTL。
+     * 守卫：条目时刻须早于 stopStartMs——晚于说明 stop 后已有新回合 turn.started
+     * 抢跑刷写条目，此时清掉会误伤新回合的运行态显示。
+     */
+    fun clearPhaseIfEntryBefore(sessionId: String, beforeMs: Long) {
+        if (sessionId.startsWith("sess_subagent")) return
+        val entry = runningSessionIds[sessionId] ?: return
+        if (entry >= beforeMs) return
+        queryBackedRunning.remove(sessionId)
+        runningSessionIds.remove(sessionId)
+        log.info("remote phase cleared by stop sequence: $sessionId (entry=$entry < stop=$beforeMs)")
+        scheduleRepushDebounced()
     }
 
     /**
@@ -365,6 +388,40 @@ class ZCodeRemoteService : Disposable {
             bridgeSweeper.schedule({ tickPhaseOnce() }, 15_000, java.util.concurrent.TimeUnit.MILLISECONDS)
         } else {
             phaseTickerActive.set(false)
+        }
+    }
+
+    /**
+     * 兜底快照 ticker（缺陷EJ，30s 一轮）：phaseTicker 只在运行集合非空时跑——集合空
+     * 时快照不推，而 EB probe 捞回候选只在快照合成时收集，「回合在跑但 turn.started
+     * 丢失」（IDE 重启后首回合 send 先于 resume 完成，2026-09-30 真机实锤）的会话在
+     * H5 恒「已完成」且捞回链断。本 ticker 在集合空且有订阅者时每 30s 无条件推一轮
+     * 快照（probe 候选随合成天然发生，捞回后 phaseTicker 15s 接管）；集合非空时让位
+     * 跳推只续期。无订阅者自停，registerControllerSub 重新拉起。
+     * 单轮成本：listSessions RPC ~120ms（538 条实测）+ listTasks 指纹缓存命中 <1ms
+     * （客户端写入 tasks-index 时才 spawn node 重读，~1s 罕见路径）。
+     */
+    private val PHASE_FALLBACK_INTERVAL_MS = 30_000L
+
+    private val phaseFallbackActive = java.util.concurrent.atomic.AtomicBoolean(false)
+
+    private fun startPhaseFallbackIfNeeded() {
+        if (!phaseFallbackActive.compareAndSet(false, true)) return
+        bridgeSweeper.schedule({ tickPhaseFallbackOnce() }, PHASE_FALLBACK_INTERVAL_MS, java.util.concurrent.TimeUnit.MILLISECONDS)
+    }
+
+    private fun tickPhaseFallbackOnce() {
+        if (controllerSubs.isEmpty()) {
+            phaseFallbackActive.set(false)
+            return
+        }
+        if (runningSessionIds.isEmpty() && queryBackedRunning.isEmpty()) {
+            runCatching { repushControllerSnapshots() }
+        }
+        if (controllerSubs.isEmpty()) {
+            phaseFallbackActive.set(false)
+        } else {
+            bridgeSweeper.schedule({ tickPhaseFallbackOnce() }, PHASE_FALLBACK_INTERVAL_MS, java.util.concurrent.TimeUnit.MILLISECONDS)
         }
     }
 
@@ -538,8 +595,12 @@ class ZCodeRemoteService : Disposable {
         val relay = client ?: return
         // 每 project 用自己的 app-server 聚合（会话库全局共享，但 workspace 过滤按各自 basePath）
         val taskItems = ArrayList<kotlinx.serialization.json.JsonElement>()
+        val now = System.currentTimeMillis()
         // 查询复核候选：判 completed 但 updatedAt 很新（回合在跑而相位喂源丢失，缺陷EB兜底）
         val probeCandidates = ArrayList<Pair<com.zcode.ideaplugin.protocol.ZCodeProtocolClient, String>>()
+        // 纠偏候选（缺陷EH兜底）：事件集合判 running 但条目时刻陈旧——终态丢失场景
+        // （帧泵挂载窗口/legacy 终态哑火/stop 合成不过全局）残留，query 复核 idle 则清出
+        val staleRunningCandidates = ArrayList<Pair<com.zcode.ideaplugin.protocol.ZCodeProtocolClient, String>>()
         for (impl in com.zcode.ideaplugin.ZCodeServiceImpl.activeProjectServices()) {
             if (!impl.isStarted()) continue
             val c = runCatching { impl.getClient() }.getOrNull() ?: continue
@@ -561,11 +622,20 @@ class ZCodeRemoteService : Disposable {
                 // 回合大概率在跑而 turn.started 事件丢了（计划批准续跑回合实测不发 legacy
                 // started，2026-09-29 真机日志实锤）。异步 probe 捞回，快照照常先推
                 if (status == "completed" &&
-                    System.currentTimeMillis() - s.updatedAt < PROBE_RECHECK_WINDOW_MS &&
+                    now - s.updatedAt < PROBE_RECHECK_WINDOW_MS &&
                     probeCandidates.size < PROBE_MAX_PER_ROUND &&
-                    (lastProbeAt[s.sessionId] ?: 0) < System.currentTimeMillis() - PROBE_MIN_INTERVAL_MS
+                    (lastProbeAt[s.sessionId] ?: 0) < now - PROBE_MIN_INTERVAL_MS
                 ) {
                     probeCandidates.add(c to s.sessionId)
+                }
+                // 纠偏候选收集：事件集合说 running 且条目超时无相位刷新——回合大概率已结束
+                // 而终态事件丢了（缺陷EH 四路断法），异步 probe 纠偏，快照照常先推
+                if (status == "running" && runningSessionIds.containsKey(s.sessionId) &&
+                    now - (runningSessionIds[s.sessionId] ?: 0L) > STALE_RUNNING_RECHECK_MS &&
+                    staleRunningCandidates.size < PROBE_MAX_PER_ROUND &&
+                    (lastProbeAt[s.sessionId] ?: 0) < now - PROBE_MIN_INTERVAL_MS
+                ) {
+                    staleRunningCandidates.add(c to s.sessionId)
                 }
                 // workspacePath 统一正斜杠：app-server 返回反斜杠，而 H5 按当前工作区
                 //（basePath 正斜杠）对 address.workspacePath 严格字符串匹配（kFe），
@@ -664,7 +734,7 @@ class ZCodeRemoteService : Disposable {
         // 相位盲区取证：快照实际推送内容概要（running 会话 id、行数、协议号）
         val runIds = runningSessionIds.keys.take(3).joinToString(",")
         log.info("remote controller snapshot pushed: topic=$topic toSeq=$seq tasks=${limited.size} running=[$runIds] proto=${snapshotContent["protocolVersion"]}")
-        scheduleRunningProbe(probeCandidates)
+        scheduleRunningProbe(probeCandidates, staleRunningCandidates)
     }
 
     // ============ 查询式活性复核（缺陷EB兜底：事件喂源丢失时把运行中会话捞回） ============
@@ -683,6 +753,11 @@ class ZCodeRemoteService : Disposable {
      *  到达则走 onSessionTurnPhase(false) 正常移除，本表条目不阻碍 */
     private val QUERY_BACKED_TTL_MS = 3 * 60_000L
 
+    /** 纠偏候选门槛（缺陷EH）：事件集合判 running 且条目超过此时长无相位刷新才值得问。
+     *  条目时刻只在相位翻转时刷新（单 step 长回合不刷新），超门槛≠已结束——probe 复核
+     *  权威兜底，无误清（projection.status=running 则续期条目） */
+    private val STALE_RUNNING_RECHECK_MS = 5 * 60_000L
+
     /** 复核确认仍在运行的会话（sessionId → 确认时刻）。独立于 runningSessionIds
      * （事件喂源）：probe 单向捞回、不纠偏——事件说 running 而查询说 idle 时信事件
      * （缺陷DD 教训：以 X 为权威纠偏须先实证 X 携带信息，这里查询只做增量捞回） */
@@ -698,29 +773,51 @@ class ZCodeRemoteService : Disposable {
      * 走 onSessionTurnPhase(true) 正常通道（集合翻转+防抖重推快照，H5 列表翻运行中）。
      * 桥线程零阻塞：read 放 bridgeSweeper 池执行（串行池阻塞几秒只推迟 sweep，无害）。
      */
-    private fun scheduleRunningProbe(candidates: List<Pair<com.zcode.ideaplugin.protocol.ZCodeProtocolClient, String>>) {
-        if (candidates.isEmpty()) return
+    private fun scheduleRunningProbe(
+        candidates: List<Pair<com.zcode.ideaplugin.protocol.ZCodeProtocolClient, String>>,
+        staleCandidates: List<Pair<com.zcode.ideaplugin.protocol.ZCodeProtocolClient, String>> = emptyList(),
+    ) {
+        if (candidates.isEmpty() && staleCandidates.isEmpty()) return
         val now = System.currentTimeMillis()
-        for ((client, sessionId) in candidates) {
-            lastProbeAt[sessionId] = now // 无论结果如何都记，60s 内不重复问同一会话
-            bridgeSweeper.execute {
-                val running = runCatching {
-                    parseProjectionStatus(client.readSessionFull(sessionId, timeoutMs = 5_000, messageLimit = 1))
-                }.getOrNull()
-                when (running) {
-                    true -> {
-                        queryBackedRunning[sessionId] = System.currentTimeMillis()
-                        log.info("[eb-probe] session $sessionId confirmed running via session/read, restoring phase")
-                        onSessionTurnPhase(sessionId, true)
-                    }
-                    // 确认非运行：补偿节流到 ~5min（判定式再减 60s 间隔），防结束不久的
-                    // 会话在 10min 候选窗内每 60s 被白问一次
-                    false -> {
+        for ((client, sessionId) in candidates) probeOnce(client, sessionId, now, stale = false)
+        for ((client, sessionId) in staleCandidates) probeOnce(client, sessionId, now, stale = true)
+    }
+
+    private fun probeOnce(
+        client: com.zcode.ideaplugin.protocol.ZCodeProtocolClient,
+        sessionId: String,
+        now: Long,
+        stale: Boolean,
+    ) {
+        lastProbeAt[sessionId] = now // 无论结果如何都记，60s 内不重复问同一会话
+        bridgeSweeper.execute {
+            val running = runCatching {
+                parseProjectionStatus(client.readSessionFull(sessionId, timeoutMs = 5_000, messageLimit = 1))
+            }.getOrNull()
+            when (running) {
+                true -> {
+                    queryBackedRunning[sessionId] = System.currentTimeMillis()
+                    if (stale) {
+                        // 确认仍在跑：续期条目时刻（防 2h sweep 误清真长回合）+ 4min 节流
+                        runningSessionIds[sessionId] = System.currentTimeMillis()
                         lastProbeAt[sessionId] = System.currentTimeMillis() + 4 * 60_000L
-                        runCatching { queryBackedRunning.remove(sessionId) }
+                        log.info("[eb-probe] session $sessionId confirmed still running (stale recheck, entry renewed)")
+                    } else {
+                        log.info("[eb-probe] session $sessionId confirmed running via session/read, restoring phase")
                     }
-                    null -> log.info("[eb-probe] session $sessionId read failed (fail-soft, keep completed)")
+                    onSessionTurnPhase(sessionId, true)
                 }
+                // 确认非运行：补偿节流到 ~5min（判定式再减 60s 间隔），防结束不久的
+                // 会话在 10min 候选窗内每 60s 被白问一次
+                false -> {
+                    lastProbeAt[sessionId] = System.currentTimeMillis() + 4 * 60_000L
+                    runCatching { queryBackedRunning.remove(sessionId) }
+                    if (stale) {
+                        log.info("[eb-probe] stale running entry corrected via session/read: $sessionId")
+                        onSessionTurnPhase(sessionId, false)
+                    }
+                }
+                null -> log.info("[eb-probe] session $sessionId read failed (fail-soft, keep current phase)")
             }
         }
     }
