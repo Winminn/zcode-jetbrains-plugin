@@ -75,6 +75,9 @@
     "glmQuotaWithLevel": "GLM 利用枠（{{level}}）",
     "quotaLoading": "利用枠を読み込み中…",
     "noQuota": "利用枠データなし",
+    "doubleClickHint": "リングをダブルクリックするとコンテキストを圧縮します",
+    "compactConfirmTitle": "コンテキストを圧縮",
+    "compactConfirmMessage": "/compact コマンドを送信して会話履歴を要約し、コンテキスト領域を解放します。ターン実行中の場合はキューに追加され、ターン終了後に送信されます。",
     "categories": {
       "messages": "メッセージ",
       "systemTools": "システムツール",

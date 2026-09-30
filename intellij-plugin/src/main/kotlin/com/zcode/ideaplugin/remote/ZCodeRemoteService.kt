@@ -7,6 +7,7 @@ import com.intellij.openapi.Disposable
 import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.components.Service
 import com.intellij.openapi.diagnostic.Logger
+import com.zcode.ideaplugin.ZCodeBundle
 import com.zcode.ideaplugin.ZCodeServiceImpl
 import com.zcode.ideaplugin.protocol.relay.ChannelCodec
 import com.zcode.ideaplugin.protocol.relay.Relay
@@ -776,7 +777,7 @@ class ZCodeRemoteService : Disposable {
                 if (now - lastPairedNotifyAt < 10 * 60_000L) return  // 10 分钟冷却
                 lastPairedNotifyAt = now
             }
-            val text = if (messageKey == "phonePaired") "手机已连接，可在手机上查看会话" else messageKey
+            val text = if (messageKey == "phonePaired") ZCodeBundle.message("remote.notify.phonePaired") else messageKey
             com.intellij.notification.NotificationGroupManager.getInstance()
                 .getNotificationGroup("ZCode")
                 .createNotification(text, com.intellij.notification.NotificationType.INFORMATION)
@@ -799,7 +800,7 @@ class ZCodeRemoteService : Disposable {
             com.intellij.notification.NotificationGroupManager.getInstance()
                 .getNotificationGroup("ZCode")
                 .createNotification(
-                    "远程页面连接频繁断开重连：若手机/浏览器开着多个远程页面请只保留一个；若只有一个页面，多为移动网络不稳，页面会自动重连",
+                    ZCodeBundle.message("remote.notify.terminalChurn"),
                     com.intellij.notification.NotificationType.WARNING,
                 )
                 .notify(null)

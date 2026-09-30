@@ -32,6 +32,7 @@ import org.cef.browser.CefBrowser
 import org.cef.browser.CefFrame
 import org.cef.handler.CefLoadHandler
 import org.cef.network.CefRequest
+import com.zcode.ideaplugin.ZCodeBundle
 import com.zcode.ideaplugin.ZCodeService
 import com.zcode.ideaplugin.ZCodeWebviewServer
 import com.zcode.ideaplugin.zCodeService
@@ -5928,8 +5929,8 @@ if (!window.__ZCODE_LOG_HOOK__) {
         // 润色代际透传：前端发起时自增，回包原样带回；弹窗关闭后前端按代丢弃迟到回包
         val seq = msg["seq"]?.jsonPrimitive?.longOrNull ?: -1L
         val text = msg["text"]?.jsonPrimitive?.content
-            ?: return enhanceError("缺少 text", seq)
-        if (text.isBlank()) return enhanceError("输入内容为空", seq)
+            ?: return enhanceError(ZCodeBundle.message("enhance.error.missingText"), seq)
+        if (text.isBlank()) return enhanceError(ZCodeBundle.message("enhance.error.emptyInput"), seq)
         // 不设单飞互斥：慢请求期间用户关弹窗再点润色，必须能立即开新代，而不是被
         // busy 挡成「润色进行中」。并发堆积用 latest-wins 收口：新请求把旧代标记为
         // 过期（旧代放弃 CLI 降级、在跑的 CLI 子进程直接销毁），generateText 靠 30s
@@ -5949,11 +5950,11 @@ if (!window.__ZCODE_LOG_HOOK__) {
                     // generateText 期间来了更新请求或用户取消：本代放弃，不再 spawn CLI 子进程
                     if (seq != enhanceLatestSeq || seq in enhanceCancelledSeqs) {
                         log.info("enhancePrompt: seq $seq superseded/cancelled while waiting, skipping CLI fallback")
-                        return enhanceError("已取消（发起了新的润色或手动取消）", seq)
+                        return enhanceError(ZCodeBundle.message("enhance.error.cancelled"), seq)
                     }
                     enhanceViaCliOneShot(providerId, modelId, text)
                 }
-                    ?: return enhanceError("润色结果为空", seq)
+                    ?: return enhanceError(ZCodeBundle.message("enhance.error.emptyResult"), seq)
             val (enhanced, model) = result
             log.info("enhancePrompt done (${enhanced.length} chars, model=$model)")
             return buildJsonObject {
@@ -5965,7 +5966,7 @@ if (!window.__ZCODE_LOG_HOOK__) {
             }
         } catch (e: Exception) {
             log.warn("enhancePrompt failed: ${LogRedactor.redact(e.toString())}")
-            return enhanceError("润色失败: ${e.message}", seq)
+            return enhanceError(ZCodeBundle.message("enhance.error.failed", e.message ?: "unknown"), seq)
         } finally {
             enhanceOpIds.remove(seq)
             enhanceCancelledSeqs.remove(seq)
