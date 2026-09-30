@@ -778,6 +778,10 @@ interface StoreState {
   /** 本 webview 内新建的会话集合：applyModelIfReady 对它们才回退全局默认模型
    * （新会话跟随上次选择的既有体验）；存量会话只重放会话级记忆（缺陷BI）*/
   createdSessionIds: Set<string>
+  /** 已发过消息的会话（缺陷EF）：首条 send 恒带 runtimeModel 兜正服务端模型，自此
+   * applyModelIfReady 的新建豁免（createdSessionIds）关闭——豁免若终身有效，之后任何
+   * 清单刷新都会经豁免口补出同值 setModel，回合中被挂起成幽灵横幅（2026-09-30 实锤）*/
+  modelSettledSessions: Set<string>
   /** 已选模型因清单变更失效被清除（防 inferCurrentModel 按模型名反查到别的 provider 复活；用户重选/切会话后复位）*/
   modelInvalidated: boolean
 
@@ -1440,6 +1444,7 @@ export const useStore = create<StoreState>((set, get) => ({
   modelAppliedSessions: new Map<string, number>(),
   modelAckSessions: new Set<string>(),
   createdSessionIds: new Set<string>(),
+  modelSettledSessions: new Set<string>(),
   thoughtLevel: null,
   currentMode: null,
   prePlanMode: null,
@@ -1818,6 +1823,9 @@ export const useStore = create<StoreState>((set, get) => ({
         ...(finalModel && get().thoughtLevel?.enabled ? { thoughtLevel: get().thoughtLevel?.current } : {}),
         ...(attachments?.length ? { attachments } : {}),
       })
+      // 首条 send 落地即关闭 applyModelIfReady 的新建豁免（缺陷EF）：send 恒带
+      // runtimeModel 已兜正服务端模型，此后重放链对该会话只承担"真切换"职责
+      set({ modelSettledSessions: new Set(get().modelSettledSessions).add(sid) })
       // 定时消息真发上报：Java 记入已发历史（持久化），历史重拉/重启后按 sessionId+text
       // 匹配补「定时执行」徽标——服务端消息本身不带任何定时标记
       if (opts?.scheduledFireAt != null) {
@@ -2426,7 +2434,13 @@ export const useStore = create<StoreState>((set, get) => ({
     // 快照的 inferCurrentModel 推断（applyMessagesSnapshot）
     const own = readSessionModel(sessionId)
     let target: ModelChoice | null = own
-    if (!target && (newSession || get().createdSessionIds.has(sessionId))) {
+    // 新建豁免（跟随上次全局默认 + 跳过同值守卫）只保留到首条 send 落地为止（缺陷EF）：
+    // send 恒带 runtimeModel 已兜正服务端模型，豁免若随 createdSessionIds 终身有效，
+    // 之后任何清单刷新（设置页模型管理联动 loadModels 等）都会经豁免口重放同值
+    // setModel——回合中被 Java 挂起即幽灵横幅（2026-09-30 实锤：创建 3 分钟后触发）
+    const firstApplyWindow =
+      newSession || (get().createdSessionIds.has(sessionId) && !get().modelSettledSessions.has(sessionId))
+    if (!target && firstApplyWindow) {
       try {
         const raw = getPersisted('zcode.currentModel')
         if (raw) target = JSON.parse(raw) as ModelChoice
@@ -2438,9 +2452,10 @@ export const useStore = create<StoreState>((set, get) => ({
     //（设置页模型管理联动 loadModels 等）都会补出这笔迟到的首次下发——目标=当前在用
     // 模型，纯多余重放，回合中被 Java 挂起成幽灵「本轮结束后生效」横幅。选择器已显示
     // 同值即视为落定（send 恒带模型每回合兜正服务端漂移），登记 acked 挡住后续重放。
-    // 仅限存量会话的重放（own 路径）：新建会话是首次应用而非重放——显示常被待命水合
-    // 先写成同一全局默认，服务端新会话未必在用它，必须真切上去并重建 settings
-    if (!(newSession || get().createdSessionIds.has(sessionId)) && sameModel(target, get().currentModel)) {
+    // 首应用窗口（newSession/未发过消息的 createdSessionIds 会话）不适用——显示常被
+    // 待命水合先写成同一全局默认，服务端新会话未必在用它，必须真切上去并重建 settings；
+    // 窗口随首条 send 关闭（缺陷EF，见上方 firstApplyWindow）
+    if (!firstApplyWindow && sameModel(target, get().currentModel)) {
       set({ modelAckSessions: new Set([...get().modelAckSessions, sessionId]) })
       return
     }

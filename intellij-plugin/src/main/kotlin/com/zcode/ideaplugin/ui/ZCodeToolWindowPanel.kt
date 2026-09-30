@@ -183,6 +183,17 @@ class ZCodeToolWindowPanel(
 
     private val pendingModelSwitches = java.util.concurrent.ConcurrentHashMap<String, PendingModelSwitch>()
 
+    /** 会话最后已知生效模型（缺陷EF 同值短路判据）：send 每次携带、setModel 三条成功链
+     *  （直发/回合结束补发/忙窗口重试）落地时更新。判等失败的代价=多一次真实下发，
+     *  方向永远安全；漂移由 send 恒带 runtimeModel 每回合兜正，不依赖此处精确 */
+    private data class EffectiveModel(val modelId: String, val providerId: String)
+
+    private val sessionEffectiveModels = java.util.concurrent.ConcurrentHashMap<String, EffectiveModel>()
+
+    private fun recordEffectiveModel(sessionId: String, modelId: String, providerId: String) {
+        sessionEffectiveModels[sessionId] = EffectiveModel(modelId, providerId)
+    }
+
     /**
      * resume 同会话去重（缺陷AB 优先级编排①）：subscribe 与 messages 两条链路
      * 并发打开同一会话时只排一次 resume 进服务端队列（坏会话每次 8.7s，直接省一半
@@ -3808,6 +3819,21 @@ if (!window.__ZCODE_LOG_HOOK__) {
                 put("message", "captcha-gated provider: $providerId (zcode-plan gateway requires human verification)")
             }
         }
+        // 同值短路（缺陷EF）：重放链（清单刷新/订阅回执等触发的 applyModelIfReady）可能
+        // 补出与生效模型相同的 setModel——回合中被挂起会弹「本轮结束后生效」幽灵横幅
+        // （切给自己）。send 恒带 runtimeModel 每回合兜正模型一致性，同值请求直接代答
+        // modelSet（前端记 ack 挡后续重放），不进挂起/下发链；若挂着真切换（用户点了
+        // 新目标）同值请求按「回滚到生效模型」语义顺带撤销挂起，与前端 cancelModelSwitch
+        // 的反悔路径同语义
+        sessionEffectiveModels[sessionId]?.let { cur ->
+            if (cur.modelId == modelId && cur.providerId == providerId) {
+                pendingModelSwitches.remove(sessionId)?.let { stale ->
+                    log.info("same-value setModel cancels pending switch: $sessionId (was ${stale.providerId}/${stale.modelId})")
+                }
+                log.info("Model switch short-circuited (same as effective): $sessionId → $providerId/$modelId")
+                return modelSetResponse(sessionId, modelId, providerId)
+            }
+        }
         // 回合进行中：挂起切换，回合结束后异步补发（见 streamingTurns 注释）。
         // 前端收到 modelSetPending 后回滚选中态并提示"本轮结束后生效"，补发成功再落定
         if (sessionId in streamingTurns) return deferModelSwitch(sessionId, modelId, providerId)
@@ -3857,6 +3883,7 @@ if (!window.__ZCODE_LOG_HOOK__) {
             if (isTimeoutEx(e)) scheduleSetModelBusyRetry(sessionId, modelId, providerId)
             return errorResponse("Model switch failed: ${e.message}")
         }
+        recordEffectiveModel(sessionId, modelId, providerId)
         return modelSetResponse(sessionId, modelId, providerId)
     }
 
@@ -3918,6 +3945,7 @@ if (!window.__ZCODE_LOG_HOOK__) {
                 try {
                     val client = project.zCodeService().getClient()
                     client.setModel(sessionId, pending.modelId, pending.providerId, buildRuntimeModel(pending.providerId, pending.modelId))
+                    recordEffectiveModel(sessionId, pending.modelId, pending.providerId)
                     sendToJs(modelSetResponse(sessionId, pending.modelId, pending.providerId))
                     log.info("deferred model switch applied: $sessionId → ${pending.providerId}/${pending.modelId}")
                     return@Thread
@@ -3976,6 +4004,7 @@ if (!window.__ZCODE_LOG_HOOK__) {
             try {
                 val client = project.zCodeService().getClient()
                 client.setModel(sessionId, modelId, providerId, buildRuntimeModel(providerId, modelId))
+                recordEffectiveModel(sessionId, modelId, providerId)
                 sendToJs(modelSetResponse(sessionId, modelId, providerId))
                 sendToJs(buildJsonObject { put("op", "busyRetryRecovered") })
                 log.info("busy-retry: setModel for $sessionId recovered → $providerId/$modelId")
@@ -4366,6 +4395,11 @@ if (!window.__ZCODE_LOG_HOOK__) {
             }
         }
 
+        // 记录生效模型（缺陷EF）：send 恒带 runtimeModel（死引用兜底换/丢后的最终值），
+        // 回合即跑在该模型上——handleSetModel 同值短路的判等基准
+        if (providerId != null && modelId != null) {
+            recordEffectiveModel(sessionId, modelId, providerId)
+        }
         return buildJsonObject {
             put("op", "sendAccepted")
             put("sessionId", sessionId)

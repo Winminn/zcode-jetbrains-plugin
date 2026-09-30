@@ -98,6 +98,7 @@ beforeEach(() => {
     modelAppliedSessions: new Map<string, number>(),
     modelAckSessions: new Set<string>(),
     createdSessionIds: new Set(),
+    modelSettledSessions: new Set(),
     modelSwitchInFlightAt: null,
     modelPendingSwitch: null,
     modelSwitchPrevModel: null,
@@ -221,5 +222,51 @@ describe('缺陷CU：models 迟到就绪前静默跳过的会话，models 就绪
     pushManageAndModels()
     expect(setModelReqs(SID1).length).toBe(1)
     expect(useStore.getState().modelAckSessions.has(SID1)).toBe(false) // 下发在途，等回执登记
+  })
+})
+
+describe('缺陷EF：新建豁免随首条 send 关闭（createdSessionIds 终身豁免的幽灵横幅余缝）', () => {
+  /** 复现链路尾部：设置页模型管理 → case 'modelManage' 连带 loadModels → models 到达
+   *  触发 applyModelIfReady（2026-09-30 实锤：创建 3 分钟后的清单刷新补出同值
+   *  setModel，回合中被 Java 挂起成幽灵横幅——CU 守卫对 createdSessionIds 有意豁免，
+   *  豁免却随实例存活终身有效）*/
+  function pushManageAndModels(): void {
+    pushResponse({ op: 'modelManage', providers: [], configPath: 'G:\\mock\\config.json' })
+    pushResponse({
+      op: 'models',
+      models: [
+        { ...GLM, label: 'GLM-5.3' },
+        { ...KIMI, label: 'Kimi K3' },
+      ],
+    })
+  }
+
+  it('created 会话已发过消息：同值重放记 ack 不发（CU 守卫对它生效）', () => {
+    useStore.setState({
+      createdSessionIds: new Set([SID1]), // 本实例新建（豁免条件之一）
+      modelSettledSessions: new Set([SID1]), // 但首条 send 已落地（豁免关闭）
+    })
+    pushManageAndModels()
+    expect(setModelReqs(SID1)).toEqual([]) // 修复前：豁免放行 → 同值 setModel → 撞回合挂起
+    expect(useStore.getState().modelAckSessions.has(SID1)).toBe(true)
+    expect(useStore.getState().lastNotice).toBeNull()
+  })
+
+  it('created 会话已发过消息且无会话级记忆：按存量口径不重放（服务端本就持有其模型）', () => {
+    storage.set('zcode.modelMemory', JSON.stringify({})) // own 缺失
+    useStore.setState({
+      createdSessionIds: new Set([SID1]),
+      modelSettledSessions: new Set([SID1]),
+    })
+    pushManageAndModels()
+    expect(setModelReqs(SID1)).toEqual([])
+  })
+
+  it('created 会话尚未发过消息：豁免仍在——同值也真切上去（首应用语义不回退）', () => {
+    useStore.setState({ createdSessionIds: new Set([SID1]) }) // 无 settled 记录
+    pushManageAndModels()
+    expect(setModelReqs(SID1).length).toBe(1)
+    expect(lastSetModelReq()).toMatchObject({ sessionId: SID1, ...GLM })
+    expect(useStore.getState().modelAckSessions.has(SID1)).toBe(false)
   })
 })
