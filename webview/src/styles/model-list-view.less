@@ -1130,3 +1130,176 @@
     }
   }
 }
+
+/* 预设供应商选择弹窗（添加第一步，卡片网格对齐 ZCode 客户端「添加供应商」页）*/
+.provider-template-picker {
+  /* 工具窗口窄时 webview viewport 小，弹窗尽量用满可用宽 */
+  width: min(720px, calc(100vw - 40px));
+  max-height: calc(100vh - 96px);
+  display: flex;
+  flex-direction: column;
+
+  h3 {
+    margin: 0 0 4px;
+  }
+
+  &__hint {
+    margin: 0 0 12px;
+    font-size: var(--fs-hint);
+    color: var(--text-secondary);
+  }
+
+  &__scroll {
+    overflow-y: auto;
+    min-height: 0;
+  }
+
+  &__group-title {
+    font-size: var(--fs-hint);
+    color: var(--text-tertiary);
+    margin: 8px 0 6px;
+
+    &:first-child {
+      margin-top: 0;
+    }
+  }
+
+  &__grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 10px;
+    padding: 2px;
+    margin: -2px;
+  }
+
+  /* 窄面板（工具窗口拖窄/默认宽）两列挤压长名，切单列保名称完整可读 */
+  @media (max-width: 620px) {
+    &__grid {
+      grid-template-columns: 1fr;
+    }
+  }
+
+  &__card {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    text-align: left;
+    border: 1px solid var(--border-primary);
+    border-radius: 10px;
+    background: var(--bg-secondary);
+    padding: 12px;
+    cursor: pointer;
+    color: var(--text-primary);
+    transition: border-color 0.12s ease, background 0.12s ease;
+    min-width: 0;
+
+    &:hover:not(:disabled) {
+      border-color: var(--accent-primary, #007fd4);
+      background: var(--bg-tertiary, var(--bg-secondary));
+    }
+
+    &.is-create {
+      border-style: dashed;
+      color: var(--text-secondary);
+
+      &:hover {
+        color: var(--text-primary);
+      }
+    }
+  }
+
+  &__create-icon {
+    flex-shrink: 0;
+    width: 32px;
+    height: 32px;
+    border-radius: 8px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: var(--bg-tertiary, var(--bg-secondary));
+    color: var(--text-secondary);
+  }
+
+  &__logo {
+    flex-shrink: 0;
+    width: 32px;
+    height: 32px;
+    border-radius: 8px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: #fff;
+    font-size: 13px;
+    font-weight: 600;
+    line-height: 1;
+  }
+
+  &__card-body {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    min-width: 0;
+    flex: 1;
+  }
+
+  &__name {
+    font-size: var(--fs-body);
+    /* 长名（Z.ai Coding Plan/阿里云百炼…）换行展开而非省略号截断，最多两行保卡片整齐 */
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+    overflow-wrap: anywhere;
+    line-height: 1.35;
+  }
+
+  &__sub {
+    font-size: var(--fs-hint);
+    color: var(--text-tertiary);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  &__chevron {
+    flex-shrink: 0;
+    color: var(--text-tertiary);
+  }
+
+  &__added {
+    flex-shrink: 0;
+    font-size: var(--fs-hint);
+    color: var(--text-tertiary);
+    border: 1px solid var(--border-primary);
+    border-radius: 999px;
+    padding: 2px 8px;
+  }
+}
+
+/* 渠道编辑弹窗：apiKey 标签行（标签左 + 预设「获取 API Key」链接右）*/
+.provider-editor__label-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.provider-editor__key-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  border: none;
+  background: none;
+  padding: 0;
+  font-size: var(--fs-hint);
+  color: var(--accent-primary, #4daafc);
+  cursor: pointer;
+
+  .codicon {
+    font-size: 11px;
+  }
+
+  &:hover {
+    text-decoration: underline;
+  }
+}

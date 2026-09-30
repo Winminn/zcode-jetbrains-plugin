@@ -76,6 +76,17 @@
   "overrideOnPersonalWarn": "Custom key is active — the key configured in the ZCode client is not in use",
   "customKeyClearBtn": "Clear custom key",
   "customKeyClearNote": "After clearing, requests use the key configured in the ZCode client (or the OAuth token)",
+  "preset": {
+    "title": "Add Provider",
+    "hint": "Pick a provider to auto-fill the base URL, protocol and model list — just paste your API key. Or start from a blank form.",
+    "create": "Create Custom Provider",
+    "createHint": "Fill in all fields manually",
+    "added": "Added",
+    "addedHint": "This provider has been added; adding again creates a duplicate entry you can disable or delete",
+    "modelCount": "{{count}} models pre-filled",
+    "groupZhipu": "Zhipu",
+    "groupOther": "Other"
+  },
   "editor": {
     "titleAdd": "Add Custom Channel",
     "titleEdit": "Edit Custom Channel",
@@ -112,7 +123,8 @@
     "errModelId": "Model ID is required",
     "errContext": "Context must be a positive integer",
     "errOutput": "Max output must be a positive integer",
-    "contextHint": "Context window drives the auto-compaction threshold — fill it per official docs; overstating it causes failed compaction or context overflow"
+    "contextHint": "Context window drives the auto-compaction threshold — fill it per official docs; overstating it causes failed compaction or context overflow",
+    "getKey": "Get API Key"
   },
   "removeProviderTitle": "Delete channel (with all its models)",
   "lastModelTitle": "Last model cannot be removed",

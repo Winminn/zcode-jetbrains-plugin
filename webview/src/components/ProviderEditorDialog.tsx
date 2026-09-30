@@ -11,6 +11,7 @@
 
 import { useState } from 'react'
 import { useTranslation } from 'react-i18next'
+import { openExternalUrl } from '@/ipc/bridge'
 import type { ProviderModelDraft, ProviderSaveDraft } from '@/types/messages'
 import '../styles/model-list-view.less'
 
@@ -55,6 +56,8 @@ interface Props {
     apiKey: string
     models: EditorModelRow[]
   } | null
+  /** 预设进入时附带的控制台 API Key 管理页（apiKey 标签旁一键直达；编辑态不显示） */
+  keyUrl?: string
   saving: boolean
   /** 保存失败文案（store providerSaveError，弹窗内提示）*/
   error: string | null
@@ -62,7 +65,7 @@ interface Props {
   onCancel: () => void
 }
 
-export function ProviderEditorDialog({ mode, initial, saving, error, onConfirm, onCancel }: Props) {
+export function ProviderEditorDialog({ mode, initial, keyUrl, saving, error, onConfirm, onCancel }: Props) {
   const { t } = useTranslation()
   const [name, setName] = useState(initial?.name ?? '')
   const [kind, setKind] = useState<'anthropic' | 'openai-compatible'>(initial?.kind ?? 'anthropic')
@@ -153,7 +156,21 @@ export function ProviderEditorDialog({ mode, initial, saving, error, onConfirm, 
             />
           </label>
           <div className="provider-editor__field">
-            <span className="provider-editor__label">{t('models.editor.apiKey')}</span>
+            <div className="provider-editor__label-row">
+              <span className="provider-editor__label">{t('models.editor.apiKey')}</span>
+              {/* 预设进入时给控制台直达（编辑态不显示——已有 key 场景无意义） */}
+              {!isEdit && keyUrl && (
+                <button
+                  type="button"
+                  className="provider-editor__key-link"
+                  onClick={() => openExternalUrl(keyUrl)}
+                  title={keyUrl}
+                >
+                  {t('models.editor.getKey')}
+                  <span className="codicon codicon-link-external" />
+                </button>
+              )}
+            </div>
             <div className="provider-editor__key-row">
               <input
                 type={keyVisible ? 'text' : 'password'}

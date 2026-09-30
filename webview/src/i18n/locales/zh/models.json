@@ -76,6 +76,17 @@
   "overrideOnPersonalWarn": "自定义 key 生效中：ZCode 客户端配置的 key 未被使用",
   "customKeyClearBtn": "清空自定义 key",
   "customKeyClearNote": "清空后恢复 ZCode 客户端配置的 key（OAuth 登录则用登录凭证）",
+  "preset": {
+    "title": "添加供应商",
+    "hint": "选择供应商自动填充接口地址、协议与模型列表，只需填入你的 API Key；也可以从空白表单开始。",
+    "create": "创建自定义供应商",
+    "createHint": "手动填写全部字段",
+    "added": "已添加",
+    "addedHint": "该供应商已添加过；再次添加会生成同名的新渠道，可自行启用或删除",
+    "modelCount": "{{count}} 个预填模型",
+    "groupZhipu": "智谱",
+    "groupOther": "其他"
+  },
   "editor": {
     "titleAdd": "添加自定义渠道",
     "titleEdit": "编辑自定义渠道",
@@ -112,7 +123,8 @@
     "errModelId": "模型 ID 不能为空",
     "errContext": "上下文须为正整数",
     "errOutput": "最大输出须为正整数",
-    "contextHint": "上下文窗口影响自动压缩阈值，请按官方文档填写，虚报会导致误压缩或上下文溢出"
+    "contextHint": "上下文窗口影响自动压缩阈值，请按官方文档填写，虚报会导致误压缩或上下文溢出",
+    "getKey": "获取 API Key"
   },
   "removeProviderTitle": "删除渠道（含全部模型）",
   "lastModelTitle": "最后一个模型不可删除",

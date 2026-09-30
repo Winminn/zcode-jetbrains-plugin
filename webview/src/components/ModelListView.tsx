@@ -18,6 +18,8 @@ import { ConfirmDialog } from './ConfirmDialog'
 import { PlanBadge } from './PlanBadge'
 import { ProviderEditorDialog } from './ProviderEditorDialog'
 import type { EditorModelRow } from './ProviderEditorDialog'
+import { ProviderTemplatePickerDialog } from './ProviderTemplatePickerDialog'
+import type { ProviderPreset } from '@/utils/providerPresets'
 import type { ModelManageModel, ModelManageProvider, ProviderSaveDraft } from '@/types/messages'
 import '../styles/model-list-view.less'
 
@@ -427,6 +429,24 @@ function providerToInitial(p: ModelManageProvider) {
   }
 }
 
+/** 预设 → 添加弹窗预填初始值（用户只补 API Key；video/pdf 不预填，models.dev 无此校准面）*/
+function presetToInitial(preset: ProviderPreset) {
+  return {
+    name: preset.name.zh,
+    kind: preset.kind,
+    baseURL: preset.baseURL,
+    apiKey: '',
+    models: preset.models.map<EditorModelRow>((m) => ({
+      modelId: m.modelId,
+      context: m.context.toLocaleString('en-US'),
+      output: m.output != null ? m.output.toLocaleString('en-US') : '',
+      images: !!m.images,
+      video: false,
+      pdf: false,
+    })),
+  }
+}
+
 export function ModelListView() {
   const { t } = useTranslation()
   const providers = useStore((s) => s.modelProviders)
@@ -460,8 +480,10 @@ export function ModelListView() {
   const [connErrorDetail, setConnErrorDetail] = useState<{ providerName: string; error: string } | null>(null)
   /** 重迁确认弹窗（null=关闭） */
   const [remigrateConfirm, setRemigrateConfirm] = useState(false)
-  /** 编辑弹窗目标：'add'=新增、provider=编辑、null=关闭 */
-  const [editorTarget, setEditorTarget] = useState<'add' | ModelManageProvider | null>(null)
+  /** 编辑弹窗目标：'add'=新增（空表单）、{preset}=预设预填新增、provider=编辑、null=关闭 */
+  const [editorTarget, setEditorTarget] = useState<'add' | { preset: ProviderPreset } | ModelManageProvider | null>(null)
+  /** 预设选择弹窗（「添加供应商」第一步：选预设或转空表单） */
+  const [pickerOpen, setPickerOpen] = useState(false)
   const setProviderKey = useStore((s) => s.setProviderKey)
   // 自定义 key 对话框的受控草稿（configured=当前已配置，供"清除"语义提示）
   const [keyDraft, setKeyDraft] = useState<KeyDraft>({ value: '', configured: false })
@@ -501,6 +523,19 @@ export function ModelListView() {
   const openConfig = () => {
     if (configPath) sendToJava({ op: 'openFile', filePath: configPath, line: 1 })
     setPendingAction(null)
+  }
+
+  // 现有自定义渠道 baseURL（预设判重：v2 providerId 按名称 slug 化，同预设重复添加会覆盖旧渠道）
+  const existingCustomBaseURLs = useMemo(
+    () => (providers ?? []).filter((p) => !isBuiltinProvider(p)).map((p) => p.baseURL ?? ''),
+    [providers],
+  )
+
+  /** 从预设选择弹窗进入编辑弹窗（新增路径统一先清残留错误） */
+  const openAddEditor = (target: 'add' | { preset: ProviderPreset }) => {
+    if (providerSaveError) useStore.setState({ providerSaveError: null })
+    setPickerOpen(false)
+    setEditorTarget(target)
   }
 
   const handleDeleteModel = (provider: ModelManageProvider, model: ModelManageModel) => {
@@ -553,8 +588,12 @@ export function ModelListView() {
   }
 
   const commitEditor = (draft: ProviderSaveDraft) => {
-    if (editorTarget && editorTarget !== 'add') updateModelProvider(editorTarget.providerId, draft)
-    else addModelProvider(draft)
+    // 预设/空表单（'add' 或 {preset}）都走新增；仅编辑已有渠道走 update
+    if (editorTarget && editorTarget !== 'add' && !('preset' in editorTarget)) {
+      updateModelProvider(editorTarget.providerId, draft)
+    } else {
+      addModelProvider(draft)
+    }
   }
 
   // 上移/下移排序：与相邻渠道交换后传完整顺序（v2 写 providerOrder）。
@@ -643,10 +682,7 @@ export function ModelListView() {
         </button>
         <button
           className="model-list-view__add"
-          onClick={() => {
-            if (providerSaveError) useStore.setState({ providerSaveError: null })
-            setEditorTarget('add')
-          }}
+          onClick={() => setPickerOpen(true)}
         >
           <span className="codicon codicon-add" />
           {t('models.add')}
@@ -896,11 +932,28 @@ export function ModelListView() {
         />
       )}
 
+      {/* 预设供应商选择（添加第一步）：点预设带预填进编辑弹窗，或转空表单 */}
+      {pickerOpen && (
+        <ProviderTemplatePickerDialog
+          addedBaseURLs={existingCustomBaseURLs}
+          onPick={(p) => openAddEditor({ preset: p })}
+          onCreateCustom={() => openAddEditor('add')}
+          onCancel={() => setPickerOpen(false)}
+        />
+      )}
+
       {/* 添加 / 编辑自定义渠道（保存成功自动关闭，失败弹窗内提示）*/}
       {editorTarget && (
         <ProviderEditorDialog
-          mode={editorTarget === 'add' ? 'add' : 'edit'}
-          initial={editorTarget === 'add' ? null : providerToInitial(editorTarget)}
+          mode={editorTarget === 'add' || (editorTarget !== null && 'preset' in editorTarget) ? 'add' : 'edit'}
+          initial={
+            editorTarget === 'add'
+              ? null
+              : editorTarget !== null && 'preset' in editorTarget
+                ? presetToInitial(editorTarget.preset)
+                : providerToInitial(editorTarget)
+          }
+          keyUrl={editorTarget !== 'add' && editorTarget !== null && 'preset' in editorTarget ? editorTarget.preset.keyUrl : undefined}
           saving={providerSaving}
           error={providerSaveError}
           onConfirm={commitEditor}
