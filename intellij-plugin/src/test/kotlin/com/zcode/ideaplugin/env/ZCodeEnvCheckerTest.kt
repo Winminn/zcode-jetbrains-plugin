@@ -14,7 +14,7 @@ import kotlin.test.fail
  * ZCodeEnvChecker 单元测试
  *
  * 纯逻辑部分（版本解析/状态判定/JSON 契约/存储注入）全环境可跑；
- * check()/resolveForStart() 真机验证（前置：本机 PATH 有 node ≥18、ZCode 已安装、已登录），
+ * check()/resolveForStart() 真机验证（前置：本机 PATH 有 node ≥18、ZCode 已安装），
  * 与 SkillScannerTest 同风格。
  */
 class ZCodeEnvCheckerTest {
@@ -56,43 +56,39 @@ class ZCodeEnvCheckerTest {
 
     private fun okCli() = CliStatus(configured = false, path = "/opt/zcode.cjs", found = true, error = null)
 
-    private fun okCred() = CredentialStatus(ok = true, model = "glm-4.7", error = null)
-
     @Test
-    fun `allOk 两件套齐备才为真`() {
-        assertTrue(EnvStatus(okNode(), okCli(), okCred()).allOk)
-        assertFalse(EnvStatus(okNode().copy(found = false), okCli(), okCred()).allOk)
-        assertFalse(EnvStatus(okNode(), okCli().copy(found = false), okCred()).allOk)
-        // 凭证降级（issue #4）：oauth 登录无明文 key 不再阻断启动（裸启走 app-server 自身凭证链）
-        assertTrue(EnvStatus(okNode(), okCli(), okCred().copy(ok = false)).allOk)
+    fun `allOk node cli 齐备才为真`() {
+        assertTrue(EnvStatus(okNode(), okCli()).allOk)
+        assertFalse(EnvStatus(okNode().copy(found = false), okCli()).allOk)
+        assertFalse(EnvStatus(okNode(), okCli().copy(found = false)).allOk)
         // 版本过低 = node 不可用
-        assertFalse(EnvStatus(okNode().copy(version = "v16.20.2", versionTooLow = true), okCli(), okCred()).allOk)
+        assertFalse(EnvStatus(okNode().copy(version = "v16.20.2", versionTooLow = true), okCli()).allOk)
     }
 
     // ============ browserHost（非阻断宿主检查） ============
 
     @Test
     fun `browserHost 异常不影响 allOk`() {
-        val hostDown = EnvStatus(okNode(), okCli(), okCred(), BrowserHostStatus(false, "CDP 不可达", "browserHostCefDown"))
+        val hostDown = EnvStatus(okNode(), okCli(), BrowserHostStatus(false, "CDP 不可达", "browserHostCefDown"))
         assertTrue(hostDown.allOk, "宿主故障只是建议性告警，不阻断 app-server 启动")
     }
 
     @Test
     fun `statusJson browserHost 序列化与 null 省略`() {
         // 探针缺席（未初始化）：JSON 不含 browserHost 节点（旧前端兼容）
-        val absent = ZCodeEnvChecker.statusJson(EnvStatus(okNode(), okCli(), okCred()))
+        val absent = ZCodeEnvChecker.statusJson(EnvStatus(okNode(), okCli()))
         assertTrue("browserHost" !in absent, "null browserHost 应省略节点")
 
         // 健康：ok=true，无 code
         val ok = ZCodeEnvChecker.statusJson(
-            EnvStatus(okNode(), okCli(), okCred(), BrowserHostStatus(true, null)),
+            EnvStatus(okNode(), okCli(), BrowserHostStatus(true, null)),
         )
         assertTrue(ok["browserHost"]!!.jsonObject["ok"]!!.jsonPrimitive.content.toBoolean())
         assertTrue("code" !in ok["browserHost"]!!.jsonObject)
 
         // 故障：ok=false + 机器可读 code
         val down = ZCodeEnvChecker.statusJson(
-            EnvStatus(okNode(), okCli(), okCred(), BrowserHostStatus(false, "CDP 不可达", "browserHostCefDown")),
+            EnvStatus(okNode(), okCli(), BrowserHostStatus(false, "CDP 不可达", "browserHostCefDown")),
         )
         val bh = down["browserHost"]!!.jsonObject
         assertEquals(false, bh["ok"]!!.jsonPrimitive.content.toBoolean())
@@ -115,22 +111,22 @@ class ZCodeEnvCheckerTest {
     @Test
     fun `firstProblem 按优先级给出可读原因`() {
         val nodeMissing = EnvStatus(
-            okNode().copy(found = false, error = "未在系统 PATH 中找到 Node.js"), okCli(), okCred(),
+            okNode().copy(found = false, error = "未在系统 PATH 中找到 Node.js"), okCli(),
         )
         assertTrue(ZCodeEnvChecker.firstProblem(nodeMissing).contains("Node.js 不可用"))
 
         val tooLow = EnvStatus(
-            okNode().copy(version = "v16.20.2", versionTooLow = true), okCli(), okCred(),
+            okNode().copy(version = "v16.20.2", versionTooLow = true), okCli(),
         )
         val msg = ZCodeEnvChecker.firstProblem(tooLow)
         assertTrue(msg.contains("版本过低") && msg.contains("v16.20.2"), "应含版本号: $msg")
 
-        val cliMissing = EnvStatus(okNode(), okCli().copy(found = false, error = "zcode.cjs 不存在"), okCred())
+        val cliMissing = EnvStatus(okNode(), okCli().copy(found = false, error = "zcode.cjs 不存在"))
         assertTrue(ZCodeEnvChecker.firstProblem(cliMissing).contains("ZCode CLI"))
 
-        // 凭证降级后 firstProblem 不再有凭证分支：凭证失败不构成启动问题
-        val credBad = EnvStatus(okNode(), okCli(), okCred().copy(ok = false, error = "配置文件不存在"))
-        assertEquals("环境异常", ZCodeEnvChecker.firstProblem(credBad))
+        // firstProblem 不评凭证：凭证失败不构成启动问题（0.3.8 撤出凭证状态展示）
+        val envOkButOdd = EnvStatus(okNode(), okCli())
+        assertEquals("环境异常", ZCodeEnvChecker.firstProblem(envOkButOdd))
     }
 
     // ============ 存储注入 ============
@@ -239,11 +235,11 @@ class ZCodeEnvCheckerTest {
     // ============ check 全流程（真机前置） ============
 
     @Test
-    fun `check 自动探测环境三件套`() {
-        // 前置：本机 PATH 有 node、ZCode 标准位置安装、~/.zcode/v2/config.json 已登录
+    fun `check 自动探测环境 node 与 cli`() {
+        // 前置：本机 PATH 有 node、ZCode 标准位置安装
         ZCodeEnvChecker.setStoreForTest(WritableStore())
         val s = ZCodeEnvChecker.check(force = true)
-        println("✅ 环境检测: allOk=${s.allOk}, node=${s.node.path} ${s.node.version}, cli=${s.cli.path} ${s.cli.version}, cred=${s.credentials.model}")
+        println("✅ 环境检测: allOk=${s.allOk}, node=${s.node.path} ${s.node.version}, cli=${s.cli.path} ${s.cli.version}")
 
         assertTrue(s.node.found, "本机 PATH 应有 node（否则请先安装）: ${s.node.error}")
         assertTrue(s.node.versionTooLow.not(), "本机 node 应 ≥ 18: ${s.node.version}")
@@ -252,17 +248,6 @@ class ZCodeEnvCheckerTest {
             "CLI 版本应探测成功且形如 N.N.N: ${s.cli.version}")
         // 判代标识恒有值（fail-soft 总有结果），且取值合法
         assertTrue(s.cli.generation in listOf("v1", "v2"), "generation 应为 v1/v2: ${s.cli.generation}")
-        if (s.cli.generation == "v2") {
-            // 新版客户端：config.json 废弃，凭证检测走 provider_config.json（本机已建渠道应有效）
-            println("✅ 判代 = v2（供应商注册表体系），凭证 = ${s.credentials.model} (${s.credentials.path})")
-            assertTrue(s.credentials.ok, "v2 本机凭证应有效: ${s.credentials.error}")
-            assertTrue(s.credentials.path!!.endsWith("provider_config.json"), "v2 凭证路径应为 provider_config.json")
-        } else if (java.nio.file.Files.isRegularFile(com.zcode.ideaplugin.protocol.Credentials.defaultConfigPath())) {
-            assertTrue(s.credentials.ok, "本机应已登录 ZCode: ${s.credentials.error}")
-            assertTrue(s.allOk)
-        } else {
-            println("✅ v1 本机（config.json 缺失）：凭证项跳过，allOk=${s.allOk}")
-        }
     }
 
     @Test
@@ -282,155 +267,26 @@ class ZCodeEnvCheckerTest {
         assertTrue(ex.message!!.contains("ZCode CLI"), "异常消息应指向 CLI 问题: ${ex.message}")
     }
 
-    // ============ v2 凭证检测（provider_config.json，双代适配 2026-09-17） ============
-
-    /** 造一份临时 provider_config.json（rules 为渠道 JSON 数组原文），闭包结束自动清理 */
-    private fun withProviderConfig(rules: String, credentialsJson: String? = null, block: (java.nio.file.Path) -> Unit) {
-        val dir = java.nio.file.Files.createTempDirectory("envcheck-v2")
-        try {
-            dir.resolve("provider_config.json").toFile()
-                .writeText("""{"schemaVersion":1,"config":{"providerConfigRules":{"providerRules":[$rules]}}}""")
-            credentialsJson?.let { dir.resolve("credentials.json").toFile().writeText(it) }
-            block(dir.resolve("provider_config.json"))
-        } finally {
-            dir.toFile().deleteRecursively()
-        }
-    }
-
-    private fun providerRule(
-        id: String, name: String, apiKey: String?, enabled: Boolean? = null,
-    ): String = buildString {
-        append("""{"providerId":"$id","templateId":"t","providerName":"$name"""")
-        enabled?.let { append(""","enabled":$it""") }
-        if (apiKey != null) {
-            append(""","config":{"group":"standard-personal","access":{"type":"api-key","apiKey":"$apiKey"},"personalModelIds":[]}""")
-        } else {
-            append(""","config":{"group":"standard-personal","personalModelIds":[]}""")
-        }
-        append("}")
-    }
-
-    @Test
-    fun `v2 凭证检测 配置缺失`() {
-        val dir = java.nio.file.Files.createTempDirectory("envcheck-v2")
-        try {
-            val s = ZCodeEnvChecker.detectCredentialsProviderConfig(dir.resolve("provider_config.json"))
-            assertFalse(s.ok)
-            assertEquals("credsProviderMissing", s.code)
-            assertTrue(s.path!!.endsWith("provider_config.json"))
-        } finally {
-            dir.toFile().deleteRecursively()
-        }
-    }
-
-    @Test
-    fun `v2 凭证检测 单渠道有 key 即有效`() {
-        withProviderConfig(providerRule("bigmodel-api", "BigModel Coding Plan", "sk-test")) { p ->
-            val s = ZCodeEnvChecker.detectCredentialsProviderConfig(p)
-            assertTrue(s.ok, s.error)
-            assertEquals("BigModel Coding Plan", s.model)
-            assertEquals(null, s.code)
-            assertTrue(s.path!!.endsWith("provider_config.json"))
-        }
-    }
-
-    @Test
-    fun `v2 凭证检测 多渠道摘要 等 N 个`() {
-        withProviderConfig(
-            providerRule("bigmodel-api", "BigModel", "sk-1") + "," +
-                providerRule("deepseek", "DeepSeek", "sk-2") + "," +
-                providerRule("zai-api", "Z.ai", null),
-        ) { p ->
-            val s = ZCodeEnvChecker.detectCredentialsProviderConfig(p)
-            assertTrue(s.ok, s.error)
-            assertEquals("BigModel 等 2 个渠道", s.model)
-        }
-    }
-
-    @Test
-    fun `v2 凭证检测 纯 SSO 渠道靠登录态兜底`() {
-        // 无 API key 渠道 + credentials.json 在（账号登录态）= 客户端凭证链可用
-        withProviderConfig(
-            providerRule("zai-api", "Z.ai", null),
-            credentialsJson = """{"oauth:bigmodel:access_token":"enc:v1:xx"}""",
-        ) { p ->
-            assertTrue(ZCodeEnvChecker.detectCredentialsProviderConfig(p).ok)
-        }
-
-        // 无 key 也无登录态 → 待修复
-        withProviderConfig(providerRule("zai-api", "Z.ai", null)) { p ->
-            val s = ZCodeEnvChecker.detectCredentialsProviderConfig(p)
-            assertFalse(s.ok)
-            assertEquals("credsProviderEmpty", s.code)
-        }
-    }
-
-    @Test
-    fun `v2 凭证检测 显式禁用渠道不计入`() {
-        withProviderConfig(
-            providerRule("deepseek", "DeepSeek", "sk-1", enabled = false) + "," +
-                providerRule("bigmodel-api", "BigModel", "sk-2", enabled = true),
-        ) { p ->
-            val s = ZCodeEnvChecker.detectCredentialsProviderConfig(p)
-            assertEquals("BigModel", s.model, "禁用渠道应跳过，摘要只含启用渠道")
-        }
-    }
-
-    @Test
-    fun `v2 凭证检测 空 key 与空白 key 不算可用`() {
-        withProviderConfig(providerRule("deepseek", "DeepSeek", "")) { p ->
-            val s = ZCodeEnvChecker.detectCredentialsProviderConfig(p)
-            assertFalse(s.ok)
-            assertEquals("credsProviderEmpty", s.code)
-        }
-    }
-
-    @Test
-    fun `v2 凭证检测 坏 JSON 走 credsInvalid`() {
-        val dir = java.nio.file.Files.createTempDirectory("envcheck-v2")
-        try {
-            val config = dir.resolve("provider_config.json").toFile()
-            config.writeText("{not-json")
-            val s = ZCodeEnvChecker.detectCredentialsProviderConfig(config.toPath())
-            assertFalse(s.ok)
-            assertEquals("credsInvalid", s.code)
-        } finally {
-            dir.toFile().deleteRecursively()
-        }
-    }
-
     // ============ JSON 契约 ============
 
     @Test
     fun `statusJson 字段结构与前端契约对齐`() {
         val cli = okCli().copy(version = "0.16.5", generation = "v2")
-        val json = ZCodeEnvChecker.statusJson(EnvStatus(okNode(), cli, okCred()))
+        val json = ZCodeEnvChecker.statusJson(EnvStatus(okNode(), cli))
         val node = json["node"]!!.jsonObject
         assertEquals("/usr/bin/node", node["path"]!!.jsonPrimitive.content)
         assertEquals("v20.11.1", node["version"]!!.jsonPrimitive.content)
         assertEquals(18, node["minVersion"]!!.jsonPrimitive.content.toInt())
         assertEquals("0.16.5", json["cli"]!!.jsonObject["version"]!!.jsonPrimitive.content)
         assertEquals("v2", json["cli"]!!.jsonObject["generation"]!!.jsonPrimitive.content)
-        val cred = json["credentials"]!!.jsonObject
-        assertEquals("glm-4.7", cred["model"]!!.jsonPrimitive.content)
         assertEquals(true, json["allOk"]!!.jsonPrimitive.content.toBoolean())
-
-        // 凭证实际读取路径（dataBaseDir 跟随验证展示用）
-        val withPath = ZCodeEnvChecker.statusJson(
-            EnvStatus(okNode(), okCli(), CredentialStatus(true, "glm-4.7", null, path = "F:\\Zcode\\.zcode\\v2\\config.json")),
-        )
-        assertEquals(
-            "F:\\Zcode\\.zcode\\v2\\config.json",
-            withPath["credentials"]!!.jsonObject["path"]!!.jsonPrimitive.content,
-        )
-        assertTrue("path" !in cred, "null path 应省略")
+        assertTrue("credentials" !in json, "凭证状态已撤出，JSON 不应再含 credentials 节点")
 
         // null 字段应省略（putOrNull）
         val bad = ZCodeEnvChecker.statusJson(
             EnvStatus(
                 NodeStatus(true, null, false, null, false, 18, "文件不存在"),
                 CliStatus(false, null, false, "未找到"),
-                CredentialStatus(false, null, "未登录"),
             ),
         )
         assertTrue("path" !in bad["node"]!!.jsonObject, "null path 应省略")

@@ -92,7 +92,6 @@
     "browserHostCefDown": "Browser debug channel unavailable: JCEF is running but the CDP port is unreachable. Restart the IDE to recover (Recheck will attempt auto-repair)",
     "browserHostHandlerMissing": "Browser host is not registered with the protocol client. Click \"Recheck\" to re-register",
     "advisoryTitle": "Runtime notice (chat unaffected)",
-    "credsDegraded": "No usable model credential found: upgrade the ZCode client to the latest version and log in again (or add an API-key provider in the client), then click \"Recheck\"",
     "dismiss": "Dismiss (does not affect features; shows again after IDE restart if still degraded)"
   },
   "envErrors": {
@@ -103,11 +102,7 @@
     "nodeTimeout": "Timed out running: {{arg}} --version",
     "nodeExecFail": "Failed to execute ({{arg}})",
     "cliFileNotFound": "zcode.cjs does not exist: {{arg}}",
-    "cliNotFound": "zcode.cjs not found in standard install locations. Please install the ZCode client first",
-    "credsMissing": "config file does not exist: {{arg}} (upgrade the ZCode client to the latest version and log in again, or add an API-key provider, then recheck)",
-    "credsInvalid": "no usable credential in config file: {{arg}} (account-login credentials are stored encrypted; upgrade the ZCode client to the latest version and log in again, or add an API-key provider, then recheck)",
-    "credsProviderMissing": "custom provider config does not exist: {{arg}} (add a channel in the ZCode client via Settings → Custom Providers, then recheck)",
-    "credsProviderEmpty": "no custom provider channel has credentials: {{arg}} (complete the channel API key in the client, or log in with an account, then recheck)"
+    "cliNotFound": "zcode.cjs not found in standard install locations. Please install the ZCode client first"
   },
   "permissionApproval": {
     "title": "Permission Approval",

@@ -3,7 +3,7 @@
  *
  * 子页签：
  *   - 外观：界面主题三态卡片 / 字体大小 / 语言 / 三组自定义颜色
- *   - 环境：Node.js 路径（版本徽章+过低警告）/ ZCode CLI 路径 / 凭证状态（只读）
+ *   - 环境：Node.js 路径（版本徽章+过低警告）/ ZCode CLI 路径 / 网络代理
  *     （参考 cc-gui EnvironmentTab：保存前后端验证，无效路径不落盘；留空=自动探测）
  *
  * 外观数据流经 utils/appearance.ts；语言经 i18n/language.ts；环境经 store envStatus
@@ -638,53 +638,6 @@ function EnvironmentSettings() {
 
       {/* 网络代理（与 ZCode 客户端同源共享，issue #12） */}
       <ProxySettings />
-
-      {/* 凭证状态（只读，无配置入口）：v1 = config.json 明文凭证（客户端登录生成）；
-          v2 = provider_config.json 渠道健康度（自定义供应商管理，插件只读）。
-          无凭证不再是错误：对话走客户端凭证链，仅辅助功能受限 */}
-      <section className="basic-settings__section">
-        <div className="basic-settings__field-header">
-          <span className="codicon codicon-key" />
-          <span className="basic-settings__field-label">{t('settings.env.credentials.label')}</span>
-          {envStatus && (
-            <span
-              className={cx(
-                'basic-settings__version-badge',
-                envStatus.credentials.ok ? 'is-ok' : 'is-warning'
-              )}
-              title={envStatus.credentials.path ?? undefined}
-            >
-              {envStatus.credentials.ok
-                ? t('settings.env.credentials.ok', { model: envStatus.credentials.model ?? '' })
-                : t('settings.env.credentials.degraded')}
-            </span>
-          )}
-        </div>
-        {envStatus?.credentials.path && (
-          <div className="basic-settings__config-path">
-            <span className="codicon codicon-file" />
-            <span className="basic-settings__config-path-text">{envStatus.credentials.path}</span>
-          </div>
-        )}
-        {envStatus && !envStatus.credentials.ok && (
-          <div className="basic-settings__version-warning">
-            <span className="codicon codicon-warning" />
-            <span>
-              {envStatus.credentials.code
-                ? t(`app.envErrors.${envStatus.credentials.code}`, { arg: envStatus.credentials.path ?? '' })
-                : envStatus.credentials.error}
-            </span>
-          </div>
-        )}
-        <small className="basic-settings__hint">
-          <span className="codicon codicon-info" />
-          <span>
-            {envStatus?.cli.generation === 'v2'
-              ? t('settings.env.credentials.hintV2')
-              : t('settings.env.credentials.hint')}
-          </span>
-        </small>
-      </section>
 
       {/* 重新检测 */}
       <section className="basic-settings__section">

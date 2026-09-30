@@ -92,7 +92,6 @@
     "browserHostCefDown": "浏览器调试通道不可用：JCEF 已启动但 CDP 端口不可达，请重启 IDE 恢复（重新检测会尝试自动修复）",
     "browserHostHandlerMissing": "浏览器宿主未注册到协议客户端，点「重新检测」自动补注册",
     "advisoryTitle": "运行环境提示（对话功能不受影响）",
-    "credsDegraded": "未找到可用的模型凭证：请将 ZCode 客户端升级到最新版并重新登录（或在客户端添加 API Key 型模型），然后点「重新检测」",
     "dismiss": "关闭提示（不影响功能，重启 IDE 后若仍异常会再次提示）"
   },
   "envErrors": {
@@ -103,11 +102,7 @@
     "nodeTimeout": "执行超时：{{arg}} --version",
     "nodeExecFail": "无法执行（{{arg}}）",
     "cliFileNotFound": "zcode.cjs 不存在：{{arg}}",
-    "cliNotFound": "未在标准安装位置找到 zcode.cjs，请确认已安装 ZCode 客户端",
-    "credsMissing": "配置文件不存在：{{arg}}（请将 ZCode 客户端升级到最新版并重新登录，或添加 API Key 型模型后重新检测）",
-    "credsInvalid": "配置文件无可用凭证：{{arg}}（oauth 登录凭证为加密存储；请将 ZCode 客户端升级到最新版并重新登录，或添加 API Key 型模型后重新检测）",
-    "credsProviderMissing": "自定义供应商配置不存在：{{arg}}（请在 ZCode 客户端 设置 → 自定义供应商 添加渠道后重新检测）",
-    "credsProviderEmpty": "自定义供应商渠道均未配置凭证：{{arg}}（请在客户端完善渠道 API Key，或登录账号后重新检测）"
+    "cliNotFound": "未在标准安装位置找到 zcode.cjs，请确认已安装 ZCode 客户端"
   },
   "permissionApproval": {
     "title": "工具执行审批",

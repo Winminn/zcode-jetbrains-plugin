@@ -3,8 +3,8 @@
  *
  * 两档：
  * - 阻断（allOk=false）：node / zcode.cjs 问题，插件暂不可用，warning 色；
- * - 建议（allOk=true 但有 advisory 项）：凭证降级（对话走 ZCode 客户端登录态）、
- *   AI 浏览器工具不可用等，均不影响对话，info 色。
+ * - 建议（allOk=true 但有 advisory 项）：AI 浏览器工具不可用等，
+ *   均不影响对话，info 色。
  * 提供「去设置」（直达基础设置→环境子tab）与「重新检测」（后者会触发宿主自愈重探）。
  * 数据源：store envStatus（init checkEnv / envSave 重检 / IDE 广播 onEnvStatusChanged / error 附带）。
  */
@@ -34,11 +34,6 @@ function collectProblems(status: EnvStatus): { key: string; code?: string; arg?:
   return problems
 }
 
-/** 凭证降级告警（oauth 登录无明文 key 时对话改走 app-server 自身凭证链）；健康为 null */
-function credentialsAdvisory(status: EnvStatus): boolean {
-  return !status.credentials.ok
-}
-
 /** browserHost 非阻断告警（未探测/健康时为 null）；渲染只按 code 选文案 */
 function browserHostProblem(status: EnvStatus): { code?: string } | null {
   const bh = status.browserHost
@@ -51,17 +46,16 @@ export function EnvBanner({ onGoSettings }: Props) {
   const envStatus = useStore((s) => s.envStatus)
   const checkEnv = useStore((s) => s.checkEnv)
   const [checking, setChecking] = useState(false)
-  // advisory 档（凭证降级/browserHost）会话内可手动关闭；阻断档（node/cli）不可关——
-  // 那是真不可用，关了用户更困惑。不持久化：重启 IDE 再提示一次（凭证仍异常时）
+  // advisory 档（browserHost）会话内可手动关闭；阻断档（node/cli）不可关——
+  // 那是真不可用，关了用户更困惑。不持久化：重启 IDE 再提示一次（宿主仍异常时）
   const [dismissed, setDismissed] = useState(false)
 
   if (!envStatus) return null
   const problems = envStatus.allOk ? [] : collectProblems(envStatus)
-  const credAdvisory = envStatus.allOk && credentialsAdvisory(envStatus)
   const hostWarning = envStatus.allOk ? browserHostProblem(envStatus) : null
-  if (problems.length === 0 && !credAdvisory && !hostWarning) return null
+  if (problems.length === 0 && !hostWarning) return null
 
-  // 阻断档沿用 warning 色；纯 advisory 档（凭证降级/browserHost）换 info 色（不吓用户，对话功能正常）
+  // 阻断档沿用 warning 色；纯 advisory 档（browserHost）换 info 色（不吓用户，对话功能正常）
   const advisory = problems.length === 0
   if (advisory && dismissed) return null
 
@@ -95,9 +89,6 @@ export function EnvBanner({ onGoSettings }: Props) {
               </li>
             )
           })}
-          {credAdvisory && (
-            <li className="env-banner__problem">{t('app.envBanner.credsDegraded')}</li>
-          )}
           {hostWarning && (
             <li className="env-banner__problem">
               {hostWarning.code === 'browserHostCefDown'

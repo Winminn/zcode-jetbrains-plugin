@@ -1818,7 +1818,6 @@ flowchart LR
         status: {
           node: { configured: false, path: '/usr/local/bin/node', found: true, version: 'v20.11.1', versionTooLow: false, minVersion: 18 },
           cli: { configured: false, path: 'C:\\Users\\mock\\AppData\\Local\\Programs\\ZCode\\resources\\glm\\zcode.cjs', found: true },
-          credentials: { ok: true, model: 'glm-4.7' },
           allOk: true,
         } satisfies EnvStatus,
       }

@@ -926,17 +926,6 @@ export interface EnvCliStatus {
   arg?: string
 }
 
-export interface EnvCredentialStatus {
-  ok: boolean
-  /** 生效 provider 的首个 model（v1）/ 可用渠道摘要（v2）*/
-  model?: string
-  error?: string
-  /** 实际读取的凭证文件路径：v1 = config.json、v2 = provider_config.json（随 dataBaseDir 重定向）*/
-  path?: string
-  /** 机器可读错误码（credsMissing/credsInvalid/credsProviderMissing/credsProviderEmpty）*/
-  code?: string
-}
-
 export interface EnvBrowserHostStatus {
   ok: boolean
   error?: string
@@ -947,7 +936,6 @@ export interface EnvBrowserHostStatus {
 export interface EnvStatus {
   node: EnvNodeStatus
   cli: EnvCliStatus
-  credentials: EnvCredentialStatus
   /** browser-use 宿主健康（非阻断建议项；null = 未探测/未初始化，旧包兼容）*/
   browserHost?: EnvBrowserHostStatus
   allOk: boolean

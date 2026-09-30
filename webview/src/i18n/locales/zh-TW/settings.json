@@ -157,13 +157,6 @@
           "hint": "渠道體系 v2：模型渠道由供應商註冊表統一管理——自訂供應商（provider_config.json）可在外掛內增刪改，官方帳號渠道（OAuth 登入）由外掛解析啟用"
         }
       }
-    },
-    "credentials": {
-      "label": "憑證狀態",
-      "ok": "有效 · {{model}}",
-      "hint": "憑證由 ZCode 用戶端登入產生；帳號（oauth）登入的憑證為加密儲存，最新版用戶端登入會把可用憑證寫入 config.json。若此處提示無可用憑證，請升級用戶端並重新登入",
-      "hintV2": "新版用戶端的模型憑證由「自訂供應商」渠道管理：API Key 型渠道明文存於 provider_config.json，帳號登入憑證加密存於 credentials.json，外掛唯讀顯示。若此處提示無可用憑證，請在用戶端 設定 → 自訂供應商 新增渠道",
-      "degraded": "無可用憑證 · 待修復"
     }
   },
   "behavior": {
