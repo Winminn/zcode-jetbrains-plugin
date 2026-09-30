@@ -36,6 +36,7 @@
   "backgroundCompleted": "バックグラウンド完了",
   "status": {
     "running": "実行中",
+    "interrupted": "中断されました",
     "error": "失敗",
     "completed": "完了",
     "pending": "待機中",

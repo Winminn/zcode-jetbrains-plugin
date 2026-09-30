@@ -6676,6 +6676,29 @@ function mergeNotificationsMidTurn(
   set(patch)
 }
 
+/**
+ * 孤儿 running 子代理纠偏（重开恒「运行中」）：回合被强杀/中断时服务端只给
+ * turnHeader 写 completedInterrupted 终态，回合内 Agent 工具 part 在转录里
+ * 永远停在 running（无 output、time.end 缺失）。非流式落地时改写为 interrupted
+ * ——session/subagents 只枚举子代理会话，孤儿 part 没有可匹配的权威条目
+ * （diag-subagent-ghost-running.py 实测：RPC running=0/ended=6 全 success，
+ * 转录却遗留 11 个 running part），不纠偏则子代理卡/底部栏重开后恒转圈。
+ * 流式中的 running 是真实的，不动——重开运行中会话的首拉在途时 streaming
+ * 已由 EA 相位投影先置位，不会误伤真在跑的子代理。仅限子代理族工具：
+ * Bash 等的 running 有轮末权威快照终态，不受强杀影响，不碰。
+ */
+function markInterruptedAgentParts(messages: ZCodeMessage[]): void {
+  for (const m of messages) {
+    for (const part of m.parts) {
+      if (part.type !== 'tool') continue
+      if (part.tool !== 'Agent' && part.tool !== 'Task' && part.tool !== 'subagent') continue
+      if (part.state?.status === 'running' || part.state?.status === 'pending') {
+        part.state = { ...part.state, status: 'interrupted' }
+      }
+    }
+  }
+}
+
 function applyMessagesSnapshot(
   msg: { messages: ZCodeMessage[]; goalTarget?: unknown; goalStats?: unknown },
   set: (partial: Partial<StoreState>) => void,
@@ -6695,6 +6718,9 @@ function applyMessagesSnapshot(
   // 改写语义、快照自行截断且新消息复用同 id——无判别落 kv 会把新轮删光=空白主屏）
   const sid = get().currentSessionId
   if (sid) commitStagedRewindCuts(sid, msg.messages)
+  // 孤儿 running 子代理纠偏：必须先于 refreshStatus/parseAgents 派生（否则
+  // agents 账本照旧解析出 running），msg.messages 为 RPC 新反序列化对象，可原地改
+  if (!get().streaming) markInterruptedAgentParts(msg.messages)
   // v2 模型名回填（缺陷BW）：v2 assistant info 的 modelId/providerId 若连这个都没有
   //（老包 v2 会话，字段重命名前落库），用 state.updated 缓存的会话实际模型补末条连续
   // 缺失的 assistant 消息（任一形态有值都不动——db 字段重命名后快照自带）

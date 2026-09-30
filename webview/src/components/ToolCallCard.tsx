@@ -157,6 +157,8 @@ function statusBadge(status: ToolPart['state']['status']): { text: string; cls: 
     case 'completed': return { text: '✓', cls: 'ok' }
     case 'running': return { text: '⟳', cls: 'running' }
     case 'error': return { text: '✗', cls: 'err' }
+    // 孤儿运行中断态（强杀/中断后历史落地纠偏，见 markInterruptedAgentParts）
+    case 'interrupted': return { text: '⊘', cls: 'err' }
     default: return { text: '…', cls: 'pending' }
   }
 }
@@ -608,7 +610,7 @@ export function ToolCallCard({ part }: Props) {
             ? 'codicon-loading subagent-line-spin' : 'codicon-chevron-right'}`}
           />
           <span className="tool-card__subagent-status">
-            {subStatus === 'running' ? t('tool.status.running') : subStatus === 'error' ? t('tool.status.error') : subStatus === 'completed' ? t('tool.status.completed') : t('tool.status.spawned')}
+            {subStatus === 'running' ? t('tool.status.running') : subStatus === 'interrupted' ? t('tool.status.interrupted') : subStatus === 'error' ? t('tool.status.error') : subStatus === 'completed' ? t('tool.status.completed') : t('tool.status.spawned')}
             {subCount > 0 && ` · ${t('tool.toolsCount', { count: subCount })}`}
           </span>
           <span className="tool-card__subagent-view">{t('tool.viewProcess')}</span>

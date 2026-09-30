@@ -32,6 +32,8 @@ function statusIcon(status: string): { icon: string; spin?: boolean } {
     case 'in_progress':
     case 'running': return { icon: 'codicon-loading', spin: true }
     case 'error': return { icon: 'codicon-error' }
+    // 孤儿运行中断态（强杀/中断后历史落地纠偏）：非错误非完成，禁止圈示意
+    case 'interrupted': return { icon: 'codicon-circle-slash' }
     default: return { icon: 'codicon-circle-outline' }
   }
 }

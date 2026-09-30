@@ -102,7 +102,10 @@ export interface ToolPart {
 }
 
 export interface ToolState {
-  status: 'pending' | 'running' | 'completed' | 'error'
+  /** interrupted = 孤儿运行中断态：会话被强杀/中断时服务端只写 turnHeader 终态，
+   *  Agent 工具 part 在转录里永远停在 running——非流式历史落地时本地纠偏（仅限
+   *  Agent/Task/subagent 工具，服务端永不回传此值） */
+  status: 'pending' | 'running' | 'completed' | 'error' | 'interrupted'
   input?: Record<string, unknown>
   /** 流式期间累积的原始工具输入 JSON 片段（tool_input_delta，未完整无法解析时展示原文）*/
   inputRaw?: string

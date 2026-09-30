@@ -49,6 +49,7 @@
   "backgroundCompleted": "Completed in background",
   "status": {
     "running": "Running",
+    "interrupted": "Interrupted",
     "error": "Failed",
     "completed": "Completed",
     "pending": "Pending",

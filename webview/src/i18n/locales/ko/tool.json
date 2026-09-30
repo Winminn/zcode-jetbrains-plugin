@@ -36,6 +36,7 @@
   "backgroundCompleted": "백그라운드 완료",
   "status": {
     "running": "실행 중",
+    "interrupted": "중단됨",
     "error": "실패",
     "completed": "완료됨",
     "pending": "대기 중",

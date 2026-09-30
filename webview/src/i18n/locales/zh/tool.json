@@ -49,6 +49,7 @@
   "backgroundCompleted": "后台完成",
   "status": {
     "running": "运行中",
+    "interrupted": "已中断",
     "error": "失败",
     "completed": "已完成",
     "pending": "等待中",
