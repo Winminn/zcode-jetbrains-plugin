@@ -23,6 +23,74 @@ export interface ChangelogEntry {
 
 export const CHANGELOG_DATA: ChangelogEntry[] = [
   {
+    "version": "0.3.8",
+    "date": "2026-09-30",
+    "zh": {
+      "sections": [
+        {
+          "title": "新增",
+          "items": [
+            "**手机远程会话**：Z.ai 手机 App 可远程查看与操控桌面 IDE 内的会话，任务列表、模型选择、设备命名全链路打通，支持 HTTP 代理环境接入。",
+            "**账号渠道直连**：模型列表新增 Z.ai 账号订阅渠道（内置置顶区），OAuth 登录即可使用、无需手动配置 API Key，额度页同步展示账号套餐用量；模型管理新增常见供应商预设，选预设后只需填 Key。",
+            "**Node 进程管理**：设置页新增「进程」页签，常驻 / 子进程 / 疑似孤立三类分栏展示，支持精准查杀。",
+            "**会话与标签体验**：新建会话增加确认弹窗（覆盖当前标签 / 新标签页打开 / 取消）；标签页支持重命名；会话列表对等待审批或输入的会话显示红点角标。",
+            "**消息操作增强**：AI 回复支持一键重发（不可重发时说明原因）；排队消息支持上移 / 下移排序；粘贴长文本自动折叠为内联 chip。",
+            "**其他**：双击上下文圆环一键压缩上下文；模型连通性测试细化到单个模型。"
+          ]
+        },
+        {
+          "title": "修复",
+          "items": [
+            "修复发送消息后会话思考级别被重置的问题（issue #25）。",
+            "修复润色功能无响应、长时间等待的问题：改为独立请求通道并支持取消，响应更稳更快。",
+            "修复重开会话后卡片状态显示异常（误报运行中、流式残留）的一族问题。",
+            "修复重启 IDE 后子代理卡片一直显示「运行中」的问题。",
+            "修复切换模型后顶部残留「已切换模型」提示横幅的问题。",
+            "修复后台任务通知卡不实时渲染（回合结束才出现）、插入位置错乱的问题。",
+            "修复 AI 完成通知误报（子代理仍在收尾就弹通知）与通知缺失会话名的问题（issue #24），并新增 AI 等待审批 / 输入时的系统提醒。",
+            "修复文件改动统计与 diff 视图口径不一致的问题（issue #23）。"
+          ]
+        },
+        {
+          "title": "移除",
+          "items": [
+            "设置页不再展示凭证状态：加密凭证无法准确判定状态，纯展示容易误导。"
+          ]
+        },
+        {
+          "title": "Added",
+          "items": [
+            "**Mobile remote sessions**: view and control desktop IDE sessions from the Z.ai mobile app — task list, model selection and device naming work end to end; HTTP proxy environments are supported.",
+            "**Account-based provider channel**: the model list gains a Z.ai subscription account channel (built-in, pinned at top) — OAuth sign-in is enough, no manual API key needed; the quota page now shows account plan usage. Model management also adds common provider presets where you only fill in the key.",
+            "**Node process manager**: a new \"Processes\" tab in settings shows resident, child and suspected-orphan processes in three groups, with precise kill support.",
+            "**Session & tab UX**: a confirmation dialog when creating a session (replace current tab / open in a new tab / cancel); tabs can be renamed; sessions waiting for approval or input show a red badge in the list.",
+            "**Message actions**: one-click resend of AI replies (with a clear reason when resending is not allowed); queued messages can be reordered up/down; long pasted text folds into an inline chip.",
+            "**Others**: double-click the context ring to compact the context; model connectivity tests now run per model."
+          ]
+        },
+        {
+          "title": "Fixed",
+          "items": [
+            "Fixed the session thought level being reset after sending a message (issue #25).",
+            "Fixed the enhance (polish) action hanging or waiting forever: it now uses a dedicated request channel with cancellation support, more stable and faster.",
+            "Fixed a family of issues where reopening a session showed wrong card states (false \"running\", leftover streaming indicators).",
+            "Fixed subagent cards stuck at \"running\" after restarting the IDE.",
+            "Fixed the \"model switched\" banner lingering at the top after a model change.",
+            "Fixed background-task notification cards not rendering in real time (only appearing after the turn ends) and being inserted at the wrong position.",
+            "Fixed false \"task completed\" notifications (fired while subagents were still finishing) and notifications missing the session name (issue #24); added a system reminder when the AI waits for approval or input.",
+            "Fixed inconsistent file-change statistics between the summary and the diff view (issue #23)."
+          ]
+        },
+        {
+          "title": "Removed",
+          "items": [
+            "The settings page no longer shows credential status: encrypted credentials could not be judged reliably and the display-only info was misleading."
+          ]
+        }
+      ]
+    }
+  },
+  {
     "version": "0.3.7",
     "date": "2026-09-19",
     "zh": {
