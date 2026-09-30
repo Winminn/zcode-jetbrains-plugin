@@ -21,7 +21,7 @@
  * 保会话内搜索 TreeWalker 能扫到/定位到过程文本。
  */
 
-import { memo, useEffect, useMemo, useRef, useState } from 'react'
+import { Fragment, memo, useEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { useTranslation } from 'react-i18next'
 import type { ZCodeMessage, MessagePart, TextPart, ImagePart, FilePart } from '@/types/messages'
@@ -56,6 +56,11 @@ interface Props {
   message: ZCodeMessage
   /** 是否正在流式（用于打字机光标 + 思考自动展开）*/
   streaming?: boolean
+  /** 合并轮组中正在流式的成员 id（分段推理自动展开只作用于该段）*/
+  streamingId?: string
+  /** 通知桥接的后续序列（缺陷EG）：与本 assistant 消息同属一次执行的通知卡与
+   * wake 续条消息，按时间序跟在本消息后——合并为一个视觉轮组渲染*/
+  absorbed?: ZCodeMessage[]
   /** user 消息的锚点 id（供 MessageAnchorRail 定位，assistant 不传）*/
   anchorAttr?: string
   /** 会话内搜索面板激活（长用户消息临时展开，保 TreeWalker 高亮/定位）*/
@@ -64,7 +69,7 @@ interface Props {
   editable?: boolean
 }
 
-export const MessageBubble = memo(function MessageBubble({ message, streaming, anchorAttr, searchActive, editable }: Props) {
+export const MessageBubble = memo(function MessageBubble({ message, streaming, streamingId, absorbed, anchorAttr, searchActive, editable }: Props) {
   const { info, parts } = message
   const isUser = info.role === 'user'
   const time = clockTime(info.time?.created)
@@ -118,7 +123,16 @@ export const MessageBubble = memo(function MessageBubble({ message, streaming, a
       />
     )
   }
-  return <AssistantBubble message={message} time={time} streaming={streaming} searchActive={searchActive} />
+  return (
+    <AssistantBubble
+      message={message}
+      time={time}
+      streaming={streaming}
+      streamingId={streamingId}
+      absorbed={absorbed}
+      searchActive={searchActive}
+    />
+  )
 })
 
 /** 用户消息长文折叠阈值（对齐 InputBox 粘贴折叠 PASTE_* 常量：≥10 行或 ≥500 字符）*/
@@ -674,30 +688,78 @@ function AssistantBubble({
   message,
   time,
   streaming,
+  streamingId,
+  absorbed,
   searchActive,
 }: {
   message: ZCodeMessage
   time: string
   streaming?: boolean
+  streamingId?: string
+  absorbed?: ZCodeMessage[]
   searchActive?: boolean
 }) {
   const { info, parts } = message
+
+  // 通知桥接合并轮组（缺陷EG）：absorbed = 按时间序跟在本消息后的通知卡与 wake
+  // 续条 assistant 消息。渲染为一个视觉轮组——一条折叠栏（统计/耗时跨段聚合）、
+  // 结论=最后一段的尾文本、通知卡内联在组的时序位置；不合并时保持原单消息路径
+  const segments = useMemo(() => {
+    if (!absorbed?.length) return null
+    const segs: { notifs: ZCodeMessage[]; msg: ZCodeMessage }[] = []
+    let cur = { notifs: [] as ZCodeMessage[], msg: message }
+    for (const m of absorbed) {
+      if (isAgentNotification(m.info)) cur.notifs.push(m)
+      else {
+        segs.push(cur)
+        cur = { notifs: [], msg: m }
+      }
+    }
+    segs.push(cur)
+    return segs
+  }, [message, absorbed])
+  const lastSeg = segments ? segments[segments.length - 1] : null
+  // 合并虚拟 parts：折叠判定/结论定位/统计在跨段序列上做（通知卡不进 parts 管线）
+  const allParts = useMemo(
+    () => (segments ? segments.flatMap((s) => s.msg.parts) : parts),
+    [segments, parts],
+  )
+  // 合并轮组 footer：耗时跨段（lead.created → 末段 completed）、token 求和
+  const footerInfo = useMemo(() => {
+    if (!segments) return info
+    const lastInfo = segments[segments.length - 1].msg.info
+    let tokens: typeof info.tokens
+    for (const s of segments) {
+      const t = s.msg.info.tokens
+      if (t) {
+        tokens = {
+          total: (tokens?.total ?? 0) + t.total,
+          input: (tokens?.input ?? 0) + t.input,
+          output: (tokens?.output ?? 0) + t.output,
+          reasoning: (tokens?.reasoning ?? 0) + t.reasoning,
+        }
+      }
+    }
+    return { ...info, time: { ...info.time, completed: lastInfo.time?.completed }, tokens }
+  }, [segments, info])
 
   // 分叉（B2 一期）：入口在 footer「已工作」行——fork 锚点是已完成的回复（保留到该回复含，
   // 从这条回复之后岔出去试另一方案），未获回答的用户消息没有分叉价值；
   // 本条消息流式中/本地乐观消息不显示（分叉中间态无意义；其余历史轮回合中照常可分叉，
   // diag-fork29 实测服务端受理且快照完整）；
   // 老 CLI 无 v4 面（forkSupported=false）隐藏。通道=v4 forkAssistant（官方同款，零文件操作）
+  // 合并轮组（缺陷EG）：锚点=末段消息 id——对最终回复分叉，保住整组尾部
   const [confirmFork, setConfirmFork] = useState(false)
   const forkBusy = useStore((s) => s.forkBusy)
   const forkSupported = useStore((s) => s.forkSupported)
+  const forkMsgId = lastSeg ? lastSeg.msg.info.id : info.id
   const forkable =
     forkSupported &&
     !streaming &&
     !!info.sessionID &&
-    !!info.id &&
-    !info.id.startsWith('stream_local_') &&
-    !info.id.startsWith('local_')
+    !!forkMsgId &&
+    !forkMsgId.startsWith('stream_local_') &&
+    !forkMsgId.startsWith('local_')
   const { t } = useTranslation()
 
   // 连续 Bash 命令聚组（cc-gui groupBlocks 规则）：压缩批量命令的消息区长度。
@@ -711,7 +773,8 @@ function AssistantBubble({
   // 「自动折叠执行过程」设置控制默认态，手动点折叠栏的意图优先于设置；
   // 搜索面板激活时强制展开，保 TreeWalker 能扫到过程文本。
   // 折的是结论之前的过程；结论之后挂的收尾动作（工具/思考）不折，保留在结论后面
-  const { lastTextIdx, collapsible } = useMemo(() => turnCollapseInfo(parts), [parts])
+  // 合并轮组（缺陷EG）：判定/统计/结论定位全部在跨段虚拟序列（allParts）上做
+  const { lastTextIdx, collapsible } = useMemo(() => turnCollapseInfo(allParts), [allParts])
   const autoCollapse = useAutoCollapseConfig()
   const [manualExpand, setManualExpand] = useState<boolean | null>(null)
   // 设置开 → 默认收起；手动点击过的意图（非 null）优先于设置默认值
@@ -719,22 +782,30 @@ function AssistantBubble({
   const collapsed = collapsible && !streaming && !expanded && !searchActive
   // 折叠栏概览只统计结论之前的过程（尾部收尾动作不折，不计数）
   const processParts = useMemo(
-    () => (collapsible ? parts.slice(0, lastTextIdx) : parts),
-    [collapsible, lastTextIdx, parts],
+    () => (collapsible ? allParts.slice(0, lastTextIdx) : allParts),
+    [collapsible, lastTextIdx, allParts],
   )
   // 折叠态下保留的尾部单元：整组/单个 part 全部落在结论之后（工具组是连续同类
-  // tool 的极大游程，text 不在其中，不会出现跨越结论的组）
-  const renderedTailUnits = useMemo(
-    () =>
-      collapsible
-        ? renderPartUnits(
-            units.filter((u) => (u.kind === 'toolGroup' ? u.startIndex : u.index) > lastTextIdx),
-            parts,
-            streaming,
-          )
-        : [],
-    [collapsible, lastTextIdx, units, parts, streaming],
-  )
+  // tool 的极大游程，text 不在其中，不会出现跨越结论的组）。
+  // 合并轮组只看末段的收尾动作（索引相对其自身 parts，跨界组合并无意义）
+  const renderedTailUnits = useMemo(() => {
+    if (!collapsible) return []
+    if (segments && lastSeg) {
+      const lp = lastSeg.msg.parts
+      const lUnits = groupParts(lp)
+      const lLastTextIdx = turnCollapseInfo(lp).lastTextIdx
+      return renderPartUnits(
+        lUnits.filter((u) => (u.kind === 'toolGroup' ? u.startIndex : u.index) > lLastTextIdx),
+        lp,
+        streaming && streamingId === lastSeg.msg.info.id,
+      )
+    }
+    return renderPartUnits(
+      units.filter((u) => (u.kind === 'toolGroup' ? u.startIndex : u.index) > lastTextIdx),
+      parts,
+      streaming,
+    )
+  }, [collapsible, segments, lastSeg, streamingId, units, parts, streaming, lastTextIdx])
   // 折叠栏概览的轮次耗时：服务端权威值（completed - created）；重拉窗口缺 completed 就不显示
   const processMs =
     collapsible && info.time?.created && info.time.completed
@@ -754,18 +825,36 @@ function AssistantBubble({
         )}
         {collapsed ? (
           <>
-            <MarkdownBlock markdown={(parts[lastTextIdx] as TextPart).text} />
+            <MarkdownBlock markdown={(allParts[lastTextIdx] as TextPart).text} />
             {renderedTailUnits}
           </>
+        ) : segments ? (
+          segments.map((seg, i) => (
+            <Fragment key={seg.msg.info.id || i}>
+              <SegmentUnits
+                parts={seg.msg.parts}
+                streaming={streaming && seg.msg.info.id === streamingId}
+              />
+              {/* 通知卡在本段消息内容之后（时序位）：通知发生在该段完成之后、
+                  下一段开始之前——渲染在前会顶到组首（历史轮时序倒挂，2026-09-30） */}
+              {seg.notifs.map((n) => (
+                <AgentNotificationCard
+                  key={n.info.id}
+                  message={n}
+                  time={clockTime(n.info.time?.created)}
+                />
+              ))}
+            </Fragment>
+          ))
         ) : (
           renderedUnits
         )}
       </div>
       <MessageFooter
-        info={info}
+        info={footerInfo}
         time={time}
         streaming={streaming}
-        copy={!streaming ? collectAssistantMarkdown(parts) : undefined}
+        copy={!streaming ? collectAssistantMarkdown(allParts) : undefined}
         fork={forkable ? { busy: forkBusy, onClick: () => setConfirmFork(true) } : undefined}
       />
       {confirmFork && (
@@ -775,13 +864,19 @@ function AssistantBubble({
           confirmText={t('chat.fork.confirmOk')}
           onConfirm={() => {
             setConfirmFork(false)
-            useStore.getState().forkFromMessage(info.sessionID, info.id)
+            useStore.getState().forkFromMessage(info.sessionID, forkMsgId)
           }}
           onCancel={() => setConfirmFork(false)}
         />
       )}
     </div>
   )
+}
+
+/** 合并轮组的分段过程渲染：独立组件化（groupParts/renderPartUnits 内部有 useMemo）*/
+function SegmentUnits({ parts, streaming }: { parts: MessagePart[]; streaming?: boolean }) {
+  const units = useMemo(() => groupParts(parts), [parts])
+  return <>{renderPartUnits(units, parts, streaming)}</>
 }
 
 /**

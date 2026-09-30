@@ -21,6 +21,7 @@ import { ConversationSearch } from './ConversationSearch'
 import { GoalCard } from './GoalCard'
 import { NEAR_BOTTOM_PX, HIDE_DELAY_MS, UP_GHOST_MS } from './ScrollJumpButton'
 import { isAgentNotification } from '@/utils/parseNotification'
+import { buildTurnChains, isNotificationBridgedChain } from '@/utils/turnChains'
 import { useStore } from '@/store/useStore'
 import { findEditableUserMessage } from '@/utils/editHistory'
 import '../styles/chat-view.less'
@@ -222,24 +223,48 @@ export function ChatView({ messages, loading, waiting, waitingSince, streamingMe
       />
       <div className="messages-container" ref={containerRef} onScroll={handleScroll} onWheel={handleWheel}>
         <div className="chat-view__inner">
-          {messages.map((m) => {
-            // autocompant 场景：turn.started 已建流式消息、usage 轮询才发现压缩——
-            // 压缩期间该消息零 delta，跳过渲染避免空壳气泡（数据保留，回合结束重拉权威修复）
-            if (compacting && m.info.id === streamingMessageId
-              && !m.parts.some((p) => p.type === 'text' || p.type === 'reasoning' || p.type === 'tool')) {
-              return null
-            }
-            return (
-              <MessageBubble
-                key={m.info.id}
-                message={m}
-                streaming={m.info.id === streamingMessageId}
-                anchorAttr={m.info.role === 'user' && !isAgentNotification(m.info) ? m.info.id : undefined}
-                searchActive={!!searchOpen}
-                editable={m.info.id === editableMsgId}
-              />
-            )
-          })}
+          {(() => {
+            // 压缩期空壳过滤（原逐条判断上提）：autocompact 场景 turn.started 已建流式
+            // 消息、usage 轮询才发现压缩——压缩期间该消息零 delta，剔除避免空壳气泡
+            //（数据保留，回合结束重拉权威修复）
+            const visible = compacting
+              ? messages.filter(
+                  (m) =>
+                    !(
+                      m.info.id === streamingMessageId &&
+                      !m.parts.some((p) => p.type === 'text' || p.type === 'reasoning' || p.type === 'tool')
+                    ),
+                )
+              : messages
+            // 通知桥接链分组（缺陷EG）：通知唤醒的续跑回复与被切的前段合并为一个
+            // 视觉轮组（一条折叠栏一个结论），通知卡内联在组内时序位置
+            const chains = buildTurnChains(visible)
+            return chains.map((chain) => {
+              const lead = chain[0]
+              if (isNotificationBridgedChain(chain)) {
+                return (
+                  <MessageBubble
+                    key={lead.info.id}
+                    message={lead}
+                    streaming={chain.some((m) => m.info.id === streamingMessageId)}
+                    streamingId={streamingMessageId ?? undefined}
+                    absorbed={chain.slice(1)}
+                    searchActive={!!searchOpen}
+                  />
+                )
+              }
+              return (
+                <MessageBubble
+                  key={lead.info.id}
+                  message={lead}
+                  streaming={lead.info.id === streamingMessageId}
+                  anchorAttr={lead.info.role === 'user' && !isAgentNotification(lead.info) ? lead.info.id : undefined}
+                  searchActive={!!searchOpen}
+                  editable={lead.info.id === editableMsgId}
+                />
+              )
+            })
+          })()}
           {/* 压缩状态条与等待转圈互斥：摘要生成期间（事件静默 63s+）明确告知在压缩 */}
           {compacting ? (
             <div className="compacting-indicator">

@@ -141,6 +141,25 @@ describe('通知卡实时落地（缺陷复现）', () => {
     expect(ids.indexOf('notif_0062')).toBeLessThan(ids.indexOf('asst_live'))
   })
 
+  it('F. 回合中途到达（缺陷EG）：快照前驱=流式气泡本体 → 通知插到流式气泡之后', () => {
+    // 2026-09-30 真机实锤：后台命令在回合跑着时完成，转录 [.., 在途回合, 通知]——
+    // 原实现恒插流式气泡之前，卡片被顶到整条在途回合上方（时序倒挂）。
+    // 快照里通知的前驱就是在飞的流式消息 → 应插其后（时序位）
+    useStore.setState({
+      streaming: true,
+      streamingMessageId: 'asst_live',
+      messages: [userMsg('u1'), assistantMsg('asst_live', '正在生成中')],
+    })
+    messageHandler!({
+      op: 'messages',
+      sessionId: SID,
+      messages: [userMsg('u1'), assistantMsg('asst_live', '正在生成中'), taskNotificationMsg('notif_0062')],
+    })
+    const ids = useStore.getState().messages.map((m) => m.info.id)
+    expect(ids).toContain('notif_0062')
+    expect(ids.indexOf('notif_0062')).toBeGreaterThan(ids.indexOf('asst_live'))
+  })
+
   it('B. 非 streaming 同一快照：通知照常落地（对照，现状应过）', () => {
     useStore.setState({ streaming: false, streamingMessageId: null, messages: [] })
     messageHandler!({

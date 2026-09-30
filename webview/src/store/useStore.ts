@@ -6636,9 +6636,7 @@ function mergeNotificationsMidTurn(
       && (!knownIds.has(m.info.id) || m.info.id === st.streamingMessageId),
   )
   if (incoming.length === 0) return
-  const idx = st.streamingMessageId
-    ? st.messages.findIndex((m) => m.info.id === st.streamingMessageId)
-    : -1
+  const snapshot = msg.messages
   // 仅撞 id 的通知转 local_n_ 副本（真身 id 被流式气泡占用）；其余真身直插，
   // 后续快照按 knownIds 自然去重
   const insertables = incoming.map((m) => {
@@ -6648,10 +6646,30 @@ function mergeNotificationsMidTurn(
     }
     return m
   })
+  // 插入点按快照自身时序（缺陷EG）：转录里的位置是权威——从通知在快照中的位
+  // 置向前找最近一个已在实时时间线的前驱，插到它之后。回合中途到达 → 前驱是
+  // 流式气泡本体（插其后，时序正确，不再顶到整条在途回合上方）；wake 轮场景 →
+  // 前驱是被切断的前段消息（即流式气泡之前，CI 原语义）。快照里找不到任何前驱
+  // 时退回旧口径（流式气泡之前/追加尾部）
+  const streamIdx = st.streamingMessageId
+    ? st.messages.findIndex((m) => m.info.id === st.streamingMessageId)
+    : -1
+  let live = [...st.messages]
+  for (const item of insertables) {
+    const baseId = item.info.id.startsWith('local_n_') ? item.info.id.slice(8) : item.info.id
+    const sIdx = snapshot.findIndex((m) => m.info.id === baseId)
+    let at = -1
+    if (sIdx > 0) {
+      for (let j = sIdx - 1; j >= 0 && at < 0; j--) {
+        const li = live.findIndex((m) => m.info.id === snapshot[j].info.id)
+        if (li >= 0) at = li + 1
+      }
+    }
+    if (at < 0) at = streamIdx >= 0 ? streamIdx : live.length
+    live.splice(at, 0, item)
+  }
   const patch: Partial<StoreState> = {
-    messages: idx >= 0
-      ? [...st.messages.slice(0, idx), ...insertables, ...st.messages.slice(idx)]
-      : [...st.messages, ...insertables],
+    messages: live
   }
   const activities = finalizeActivitiesFromNotifications(st.subagentActivities, incoming, Date.now())
   if (activities !== st.subagentActivities) patch.subagentActivities = activities
