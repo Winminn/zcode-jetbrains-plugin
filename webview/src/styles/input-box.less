@@ -256,17 +256,25 @@
   .image-preview-content {
     display: flex;
     flex-direction: column;
+    align-items: center;
     gap: 8px;
     max-width: 90vw;
     max-height: 85vh;
 
+    /* 缩放盒：布局尺寸由 JS 设为 fit×scale，img 填满 100%。缩放必须落在布局上
+       ——若走 transform: scale 只会拉伸按 fit 尺寸光栅化的纹理（合成层几何变换
+       不重新采样源图），窗口越窄 fit 被 max-width 压得越小，放大越模糊；
+       放大后超出 content 盒属预期（overflow 可见），flex 不许收缩 */
+    .image-preview-zoom {
+      flex-shrink: 0;
+      will-change: transform; /* 平移走合成层 */
+    }
+
     img {
-      max-width: 90vw;
-      max-height: 80vh;
-      object-fit: contain;
+      width: 100%;
+      height: 100%;
+      display: block;
       border-radius: 4px;
-      /* 缩放/平移走 transform：不参与布局，overflow 出 content 盒属预期 */
-      will-change: transform;
       touch-action: none;
       user-select: none;
 
@@ -279,14 +287,20 @@
         cursor: grabbing;
       }
     }
+  }
 
-    .image-preview-meta {
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      gap: 10px;
-      min-height: 18px;
-    }
+  /* 序号/标题：overlay 顶部固定位（图片放大溢出 content 盒时不随布局滚出视口） */
+  .image-preview-meta {
+    position: absolute;
+    top: 16px;
+    left: 0;
+    right: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 10px;
+    min-height: 18px;
+    pointer-events: none;
 
     .image-preview-counter {
       color: #fff;

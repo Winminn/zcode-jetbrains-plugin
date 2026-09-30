@@ -70,6 +70,30 @@ export function ImagePreview({
   )
   const lastDragEndRef = useRef(0)
 
+  // fit 基准：natural 与视口 90vw/80vh 的 contain 尺寸，即 scale=1 的显示尺寸。
+  // 缩放落在 img 布局宽高（width=base×scale）上——浏览器按新布局重新光栅化源图；
+  // 若缩放走 transform: scale 则只拉伸按 fit 尺寸光栅化的既有纹理，窗口越窄
+  // （fit 被 max-width 压得越小）放大越模糊
+  const [base, setBase] = useState<{ w: number; h: number } | null>(null)
+
+  const recalcBase = useCallback(() => {
+    const img = imgRef.current
+    const nw = img?.naturalWidth ?? 0
+    const nh = img?.naturalHeight ?? 0
+    if (!nw || !nh) return
+    const k = Math.min(1, (window.innerWidth * 0.9) / nw, (window.innerHeight * 0.8) / nh)
+    setBase({ w: nw * k, h: nh * k })
+  }, [])
+
+  // 窗口尺寸变化重算 fit 基准（放大中的显示尺寸随 base 联动）
+  useEffect(() => {
+    const onResize = () => {
+      if (imgRef.current?.complete) recalcBase()
+    }
+    window.addEventListener('resize', onResize)
+    return () => window.removeEventListener('resize', onResize)
+  }, [recalcBase])
+
   const applyTransform = useCallback((s: number, x: number, y: number) => {
     scaleRef.current = s
     offsetRef.current = { x, y }
@@ -215,27 +239,44 @@ export function ImagePreview({
         aria-label={cur.title ?? t('chat.message.imagePreview')}
         onClick={(e) => e.stopPropagation()}
       >
-        <img
-          ref={imgRef}
-          src={cur.src}
-          alt={cur.title ?? ''}
-          draggable={false}
-          className={panning ? 'is-panning' : scale > MIN_SCALE ? 'is-zoomable' : undefined}
-          style={{ transform: `translate(${offset.x}px, ${offset.y}px) scale(${scale})` }}
-          onPointerDown={onImgPointerDown}
-          onPointerMove={onImgPointerMove}
-          onPointerUp={onImgPointerEnd}
-          onPointerCancel={onImgPointerEnd}
-          onDoubleClick={onImgDoubleClick}
-        />
-        <div className="image-preview-meta">
+        <div
+          className="image-preview-zoom"
+          style={
+            base
+              ? {
+                  width: base.w * scale,
+                  height: base.h * scale,
+                  transform: `translate(${offset.x}px, ${offset.y}px)`,
+                }
+              : { transform: `translate(${offset.x}px, ${offset.y}px)` }
+          }
+        >
+          <img
+            ref={imgRef}
+            src={cur.src}
+            alt={cur.title ?? ''}
+            draggable={false}
+            className={panning ? 'is-panning' : scale > MIN_SCALE ? 'is-zoomable' : undefined}
+            onLoad={recalcBase}
+            onPointerDown={onImgPointerDown}
+            onPointerMove={onImgPointerMove}
+            onPointerUp={onImgPointerEnd}
+            onPointerCancel={onImgPointerEnd}
+            onDoubleClick={onImgDoubleClick}
+          />
+        </div>
+      </div>
+      <div
+        className="image-preview-meta"
+        onClick={(e) => e.stopPropagation()}
+        onDoubleClick={(e) => e.stopPropagation()}
+      >
           {multi && (
             <span className="image-preview-counter">
               {idx + 1} / {list.length}
             </span>
           )}
           {cur.title && <span className="image-preview-title">{cur.title}</span>}
-        </div>
       </div>
       {multi && (
         <>
