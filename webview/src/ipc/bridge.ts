@@ -1775,7 +1775,7 @@ flowchart LR
       return {
         op: 'remoteState',
         state: 'waiting',
-        deviceName: 'ZCode-IDEA (mock)',
+        deviceName: 'ZCode JetBrains (mock)',
         qrUrl: 'https://zcode.z.ai/remote/v4?sid=mock-sid&hash=mock-hash&t=0&mid=mock&name=mock&app_version=3.8.1&theme=dark',
       }
     case 'remoteStop':

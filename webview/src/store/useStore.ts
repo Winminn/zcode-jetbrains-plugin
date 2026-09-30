@@ -655,7 +655,7 @@ interface StoreState {
   remoteState: 'idle' | 'off' | 'connecting' | 'waiting' | 'paired' | 'error' | 'kicked'
   /** 手机远程：配对 QR URL（waiting 态携带，含敏感 passHash 仅弹窗内展示）*/
   remoteQrUrl: string | null
-  /** 手机远程：宿主设备名（状态卡展示，如 "ZCode-IDEA (IntelliJ IDEA)"）*/
+  /** 手机远程：宿主设备名（状态卡展示，如 "ZCode JetBrains (IntelliJ IDEA)"）*/
   remoteDeviceName: string | null
   /** 手机远程：错误信息（error/kicked 态）*/
   remoteError: string | null

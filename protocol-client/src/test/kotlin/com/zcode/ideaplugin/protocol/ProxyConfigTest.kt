@@ -112,6 +112,50 @@ class ProxyConfigTest {
         assertTrue(ProxyConfig(httpProxy = "  ").toEnvMap().isEmpty())
     }
 
+    // ============ toJavaProxySelector（插件进程直发网络：relay WS / monitor HTTP）============
+
+    @Test
+    fun `未配置代理返回 null 走默认直连`() {
+        assertTrue(ProxyConfig().toJavaProxySelector() == null)
+        assertTrue(ProxyConfig(noProxy = "localhost").toJavaProxySelector() == null)
+    }
+
+    @Test
+    fun `命中 noProxy 后缀直连，其余走代理`() {
+        val selector = ProxyConfig(
+            httpProxy = "http://127.0.0.1:7890",
+            noProxy = "localhost,127.0.0.1,*.internal",
+        ).toJavaProxySelector()!!
+        val uri = java.net.URI("wss://zcode.z.ai/ws")
+        val proxies = selector.select(uri)
+        assertEquals(1, proxies.size)
+        assertEquals(java.net.Proxy.Type.HTTP, proxies[0].type())
+        assertEquals(java.net.InetSocketAddress("127.0.0.1", 7890), proxies[0].address())
+
+        // noProxy 命中（精确 + 后缀 + 通配剥前缀），大小写不敏感
+        for (host in listOf("localhost", "localhost:3000", "a.internal", "A.INTERNAL", "127.0.0.1")) {
+            val selected = selector.select(java.net.URI("https://$host/x"))
+            assertEquals(1, selected.size, host)
+            assertEquals(java.net.Proxy.NO_PROXY, selected[0], host)
+        }
+    }
+
+    @Test
+    fun `无端口补 80，无协议前缀经归一可用`() {
+        val selector = ProxyConfig(httpProxy = "proxy.corp").toJavaProxySelector()!!
+        val proxies = selector.select(java.net.URI("https://zcode.z.ai/ws"))
+        assertEquals(java.net.InetSocketAddress("proxy.corp", 80), proxies[0].address())
+    }
+
+    @Test
+    fun `userinfo 认证形态仍可解析出 host 与端口`() {
+        val selector = ProxyConfig(httpProxy = "http://user:pass@10.0.0.9:3128").toJavaProxySelector()!!
+        assertEquals(
+            java.net.InetSocketAddress("10.0.0.9", 3128),
+            selector.select(java.net.URI("wss://zcode.z.ai/ws"))[0].address(),
+        )
+    }
+
     // ============ 日志摘要与脱敏 ============
 
     @Test

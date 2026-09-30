@@ -10,6 +10,7 @@ import com.intellij.openapi.diagnostic.Logger
 import com.zcode.ideaplugin.ZCodeBundle
 import com.zcode.ideaplugin.ZCodeServiceImpl
 import com.zcode.ideaplugin.protocol.relay.ChannelCodec
+import com.zcode.ideaplugin.protocol.relay.JdkWebSocketTransportFactory
 import com.zcode.ideaplugin.protocol.relay.Relay
 import com.zcode.ideaplugin.protocol.relay.RelayClient
 import com.zcode.ideaplugin.protocol.relay.RelayCredentials
@@ -66,7 +67,7 @@ class ZCodeRemoteService : Disposable {
     @Volatile private var lastError: String? = null
 
     val deviceName: String
-        get() = "ZCode-IDEA (${com.intellij.openapi.application.ApplicationInfo.getInstance().versionName})"
+        get() = "ZCode JetBrains (${com.intellij.openapi.application.ApplicationInfo.getInstance().versionName})"
 
     // ============ 对外操作（webview op → 这里） ============
 
@@ -91,9 +92,17 @@ class ZCodeRemoteService : Disposable {
         // 读不到时 QR URL 不带该参数（实测 H5 正常加载），auth_init 仍走兜底常量
         val detectedAppVersion = resolveHostAppVersion()
         val hostAppVersion = detectedAppVersion ?: Relay.APP_VERSION
+        // relay WS 由插件进程直发：代理环境下直连不通，须显式挂共享 setting.json 的
+        // 代理（与官方客户端同源三键；noProxy 后缀匹配内建于 selector，额度 monitor
+        // HTTP 同规则）。重连复用同一 factory 实例，selector 无需重建
+        val proxySelector = com.zcode.ideaplugin.protocol.ProxyConfigStore.read().let { proxyConfig ->
+            log.info("remote relay proxy: ${proxyConfig.logSummary}")
+            proxyConfig.toJavaProxySelector()
+        }
         val relayClient = RelayClient(
             config = RelayClient.RelayConfig(deviceName = deviceName.take(64), appVersion = hostAppVersion),
             credentials = credentials,
+            transportFactory = JdkWebSocketTransportFactory(proxySelector),
         )
         relayClient.onDeviceRegistered = { updated ->
             saveCredentials(updated)

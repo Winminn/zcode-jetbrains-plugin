@@ -3573,26 +3573,13 @@ if (!window.__ZCODE_LOG_HOOK__) {
      *
      * 代理：这些请求由插件 Java 进程直接发出（不经 app-server，spawn env 注入对它
      * 无效），须显式挂共享 setting.json 的代理（issue #12 用户实测：境外网络下不走
-     * 代理额度查不到）。尊重 noProxy 列表（后缀匹配，规则对齐 zcode.cjs）；未配置
-     * 代理返回直连 client，行为不变。
+     * 代理额度查不到）。noProxy 后缀匹配内建于 ProxyConfig.toJavaProxySelector()
+     * （与 relay WS 同一实现）；未配置代理返回直连 client，行为不变。
      */
     private fun monitorHttpClient(): java.net.http.HttpClient {
         val builder = java.net.http.HttpClient.newBuilder()
             .connectTimeout(java.time.Duration.ofSeconds(15))
-        val raw = ProxyConfig.normalizeProxyUrl(ProxyConfigStore.read().httpProxy) ?: return builder.build()
-        val u = runCatching { java.net.URI(raw) }.getOrNull() ?: return builder.build()
-        val noProxy = ProxyConfig.normalizeNoProxy(ProxyConfigStore.read().noProxy)
-            ?.split(",")?.map { it.trim().lowercase().trimStart('.', '*') }?.filter { it.isNotEmpty() }
-            ?: emptyList()
-        val addr = java.net.InetSocketAddress(u.host, if (u.port == -1) 80 else u.port)
-        builder.proxy(object : java.net.ProxySelector() {
-            override fun select(uri: java.net.URI?): List<java.net.Proxy> {
-                val host = uri?.host?.lowercase() ?: return listOf(java.net.Proxy.NO_PROXY)
-                if (noProxy.any { host == it || host.endsWith(".$it") }) return listOf(java.net.Proxy.NO_PROXY)
-                return listOf(java.net.Proxy(java.net.Proxy.Type.HTTP, addr))
-            }
-            override fun connectFailed(uri: java.net.URI?, sa: java.net.SocketAddress?, ioe: java.io.IOException?) {}
-        })
+        ProxyConfigStore.read().toJavaProxySelector()?.let { builder.proxy(it) }
         return builder.build()
     }
 

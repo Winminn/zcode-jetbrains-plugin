@@ -34,6 +34,33 @@ data class ProxyConfig(
     val isEmpty: Boolean get() = httpProxy.isNullOrBlank() && noProxy.isNullOrBlank() && caCertPath.isNullOrBlank()
 
     /**
+     * 构造 JDK HttpClient（含 WebSocket）挂代理用的 ProxySelector。
+     *
+     * 未配置代理返回 null——调用方不设 proxy，走 JVM 默认行为（直连），不变；
+     * 配置后：目标 host 命中 noProxy 列表（后缀匹配，规则对齐 zcode.cjs）→ 直连，
+     * 其余 → 走该 HTTP 代理。插件 Java 进程直发的网络（relay WS、额度 monitor HTTP）
+     * 不经 app-server spawn env 注入，须显式挂共享 setting.json 的代理。
+     */
+    fun toJavaProxySelector(): java.net.ProxySelector? {
+        val u = runCatching { java.net.URI(normalizeProxyUrl(httpProxy) ?: return null) }.getOrNull()
+            ?: return null
+        val host = u.host ?: return null
+        val addr = java.net.InetSocketAddress(host, if (u.port == -1) 80 else u.port)
+        val noProxyList = normalizeNoProxy(noProxy)
+            ?.split(",")?.map { it.trim().lowercase().trimStart('.', '*') }?.filter { it.isNotEmpty() }
+            ?: emptyList()
+        return object : java.net.ProxySelector() {
+            override fun select(uri: java.net.URI?): List<java.net.Proxy> {
+                val h = uri?.host?.lowercase() ?: return listOf(java.net.Proxy.NO_PROXY)
+                if (noProxyList.any { h == it || h.endsWith(".$it") }) return listOf(java.net.Proxy.NO_PROXY)
+                return listOf(java.net.Proxy(java.net.Proxy.Type.HTTP, addr))
+            }
+
+            override fun connectFailed(uri: java.net.URI?, sa: java.net.SocketAddress?, ioe: java.io.IOException?) {}
+        }
+    }
+
+    /**
      * 日志摘要（userinfo 已脱敏）：app-server/CLI spawn 注入后打印，
      * 排障问题「代理到底注入了没」的直接答案；未配置返回固定文案
      */

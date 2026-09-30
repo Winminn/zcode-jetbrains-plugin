@@ -45,7 +45,7 @@ class RelayClient(
     data class RelayConfig(
         val wsUrl: String = Relay.DEFAULT_WS_URL,
         val origin: String = Relay.DEFAULT_ORIGIN,
-        val deviceName: String = "ZCode-IDEA",
+        val deviceName: String = "ZCode JetBrains",
         val appVersion: String = Relay.APP_VERSION,
         val platform: String = "win32",
         /** 重连退避序列（ms）；空 = 不自动重连 */
@@ -523,10 +523,19 @@ class RelayClient(
     }
 }
 
-/** 生产传输：JDK HttpClient WebSocket（header 注入 + 3s 连接超时） */
-class JdkWebSocketTransportFactory : RelayClient.TransportFactory {
+/** 生产传输：JDK HttpClient WebSocket（header 注入 + 3s 连接超时）。
+ *  proxySelector 非 null 时挂上——relay WS 由插件进程直发，代理环境下直连不通
+ *  （须走共享 setting.json 的 httpProxy，与额度 monitor HTTP 同源同规则）；
+ *  null 时不设置，走 JVM 默认 ProxySelector（行为不变） */
+class JdkWebSocketTransportFactory(
+    private val proxySelector: java.net.ProxySelector? = null,
+) : RelayClient.TransportFactory {
     override fun connect(url: String, headers: Map<String, String>, listener: WebSocket.Listener): WebSocket {
-        val builder = HttpClient.newHttpClient()
+        val httpClient = HttpClient.newBuilder()
+            .connectTimeout(Duration.ofSeconds(3))
+            .apply { proxySelector?.let { proxy(it) } }
+            .build()
+        val builder = httpClient
             .newWebSocketBuilder()
             .connectTimeout(Duration.ofSeconds(3))
         for ((k, v) in headers) builder.header(k, v)
