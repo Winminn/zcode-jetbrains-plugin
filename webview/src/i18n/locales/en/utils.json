@@ -3,7 +3,9 @@
   "backgroundTask": "Background task",
   "subagentTitle": "Subagent · {{type}}",
   "secondsShort": "{{count}}s",
+  "secondsShortCompact": "{{count}}s",
   "minutesSeconds": "{{m}}m {{s}}s",
+  "minutesSecondsCompact": "{{m}}m{{s}}s",
   "format": {
     "mcpMonthlyLimit": "MCP Monthly Quota",
     "cycleLimit": "Cycle Quota",

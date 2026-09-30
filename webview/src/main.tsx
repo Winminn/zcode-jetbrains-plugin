@@ -7,6 +7,13 @@ import { initPersist } from './utils/persist'
 import './i18n/config' // i18n 初始化（语言解析：IDE 注入 > 手动值 > 默认 zh）
 import { initI18nLanguage } from './i18n/language'
 import App from './App'
+import { useStore } from '@/store/useStore'
+
+// dev 专用调试句柄（生产构建剔除）：浏览器 DevTools / IAB 自动化可直改 store 复现状态，
+// 如 __zcodeStore.setState({ subagentDetail: 'call_x' }) 直开子代理详情弹窗
+if (import.meta.env.DEV) {
+  ;(window as unknown as Record<string, unknown>).__zcodeStore = useStore
+}
 
 // 外观恢复（字号/自定义颜色；index.html 防闪脚本之后、React 渲染之前兜底补齐）
 initAppearance()

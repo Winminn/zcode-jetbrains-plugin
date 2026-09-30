@@ -3,7 +3,9 @@
   "backgroundTask": "백그라운드 작업",
   "subagentTitle": "서브에이전트 · {{type}}",
   "secondsShort": "{{count}}초",
+  "secondsShortCompact": "{{count}}초",
   "minutesSeconds": "{{m}}분 {{s}}초",
+  "minutesSecondsCompact": "{{m}}분{{s}}초",
   "format": {
     "mcpMonthlyLimit": "MCP 월간 할당량",
     "cycleLimit": "주기 할당량",

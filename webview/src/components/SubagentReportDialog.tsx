@@ -13,7 +13,7 @@ import { useTranslation } from 'react-i18next'
 import { useStore } from '@/store/useStore'
 import { MarkdownBlock } from './MarkdownBlock'
 import { ScrollJumpButton } from './ScrollJumpButton'
-import { clockTime, formatToolDuration } from '@/utils/time'
+import { clockTime, formatToolDurationCompact } from '@/utils/time'
 import { transcriptModel, validSpan } from '@/utils/parseStatus'
 import '../styles/subagent-detail.less'
 
@@ -36,7 +36,7 @@ export function SubagentReportDialog() {
   const csid = item?.childSessionId ?? info?.childSessionId
   const span = validSpan(item?.startedAt, item?.endedAt) ?? validSpan(info?.startedAt, info?.endedAt)
   const startTime = (item?.startedAt ?? info?.startedAt) ? clockTime(item?.startedAt ?? info?.startedAt!) : ''
-  const duration = span ? formatToolDuration(span.endedAt - span.startedAt) : ''
+  const duration = span ? formatToolDurationCompact(span.endedAt - span.startedAt) : ''
   const model = transcriptModel(csid ? childMessages[csid] : undefined)
     ?? subagentDefs?.find((d) => d.name === (item?.subagentType ?? info?.subagentType))?.model
 
@@ -74,11 +74,18 @@ export function SubagentReportDialog() {
             <span className="subagent-detail-header__title" title={report.title}>
               {report.title}
             </span>
+            {/* meta 行防挤压：nowrap + 时刻/耗时合并 + 模型行尾截断
+                （本弹窗无类型/状态徽标，保持三段式不变）*/}
             <div className="subagent-detail-header__meta">
               <span className="subagent-detail-meta-item">{t('tool.subagent.finalReport')}</span>
-              {startTime && <span className="subagent-detail-meta-item">{startTime}</span>}
-              {model && <span className="subagent-detail-meta-item">{model}</span>}
-              {duration && <span className="subagent-detail-meta-item">{duration}</span>}
+              {(startTime || duration) && (
+                <span className="subagent-detail-meta-item">
+                  {startTime && <span>{startTime}</span>}
+                  {startTime && duration && ' · '}
+                  {duration && <span>{duration}</span>}
+                </span>
+              )}
+              {model && <span className="subagent-detail-meta-item model" title={model}>{model}</span>}
             </div>
           </div>
           {/* 切换到完整执行过程弹窗（互斥：本弹窗关闭）*/}

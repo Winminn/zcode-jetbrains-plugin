@@ -54,6 +54,16 @@ export function formatToolDuration(ms: number): string {
   return formatDuration(ms)
 }
 
+/**
+ * 紧凑档耗时 → "X.X秒" / "X分Y秒"（单位与数字间不留空格）
+ * 弹窗头部 meta 行专用：窄弹窗下多项并排，空格会放大换行挤压
+ */
+export function formatToolDurationCompact(ms: number): string {
+  if (ms < 60000) return i18n.t('utils.secondsShortCompact', { count: (Math.max(0, ms) / 1000).toFixed(1) })
+  const sec = Math.max(0, Math.floor(ms / 1000))
+  return i18n.t('utils.minutesSecondsCompact', { m: Math.floor(sec / 60), s: sec % 60 })
+}
+
 /** 字节数 → "45.2 KB" / "1.2 MB"（1024 进制，保留 1 位小数；cc-gui 历史列表同款） */
 export function formatFileSize(bytes: number): string {
   if (!bytes || bytes <= 0) return '0 KB'

@@ -26,6 +26,10 @@
   position: relative; /* 滚动跳转按钮（scroll-control-button absolute）的定位锚 */
   width: 760px;
   max-width: 92vw;
+  /* 头部 meta 行整行 nowrap 后其固有宽度会顶穿 max-width（flex 子项
+     min-width:auto 优先于 max-width），必须显式放行收缩到 92vw，
+     收缩压力由 meta 行内部按 model→type 顺序截断消化 */
+  min-width: 0;
   max-height: 82vh;
   background: var(--bg-elevated);
   border: 1px solid var(--border-primary);
@@ -56,7 +60,19 @@
     gap: 4px;
   }
 
+  /* 标题行：标题 + 类型徽标（身份层）。nowrap 不可省（徽标有它才不词内
+     折行）；标题先截断（flex:0 1 auto），类型徽标 45% 上限次之 */
+  &__titlerow {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    min-width: 0;
+    white-space: nowrap;
+  }
+
   &__title {
+    flex: 0 1 auto;
+    min-width: 0;
     font-weight: 600;
     font-size: 14px;
     color: var(--text-primary);
@@ -65,12 +81,19 @@
     white-space: nowrap;
   }
 
+  /* meta 行=状态+数据层（状态徽标/时刻·耗时/工具数/模型）：
+     nowrap 让各信息项永不词内折行（此前"已完成/模型/耗时"在窄弹窗下逐字
+     断行）；空间不足时按 model（行尾、3 倍收缩率）→ 硬裁剪顺序消化，
+     硬项（状态徽标/时刻·耗时/工具数）恒不缩 */
   &__meta {
     display: flex;
     align-items: center;
     gap: 8px;
     font-size: 11px;
     color: var(--text-tertiary);
+    white-space: nowrap;
+    overflow: hidden;
+    min-width: 0;
   }
 }
 
@@ -80,6 +103,17 @@
   border-radius: 3px;
   background: var(--bg-tertiary);
   color: var(--text-secondary);
+  flex-shrink: 0;
+
+  /* 类型徽标（general-purpose 等可很长）：截断兜底项，正常宽度完整显示，
+     挤压时先于硬项收缩（model 收缩率 3 倍于它，先牺牲模型尾部） */
+  &.type {
+    flex-shrink: 1;
+    min-width: 0;
+    max-width: 45%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
 
   &.running {
     color: var(--status-info);
@@ -100,6 +134,15 @@
 
 .subagent-detail-meta-item {
   font-family: var(--font-mono);
+  flex-shrink: 0;
+
+  /* 模型 ID（行尾）：第一压缩项，截断不丢关键信息（悬停 title 有全称） */
+  &.model {
+    flex-shrink: 3;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
 }
 
 .subagent-detail-icon-btn {
@@ -153,6 +196,7 @@
 .subagent-detail-body {
   flex: 1;
   overflow-y: auto;
+  overflow-x: hidden; /* 极窄宽度下工具卡名不外溢弹窗边框（内容优先级低于边框完整） */
   padding: 12px 16px;
 
   &::-webkit-scrollbar {

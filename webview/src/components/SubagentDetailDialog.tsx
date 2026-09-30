@@ -24,7 +24,7 @@ import { TimelineSeparator } from './TimelineSeparator'
 import { groupParts } from '@/utils/groupParts'
 import { getAgentToolOutput, getAgentToolErrorText, transcriptModel, validSpan } from '@/utils/parseStatus'
 import { findTimelinePart } from '@/utils/parseNotification'
-import { clockTime, formatToolDuration } from '@/utils/time'
+import { clockTime, formatToolDurationCompact } from '@/utils/time'
 import type { ZCodeMessage } from '@/types/messages'
 import '../styles/subagent-detail.less'
 
@@ -259,15 +259,15 @@ export function SubagentDetailDialog() {
 
   if (!key) return null
 
-  // 耗时（与工具命令卡同格式："X.X 秒" / "X 分 Y 秒"，i18n）：item（三源合并，
-  // part.time 优先）无有效对再看 RPC 原始 info，跨源不混搭。运行中以当前时刻
-  // 实时累计；已结束但无有效终点则不显示（宁缺勿错——RPC 起止可能相等/倒挂，
-  // 正是历史完成后显示 "0s" 的根源）
+  // 耗时（头部 meta 行用紧凑档 formatToolDurationCompact："X.X秒" / "X分Y秒"，无空格；
+  // i18n）：item（三源合并，part.time 优先）无有效对再看 RPC 原始 info，跨源不混搭。
+  // 运行中以当前时刻实时累计；已结束但无有效终点则不显示（宁缺勿错——RPC 起止
+  // 可能相等/倒挂，正是历史完成后显示 "0s" 的根源）
   const span = validSpan(item?.startedAt, item?.endedAt) ?? validSpan(info?.startedAt, info?.endedAt)
   const liveStart = span ? undefined : (running ? item?.startedAt ?? info?.startedAt : undefined)
   const duration = span
-    ? formatToolDuration(span.endedAt - span.startedAt)
-    : liveStart ? formatToolDuration(Math.max(0, Date.now() - liveStart)) : ''
+    ? formatToolDurationCompact(span.endedAt - span.startedAt)
+    : liveStart ? formatToolDurationCompact(Math.max(0, Date.now() - liveStart)) : ''
   // 开始时刻（主界面 msg__footer-time 同款 clockTime：当天 HH:mm，跨天带日期）。
   // 三源之最先非空——与耗时同源，时刻不存在时耗时也不存在，二者同现同隐
   const startTs = item?.startedAt ?? info?.startedAt ?? activity?.startedAt
@@ -281,7 +281,14 @@ export function SubagentDetailDialog() {
       ? subagentDefs?.find((d) => d.name === (item?.subagentType ?? activity?.agentType ?? info?.subagentType))?.model
       : undefined)
   const badge = statusText(item?.status, t)
-  const toolCount = activity?.tools.length ?? 0
+  // 工具数：流式聚合（subagentActivities，纯内存态）优先；重启/重开历史会话后
+  // 聚合为空（2026-09-30 真机：头部唯独工具数消失），兜底数权威转录里的 tool
+  // parts——转录在场（工具卡能渲染）时计数必可得；聚合在场时两者应一致，不双加
+  const transcriptToolCount = (display ?? []).reduce(
+    (n, m) => n + m.parts.filter((p) => p.type === 'tool').length,
+    0,
+  )
+  const toolCount = activity?.tools.length || transcriptToolCount
 
   const handleRefresh = () => {
     if (!childSessionId) return
@@ -310,6 +317,8 @@ export function SubagentDetailDialog() {
     || (!!agentOutput && !failErrorText && !agentOutput.startsWith('Agent failed'))
   const failed = !running && (finalStatus === 'error' || finalStatus === 'failed') && !successEvidence
   const reportReady = finalStatus === 'completed' && !!agentOutput
+  // 代理类型（徽标显示 + title 全称，两处同源）
+  const agentType = item?.subagentType || activity?.agentType || info?.subagentType
 
   return (
     <div className="subagent-detail-overlay" onClick={closeDetail}>
@@ -317,20 +326,34 @@ export function SubagentDetailDialog() {
         <div className="subagent-detail-header">
           <span className="codicon codicon-hubot subagent-detail-header__icon" />
           <div className="subagent-detail-header__main">
-            <span className="subagent-detail-header__title" title={item?.description}>
-              {item?.description || activity?.description || t('tool.subagent.task')}
-            </span>
-            <div className="subagent-detail-header__meta">
-              {(item?.subagentType || activity?.agentType || info?.subagentType) && (
-                <span className="subagent-detail-badge type">
-                  {item?.subagentType || activity?.agentType || info?.subagentType}
+            {/* 两行分层：标题行=身份（标题/类型徽标），meta 行=状态+数据
+                （状态徽标/时刻·耗时/工具数/模型）——窄宽下挤压压力由
+                标题（第一行）与模型（第二行行尾）顺序消化 */}
+            <div className="subagent-detail-header__titlerow">
+              <span className="subagent-detail-header__title" title={item?.description}>
+                {item?.description || activity?.description || t('tool.subagent.task')}
+              </span>
+              {agentType && (
+                <span className="subagent-detail-badge type" title={agentType}>
+                  {agentType}
                 </span>
               )}
+            </div>
+            <div className="subagent-detail-header__meta">
               <span className={`subagent-detail-badge ${badge.cls}`}>{badge.text}</span>
-              {startTime && <span className="subagent-detail-meta-item">{startTime}</span>}
-              {model && <span className="subagent-detail-meta-item">{model}</span>}
-              {duration && <span className="subagent-detail-meta-item">{duration}</span>}
-              {toolCount > 0 && <span className="subagent-detail-meta-item">{t('tool.toolsCount', { count: toolCount })}</span>}
+              {(startTime || duration) && (
+                <span className="subagent-detail-meta-item">
+                  {startTime && <span>{startTime}</span>}
+                  {startTime && duration && ' · '}
+                  {duration && <span>{duration}</span>}
+                </span>
+              )}
+              {toolCount > 0 && (
+                <span className="subagent-detail-meta-item">
+                  {t('tool.toolsCount', { count: toolCount })}
+                </span>
+              )}
+              {model && <span className="subagent-detail-meta-item model" title={model}>{model}</span>}
             </div>
           </div>
           {/* 手动重拉完整记录：只在非运行中出现——运行中实时流就是最新数据，

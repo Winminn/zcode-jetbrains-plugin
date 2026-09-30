@@ -3,7 +3,9 @@
   "backgroundTask": "后台任务",
   "subagentTitle": "子代理 · {{type}}",
   "secondsShort": "{{count}} 秒",
+  "secondsShortCompact": "{{count}}秒",
   "minutesSeconds": "{{m}} 分 {{s}} 秒",
+  "minutesSecondsCompact": "{{m}}分{{s}}秒",
   "format": {
     "mcpMonthlyLimit": "MCP 每月额度",
     "cycleLimit": "周期额度",

@@ -20,7 +20,7 @@ import '@/i18n/config'
 import { SubagentDetailDialog } from '@/components/SubagentDetailDialog'
 import { SubagentReportDialog } from '@/components/SubagentReportDialog'
 import { useStore } from '@/store/useStore'
-import type { ZCodeMessage } from '@/types/messages'
+import type { ZCodeMessage, ToolPart } from '@/types/messages'
 
 const CHILD_SID = 'sess_subagent_agent_meta1'
 
@@ -153,5 +153,100 @@ describe('子代理弹窗 meta：执行时刻与模型', () => {
     await vi.waitFor(() => {
       expect(sendMock.mock.calls.some((c) => (c[0] as { op: string }).op === 'subagentMessages')).toBe(true)
     })
+  })
+})
+
+describe('子代理弹窗 meta：紧凑合并（防窄宽逐项折行）', () => {
+  it('时刻+耗时合并一项：耗时走紧凑格式（无空格）', () => {
+    const start = Date.now() - 264_000
+    useStore.setState({
+      agents: [{ callID: 'call_meta', childSessionId: CHILD_SID, status: 'completed', description: 'd', startedAt: start, endedAt: start + 264_000 }],
+      childMessages: { [CHILD_SID]: msgs('GLM-5.2') },
+    })
+    render(<SubagentDetailDialog />)
+    expect(screen.getByText(hhmm(start))).toBeTruthy()
+    expect(screen.getByText('4分24秒')).toBeTruthy()
+    expect(screen.queryByText('4 分 24 秒')).toBeNull()
+  })
+
+  it('工具数为文字形态（{{count}} 个工具，图标版难理解已回退）', () => {
+    const tool = (i: number): ToolPart => ({
+      type: 'tool',
+      callID: `call_tool_${i}`,
+      tool: 'Read',
+      state: { status: 'completed', input: {} },
+    })
+    useStore.setState({
+      agents: [{ callID: 'call_meta', childSessionId: CHILD_SID, status: 'completed', description: 'd', startedAt: Date.now() - 30_000, endedAt: Date.now() }],
+      childMessages: { [CHILD_SID]: msgs('GLM-5.2') },
+      subagentActivities: [{ key: 'call_meta', status: 'completed', tools: [tool(1), tool(2), tool(3)], lastUpdate: Date.now() }],
+    })
+    render(<SubagentDetailDialog />)
+    expect(screen.getByText('3 个工具')).toBeTruthy()
+  })
+
+  it('重启/重开历史会话后流式聚合为空：工具数兜底数转录 tool parts', () => {
+    useStore.setState({
+      agents: [{ callID: 'call_meta', childSessionId: CHILD_SID, status: 'completed', description: 'd', startedAt: Date.now() - 30_000, endedAt: Date.now() }],
+      childMessages: { [CHILD_SID]: [
+        ...msgs('GLM-5.2'),
+        {
+          info: { id: 'm3', sessionID: CHILD_SID, role: 'assistant', time: { created: 3 } },
+          parts: [
+            { type: 'tool', callID: 'c1', tool: 'Read', state: { status: 'completed', input: {} } } as ToolPart,
+            { type: 'tool', callID: 'c2', tool: 'Edit', state: { status: 'completed', input: {} } } as ToolPart,
+          ],
+        },
+      ] },
+    })
+    render(<SubagentDetailDialog />)
+    expect(screen.getByText('2 个工具')).toBeTruthy()
+  })
+
+  it('模型挪行尾且带 title（窄宽截断后可悬停看全称）', () => {
+    const start = Date.now() - 30_000
+    useStore.setState({
+      agents: [{ callID: 'call_meta', childSessionId: CHILD_SID, status: 'completed', description: 'd', startedAt: start, endedAt: start + 30_000 }],
+      childMessages: { [CHILD_SID]: msgs('GLM-5.2') },
+    })
+    render(<SubagentDetailDialog />)
+    expect(screen.getByText('GLM-5.2').getAttribute('title')).toBe('GLM-5.2')
+  })
+
+  it('报告弹窗：时刻+耗时同样合并为紧凑格式', () => {
+    const start = Date.now() - 264_000
+    useStore.setState({
+      subagentReport: { callID: 'call_meta', title: '报告', markdown: '# done' },
+      agents: [{ callID: 'call_meta', childSessionId: CHILD_SID, status: 'completed', description: 'd', startedAt: start, endedAt: start + 264_000 }],
+      childMessages: { [CHILD_SID]: msgs('GLM-5.3') },
+    })
+    render(<SubagentReportDialog />)
+    expect(screen.getByText('4分24秒')).toBeTruthy()
+  })
+
+  it('布局分层：标题行=标题+类型徽标，状态徽标领起数据行（时刻·耗时合并其后）', () => {
+    const start = Date.now() - 264_000
+    useStore.setState({
+      agents: [{ callID: 'call_meta', childSessionId: CHILD_SID, status: 'completed', description: 'd', subagentType: 'general-purpose', startedAt: start, endedAt: start + 264_000 }],
+      childMessages: { [CHILD_SID]: [
+        ...msgs('GLM-5.2'),
+        {
+          info: { id: 'm3', sessionID: CHILD_SID, role: 'assistant', time: { created: 3 } },
+          parts: [{ type: 'tool', callID: 'c1', tool: 'Read', state: { status: 'completed', input: {} } } as ToolPart],
+        },
+      ] },
+    })
+    render(<SubagentDetailDialog />)
+    const titlerow = document.querySelector('.subagent-detail-header__titlerow')
+    expect(titlerow).toBeTruthy()
+    expect(titlerow!.querySelector('.subagent-detail-badge.type')?.textContent).toBe('general-purpose')
+    // 标题行只有类型徽标一种徽标（状态徽标下移数据行）
+    expect(titlerow!.querySelectorAll('.subagent-detail-badge').length).toBe(1)
+    const meta = document.querySelector('.subagent-detail-header__meta')
+    // 状态徽标在数据行行首（第一子元素）
+    expect((meta!.firstElementChild as HTMLElement).classList.contains('completed')).toBe(true)
+    expect(meta!.textContent).toContain(hhmm(start))
+    expect(meta!.textContent).toContain('4分24秒')
+    expect(meta!.textContent).toContain('个工具')
   })
 })
