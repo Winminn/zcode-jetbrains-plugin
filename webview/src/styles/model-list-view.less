@@ -1036,6 +1036,21 @@
       width: 96px;
       flex: none;
     }
+    /* 模型 ID 凸显（行内主体字段）：标签 accent 色，输入 mono + accent 文字（对齐项目强调语言）。
+       input 须带 :not([type=checkbox]) 对齐通用规则的 (0,3,1) 特异性——通用
+       .provider-editor input:not([type=checkbox]) 在文件更后且 :not 计特异，不挂会把它盖回正文色 */
+    .provider-editor__field--model-id {
+      .provider-editor__label {
+        color: var(--accent-primary, #007fd4);
+        font-weight: 500;
+      }
+
+      input:not([type='checkbox']) {
+        font-family: var(--font-mono, Consolas, monospace);
+        color: var(--accent-primary, #007fd4);
+        font-size: var(--fs-body);
+      }
+    }
 
     input {
       width: 100%;

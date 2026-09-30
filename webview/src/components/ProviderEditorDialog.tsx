@@ -205,7 +205,7 @@ export function ProviderEditorDialog({ mode, initial, keyUrl, saving, error, onC
             {rows.map((r, i) => (
               <div className="provider-editor__model-panel" key={i}>
                 <div className="provider-editor__model-grid">
-                  <label className="provider-editor__field provider-editor__field--grow">
+                  <label className="provider-editor__field provider-editor__field--grow provider-editor__field--model-id">
                     <span className="provider-editor__label">{t('models.editor.modelId')}</span>
                     <input value={r.modelId} onChange={(e) => setRow(i, { modelId: e.target.value })} placeholder="model-id" spellCheck={false} />
                   </label>
