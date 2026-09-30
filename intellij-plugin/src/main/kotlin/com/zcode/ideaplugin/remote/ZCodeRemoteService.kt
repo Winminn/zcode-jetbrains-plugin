@@ -1,6 +1,5 @@
 package com.zcode.ideaplugin.remote
 
-import com.intellij.credentialStore.CredentialAttributes
 import com.intellij.credentialStore.Credentials
 import com.intellij.ide.passwordSafe.PasswordSafe
 import com.intellij.openapi.Disposable
@@ -828,7 +827,7 @@ class ZCodeRemoteService : Disposable {
 
     // ============ 凭据（PasswordSafe 首次引入） ============
 
-    private fun credentialAttributes() = CredentialAttributes(SERVICE_NAME)
+    private fun credentialAttributes() = RemoteCredentialAttributes.forService(SERVICE_NAME)
 
     private fun loadOrCreateCredentials(): RelayCredentials {
         val stored = PasswordSafe.instance.get(credentialAttributes())
