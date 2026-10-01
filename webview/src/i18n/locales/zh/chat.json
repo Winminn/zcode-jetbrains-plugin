@@ -177,6 +177,17 @@
     "confirmMessage": "历史保留到这条回复（含），原会话不受影响。",
     "confirmOk": "分叉"
   },
+  "previewCards": {
+    "website": "网站",
+    "htmlWebsite": "网站 · HTML",
+    "markdown": "文档 · MD",
+    "docx": "文档 · DOCX",
+    "xlsx": "表格 · XLSX",
+    "pptx": "演示文稿 · PPTX",
+    "pdf": "文档 · PDF",
+    "video": "视频",
+    "audio": "音频"
+  },
   "fileChanges": {
     "summary": "{{count}} 个文件已更改 · +{{additions}} −{{deletions}}",
     "reverted": "已撤销",

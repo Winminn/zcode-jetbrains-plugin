@@ -177,6 +177,17 @@
     "confirmMessage": "歷史保留到這條回覆（含），原會話不受影響。",
     "confirmOk": "分叉"
   },
+  "previewCards": {
+    "website": "網站",
+    "htmlWebsite": "網站 · HTML",
+    "markdown": "文件 · MD",
+    "docx": "文件 · DOCX",
+    "xlsx": "表格 · XLSX",
+    "pptx": "簡報 · PPTX",
+    "pdf": "文件 · PDF",
+    "video": "影片",
+    "audio": "音訊"
+  },
   "fileChanges": {
     "summary": "{{count}} 個檔案已變更 · +{{additions}} −{{deletions}}",
     "reverted": "已撤銷",

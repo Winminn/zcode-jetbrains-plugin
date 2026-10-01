@@ -177,6 +177,17 @@
     "confirmMessage": "履歴はこの返答まで保持され、元のセッションは影響を受けません。",
     "confirmOk": "フォーク"
   },
+  "previewCards": {
+    "website": "ウェブサイト",
+    "htmlWebsite": "ウェブサイト · HTML",
+    "markdown": "ドキュメント · MD",
+    "docx": "ドキュメント · DOCX",
+    "xlsx": "スプレッドシート · XLSX",
+    "pptx": "プレゼンテーション · PPTX",
+    "pdf": "ドキュメント · PDF",
+    "video": "動画",
+    "audio": "音声"
+  },
   "fileChanges": {
     "summary": "{{count}} 件のファイルを変更 · +{{additions}} −{{deletions}}",
     "reverted": "復元済み",

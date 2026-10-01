@@ -177,6 +177,17 @@
     "confirmMessage": "기록은 이 답변까지 유지되며 원본 세션은 영향을 받지 않습니다.",
     "confirmOk": "분기"
   },
+  "previewCards": {
+    "website": "웹사이트",
+    "htmlWebsite": "웹사이트 · HTML",
+    "markdown": "문서 · MD",
+    "docx": "문서 · DOCX",
+    "xlsx": "스프레드시트 · XLSX",
+    "pptx": "프레젠테이션 · PPTX",
+    "pdf": "문서 · PDF",
+    "video": "동영상",
+    "audio": "오디오"
+  },
   "fileChanges": {
     "summary": "{{count}}개 파일 변경됨 · +{{additions}} −{{deletions}}",
     "reverted": "복원됨",

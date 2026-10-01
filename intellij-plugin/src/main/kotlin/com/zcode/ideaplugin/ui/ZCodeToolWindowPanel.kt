@@ -1016,6 +1016,8 @@ if (!window.__ZCODE_LOG_HOOK__) {
                         "getModelUsage" -> handleGetModelUsage(msg)
                         "getToolUsage" -> handleGetToolUsage(msg)
                         "openFile" -> handleOpenFile(msg)
+                        "checkFilesExist" -> handleCheckFilesExist(msg)
+                        "openFileSystem" -> handleOpenFileSystem(msg)
                         "showDiff" -> handleShowDiff(msg)
                         "refreshFile" -> handleRefreshFile(msg)
                         "createTab" -> handleCreateTab()
@@ -3938,6 +3940,64 @@ if (!window.__ZCODE_LOG_HOOK__) {
         val startTime = msg["startTime"]?.jsonPrimitive?.content ?: ""
         val endTime = msg["endTime"]?.jsonPrimitive?.content ?: ""
         return queryUsageEndpoint(creds, "tool-usage", startTime, endTime, "toolUsage")
+    }
+
+    /**
+     * op=checkFilesExist — 批量文件存在性检查（产物预览卡渲染前校验，防闪卡）。
+     * 纯 java.io.File 探测（不走 VFS：候选可能不在项目内，且只判存在不打开）。
+     * requestId 原样回显供前端配对；文件多时也只做 stat（µs 级），无需异步。
+     */
+    private fun handleCheckFilesExist(msg: JsonObject): JsonObject {
+        val requestId = msg["requestId"]?.jsonPrimitive?.content
+        val paths = msg["paths"]?.jsonArray?.map { it.jsonPrimitive.content }
+            ?: return errorResponse("缺少 paths")
+        return buildJsonObject {
+            put("op", "checkFilesExistResult")
+            if (requestId != null) put("requestId", requestId)
+            put("results", buildJsonArray {
+                for (p in paths) {
+                    add(buildJsonObject {
+                        put("path", p)
+                        put("exists", runCatching { java.io.File(p).exists() }.getOrDefault(false))
+                    })
+                }
+            })
+        }
+    }
+
+    /**
+     * op=openFileSystem — 用系统默认程序打开文件（产物预览卡的 Office/PDF/音视频路由）。
+     * 扩展名白名单与 webview 提取表同源收口：AI 文本里出现的任意路径不得被拉起。
+     * html/htm 例外走 BrowserUtil.browse 强制系统浏览器（用户定案：html 产物直接看渲染
+     * 效果不进 IDE 编辑器；Desktop.open 走文件关联可能落到编辑器，browse 不受影响）。
+     */
+    private fun handleOpenFileSystem(msg: JsonObject): JsonObject {
+        val filePath = msg["filePath"]?.jsonPrimitive?.content
+            ?: return errorResponse("缺少 filePath")
+        val allowedExtensions = setOf(
+            "docx", "xlsx", "pptx", "pdf", "html", "htm",
+            "mp4", "mov", "webm", "m4v", "mp3", "wav", "m4a", "ogg", "opus", "flac", "weba",
+        )
+        val ext = filePath.substringAfterLast('.', "").lowercase()
+        if (ext !in allowedExtensions) {
+            log.warn("openFileSystem rejected non-preview extension: ${LogRedactor.redact(filePath).take(120)}")
+            return errorResponse("unsupported file type")
+        }
+        com.intellij.openapi.application.invokeLater {
+            val f = java.io.File(filePath)
+            if (!f.exists()) {
+                log.warn("Open file (system) failed: not found $filePath")
+                return@invokeLater
+            }
+            runCatching {
+                if (ext == "html" || ext == "htm") {
+                    BrowserUtil.browse(f.toURI())
+                } else {
+                    java.awt.Desktop.getDesktop().open(f)
+                }
+            }.onFailure { log.warn("Open file (system) failed: ${it.message}") }
+        }
+        return buildJsonObject { put("op", "fileOpened") }
     }
 
     /**

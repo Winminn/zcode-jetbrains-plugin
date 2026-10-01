@@ -31,6 +31,7 @@ import { onMessage, sendToJava } from '@/ipc/bridge'
 import { renderUserRefChips, hasUserRefChips, type CmdRefInfo } from '@/utils/userRefChips'
 import { MarkdownBlock } from './MarkdownBlock'
 import { AgentNotificationCard } from './AgentNotificationCard'
+import { AssistantPreviewCards } from './AssistantPreviewCards'
 import { FileIcon } from './FileIcon'
 import { isAgentNotification, isCompactSummaryMessage, findTimelinePart } from '@/utils/parseNotification'
 import { clockTime, compactTokens, formatDuration } from '@/utils/time'
@@ -816,6 +817,8 @@ function AssistantBubble({
     collapsible && info.time?.created && info.time.completed
       ? info.time.completed - info.time.created
       : null
+  // 产物预览卡数据源：整组 assistant 文本（合并轮组含续段），与「复制 Markdown」同源拼接
+  const turnText = useMemo(() => collectAssistantMarkdown(allParts), [allParts])
 
   return (
     <div className="msg msg--assistant">
@@ -857,6 +860,13 @@ function AssistantBubble({
       </div>
       {turnFileChanges && turnFileChanges.files > 0 && (
         <TurnFileChangesBar fc={turnFileChanges} messageId={info.id} />
+      )}
+      {/* 产物预览卡（B2 二期）：轮末文档/网站卡——轮文本五源提取，md/html 需命中
+          本轮 fileChanges，stat 校验后出卡；流式中不出（轮未定型）；流式壳 id
+          （stream_msg_* 聚合壳/local_* 乐观壳）不出——轮末重拉后真身 id 重挂载，
+          壳 id 查询注定失败（服务端行流无此 id）只添失败日志 */}
+      {!streaming && turnText.trim() && !/^(stream_|local_)/.test(info.id) && (
+        <AssistantPreviewCards messageId={info.id} text={turnText} />
       )}
       <MessageFooter
         info={footerInfo}

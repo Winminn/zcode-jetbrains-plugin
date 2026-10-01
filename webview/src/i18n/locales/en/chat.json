@@ -177,6 +177,17 @@
     "confirmMessage": "History is kept up to this reply (inclusive); the original session stays untouched.",
     "confirmOk": "Fork"
   },
+  "previewCards": {
+    "website": "Website",
+    "htmlWebsite": "Website · HTML",
+    "markdown": "Document · MD",
+    "docx": "Document · DOCX",
+    "xlsx": "Spreadsheet · XLSX",
+    "pptx": "Presentation · PPTX",
+    "pdf": "Document · PDF",
+    "video": "Video",
+    "audio": "Audio"
+  },
   "fileChanges": {
     "summary": "{{count}} files changed · +{{additions}} −{{deletions}}",
     "reverted": "Reverted",

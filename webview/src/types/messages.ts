@@ -445,6 +445,10 @@ export type JavaRequest =  | { op: 'askUserPendingState' }
   | { op: 'getToolUsage'; startTime: string; endTime: string }
   /** 打开文件；findText 可选——在编辑器 Find 栏填充该关键词并高亮全部命中 */
   | { op: 'openFile'; filePath: string; line?: number; findText?: string }
+  /** 产物预览卡批量文件存在性检查（渲染前过滤已删除路径，防闪卡）*/
+  | { op: 'checkFilesExist'; requestId: string; paths: string[] }
+  /** 产物预览卡：用系统默认程序打开文件（Office/PDF/音视频等 IDE 无编辑器的类型；Java 侧白名单扩展名）*/
+  | { op: 'openFileSystem'; filePath: string }
   | { op: 'showDiff'; filePath: string; oldContent: string; newContent: string; title?: string }
   | { op: 'refreshFile'; filePath: string }
   | { op: 'listMemoryFiles' }
@@ -1027,6 +1031,8 @@ export type JavaResponse =
   | { op: 'turnFileRewindApplyError'; reason: string; message?: string }
   /** turnFileChangesSync 回执（重扫异步执行，事件经流式通道后续到达） */
   | { op: 'turnFileChangesSynced'; sessionId: string }
+  /** checkFilesExist 应答：按请求回显 requestId（产物预览卡渲染前批量校验）*/
+  | { op: 'checkFilesExistResult'; requestId?: string; results: { path: string; exists: boolean }[] }
   /** 会话待交互计数推送（审批/提问挂起数；协议客户端反向请求计数，全量快照）。
    *  会话列表红点角标数据源——本地方案（官方 pendingInteractionSummary 在 v4
    *  sessions-index topic 订阅里，需常驻占 v4 订阅槽） */

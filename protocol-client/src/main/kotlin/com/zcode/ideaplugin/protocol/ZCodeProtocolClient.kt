@@ -2818,10 +2818,12 @@ class ZCodeProtocolClient private constructor(
      *
      * messageId 锚点：turnHeader 行的 entityId = productTurnId（product-projection
      * 3661 实证：常态=该轮 user 消息 id，队列 drain 可能是轮 id 变体）——快照窗口
-     * 可用时改锚到**同轮第一条 assistantText 行的 entityId**（=legacy assistant 消息
-     * id；必须取第一段——前端 mergeTurnMessages 把同轮多段 assistant 合并为一条时
-     * 保留第一段的 id，锚最后段会「host not in messages」挂起死锁，真机日志实证）
-     * ；窗口不可用（增量单行 upsert）时退回 entityId，由前端 user→assistant 换算
+     * 可用时改锚到**同轮最早的 assistant 侧消息 id 行的 entityId**（=legacy 首段
+     * assistant 消息 id；前端 mergeTurnMessages 把同轮多段 assistant 合并为一条时
+     * 保留首段的 id，锚非首段会「host not in messages」挂起死锁——首段可能没有
+     * assistantText 行（纯 reasoning/工具 step），必须取全 kind 最早行，见过滤处
+     * 注释；真机日志实证）；
+     * 窗口不可用（增量单行 upsert）时退回 entityId，由前端 user→assistant 换算
      * +挂起重试兜底。
      */
     private fun turnFileChangesEvent(
@@ -2836,8 +2838,16 @@ class ZCodeProtocolClient private constructor(
         val anchor = if (window != null && turnId != null) {
             window
                 .filter {
-                    it["kind"]?.jsonPrimitive?.jsonStringOrNull == "assistantText" &&
-                        it["turnId"]?.jsonPrimitive?.jsonStringOrNull == turnId
+                    val kind = it["kind"]?.jsonPrimitive?.jsonStringOrNull
+                    // 首段 assistant 消息 id：前端 mergeTurnMessages 把同轮多段 assistant
+                    // 合并为一条时保留**首段** id——锚必须取同轮最早的 assistant 侧行。
+                    // 只取 assistantText 会漏掉「首段是纯 reasoning/工具 step」的轮
+                    //（首段无 assistantText 行 → 锚落到次段 id → 前端 host 解析必 miss，
+                    // 历史加载后逐轮更改条全灭，2026-10-01 真机实锤）。turnHeader/userInput
+                    // 是轮/user 消息身份，toolCall 的 entityId=call_* 非消息 id，一并跳过。
+                    kind != "turnHeader" && kind != "userInput" &&
+                        it["turnId"]?.jsonPrimitive?.jsonStringOrNull == turnId &&
+                        !(it["entityId"]?.jsonPrimitive?.jsonStringOrNull ?: "").startsWith("call_")
                 }
                 .minByOrNull { it["rowId"]?.jsonPrimitive?.intOrNull ?: Int.MAX_VALUE }
                 ?.get("entityId")?.jsonPrimitive?.jsonStringOrNull
