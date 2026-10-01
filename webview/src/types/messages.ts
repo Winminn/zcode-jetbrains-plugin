@@ -1476,12 +1476,15 @@ export interface TurnFileRewindPreview {
 
 // ============ 额度数据（glm plan usage API）============
 // 来源：{baseDomain}/api/monitor/usage/quota/limit → data.limits[]
-// type: TOKENS_LIMIT(token额度) | TIME_LIMIT(次数额度)
-// unit: 3=每5小时, 6=每周, 5=MCP每月
+// type: TOKENS_LIMIT(token额度，zai 团队后端等价为 CREDIT_LIMIT) | TIME_LIMIT(次数额度)
+// unit: 3=每5小时, 6=每周, 5=每月工具调用（官方 findCodingPlanQuotaLimit 口径；
+//       MCP 额度是独立接口，不在 quota/limit 返回内）
+// number: 窗口序号（5h 池=5、工具调用=1），部分套餐响应缺省
 
 export interface QuotaLimit {
   type?: string
   unit?: number
+  number?: number
   percentage?: number
   currentValue?: number
   usage?: number

@@ -33,7 +33,7 @@ export function QuotaCards({ limits }: Props) {
             <div className="quota-card__bar">
               <div className="quota-card__bar-fill" style={{ width: `${pct}%` }} />
             </div>
-            <span className="quota-card__pct">{pct.toFixed(0)}%</span>
+            <span className="quota-card__pct">{t('usage.quota.usedPct', { pct: pct.toFixed(0) })}</span>
             {limit.nextResetTime ? (
               <span className="quota-card__reset">{t('usage.quota.resetAt', { time: fmtResetTime(limit.nextResetTime) })}</span>
             ) : null}

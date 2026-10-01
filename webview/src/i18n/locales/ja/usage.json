@@ -6,7 +6,8 @@
     "refresh": "利用枠を更新",
     "loading": "読み込み中…",
     "empty": "利用枠データなし",
-    "resetAt": "リセット {{time}}"
+    "resetAt": "リセット {{time}}",
+    "usedPct": "使用 {{pct}}%"
   },
   "plan": {
     "tab": "GLM プラン利用量",
@@ -71,8 +72,8 @@
     "titleBreakdown": "コンテキスト内訳",
     "noBreakdown": "内訳データなし（対話後に表示されます）",
     "hitRate": "平均キャッシュヒット率",
-    "glmQuota": "GLM 利用枠",
-    "glmQuotaWithLevel": "GLM 利用枠（{{level}}）",
+    "glmQuota": "GLM 利用枠残り",
+    "glmQuotaWithLevel": "GLM 利用枠残り（{{level}}）",
     "quotaLoading": "利用枠を読み込み中…",
     "noQuota": "利用枠データなし",
     "doubleClickHint": "リングをダブルクリックするとコンテキストを圧縮します",
@@ -86,5 +87,24 @@
       "mcpTools": "MCP ツール",
       "other": "その他"
     }
+  },
+  "windows": {
+    "fiveHours": "5時間プール",
+    "weekly": "週間クォータ",
+    "toolCalls": "ツール呼び出し"
+  },
+  "banner": {
+    "exhausted": "{{names}}を使い切りました",
+    "exhaustedReset": "{{names}}を使い切りました。{{time}} にリセット",
+    "exhaustedGeneric": "プランの利用枠を使い切りました",
+    "low": "{{name}}の残り {{pct}}",
+    "lowReset": "{{name}}の残り {{pct}}。{{time}} にリセット",
+    "remainPct": "{{pct}}%",
+    "concurrent": "モデルの同時実行上限に達しました。しばらくしてから再試行してください",
+    "providerLimited": "プロバイダーから利用枠/プラン制限が返されました",
+    "rateLimited": "リクエストが集中しています。しばらくしてから再試行してください",
+    "refresh": "利用枠を更新",
+    "dismiss": "閉じる",
+    "dismissAria": "利用枠通知を閉じる"
   }
 }

@@ -6,7 +6,8 @@
     "refresh": "刷新额度",
     "loading": "加载中…",
     "empty": "暂无额度数据",
-    "resetAt": "重置 {{time}}"
+    "resetAt": "重置 {{time}}",
+    "usedPct": "已用 {{pct}}%"
   },
   "plan": {
     "tab": "GLM 套餐用量",
@@ -72,8 +73,8 @@
     "titleBreakdown": "上下文构成",
     "noBreakdown": "暂无构成明细（对话后将显示）",
     "hitRate": "平均缓存命中率",
-    "glmQuota": "GLM 额度",
-    "glmQuotaWithLevel": "GLM 额度（{{level}}）",
+    "glmQuota": "GLM 额度剩余",
+    "glmQuotaWithLevel": "GLM 额度剩余（{{level}}）",
     "quotaLoading": "额度加载中…",
     "noQuota": "暂无额度数据",
     "doubleClickHint": "双击圆环可压缩上下文",
@@ -87,5 +88,24 @@
       "mcpTools": "MCP 工具",
       "other": "其他"
     }
+  },
+  "windows": {
+    "fiveHours": "5 小时池",
+    "weekly": "本周额度",
+    "toolCalls": "工具调用"
+  },
+  "banner": {
+    "exhausted": "{{names}}已用完",
+    "exhaustedReset": "{{names}}已用完，{{time}} 重置",
+    "exhaustedGeneric": "套餐额度已用完",
+    "low": "{{name}}仅剩 {{pct}}",
+    "lowReset": "{{name}}仅剩 {{pct}}，{{time}} 重置",
+    "remainPct": "{{pct}}%",
+    "concurrent": "模型并发已达上限，请稍后重试",
+    "providerLimited": "渠道返回额度/套餐限制",
+    "rateLimited": "请求过于频繁，请稍后重试",
+    "refresh": "刷新额度",
+    "dismiss": "关闭",
+    "dismissAria": "关闭额度提示"
   }
 }

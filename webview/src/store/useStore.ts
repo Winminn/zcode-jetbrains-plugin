@@ -19,6 +19,8 @@ import { extractTitleExcerpt } from '@/utils/titleExcerpt'
 import type { JavaResponse, SessionInfo, ZCodeMessage, StreamEvent, ModelOption, ModelManageProvider, ProviderSaveDraft, TodoItem, AgentItem, FileChangeItem, QuotaData, ModelUsageData, ToolUsageData, UsageRange, AppUsageData, AppUsageRange, ContextBreakdownItem, ThoughtLevelInfo, SubagentActivity, SubagentInfo, ToolUpdatedPayload, MemoryFileInfo, MemoryDirInfo, MemorySearchHitInfo, SkillInfo, McpServerInfo, McpToolsState, McpLogEntry, EnvStatus, BrowserClearedSite, BrowserDataOverview, AgentDef, AgentDefInput, ImageAttachmentInput, GoalState, AutoArchiveRecord, ToolPart, SlashCommand, MessagePart, TurnFileChangesMap, TurnFileChangeSummary } from '@/types/messages'
 import { applyStreamEvent, isSubagentToolEvent, applySubagentToolEvent, markActivityOutcome, finalizeActivitiesFromNotifications, asSubagentLifecycle, asGoalTargetPayload, looksLikeQuotaError, asSteerDrainedInputs, appendSteerUserMessages } from '@/utils/streamReducer'
 import type { TurnErrorInfo, SubagentLifecyclePayload } from '@/utils/streamReducer'
+import { classifyQuotaError, bannerTriggerKey, providerLimitedMessage } from '@/utils/quotaWindows'
+import type { QuotaBannerTrigger } from '@/utils/quotaWindows'
 import i18n from '@/i18n/config'
 
 /** 前端诊断日志直落 idea.log（Java __jsLog 通道——console.warn 不被 JCEF 转发，
@@ -1140,6 +1142,12 @@ interface StoreState {
   /** 用量查询局部错误（凭证/HTTP 失败，不污染全局 lastError）*/
   usageError: string | null
 
+  // 会话额度横幅错误触发源（turn.failed / backendError 分类命中时写入；展示视图由
+  // useQuotaBanner 与 quota 数据派生，见 utils/quotaWindows.ts）。null = 无触发
+  quotaBannerError: import('@/utils/quotaWindows').QuotaBannerTrigger | null
+  /** 已关闭的横幅去重键（内存级：本 webview 生命周期内同源错误不重复打扰）*/
+  quotaBannerDismissed: string[]
+
   // 应用用量（usage/stats：app-server 本地聚合，含第三方模型，无 apiKey 依赖）
   appUsage: AppUsageData | null
   appUsageRange: AppUsageRange
@@ -1284,6 +1292,10 @@ interface StoreState {
   loadUsage: () => void
   /** 拉取额度（设置视图 + 圆环 popover 用）*/
   loadQuota: () => void
+  /** 关闭当前额度横幅（记录去重键，同源触发不再展示）*/
+  dismissQuotaBanner: (key: string) => void
+  /** 清除额度横幅错误触发源（窗口恢复/新回合开始时由 useQuotaBanner 调用）*/
+  clearQuotaBannerError: () => void
   /** 拉取记忆文件清单（设置视图「记忆」条目）*/
   loadMemoryFiles: () => void
   /** 自动记忆全文搜索（调用方防抖；空 query 退出搜索态）*/
@@ -1678,6 +1690,8 @@ export const useStore = create<StoreState>((set, get) => ({
   customStart: null,
   customEnd: null,
   usageError: null,
+  quotaBannerError: null,
+  quotaBannerDismissed: [],
   appUsage: null,
   appUsageRange: '7d',
   appUsageError: null,
@@ -2767,6 +2781,15 @@ export const useStore = create<StoreState>((set, get) => ({
     sendToJava({ op: 'getQuota' })
   },
 
+  dismissQuotaBanner: (key: string) => {
+    const { quotaBannerDismissed } = get()
+    // 去重键由组件层经 deriveQuotaBanner 得出后回传（store 只存，不重复派生）
+    if (quotaBannerDismissed.includes(key)) return
+    set({ quotaBannerDismissed: [...quotaBannerDismissed, key] })
+  },
+
+  clearQuotaBannerError: () => set({ quotaBannerError: null }),
+
   loadMemoryFiles: () => {
     set({ memoryLoading: true, memoryError: null })
     sendToJava({ op: 'listMemoryFiles' })
@@ -3601,6 +3624,26 @@ function formatTurnError(err: TurnErrorInfo): string {
   return err.message
     ? i18n.t('app.turnFailed', { message: err.message.slice(0, 300) })
     : i18n.t('app.turnFailedNoDetail')
+}
+
+/**
+ * 错误 → 额度横幅触发源（会话额度横幅，见 utils/quotaWindows.ts）。
+ * 仅 bigmodel 系渠道进横幅：第三方渠道的 429/quota 语义不可比，只走顶栏错误条。
+ */
+function quotaBannerTriggerFrom(
+  providerId: string | null | undefined,
+  code: string | number | undefined,
+  message: string | undefined,
+  statusCode?: number,
+): QuotaBannerTrigger | null {
+  if (!isBigmodelProvider(providerId)) return null
+  const kind = classifyQuotaError(code, message, statusCode)
+  if (!kind) return null
+  return {
+    kind,
+    ...(kind === 'provider-limited' ? { message: providerLimitedMessage(message) ?? undefined } : {}),
+    triggerKey: bannerTriggerKey(kind, code, message),
+  }
 }
 
 /**
@@ -4605,6 +4648,10 @@ export function handleResponse(
       // 到达（服务端按可重试分类持续退避，事件流上无迹象）——只提示，
       // 不复位 streaming（turn 可能仍在服务端重试，由终止帧收尾）
       set({ lastError: formatBackendError(msg.statusCode, msg.code, msg.message) })
+      // 会话额度横幅：分类命中且当前模型属 bigmodel 系时同步点亮（展示视图由
+      // useQuotaBanner 与额度数据派生；同源去重键防重复打扰）
+      const banner = quotaBannerTriggerFrom(get().currentModel?.providerId, msg.code, msg.message, msg.statusCode)
+      if (banner) set({ quotaBannerError: banner })
       break
     }
 
@@ -6080,6 +6127,11 @@ function handleStreamBatchDirect(
     patch.childSessionKeys = { ...get().childSessionKeys, ...childKeyPatch }
   }
   if (turnStarted) patch.streaming = true, patch.waitingSince = null
+  // 新回合开跑 = 瞬态额度问题（并发/限频/服务商边界）已被服务端放行，撤下横幅触发源；
+  // 耗尽类保留——窗口恢复由 useQuotaBanner 依据额度数据判定（额度未恢复时新回合仍会失败）
+  if (turnStarted && get().quotaBannerError && get().quotaBannerError!.kind !== 'window-exhausted') {
+    patch.quotaBannerError = null
+  }
   // 同批 completed+started（服务端自动续轮）时保留 reducer 返回的新 streamingMessageId，
   // 不能按"turn 结束"清空——清了后续 delta 全部丢失（实时断流）
   if (turnEnded && !turnStarted) {
@@ -6091,7 +6143,12 @@ function handleStreamBatchDirect(
     // 后台任务指示器不在回合结束清除（后台化确认后回合可能立即结束，
     // 任务仍在后台跑——由任务完成通知清除，见 bgCompleted 分支）
     // 失败回合展示错误详情（同批 failed+started 的自动续轮不打扰）
-    if (turnError) patch.lastError = formatTurnError(turnError)
+    if (turnError) {
+      patch.lastError = formatTurnError(turnError)
+      // 会话额度横幅触发源：与顶栏错误条并行点亮（耗尽类附窗口信息由视图层派生）
+      const banner = quotaBannerTriggerFrom(get().currentModel?.providerId, turnError.code, turnError.message)
+      if (banner) patch.quotaBannerError = banner
+    }
     // steer 插队 chip 活到回合结束：未落位（guide 降级队列被弃/命令失败等，罕见
     // 路径——实测 guide 命中时 steerDrained 早于 completed 到达），清 chip 并横幅
     // 提示可重发。带附件引导已砍（0.3.4 定案），不再有回合末促发分支。
@@ -6423,6 +6480,10 @@ function handleStreamEvent(
   // turn.started：进入流式，清除 waiting（开始有内容了）
   if (event.type === 'turn.started') {
     set({ streaming: true, waitingSince: null })
+    // 瞬态额度横幅随新回合撤下（同批量路径；耗尽类保留，由额度数据判定恢复）
+    if (get().quotaBannerError && get().quotaBannerError!.kind !== 'window-exhausted') {
+      set({ quotaBannerError: null })
+    }
   }
 
   const st = get()
@@ -6448,8 +6509,12 @@ function handleStreamEvent(
     // cancelling 在途不碰（同批量路径：撤回应答要按 restore 回插，先清 pending
     // 会让回插落空）
     const steerDropped = get().steerPending
+    // 失败回合同时点亮额度横幅触发源（同批量路径；与顶栏错误条并行）
+    const bannerTrigger = turnError
+      ? quotaBannerTriggerFrom(get().currentModel?.providerId, turnError.code, turnError.message)
+      : null
     const steerEndPatch: Partial<StoreState> = turnError
-      ? { lastError: formatTurnError(turnError), steerPending: steerDropped?.cancelling ? steerDropped : null }
+      ? { lastError: formatTurnError(turnError), ...(bannerTrigger ? { quotaBannerError: bannerTrigger } : {}), steerPending: steerDropped?.cancelling ? steerDropped : null }
       : steerDropped
         ? steerDropped.cancelling
           ? { steerPending: steerDropped }

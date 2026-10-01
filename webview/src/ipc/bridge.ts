@@ -1038,7 +1038,8 @@ function mockResponse(req: JavaRequest): JavaResponse | null {
       // mock：27.9% 上下文使用率（与真实场景接近）
       return { op: 'usage', sessionId: req.sessionId, used: 278937, size: 1000000, hitRate: 0.988 }
     case 'getQuota':
-      // mock：额度数据（5小时 86% / 每周 64%）；provider* 模拟订阅渠道凭证提示
+      // mock：额度数据（5h 池 86% / 每周 64% / 工具调用 40%）；number 对齐官方
+      // (type,unit,number) 三标准窗挑选，dev 模式可验窗口卡与横幅；provider* 模拟订阅渠道凭证提示
       return {
         op: 'quota',
         providerId: 'builtin:bigmodel-coding-plan',
@@ -1046,8 +1047,9 @@ function mockResponse(req: JavaRequest): JavaResponse | null {
         data: {
           level: 'Max',
           limits: [
-            { type: 'TOKENS_LIMIT', unit: 3, percentage: 86, currentValue: 430000, usage: 500000, nextResetTime: Date.now() + 3 * 3600 * 1000 },
+            { type: 'TOKENS_LIMIT', unit: 3, number: 5, percentage: 86, currentValue: 430000, usage: 500000, nextResetTime: Date.now() + 3 * 3600 * 1000 },
             { type: 'TOKENS_LIMIT', unit: 6, percentage: 64, currentValue: 1280000, usage: 2000000, nextResetTime: Date.now() + 5 * 24 * 3600 * 1000 },
+            { type: 'TIME_LIMIT', unit: 5, number: 1, percentage: 40, nextResetTime: Date.now() + 20 * 24 * 3600 * 1000 },
           ],
         },
       }

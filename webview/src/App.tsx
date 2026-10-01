@@ -16,6 +16,7 @@ import { useTheme } from '@/hooks/useTheme'
 import { ChatHeader } from '@/components/ChatHeader'
 import { ChatView } from '@/components/ChatView'
 import { StatusPanel } from '@/components/StatusPanel'
+import { QuotaBanner } from '@/components/QuotaBanner'
 import { HistoryView } from '@/components/HistoryView'
 import { SettingsView } from '@/components/SettingsView'
 import { InputBox } from '@/components/InputBox'
@@ -309,6 +310,9 @@ export default function App() {
             onSearchClose={() => setSearchOpen(false)}
           />
           <StatusPanel />
+          {/* 会话额度横幅（耗尽/并发/服务商边界/限频/低额提醒）：错误触发 + 60s 额度轮询派生，
+              窗口恢复或用户关闭后消失；只占 chat 列，错误详情仍在底部 lastError 条 */}
+          <QuotaBanner />
           <InputBox
             onSend={(text, _filePaths, attachments) => sendMessage(text, attachments)}
             isStreaming={streaming}

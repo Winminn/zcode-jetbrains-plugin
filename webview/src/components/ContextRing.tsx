@@ -17,7 +17,8 @@ import { useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { useTranslation } from 'react-i18next'
 import { useStore, isBigmodelProvider } from '@/store/useStore'
-import { fmtTokens, limitTitle, fmtResetTime, fmtTime } from '@/utils/format'
+import { fmtTokens, limitTitle, fmtResetTimeCompact, fmtResetDate, fmtTime } from '@/utils/format'
+import { quotaWindowRows, remainingPercent, formatRemainPct, WINDOW_LABEL_I18N } from '@/utils/quotaWindows'
 import type { ContextBreakdownItem, ContextSource } from '@/types/messages'
 import { ConfirmDialog } from './ConfirmDialog'
 import '../styles/input-box.less'
@@ -206,21 +207,26 @@ export function ContextRing() {
               </div>
             )}
 
-            {/* GLM 额度（仅 GLM 套餐模型）*/}
+            {/* GLM 额度窗口卡（仅 GLM 套餐模型）：官方 Usage Remaining 同构——
+                三标准窗（5h 池/周/工具调用）按 (type,unit,number) 挑选、剩余口径
+                （percentage 为已用占比，展示取 100-已用）；其余形状落「通用额度」行，
+                形状漂移不空窗。reset：5h 当日 HH:mm 紧凑，周/工具只显日期 */}
             {isGlmPlan && (
               <div className="ctx-popover__section">
                 <div className="ctx-popover__title">
                   {quota?.level ? t('usage.context.glmQuotaWithLevel', { level: quota.level }) : t('usage.context.glmQuota')}
                 </div>
-                {quota?.limits?.length ? (
-                  quota.limits.map((l, i) => {
-                    const p = Math.min(100, Math.max(0, l.percentage ?? 0))
+                {quotaWindowRows(quota?.limits).length ? (
+                  quotaWindowRows(quota?.limits).map(({ key, limit }, i) => {
+                    const remain = remainingPercent(limit)
                     return (
                       <div className="ctx-popover__row" key={i}>
-                        <span className="ctx-popover__label">{limitTitle(l)}</span>
-                        <span className="ctx-popover__num">{p.toFixed(0)}%</span>
-                        {l.nextResetTime ? (
-                          <span className="ctx-popover__reset">{t('usage.quota.resetAt', { time: fmtResetTime(l.nextResetTime) })}</span>
+                        <span className="ctx-popover__label">{key === 'other' ? limitTitle(limit) : t(WINDOW_LABEL_I18N[key])}</span>
+                        <span className="ctx-popover__num">{remain !== null ? formatRemainPct(remain) : '--'}</span>
+                        {limit.nextResetTime ? (
+                          <span className="ctx-popover__reset">
+                            {t('usage.quota.resetAt', { time: key === '5h' ? fmtResetTimeCompact(limit.nextResetTime) : fmtResetDate(limit.nextResetTime) })}
+                          </span>
                         ) : null}
                       </div>
                     )
