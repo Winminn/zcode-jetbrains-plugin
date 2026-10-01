@@ -17,6 +17,7 @@ import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.contentOrNull
+import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
@@ -392,6 +393,7 @@ class ZCodeServiceImpl(private val project: Project) : ZCodeService, com.intelli
             // 面板初始化时环境未就绪会抛 EnvCheckException 跳过注册，若不在此补注册，
             // 用户配好环境后 handler 永远缺席（Mac 首启 PATH 探测失败即触发过）
             registerProtocolHandlersLocked(newClient)
+            hookSessionsIndex(newClient)
             // app-server 新进程就绪即补扫自动归档（缺陷BH）：调度器已随项目启动（eager init）
             // 但客户端可能晚起，此处保证「客户端一起来 15s 内必有一轮」，不必等 30min 周期或
             // 归档 tab 打开。扫描内部 isStarted 短路，不会递归拉起新进程；只在新进程构造路径
@@ -494,6 +496,111 @@ class ZCodeServiceImpl(private val project: Project) : ZCodeService, com.intelli
             }
         } catch (e: Exception) {
             log.warn("Protocol handler registration failed (will retry on next getClient): ${e.message}")
+        }
+    }
+
+    // ===== 会话列表活性订阅（sessions-index v4 topic）=====
+
+    /**
+     * 整 workspace 会话索引的常驻订阅（官方桌面客户端侧栏同源数据面）：
+     * 相位/标题/最近活动/后台工作标记全推送，列表行不再只靠本进程事件流——
+     * 官方桌面端/手机 H5 驱动的会话在 IDE 里同样实时翻转（此前跨进程无感知，
+     * 调研结论见项目记忆 zcode-sessions-index-refresh-entry：publisher 永驻内存、
+     * 只吃本进程事件流，本订阅是官方 wire 面上唯一的全量活性通道）。
+     *
+     * 成本：+1 条 workspace 级 v4 订阅（非会话驻留池，16 槽账本不统计它；
+     * 与官方桌面端每个打开的 workspace 恒持一条同构）。
+     */
+    private fun hookSessionsIndex(c: ZCodeProtocolClient) {
+        // 帧监听随 client 实例注册（v4 帧泵对所有 topic 透传，此处按 topic 前缀分拣）
+        c.addV4FrameListener { params ->
+            runCatching { handleSessionsIndexFrame(c, params) }
+        }
+        // 订阅 RPC 异步发出：本函数在 getClient 锁内的启动路径被调，同步等订阅回包
+        // （忙窗口最长 10s 超时）会把所有等 getClient 的调用方一起堵住
+        com.intellij.util.concurrency.AppExecutorUtil.getAppExecutorService().submit {
+            subscribeSessionsIndex(c)
+        }
+    }
+
+    private fun subscribeSessionsIndex(c: ZCodeProtocolClient) {
+        try {
+            val ws = project.basePath ?: return
+            // topic 的 workspaceId = 原始路径（2026-10-01 diag-v4-sessions-index-dump 实帧）；
+            // workspace 参数必带——部分版本缺席时订阅成功但无 initial 快照帧（2026-09-22 真机）
+            val ack = c.v4ConversationSubscribe(
+                "sessions-index/$ws",
+                connectionId = "zcode-plugin-index",
+                workspacePath = ws,
+            )
+            log.info("[sessions-index] subscribed: ${ack["ack"].toString().take(140)}")
+        } catch (e: Exception) {
+            // 订阅失败不致命：列表退回 session/list 拉取语义，仅活性推送缺席
+            log.warn("[sessions-index] subscribe failed: ${e.message?.take(160)}")
+        }
+    }
+
+    /** sessions-index 帧分拣：initial 快照（full 合并）与增量（upsert/removed）。
+     *  帧形状照官方 publisher 实证：快照 payload={kind:"snapshot",snapshot}、
+     *  增量 payload={kind:"deltas",deltas[]}（复数——2026-10-01 源码核对
+     *  sessions-index-publisher.ts reserveDeltaFrame）；seq 断档时服务端整帧退化为
+     *  snapshot，客户端无需处理续传。"delta" 单数留作容错别名 */
+    private fun handleSessionsIndexFrame(c: ZCodeProtocolClient, params: JsonObject) {
+        val topic = params["topic"]?.jsonPrimitive?.contentOrNull ?: return
+        if (!topic.startsWith("sessions-index/")) return
+        val payload = params["frame"]?.jsonObject?.get("payload")?.jsonObject ?: return
+        when (payload["kind"]?.jsonPrimitive?.contentOrNull) {
+            "snapshot" -> {
+                val sessions = payload["snapshot"]?.jsonObject?.get("sessions")?.jsonArray ?: return
+                // 快照时机强制刷新软删缓存（首次对账最便宜的时刻）
+                hiddenTaskIdAt = 0L
+                pushSessionsIndex(c, sessions.mapNotNull { it as? JsonObject }, full = true, removedIds = emptyList())
+            }
+            "deltas", "delta" -> {
+                val deltas = payload["deltas"]?.jsonArray ?: return
+                val upserts = mutableListOf<JsonObject>()
+                val removed = mutableListOf<String>()
+                for (d in deltas) {
+                    val o = d as? JsonObject ?: continue
+                    when (o["op"]?.jsonPrimitive?.contentOrNull) {
+                        "session.upserted" -> (o["session"] as? JsonObject)?.let { upserts.add(it) }
+                        "session.removed" -> o["sessionId"]?.jsonPrimitive?.contentOrNull?.let { removed.add(it) }
+                    }
+                }
+                pushSessionsIndex(c, upserts, full = false, removedIds = removed)
+            }
+        }
+    }
+
+    private fun pushSessionsIndex(c: ZCodeProtocolClient, entries: List<JsonObject>, full: Boolean, removedIds: List<String>) {
+        if (entries.isEmpty() && removedIds.isEmpty()) return
+        val hidden = hiddenTaskIds(c)
+        val visible = entries.filter { e ->
+            val sid = e["sessionId"]?.jsonPrimitive?.contentOrNull ?: return@filter false
+            // 子代理子会话不进列表（与 session/list 同口径）；软删过滤（见 [hiddenTaskIds]）
+            !sid.startsWith("sess_subagent") && sid !in hidden
+        }
+        val removedVisible = removedIds.filter { !it.startsWith("sess_subagent") && it !in hidden }
+        if (visible.isEmpty() && removedVisible.isEmpty()) return
+        com.zcode.ideaplugin.ui.ZCodeToolWindowPanel.broadcastSessionsIndex(visible, removedVisible, full)
+    }
+
+    /** 软删会话 id 缓存（60s TTL）。实证：归档会话不在 sessions-index（无需过滤）、
+     *  软删在（publisher 不排——2026-10-01 直连对账 344 归档 0 命中 / 520 软删 185 命中），
+     *  客户端删除=纯软删，不过滤会复活僵尸行。delta 高频期不逐帧查库 */
+    @Volatile private var hiddenTaskIdCache: Set<String> = emptySet()
+    @Volatile private var hiddenTaskIdAt: Long = 0L
+
+    private fun hiddenTaskIds(c: ZCodeProtocolClient): Set<String> {
+        val now = System.currentTimeMillis()
+        if (hiddenTaskIdAt != 0L && now - hiddenTaskIdAt < 60_000L) return hiddenTaskIdCache
+        return try {
+            val ids = c.taskIndex.listTasks().filter { it.archived || it.deleted }.map { it.taskId }.toSet()
+            hiddenTaskIdCache = ids
+            hiddenTaskIdAt = now
+            ids
+        } catch (e: Exception) {
+            hiddenTaskIdCache // 读库失败沿用旧缓存（宁多显示不漏显示）
         }
     }
 

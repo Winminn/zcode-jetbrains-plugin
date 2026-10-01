@@ -21,6 +21,9 @@ import { applyStreamEvent, isSubagentToolEvent, applySubagentToolEvent, markActi
 import type { TurnErrorInfo, SubagentLifecyclePayload } from '@/utils/streamReducer'
 import { classifyQuotaError, bannerTriggerKey, providerLimitedMessage } from '@/utils/quotaWindows'
 import type { QuotaBannerTrigger } from '@/utils/quotaWindows'
+import { isDefaultSessionTitle } from '@/utils/format'
+import { mergeSessionsIndex } from '@/utils/sessionIndexMerge'
+import type { SessionIndexEntry } from '@/types/messages'
 import i18n from '@/i18n/config'
 
 /** 前端诊断日志直落 idea.log（Java __jsLog 通道——console.warn 不被 JCEF 转发，
@@ -3297,12 +3300,6 @@ let listSessionsSentAt = 0
  * 服务端标题是否仍是占位（未生成正式标题）：
  * 空 / 会话 id 本身 / sess_ 前缀（CLI 新会话初始 title 即会话 id）。
  */
-function isDefaultSessionTitle(title: string | undefined, sessionId: string): boolean {
-  const t = title?.trim()
-  if (!t) return true
-  return t === sessionId || t.startsWith('sess_')
-}
-
 /** 从用户消息提炼临时标题：首个非空行，超 40 字符截断（与 CLI 首轮输入作标题的行为一致）*/
 function deriveProvisionalTitle(text: string): string {
   const firstLine = text.trim().split('\n').map((l) => l.trim()).find((l) => l.length > 0) ?? ''
@@ -5408,6 +5405,30 @@ export function handleResponse(
           ),
         })
         if (!running) scheduleTurnEndListRefresh(get)
+      }
+      break
+    }
+
+    case 'sessionIndexUpdate': {
+      // 会话列表活性订阅（sessions-index v4 topic，Kotlin 过滤软删/子会话后推送）：
+      // 官方桌面端/手机 H5 驱动的会话此前在本进程零事件流、列表只能停在旧快照
+      // （跨进程改动须重启 agent runtime 才可见）——索引推送补齐这个面。合并是
+      // 叠加语义（session/list 快照仍是权威底座），纯函数见 utils/sessionIndexMerge
+      const merged = mergeSessionsIndex({
+        prev: get().sessions,
+        entries: (msg.sessions ?? []) as SessionIndexEntry[],
+        removed: (msg.removed ?? []) as string[],
+        currentId: get().currentSessionId,
+      })
+      if (merged !== get().sessions) {
+        // 回合运行中的行强制 running（与 listSessions 收口同法）：remoteRunningTurns
+        // 是本进程事件流的投影，相位可能晚于索引帧到达
+        const runningIds = Object.keys(get().remoteRunningTurns)
+        set({
+          sessions: runningIds.length
+            ? merged.map((s) => (runningIds.includes(s.sessionId) ? { ...s, status: 'running' } : s))
+            : merged,
+        })
       }
       break
     }

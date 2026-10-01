@@ -28,6 +28,7 @@ import { readNotifyConfig, writeNotifyConfig } from '@/utils/notifyConfig'
 import { readEnhanceConfig, writeEnhanceConfig, type EnhanceModel } from '@/utils/enhanceConfig'
 import { readTurnCollapseConfig, writeTurnCollapseConfig, type TurnCollapseConfig } from '@/utils/turnCollapseConfig'
 import { readAskUserAutoConfig, writeAskUserAutoConfig } from '@/utils/askUserConfig'
+import { readCommitPromptConfig, writeCommitPromptConfig } from '@/utils/commitPromptConfig'
 import { useStore } from '@/store/useStore'
 import '../styles/basic-settings.less'
 import '../styles/agent-select.less'
@@ -41,6 +42,17 @@ export function BehaviorSettings() {
   const [modelOpen, setModelOpen] = useState(false)
   // 提问自动继续（插件自有 persist kv 配置，默认关=一直等待回答）
   const [askUserAuto, setAskUserAuto] = useState(readAskUserAutoConfig)
+
+  // AI 提交信息附加要求（persist kv 配置，IDE 提交框 AI 按钮读取；失焦即存）
+  const [commitPrompt, setCommitPrompt] = useState(readCommitPromptConfig)
+  const [commitPromptSaved, setCommitPromptSaved] = useState(false)
+
+  const saveCommitPrompt = (text: string) => {
+    setCommitPrompt(text)
+    writeCommitPromptConfig(text)
+    setCommitPromptSaved(true)
+    window.setTimeout(() => setCommitPromptSaved(false), 1500)
+  }
 
   const updateAskUserAuto = (patch: Partial<typeof askUserAuto>) => {
     const next = { ...askUserAuto, ...patch }
@@ -220,6 +232,28 @@ export function BehaviorSettings() {
         <small className="basic-settings__hint">
           <span className="codicon codicon-info" />
           <span>{t('settings.behavior.askUserAuto.hint')}</span>
+        </small>
+      </section>
+      <section className="basic-settings__section">
+        <div className="basic-settings__field-header">
+          <span className="codicon codicon-git-commit" />
+          <span className="basic-settings__field-label">{t('settings.behavior.commitPrompt.title')}</span>
+          {commitPromptSaved && <span className="basic-settings__saved-hint">{t('settings.behavior.commitPrompt.saved')}</span>}
+        </div>
+        <textarea
+          className="basic-settings__textarea"
+          value={commitPrompt}
+          placeholder={t('settings.behavior.commitPrompt.placeholder')}
+          onChange={(e) => setCommitPrompt(e.target.value)}
+          onBlur={(e) => {
+            // 内容有实际变化才写（失焦即存，避免每次点击都触发 kv 回存）
+            if (e.target.value !== readCommitPromptConfig()) saveCommitPrompt(e.target.value)
+          }}
+          rows={3}
+        />
+        <small className="basic-settings__hint">
+          <span className="codicon codicon-info" />
+          <span>{t('settings.behavior.commitPrompt.hint')}</span>
         </small>
       </section>
     </>

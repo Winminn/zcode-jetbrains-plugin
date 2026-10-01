@@ -288,6 +288,24 @@ export interface SessionInfo {
   goalTarget?: boolean
 }
 
+/**
+ * sessions-index v4 topic 的会话摘要（官方 SessionSummary 原样字段，Java 侧已过滤
+ * 子代理会话与软删）。列表活性订阅（op=sessionIndexUpdate）的行数据。
+ */
+export interface SessionIndexEntry {
+  sessionId: string
+  workspaceId?: string
+  title?: string
+  /** custom=用户显式重命名；default/generated 均非手动标题（官方 titleSource 语义） */
+  titleSource?: string
+  /** draft/prewarming/running/completedSuccess/completedInterrupted/error */
+  phase?: string
+  sessionEnded?: boolean
+  hasBackgroundWork?: boolean
+  lastActivityAt?: number
+  createdAt?: number
+}
+
 // ============ IPC 请求 / 响应（JS ↔ Java）============
 
 /** 外观配置（IDE 侧 PropertiesComponent 权威源；'' = 恢复主题默认/跟随 IDE）*/
@@ -1014,6 +1032,8 @@ export type JavaResponse =
    *  sessions-index topic 订阅里，需常驻占 v4 订阅槽） */
   | { op: 'pendingInteractions'; counts: Record<string, number> }
   | { op: 'sessionTurnPhase'; sessionId: string; phase: 'running' | 'ended' }
+  /** 会话索引推送（sessions-index v4 订阅）：full=initial 快照全量；sessions 为官方 SessionSummary 过滤后的原样字段 */
+  | { op: 'sessionIndexUpdate'; full: boolean; sessions: SessionIndexEntry[]; removed: string[] }
   /** steerMessage 应答：accepted=true 时 UI 由 turn.steerQueued/steerDrained 事件驱动；error=受理失败（清 chip + 横幅）。queueItemId=queue_<commandId>（前端已预置，ack 仅核对）*/
   | { op: 'steerMessage'; sessionId: string; accepted?: boolean; delivery?: string; queueItemId?: string; error?: string }
   /** cancelSteer 应答：removed=true 已撤销（清 chip + 队列条目回插）；false=已注入落位（queue.itemMissing），提示不可撤 */

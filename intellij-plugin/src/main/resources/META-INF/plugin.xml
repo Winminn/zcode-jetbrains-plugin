@@ -29,6 +29,10 @@
          2026.1 及以下该插件 ID 不存在（JCEF 仍在平台核心），可选配置被忽略不影响加载。 -->
     <depends>com.intellij.modules.platform</depends>
     <depends optional="true" config-file="jcef-dependency.xml">com.intellij.modules.jcef</depends>
+    <!-- AI Commit Message（提交框 AI 生成按钮）：git4idea 出真 diff（各家 IDE 均内置捆绑；
+         缺失时仅提交框按钮缺席，其余功能不受影响）。Action 注册在可选配置文件，
+         无 git4idea 的 IDE 不加载该类（类体内引用 git4idea，不随主配置强载） -->
+    <depends optional="true" config-file="git4idea-dependency.xml">Git4Idea</depends>
 
     <!-- 原生 UI 文案 bundle（messages/ZCodeBundle*.properties，默认中文 + en/ja/ko） -->
     <resource-bundle>messages.ZCodeBundle</resource-bundle>

@@ -311,6 +311,31 @@ class ZCodeToolWindowPanel(
         }
 
         /**
+         * 会话索引推送（ZCodeServiceImpl sessions-index 订阅 → 所有已开标签）：
+         * 整 workspace 会话的活性数据（相位/标题/最近活动）。sessions 条目是官方
+         * SessionSummary 的原样 JSON（过滤后），removed 为服务端移除的会话 id；
+         * full=true 表示 initial 快照全量。合并语义在前端 store（叠加不替换）。
+         */
+        fun broadcastSessionsIndex(sessions: List<JsonObject>, removedIds: List<String>, full: Boolean) {
+            val sessionsJson = JsonArray(sessions)
+            val removedJson = JsonArray(removedIds.map { JsonPrimitive(it) })
+            SwingUtilities.invokeLater {
+                activePanels.forEach { panel ->
+                    try {
+                        panel.pushToWebview(buildJsonObject {
+                            put("op", "sessionIndexUpdate")
+                            put("full", full)
+                            put("sessions", sessionsJson)
+                            put("removed", removedJson)
+                        })
+                    } catch (_: Exception) {
+                        // 未初始化/销毁中的标签跳过
+                    }
+                }
+            }
+        }
+
+        /**
          * 回合相位广播（ZCodeServiceImpl 全局事件监听 → 所有已开标签）：会话列表行
          * 运行中/复位的实时数据源。手机远程驱动的会话在 IDE 无本地 streaming 状态，
          * 列表行只能停在旧快照值（表现为运行中却显示已完成）；本地回合同样受益

@@ -212,6 +212,12 @@
       "hint": "Waits indefinitely by default (no countdown, never auto-closes); plan approvals keep the 5-minute timeout. Plugin-local only, independent of the ZCode client setting",
       "onHint": "Click to disable auto-continue",
       "offHint": "Click to enable auto-continue"
+    },
+    "commitPrompt": {
+      "title": "AI Commit Message Extra Prompt",
+      "saved": "Saved",
+      "placeholder": "e.g. use feat#/fix# type markers (no scope parentheses); body summarizes what & why first",
+      "hint": "Extra requirements for the \"Generate Commit Message with AI\" button in the IDE commit dialog, appended after the built-in spec with priority. Recent commit subjects of this repo are also fed as style reference automatically. Leave empty for the default style."
     }
   }
 }

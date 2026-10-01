@@ -102,6 +102,16 @@ export function fmtResetDate(ts?: number): string {
   return `${mm}-${dd}`
 }
 
+/**
+ * 会话标题是否为占位值（空 / 会话 id / sess_ 前缀）：标题合并防回退守卫共用判据
+ * （listSessions 快照合并与 sessionIndexUpdate 活性合并同源，防双份漂移）
+ */
+export function isDefaultSessionTitle(title: string | undefined, sessionId: string): boolean {
+  const t = title?.trim()
+  if (!t) return true
+  return t === sessionId || t.startsWith('sess_')
+}
+
 /** X 轴标签格式化（对齐 glm parseXTime）：daily → MM-DD，hourly → HH:mm */
 export function formatXLabel(t: string, granularity?: string): string {
   if (granularity === 'daily') return t.slice(5) // MM-DD

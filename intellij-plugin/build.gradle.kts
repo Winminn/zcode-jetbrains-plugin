@@ -99,8 +99,9 @@ intellij {
     version.set("2024.1")
     type.set("IC")  // IC = Idea Community
 
-    // 用到的插件（Bundled）
-    plugins.set(listOf())
+    // 用到的插件（Bundled）：Git4Idea = AI Commit Message 的真 diff 源（各家 IDE 均内置；
+    // plugin.xml 以 optional depends 声明，运行期缺失不致命、仅提交框按钮缺席）
+    plugins.set(listOf("Git4Idea"))
 
     // 不每次都更新 plugin
     updateSinceUntilBuild.set(false)

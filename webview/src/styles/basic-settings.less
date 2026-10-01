@@ -482,3 +482,31 @@
   gap: 8px;
   margin-bottom: 8px;
 }
+
+/* AI 提交信息附加要求（多行输入；样式对齐消息编辑 textarea）*/
+.basic-settings__textarea {
+  width: 100%;
+  min-height: 64px;
+  margin-top: 8px;
+  padding: 8px 10px;
+  border: 1px solid var(--border-primary);
+  border-radius: 8px;
+  background: var(--bg-elevated);
+  color: var(--text-primary);
+  font-size: 12px;
+  line-height: 1.5;
+  font-family: inherit;
+  resize: vertical;
+  outline: none;
+  transition: border-color 0.15s;
+
+  &:focus {
+    border-color: var(--button-primary);
+  }
+}
+
+.basic-settings__saved-hint {
+  margin-left: auto;
+  font-size: 11px;
+  color: var(--status-success);
+}
