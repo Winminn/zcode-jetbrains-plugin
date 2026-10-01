@@ -177,6 +177,55 @@
     "confirmMessage": "기록은 이 답변까지 유지되며 원본 세션은 영향을 받지 않습니다.",
     "confirmOk": "분기"
   },
+  "fileChanges": {
+    "summary": "{{count}}개 파일 변경됨 · +{{additions}} −{{deletions}}",
+    "reverted": "복원됨",
+    "openTitle": "이 턴의 파일 변경 보기",
+    "dialogTitle": "이 턴의 파일 변경",
+    "turnSummary": "{{files}}개 파일 · +{{additions}} −{{deletions}}",
+    "backToList": "파일 목록으로",
+    "rewindBtn": "이 턴 복원하기…",
+    "writeCount": "{{count}}회 쓰기",
+    "noPatches": "표시할 패치가 없습니다",
+    "rewindTitle": "이 턴의 파일 변경 복원",
+    "rewindIntro": "이 턴이 쓴 파일을 복원/삭제합니다 (대화 기록에는 영향이 없음; 복원 작업 자체는 되돌릴 수 없음)",
+    "safeSection": "적용될 내용 ({{count}})",
+    "unsafeSection": "안전하게 복원할 수 없는 파일 ({{count}})",
+    "ignoredSection": "복원 대상 외 ({{count}})",
+    "actionRestore": "복원",
+    "tool": {
+      "Write": "쓰기",
+      "Edit": "편집",
+      "MultiEdit": "일괄 편집",
+      "NotebookEdit": "Notebook 편집"
+    },
+    "actionDelete": "삭제",
+    "unsafeHint": "안전하게 복원할 수 없는 파일이 있습니다 (세션 외부에서 수정되었을 수 있음). 작업 공간을 보호하기 위해 이번에는 아무것도 복원하지 않습니다.",
+    "confirmRewind": "복원하기",
+    "applying": "복원 중…",
+    "empty": "이 턴에서는 파일 변경이 없습니다",
+    "reason": {
+      "external_modified": "세션 외부에서 수정됨",
+      "checkpoint_missing": "체크포인트 데이터 없음",
+      "checkpoint_unreadable": "체크포인트 데이터 손상됨",
+      "file_read_failed": "파일 읽기 실패",
+      "unsupported_checkpoint": "지원하지 않는 체크포인트 유형"
+    },
+    "err": {
+      "unsupported": "현재 CLI 버전에서는 지원하지 않습니다",
+      "targetGone": "해당 턴의 세션 데이터를 찾을 수 없습니다",
+      "snapshotTimeout": "연결 시간 초과, 다시 시도하세요",
+      "revisionUnknown": "세션 상태가 준비되지 않았습니다, 잠시 후 다시 시도하세요",
+      "stale": "세션 상태가 변경되었습니다, 다시 시도하세요",
+      "commandFailed": "복원이 거부되었습니다",
+      "missingParams": "매개변수 누락",
+      "internal": "작업 실패"
+    },
+    "review": "검토",
+    "reviewDiffTitle": "{{name}} 변경 비교",
+    "openBtn": "열기",
+    "rewindShort": "되돌리기"
+  },
   "resend": {
     "confirmTitle": "이 메시지를 다시 보내시겠습니까?",
     "confirmMessage": "원문 그대로 다시 보내어 답변을 재생성합니다. 현재 답변은 삭제됩니다.",

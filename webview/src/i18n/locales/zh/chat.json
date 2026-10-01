@@ -177,6 +177,55 @@
     "confirmMessage": "历史保留到这条回复（含），原会话不受影响。",
     "confirmOk": "分叉"
   },
+  "fileChanges": {
+    "summary": "{{count}} 个文件已更改 · +{{additions}} −{{deletions}}",
+    "reverted": "已撤销",
+    "openTitle": "查看本轮文件更改",
+    "dialogTitle": "本轮文件更改",
+    "turnSummary": "{{files}} 个文件 · +{{additions}} −{{deletions}}",
+    "backToList": "返回文件列表",
+    "rewindBtn": "撤销此轮更改…",
+    "writeCount": "写入 {{count}} 次",
+    "noPatches": "该文件没有可显示的补丁",
+    "rewindTitle": "撤销本轮文件改动",
+    "rewindIntro": "将恢复/删除本轮对文件的改动（不影响聊天记录；撤销操作本身无法再撤销）",
+    "safeSection": "将执行（{{count}}）",
+    "unsafeSection": "无法自动撤销（{{count}}）",
+    "ignoredSection": "不在撤销范围（{{count}}）",
+    "actionRestore": "恢复",
+    "tool": {
+      "Write": "写入",
+      "Edit": "编辑",
+      "MultiEdit": "批量编辑",
+      "NotebookEdit": "编辑 Notebook"
+    },
+    "actionDelete": "删除",
+    "unsafeHint": "存在无法安全撤销的文件（可能已在会话外被修改）。为保护当前工作区，本次不执行任何撤销。",
+    "confirmRewind": "确认撤销",
+    "applying": "正在撤销…",
+    "empty": "本轮没有文件改动",
+    "reason": {
+      "external_modified": "文件在会话外被修改过",
+      "checkpoint_missing": "检查点数据缺失",
+      "checkpoint_unreadable": "检查点数据损坏",
+      "file_read_failed": "文件读取失败",
+      "unsupported_checkpoint": "不支持的检查点类型"
+    },
+    "err": {
+      "unsupported": "当前 CLI 版本不支持此能力",
+      "targetGone": "找不到该轮的会话数据",
+      "snapshotTimeout": "连接超时，请重试",
+      "revisionUnknown": "会话状态未就绪，请稍后重试",
+      "stale": "会话状态已变化，请重试",
+      "commandFailed": "撤销被拒绝",
+      "missingParams": "参数缺失",
+      "internal": "操作失败"
+    },
+    "review": "审查",
+    "reviewDiffTitle": "{{name}} 修改前后对比",
+    "openBtn": "打开",
+    "rewindShort": "撤销"
+  },
   "resend": {
     "confirmTitle": "重发这条消息？",
     "confirmMessage": "将按原文重新发送并重新生成回复，当前这轮回复会被裁掉。",

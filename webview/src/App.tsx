@@ -26,6 +26,7 @@ import { SubagentDetailDialog } from '@/components/SubagentDetailDialog'
 import { SubagentReportDialog } from '@/components/SubagentReportDialog'
 import { MarkdownPreviewDialog } from '@/components/MarkdownPreviewDialog'
 import { AskUserReviewDialog } from '@/components/AskUserReviewDialog'
+import { TurnFileChangesDialog } from '@/components/TurnFileChangesDialog'
 import { PairingDialog } from '@/components/PairingDialog'
 import { ConfirmDialog } from '@/components/ConfirmDialog'
 import { ChangelogDialog, CHANGELOG_LAST_SEEN_KEY } from '@/components/ChangelogDialog'
@@ -455,6 +456,8 @@ export default function App() {
       <MarkdownPreviewDialog />
       {/* AskUserQuestion 回看弹窗（消息流「询问用户」工具卡点击，只读回看问题与已选答案）*/}
       <AskUserReviewDialog />
+      {/* 逐轮文件更改弹窗（B2 回合产物：更改条点击打开，含撤销该轮文件改动）*/}
+      <TurnFileChangesDialog />
       {/* 手机远程配对弹窗（Header 手机图标打开，store 自管理开关）*/}
       <PairingDialog />
       {/* 版本更新弹窗（条件渲染：每次打开从最新版页开始；关闭即记已读当前版本）*/}

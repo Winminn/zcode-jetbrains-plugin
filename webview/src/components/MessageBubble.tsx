@@ -24,12 +24,14 @@
 import { Fragment, memo, useEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { useTranslation } from 'react-i18next'
-import type { ZCodeMessage, MessagePart, TextPart, ImagePart, FilePart } from '@/types/messages'
+import type { ZCodeMessage, MessagePart, TextPart, ImagePart, FilePart, TurnFileChangeSummary, TurnFileChangeItem, JavaResponse } from '@/types/messages'
 import { useStore } from '@/store/useStore'
+import { onMessage, sendToJava } from '@/ipc/bridge'
 
 import { renderUserRefChips, hasUserRefChips, type CmdRefInfo } from '@/utils/userRefChips'
 import { MarkdownBlock } from './MarkdownBlock'
 import { AgentNotificationCard } from './AgentNotificationCard'
+import { FileIcon } from './FileIcon'
 import { isAgentNotification, isCompactSummaryMessage, findTimelinePart } from '@/utils/parseNotification'
 import { clockTime, compactTokens, formatDuration } from '@/utils/time'
 import { readTurnCollapseConfig } from '@/utils/turnCollapseConfig'
@@ -752,6 +754,9 @@ function AssistantBubble({
   const [confirmFork, setConfirmFork] = useState(false)
   const forkBusy = useStore((s) => s.forkBusy)
   const forkSupported = useStore((s) => s.forkSupported)
+  // 逐轮文件更改条（B2 回合产物）：key = 消息 id = turnHeader entityId（mapper 构造
+  // UI 轮身份的同源约定）；无数据（纯对话轮/老 CLI/历史窗口外）不渲染
+  const turnFileChanges = useStore((s) => s.turnFileChanges[info.id])
   const forkMsgId = lastSeg ? lastSeg.msg.info.id : info.id
   const forkable =
     forkSupported &&
@@ -850,6 +855,9 @@ function AssistantBubble({
           renderedUnits
         )}
       </div>
+      {turnFileChanges && turnFileChanges.files > 0 && (
+        <TurnFileChangesBar fc={turnFileChanges} messageId={info.id} />
+      )}
       <MessageFooter
         info={footerInfo}
         time={time}
@@ -868,6 +876,170 @@ function AssistantBubble({
           }}
           onCancel={() => setConfirmFork(false)}
         />
+      )}
+    </div>
+  )
+}
+
+/**
+ * 逐轮文件更改卡片（B2 回合产物，UI 对齐官方客户端）：
+ * 头部行（chevron + 「N 个文件已更改 +x −y」+ 撤销按钮）点击展开逐文件行——
+ * 文件名 + 目录（灰）+ 行数统计 + 「审查」（IDEA 侧内嵌对比弹窗：本轮 hunk 着色渲染
+ * unified patch，数据即服务端直出、不读磁盘永不失真；异常时降级内置 diff 弹窗定位）/
+ * 「打开」（IDE 编辑器打开原文件）。明细懒加载（首次展开发 turnFileChanges 查询，
+ * 响应与弹窗各自消费互不干扰）。
+ * reverted（该轮已撤销）时头部弱化 + 徽标，无撤销按钮。
+ */
+/** 导出仅供测试（卡片交互：展开懒加载/审查/打开按钮） */
+export function TurnFileChangesBar({ fc, messageId }: { fc: TurnFileChangeSummary; messageId: string }) {
+  const { t } = useTranslation()
+  const sessionId = useStore((s) => s.currentSessionId)
+  const workspacePath = useStore((s) => s.projectPath)
+  const openDialog = useStore((s) => s.openTurnFileChanges)
+  const [expanded, setExpanded] = useState(false)
+  const [items, setItems] = useState<TurnFileChangeItem[] | null>(null)
+  const [loading, setLoading] = useState(false)
+
+  // 展开：懒加载明细
+  useEffect(() => {
+    if (!expanded || !sessionId || items || loading) return
+    setLoading(true)
+    sendToJava({ op: 'turnFileChanges', sessionId, messageId })
+  }, [expanded, sessionId, items, loading, messageId])
+
+  // 响应监听（按 messageId 匹配本卡片；弹窗的监听各自独立互不干扰）
+  useEffect(() => {
+    const off = onMessage((msg: JavaResponse) => {
+      if (msg.op === 'turnFileChangesResult' && msg.messageId === messageId) {
+        setItems(msg.data.items)
+        setLoading(false)
+      } else if (msg.op === 'turnFileChangesError') {
+        setLoading(false)
+      } else if (msg.op === 'turnFileDiffError') {
+        // IDEA 侧内嵌对比弹窗异常（正常链路不会出现，兜底）：降级内置 diff 弹窗定位该文件
+        if (msg.path) openDialog(messageId, { path: msg.path })
+      }
+    })
+    return off
+  }, [messageId, openDialog])
+
+  // v4 协议 items[].path 相对 workspace；容忍服务端给绝对路径的形态
+  const toAbsPath = (path: string) => {
+    const norm = path.replace(/\\/g, '/')
+    const base = (workspacePath || '').replace(/\\/g, '/').replace(/\/$/, '')
+    const full =
+      base && !norm.startsWith(base) && !/^[a-zA-Z]:\//.test(norm)
+        ? `${base}/${norm.replace(/^\//, '')}`
+        : norm
+    return full
+  }
+
+  const openInEditor = (path: string) => {
+    sendToJava({ op: 'openFile', filePath: toAbsPath(path) })
+  }
+
+  const reverted = fc.state === 'reverted'
+
+  // 审查 → IDEA 侧内嵌对比弹窗（op:turnFileDiff）：本轮 hunk 由服务端直出（与 +N−N
+  // 徽标同源），Java Swing 渲染 unified patch（+/−着色、无左右分栏）；不读磁盘——
+  // 历史轮审查时磁盘已是后续状态，任何「当前磁盘 vs 本轮」的构造都必错。工具流 edits
+  // 片段级拼不出文件级 diff（真机实证）。无 hunk 直接降级内置弹窗；Java 端异常回
+  // turnFileDiffError 由监听处降级。
+  const reviewInIde = (it: TurnFileChangeItem) => {
+    const key = it.path.replace(/\\/g, '/')
+    if (it.patches.length > 0) {
+      const name = key.split('/').pop() || key
+      sendToJava({
+        op: 'turnFileDiff',
+        filePath: toAbsPath(key),
+        path: it.path,
+        patches: it.patches,
+        title: t('chat.fileChanges.reviewDiffTitle', { name }),
+      })
+    } else {
+      openDialog(messageId, { path: it.path })
+    }
+  }
+  return (
+    <div className={`msg__fccard${reverted ? ' msg__fccard--reverted' : ''}`}>
+      <div
+        className="msg__fccard-head"
+        role="button"
+        tabIndex={0}
+        onClick={() => setExpanded((v) => !v)}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter' || e.key === ' ') setExpanded((v) => !v)
+        }}
+      >
+        <span className={`codicon codicon-chevron-${expanded ? 'down' : 'right'}`} aria-hidden="true" />
+        <span className="msg__fccard-title">
+          {t('chat.fileChanges.summary', { count: fc.files, additions: fc.additions, deletions: fc.deletions })}
+        </span>
+        {reverted && <span className="msg__fcbar-tag">{t('chat.fileChanges.reverted')}</span>}
+        {fc.canRewind && !reverted && (
+          <span
+            className="msg__fccard-undo"
+            role="button"
+            tabIndex={0}
+            title={t('chat.fileChanges.rewindTitle')}
+            onClick={(e) => {
+              e.stopPropagation()
+              openDialog(messageId, { rewind: true })
+            }}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' || e.key === ' ') {
+                e.stopPropagation()
+                openDialog(messageId, { rewind: true })
+              }
+            }}
+          >
+            <span className="codicon codicon-discard" />
+            {t('chat.fileChanges.rewindShort')}
+          </span>
+        )}
+      </div>
+      {expanded && (
+        <div className="msg__fccard-list">
+          {loading && !items ? (
+            <div className="msg__fccard-loading">
+              <span className="codicon codicon-loading spin" /> {t('common.actions.loading')}
+            </div>
+          ) : items && items.length > 0 ? (
+            items.map((it) => {
+              const norm = it.path.replace(/\\/g, '/')
+              const seg = norm.split('/')
+              const name = seg.pop() || norm
+              const dir = seg.join('/')
+              return (
+                <div key={it.path} className="msg__fccard-file">
+                  <FileIcon path={it.path} className="file-type-icon msg__fccard-file-icon" />
+                  <div className="msg__fccard-file-main">
+                    <span className="msg__fccard-file-name" title={it.path}>{name}</span>
+                    {dir && <span className="msg__fccard-file-dir" title={it.path}>{dir}/</span>}
+                    <span className="msg__fccard-file-stat">
+                      <span className="tfc-add">+{it.additions}</span>
+                      <span className="tfc-del">−{it.deletions}</span>
+                    </span>
+                  </div>
+                  <div className="msg__fccard-file-actions">
+                    <button
+                      type="button"
+                      className="msg__fccard-btn"
+                      onClick={() => reviewInIde(it)}
+                    >
+                      {t('chat.fileChanges.review')}
+                    </button>
+                    <button type="button" className="msg__fccard-btn" onClick={() => openInEditor(it.path)}>
+                      {t('chat.fileChanges.openBtn')}
+                    </button>
+                  </div>
+                </div>
+              )
+            })
+          ) : (
+            <div className="msg__fccard-loading">{t('chat.fileChanges.empty')}</div>
+          )}
+        </div>
       )}
     </div>
   )

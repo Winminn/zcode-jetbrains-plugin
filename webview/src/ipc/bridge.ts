@@ -219,9 +219,18 @@ export function initBridge(): void {
  * 发请求到 Java 端（通过 JBCefJSQuery）。
  * 在 JCEF 环境调用 window.__ZCODE_CEF_QUERY__；非 JCEF 环境（dev/单测）走 mock。
  */
+/**
+ * 真机桥曾就绪标记：sendToJava 任一真实通道（CEF_QUERY / window.sendToJava）成立过即置位。
+ * JBCefJSQuery 引用在标签重建/插件重载后会失效——此刻注入函数 typeof 仍是 function 但
+ * 调用抛错，catch 后若落 mockRespond 会用假数据顶替真数据（实测现象：真机弹
+ * 「mock 不支持 op: scheduledList」）。曾见过桥的环境一律不允许再走 mock。
+ */
+let realBridgeSeen = false
+
 export function sendToJava(req: JavaRequest): void {
   // 优先用 Java 注入的 CEF_QUERY 函数
   if (typeof window.__ZCODE_CEF_QUERY__ === 'function') {
+    realBridgeSeen = true
     try {
       window.__ZCODE_CEF_QUERY__({
         request: JSON.stringify(req),
@@ -231,12 +240,14 @@ export function sendToJava(req: JavaRequest): void {
       })
       return
     } catch (e) {
-      console.error('[bridge] __ZCODE_CEF_QUERY__ 调用异常', e)
+      // 桥失效（标签重建/dispose 后旧 query 引用）：不再落 mock，由 realBridgeSeen 守卫丢弃
+      console.error('[bridge] __ZCODE_CEF_QUERY__ 调用异常（桥可能已失效）', e)
     }
   }
 
   // 兼容旧版（buildInitialHtml 路径直接挂 sendToJava）
   if (typeof window.sendToJava === 'function') {
+    realBridgeSeen = true
     window.sendToJava(req)
     return
   }
@@ -353,6 +364,13 @@ const mockArchivedSessions = [  {
 ]
 
 function mockRespond(req: JavaRequest): void {
+  // 真机守卫：曾见过真实桥的环境绝不允许回 mock 假数据（桥失效后静默丢弃该请求，
+  // 由各功能的既有兜底自愈；上 __jsLog 落 idea.log 便于排查——__jsLog 自身走 sendToJava，
+  // 在此守卫下同样被丢弃，故本地 console.warn 保底）
+  if (realBridgeSeen) {
+    console.warn('[bridge] 真机桥已失效，丢弃请求（不回 mock 假数据）:', req.op)
+    return
+  }
   console.log('[bridge:mock] 收到请求', req.op)
 
   // send 文本 "#plan"：模拟 plan 模式下 ExitPlanMode 审批弹窗（验收 PlanApprovalDialog）
@@ -895,6 +913,10 @@ function mockResponse(req: JavaRequest): JavaResponse | null {
   switch (req.op) {
     case 'listSessions':
       return { op: 'listSessions', sessions: mockSessions }
+    case 'scheduledList':
+      // mock：空定时列表（形状对齐 Java buildListMessage；此前缺分支会在 dev/mock 态
+      // 弹「mock 不支持 op」误报——init 的桥就绪分支每次都发它）
+      return { op: 'scheduledList', ts: Date.now(), items: [], fired: [] }
     case 'listArchivedSessions':
       return { op: 'archivedSessions', sessions: mockArchivedSessions }
     case 'archiveSession':
@@ -2025,6 +2047,90 @@ flowchart LR
       // mock：v4 编辑受理 ack。真实编排（rewind.triggered 截断 + 服务端重发流式）
       // 由事件流驱动，mock 无事件流——ack 后指示器挂着属预期，新文本重发/截断需真机验
       return { op: 'editAccepted', sessionId: req.sessionId, disposition: 'rewind' }
+    case 'turnFileChanges':
+      // mock：某轮改动文件清单（B2 更改条弹窗验收：双文件 + 含 +/− hunk）
+      return {
+        op: 'turnFileChangesResult',
+        sessionId: req.sessionId,
+        messageId: req.messageId,
+        data: {
+          files: 2,
+          additions: 26,
+          deletions: 4,
+          state: 'active',
+          items: [
+            {
+              path: 'mock/src/utils/format.ts',
+              additions: 18,
+              deletions: 3,
+              writeCount: 2,
+              toolNames: ['Edit'],
+              patches: [
+                {
+                  oldStart: 10,
+                  oldLines: 5,
+                  newStart: 10,
+                  newLines: 20,
+                  lines: [
+                    ' export function fmt(x: number): string {',
+                    '+  const scaled = x * 2',
+                    '-  return String(x)',
+                    '+  return String(scaled)',
+                    ' }',
+                  ],
+                },
+              ],
+            },
+            {
+              path: 'mock/src/App.tsx',
+              additions: 8,
+              deletions: 1,
+              writeCount: 1,
+              toolNames: ['Write'],
+              patches: [
+                {
+                  oldStart: 1,
+                  oldLines: 0,
+                  newStart: 1,
+                  newLines: 8,
+                  lines: ['+import { fmt } from "@/utils/format"', '+', '+export const demo = fmt(21)'],
+                },
+              ],
+            },
+          ],
+        },
+      }
+    case 'turnFileRewindPreview':
+      // mock：回退预览（1 可安全恢复 + 1 外部修改不可撤 → canApply=false 验禁用态；
+      // 全绿路径改 safeFiles 两项即可）
+      return {
+        op: 'turnFileRewindPreviewResult',
+        sessionId: req.sessionId,
+        messageId: req.messageId,
+        data: {
+          canApply: false,
+          safeFiles: [{ action: 'restore', operationCount: 2, path: 'mock/src/utils/format.ts', toolNames: ['Edit'] }],
+          unsafeFiles: [
+            {
+              reason: 'external_modified',
+              message: 'file modified outside the session',
+              operationCount: 1,
+              path: 'mock/src/App.tsx',
+              toolNames: ['Write'],
+            },
+          ],
+          ignoredFiles: [],
+        },
+      }
+    case 'turnFileRewindApply':
+      // mock：撤销受理 ack（store 乐观置 reverted；服务端 reverted 事件 mock 不推）
+      return { op: 'turnFileRewindApplied', sessionId: req.sessionId, messageId: req.messageId }
+    case 'turnFileChangesSync':
+      // mock：重扫回执（dev 无真实订阅，事件由 mock 流单独注入）
+      return { op: 'turnFileChangesSynced', sessionId: req.sessionId }
+    case 'turnFileDiff':
+      // mock：dev 无 IDEA Swing 弹窗，回 shown 受理 ack（真实侧由 Java 弹内嵌对比窗）
+      return { op: 'turnFileDiffShown' }
     case 'gotoSession':
       // mock：跳转会话 ack（dev 无多标签宿主，仅防误报"mock 不支持 op"错误条）
       return { op: 'gotoSessionOpened' }

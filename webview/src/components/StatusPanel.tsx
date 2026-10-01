@@ -62,7 +62,9 @@ export function StatusPanel() {
   const totalDel = fileChanges.reduce((n, f) => n + f.deletions, 0)
 
   // 列表点击的默认页分流：已完成 → 最终报告弹窗（报告 md 缺失时回退执行记录），
-  // 其余状态 → 执行记录弹窗。两弹窗头部按钮互斥切换的逻辑不变
+  // 其余状态 → 执行记录弹窗。两弹窗头部按钮互斥切换的逻辑不变。
+  // 本面板浮层不收起：浮层 portal 在 body 末尾，与 modal 遮罩同为 z-index 1000 时
+  // DOM 序靠后者在上（浮层盖在弹窗上）——用户实测拍板保留，看完一个接着点下一个
   const handleAgentClick = (a: AgentItem) => {
     if (a.status === 'completed') {
       const markdown = getAgentToolOutput(messages, a.callID)
@@ -78,6 +80,8 @@ export function StatusPanel() {
   useEffect(() => {
     if (!openTab) return
     const handleClickOutside = (e: MouseEvent) => {
+      // 大弹窗（modal 遮罩系）内部点击不算"外部"：浮层保留，关掉弹窗还能接着点下一个
+      if ((e.target as Element)?.closest?.('.modal-overlay')) return
       // panelRef 包含 tab 行；popover 渲染在 body 下，单独判断
       const popover = document.getElementById('status-panel-popover-fixed')
       if (panelRef.current && !panelRef.current.contains(e.target as Node)
@@ -86,6 +90,8 @@ export function StatusPanel() {
       }
     }
     const handleEscape = (e: KeyboardEvent) => {
+      // 大弹窗打开时 Esc 先归大弹窗，浮层保留
+      if (document.querySelector('.modal-overlay')) return
       if (e.key === 'Escape') setOpenTab(null)
     }
     document.addEventListener('mousedown', handleClickOutside)
@@ -101,10 +107,17 @@ export function StatusPanel() {
       setOpenTab(null)
       return
     }
-    // 打开新 tab 时，计算 popover 位置（贴在 tab 行正上方）
+    // 打开新 tab 时，计算 popover 位置（贴在 tab 行正上方：任务/子代理统一靠面板左缘，
+    // 文件靠面板右缘；窄视口下 8px 收敛防出屏）
     // 注：位置计算放在 updater 外（updater 内写 state 属副作用，React 18 下 updater 可能被重放）
     const rect = panelRef.current?.getBoundingClientRect()
-    if (rect) setPopoverPos({ left: rect.left, bottom: window.innerHeight - rect.top + 4 })
+    if (rect) {
+      const popoverWidth = 360 // 与 .status-panel-popover 的 width 保持一致
+      const margin = 8
+      const maxLeft = Math.max(margin, window.innerWidth - popoverWidth - margin)
+      const left = tab === 'files' ? rect.right - popoverWidth : rect.left
+      setPopoverPos({ left: Math.min(Math.max(left, margin), maxLeft), bottom: window.innerHeight - rect.top + 4 })
+    }
     setOpenTab(tab)
   }
 

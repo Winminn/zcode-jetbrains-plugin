@@ -910,6 +910,11 @@ if (!window.__ZCODE_LOG_HOOK__) {
                         "createSession" -> handleCreateSession(msg)
                         "forkSession" -> handleForkSession(msg)
                         "editUserQuery" -> handleEditUserQuery(msg)
+                        "turnFileChanges" -> handleTurnFileChanges(msg)
+                        "turnFileRewindPreview" -> handleTurnFileRewindPreview(msg)
+                        "turnFileRewindApply" -> handleTurnFileRewindApply(msg)
+                        "turnFileChangesSync" -> handleTurnFileChangesSync(msg)
+                        "turnFileDiff" -> handleTurnFileDiff(msg)
                         "subscribe" -> handleSubscribe(msg)
                         "subscribeChild" -> handleSubscribeChild(msg)
                         "unsubscribeChild" -> handleUnsubscribeChild(msg)
@@ -1999,6 +2004,217 @@ if (!window.__ZCODE_LOG_HOOK__) {
         put("message", message)
         reason?.let { put("reason", it) }
     }
+
+    // ============ 回合文件更改与回退（B2：v4/conversation/fileChanges 族桥接） ============
+    //
+    // 三个直通 op（详情/回退预览/回退执行）+ 一个重扫 op（会话重开后补逐轮更改条）。
+    // 错误走专用 *Error op 而非 errorResponse（op:error 会全量复位前端流式态——
+    // 更改条在回合进行中也可见可点，不能误清 streaming；与编辑链路同理由）。
+
+    /** 逐轮回退桥接 op 的公共错误应答（reason 机器码：unsupported=老 CLI 无 v4 面，
+     *  targetGone/snapshotTimeout/revisionUnknown=定位失败，commandFailed/stale=服务端拒绝） */
+    private fun turnFileOpError(op: String, reason: String, message: String): JsonObject = buildJsonObject {
+        put("op", op)
+        put("reason", reason)
+        put("message", message)
+    }
+
+    /** 逐轮回退桥接 op 公共入参解析；缺参返回错误应答（调用方直接作为 op 结果返回） */
+    private fun turnFileOpArgs(
+        msg: JsonObject,
+        errorOp: String,
+    ): Pair<String, String>? {
+        val sessionId = msg["sessionId"]?.jsonPrimitive?.content
+        val messageId = msg["messageId"]?.jsonPrimitive?.content
+        if (sessionId.isNullOrBlank() || messageId.isNullOrBlank()) {
+            return null
+        }
+        return sessionId to messageId
+    }
+
+    /** turnFileOpArgs 缺参时的统一错误（调用方缺参分支直接返回） */
+    private fun turnFileOpMissingParams(errorOp: String): JsonObject =
+        turnFileOpError(errorOp, "missingParams", "缺少 sessionId/messageId")
+
+    private fun handleTurnFileChanges(msg: JsonObject): JsonObject {
+        val errorOp = "turnFileChangesError"
+        val (sessionId, messageId) = turnFileOpArgs(msg, errorOp) ?: return turnFileOpMissingParams(errorOp)
+        val client = project.zCodeService().getClient()
+        return try {
+            val result = client.fetchTurnFileChanges(sessionId, messageId)
+            buildJsonObject {
+                put("op", "turnFileChangesResult")
+                put("sessionId", sessionId)
+                put("messageId", messageId)
+                put("data", result)
+            }
+        } catch (e: ZCodeProtocolException) {
+            turnFileOpErrorFromProtocol(e, errorOp)
+        } catch (e: Exception) {
+            log.warn("Turn file changes query failed: ${e.message}")
+            turnFileOpError(errorOp, "internal", e.message ?: "未知错误")
+        }
+    }
+
+    private fun handleTurnFileRewindPreview(msg: JsonObject): JsonObject {
+        val errorOp = "turnFileRewindPreviewError"
+        val (sessionId, messageId) = turnFileOpArgs(msg, errorOp) ?: return turnFileOpMissingParams(errorOp)
+        val client = project.zCodeService().getClient()
+        return try {
+            val result = client.previewTurnFileRewind(sessionId, messageId)
+            buildJsonObject {
+                put("op", "turnFileRewindPreviewResult")
+                put("sessionId", sessionId)
+                put("messageId", messageId)
+                put("data", result)
+            }
+        } catch (e: ZCodeProtocolException) {
+            turnFileOpErrorFromProtocol(e, errorOp)
+        } catch (e: Exception) {
+            log.warn("Turn file rewind preview failed: ${e.message}")
+            turnFileOpError(errorOp, "internal", e.message ?: "未知错误")
+        }
+    }
+
+    private fun handleTurnFileRewindApply(msg: JsonObject): JsonObject {
+        val errorOp = "turnFileRewindApplyError"
+        val (sessionId, messageId) = turnFileOpArgs(msg, errorOp) ?: return turnFileOpMissingParams(errorOp)
+        val client = project.zCodeService().getClient()
+        return try {
+            val result = client.applyTurnFileRewind(sessionId, messageId)
+            log.info("Turn file rewind applied: $sessionId msg=$messageId")
+            buildJsonObject {
+                put("op", "turnFileRewindApplied")
+                put("sessionId", sessionId)
+                put("messageId", messageId)
+                put("data", result)
+            }
+        } catch (e: ZCodeProtocolException) {
+            turnFileOpErrorFromProtocol(e, errorOp)
+        } catch (e: Exception) {
+            log.warn("Turn file rewind apply failed: ${e.message}")
+            turnFileOpError(errorOp, "internal", e.message ?: "未知错误")
+        }
+    }
+
+    private fun turnFileOpErrorFromProtocol(e: ZCodeProtocolException, errorOp: String): JsonObject {
+        if (e.code == -32601) {
+            log.info("Turn file op unavailable (no v4 surface): $errorOp")
+            return turnFileOpError(errorOp, "unsupported", "当前 CLI 版本不支持该能力")
+        }
+        log.info("Turn file op failed (${e.reason}): ${e.message}")
+        val reason = when {
+            e.message?.contains("proto.staleRevision") == true -> "stale"
+            e.message?.contains("proto.staleLogEpoch") == true -> "stale"
+            else -> e.reason ?: "internal"
+        }
+        return turnFileOpError(errorOp, reason, e.message ?: "未知错误")
+    }
+
+    /**
+     * 会话重开后补逐轮更改条：rowsRange 无状态重扫（零订阅依赖），webview 在
+     * messages 落地后调本 op 触发。异步执行，事件经流式通道后续到达，此处只回执。
+     * 全链路 info 日志（count=0/异常可见）——真机排障入口。
+     */
+    private fun handleTurnFileChangesSync(msg: JsonObject): JsonObject {
+        val sessionId = msg["sessionId"]?.jsonPrimitive?.content
+            ?: return errorResponse("缺少 sessionId")
+        val client = project.zCodeService().getClient()
+        ApplicationManager.getApplication().executeOnPooledThread {
+            try {
+                val count = client.rescanTurnFileChanges(sessionId)
+                log.info("[turn-file-changes] rescan: $sessionId count=$count")
+            } catch (e: ZCodeProtocolException) {
+                log.info("[turn-file-changes] rescan skipped: $sessionId code=${e.code} reason=${e.reason} ${e.message}")
+            } catch (e: Exception) {
+                log.info("[turn-file-changes] rescan failed: $sessionId ${e.message}")
+            }
+        }
+        return buildJsonObject {
+            put("op", "turnFileChangesSynced")
+            put("sessionId", sessionId)
+        }
+    }
+
+    /**
+     * op=turnFileDiff — 逐轮更改「审查」的 IDEA 侧内嵌（unified）对比弹窗。
+     * 数据面：本轮 hunk 由服务端 fileChanges 查询直出（与 +N−N 徽标同源，永不失真）——
+     * 不读磁盘（历史轮审查时磁盘已是后续状态，反推必错）。hunk 原样渲染 +/−/上下文行，
+     * 无左右分栏；Swing DialogWrapper 非模态（可边看边操作，Esc/关闭按钮收起）。
+     */
+    private fun handleTurnFileDiff(msg: JsonObject): JsonObject {
+        val errorOp = "turnFileDiffError"
+        val filePath = msg["filePath"]?.jsonPrimitive?.content
+        if (filePath.isNullOrBlank()) return turnFileOpError(errorOp, "missingParams", "缺少 filePath")
+        val patchList = msg["patches"]?.jsonArray?.mapNotNull { it as? JsonObject }
+        if (patchList == null || patchList.isEmpty()) return turnFileOpError(errorOp, "missingParams", "缺少 patches")
+        val title = msg["title"]?.jsonPrimitive?.content ?: "Diff: ${filePath.substringAfterLast('/')}"
+        com.intellij.openapi.application.invokeLater {
+            try {
+                showUnifiedPatchDialog(filePath, patchList, title)
+            } catch (e: Exception) {
+                log.warn("Unified patch dialog failed: ${e.message}")
+            }
+        }
+        return buildJsonObject { put("op", "turnFileDiffShown") }
+    }
+
+    /** 当前审查弹窗（同一标签连点多个文件时先关旧窗，防窗口堆叠；仅 EDT 访问） */
+    private var turnDiffDialog: com.intellij.openapi.ui.DialogWrapper? = null
+
+    /** 本轮变更内嵌对比弹窗：unified hunk 着色渲染（+/−行底色区分、上下文灰），跟随 IDE 主题底色 */
+    private fun showUnifiedPatchDialog(filePath: String, patches: List<JsonObject>, title: String) {
+        // 关掉已有的审查弹窗再开新的（引用读写都在 EDT，无并发）
+        turnDiffDialog?.let {
+            if (!it.isDisposed()) com.intellij.openapi.util.Disposer.dispose(it.getDisposable())
+        }
+        turnDiffDialog = null
+        val scheme = com.intellij.openapi.editor.colors.EditorColorsManager.getInstance().globalScheme
+        val bg = String.format("#%06x", scheme.defaultBackground.rgb and 0xFFFFFF)
+        val fg = String.format("#%06x", scheme.defaultForeground.rgb and 0xFFFFFF)
+        val html = buildString {
+            append("<html><body style='margin:0'><pre style='")
+            append("background:$bg;color:$fg;font-family:'JetBrains Mono',Consolas,monospace;font-size:12px;")
+            append("padding:8px;white-space:pre-wrap;word-break:break-all;margin:0'>")
+            append("<span style='color:$fg;font-weight:bold'>").append(escapeHtml(filePath)).append("</span>\n")
+            for (h in patches) {
+                val oldStart = h["oldStart"]?.jsonPrimitive?.intOrNull ?: 0
+                val oldLines = h["oldLines"]?.jsonPrimitive?.intOrNull ?: 0
+                val newStart = h["newStart"]?.jsonPrimitive?.intOrNull ?: 0
+                val newLines = h["newLines"]?.jsonPrimitive?.intOrNull ?: 0
+                append("<span style='color:#8899a6'>@@ -").append(oldStart).append(',').append(oldLines)
+                    .append(" +").append(newStart).append(',').append(newLines).append(" @@</span>\n")
+                val lines = (h["lines"] as? JsonArray)?.mapNotNull { it.jsonPrimitive.contentOrNull } ?: emptyList()
+                for (line in lines) {
+                    val text = escapeHtml(line.drop(1))
+                    when (line.take(1)) {
+                        "+" -> append("<span style='background:rgba(78,201,148,.18);color:#4ec994'>+").append(text).append("</span>\n")
+                        "-" -> append("<span style='background:rgba(224,85,101,.18);color:#e05565'>-").append(text).append("</span>\n")
+                        else -> append("<span>").append(text).append("</span>\n")
+                    }
+                }
+            }
+            append("</pre></body></html>")
+        }
+        val pane = javax.swing.JEditorPane("text/html", html)
+        pane.isEditable = false
+        val scroll = com.intellij.ui.components.JBScrollPane(pane)
+        scroll.preferredSize = java.awt.Dimension(780, 520)
+        val dialog = object : com.intellij.openapi.ui.DialogWrapper(project, null, true,
+            com.intellij.openapi.ui.DialogWrapper.IdeModalityType.MODELESS, false) {
+            init { init(); this.title = title }
+            override fun createCenterPanel(): javax.swing.JComponent = scroll
+            override fun createActions(): Array<javax.swing.Action> = arrayOf(okAction)
+        }
+        turnDiffDialog = dialog
+        dialog.show()
+    }
+
+    /** HTML 文本转义（diff 行内容来自文件原文，含 <> 需转义防吞字） */
+    private fun escapeHtml(text: String): String = text
+        .replace("&", "&amp;")
+        .replace("<", "&lt;")
+        .replace(">", "&gt;")
 
     /**
      * op:editUserQuery 的 attachments 数组 → v4 ref 引用形态列表。
@@ -3711,7 +3927,16 @@ if (!window.__ZCODE_LOG_HOOK__) {
         val line = msg["line"]?.jsonPrimitive?.content?.toIntOrNull()
         val findText = msg["findText"]?.jsonPrimitive?.content
         com.intellij.openapi.application.invokeLater {
+            // VFS 刷新兜底（AI 刚创建的文件可能尚未进 LocalFileSystem VFS——"打开初始
+            // 打不开，IDEA 没刷新"实锤）：找不到时同步刷新该文件后重取
+            val ioFile = java.io.File(filePath)
             val vfile = LocalFileSystem.getInstance().findFileByPath(filePath)
+                ?: if (ioFile.exists()) {
+                    com.intellij.openapi.application.ApplicationManager.getApplication()
+                        .runWriteAction<com.intellij.openapi.vfs.VirtualFile?> {
+                            LocalFileSystem.getInstance().refreshAndFindFileByIoFile(ioFile)
+                        }
+                } else null
             if (vfile != null) {
                 FileEditorManager.getInstance(project).openFile(vfile, true)
                 val editor = FileEditorManager.getInstance(project).selectedTextEditor
@@ -3726,7 +3951,7 @@ if (!window.__ZCODE_LOG_HOOK__) {
                     openEditorSearch(editor, findText)
                 }
             } else {
-                log.warn("Open file failed: file not found $filePath")
+                log.warn("Open file failed: file not found after VFS refresh $filePath")
             }
         }
         return buildJsonObject { put("op", "fileOpened") }
@@ -3756,12 +3981,8 @@ if (!window.__ZCODE_LOG_HOOK__) {
         }
     }
 
-    /** op=showDiff — 弹出 IDEA 原生 diff 窗口（old vs new）*/
-    private fun handleShowDiff(msg: JsonObject): JsonObject {
-        val filePath = msg["filePath"]?.jsonPrimitive?.content ?: return errorResponse("缺少 filePath")
-        val oldContent = msg["oldContent"]?.jsonPrimitive?.content ?: ""
-        val newContent = msg["newContent"]?.jsonPrimitive?.content ?: ""
-        val title = msg["title"]?.jsonPrimitive?.content ?: "Diff: ${filePath.substringAfterLast('/')}"
+    /** IDEA 原生 diff 弹窗（文件类型按文件名推断，左旧右新；EDT 异步弹出） */
+    private fun showIdeDiff(filePath: String, oldContent: String, newContent: String, title: String) {
         com.intellij.openapi.application.invokeLater {
             try {
                 // 按文件名推断类型，否则 diff 页无语法高亮（全灰）
@@ -3779,6 +4000,15 @@ if (!window.__ZCODE_LOG_HOOK__) {
                 log.warn("Diff display failed: ${e.message}")
             }
         }
+    }
+
+    /** op=showDiff — 弹出 IDEA 原生 diff 窗口（old vs new，内容由调用方全文给定）*/
+    private fun handleShowDiff(msg: JsonObject): JsonObject {
+        val filePath = msg["filePath"]?.jsonPrimitive?.content ?: return errorResponse("缺少 filePath")
+        val oldContent = msg["oldContent"]?.jsonPrimitive?.content ?: ""
+        val newContent = msg["newContent"]?.jsonPrimitive?.content ?: ""
+        val title = msg["title"]?.jsonPrimitive?.content ?: "Diff: ${filePath.substringAfterLast('/')}"
+        showIdeDiff(filePath, oldContent, newContent, title)
         return buildJsonObject { put("op", "diffShown") }
     }
 
@@ -5000,7 +5230,9 @@ if (!window.__ZCODE_LOG_HOOK__) {
         // 2026-09-19 [title-sub] 日志实锤：4 次 blocked 0 放行），首帧标题更新被拦即丢，
         // 表现为"标题生成了但主界面不更新"。titleUpdated 是全局无害更新（前端仅改
         // 列表标题，会话不在列表即被丢弃），放行不破坏隔离语义
-        if (sessionId !in subscribedSessions && event.type != "session.titleUpdated") {
+        // turn.fileChanges 同款豁免（重扫触发点在订阅回执后仍可能与闸门赛跑——
+        // messages/subscribe 双 op 线程池并发；前端按 currentSessionId 过滤无害）
+        if (sessionId !in subscribedSessions && event.type != "session.titleUpdated" && event.type != "turn.fileChanges") {
             // 诊断（子会话实时流停更追查）：子会话被门禁挡住的首次打点——
             // 持续打点说明订阅簿记在任务中途被清（invalidateStaleSubscriptions 等）
             if (sessionId.startsWith("sess_subagent")) {

@@ -122,6 +122,15 @@ class ZCodeProtocolClient private constructor(
      * 必填参数之一（三件套 topic+connectionId+subscriptionId，缺任一 -32603） */
     private val v4SubscriptionIds = java.util.concurrent.ConcurrentHashMap<String, String>()
 
+    /**
+     * 会话投影 revision 水位（sessionId → 最近一帧携带的投影 revision）。
+     * fileChanges/fileRewindPreview 查询的 CAS 是严格相等校验且拒绝应答不带
+     * revisionAtDecision，已全量订阅会话（子会话）重入查询时靠这里取兜底水位。
+     * trackProjectionRevision 维护（快照帧 revision + 增量帧 state.updated 的
+     * patch.revision），cleanup 时随会话清理。
+     */
+    private val v4ProjectionRevisions = java.util.concurrent.ConcurrentHashMap<String, Int>()
+
     /** v4 帧累计映射产出事件数（[V4FrameProbe] 的 mapped 字段，见 handleNotification） */
     private val v4MappedProbe = ConcurrentHashMap<String, Long>()
 
@@ -827,15 +836,43 @@ class ZCodeProtocolClient private constructor(
             val topic = params["topic"]?.jsonPrimitive?.jsonStringOrNull ?: return
             val sid = topic.removePrefix("conversation/")
             if (sid.length == topic.length) return
+            // 投影 revision 水位跟踪：fileChanges/fileRewindPreview 两查询的 CAS 是
+            // 严格相等校验（baseRevision ≠ snapshot.revision 直接 staleRevision 拒绝、
+            // 无 revisionAtDecision 可回），客户端必须持有当前值。快照帧直读 revision，
+            // 增量帧扫 state.updated 的 patch.revision（投影每变更必带，见 delta.ts）。
+            // 主要消费方是已全量订阅会话（子会话）重入查询时的兜底水位
+            trackProjectionRevision(sid, params)
             // 仅标题订阅的主会话：只抽 state.updated delta 的 meta.title 合成
             // session.titleUpdated（v2 标题广播唯一通道，见 v4TitleSessions），行数据
             // 不映射——主会话已有 legacy 流，映射会造成双写
             if (sid in v4TitleSessions && sid !in v4SubscribedSessions) {
                 val frame = params["frame"]?.jsonObject ?: return
-                val deltas = frame["payload"]?.jsonObject?.get("deltas")?.jsonArray ?: return
+                val payload = frame["payload"]?.jsonObject ?: return
+                // 逐轮文件更改摘要（B2 回合产物）：turnHeader 行自带服务端权威 fileChanges
+                // 账本（+/−行数服务端算好直出）——快照窗口（订阅 initial/重同步）与
+                // row.appended/upserted 增量两路都提取，合成 turn.fileChanges 事件供前端
+                // 渲染逐轮「N 个文件已更改」条。行无 fileChanges 键（无写入的轮）静默跳过
+                val frameTs = frame["sentAt"]?.jsonPrimitive?.longOrNull ?: System.currentTimeMillis()
+                if (payload["kind"]?.jsonPrimitive?.jsonStringOrNull == "snapshot") {
+                    val windowRows = payload["snapshot"]?.jsonObject?.get("rows")?.jsonObject
+                        ?.get("window")?.jsonArray?.mapNotNull { it as? JsonObject } ?: emptyList()
+                    for (row in windowRows) {
+                        turnFileChangesEvent(sid, row, frameTs, windowRows)?.let { dispatchSessionEvent(it) }
+                    }
+                    return
+                }
+                val deltas = payload["deltas"]?.jsonArray ?: return
                 for (d in deltas) {
                     val delta = d as? JsonObject ?: continue
-                    if (delta["op"]?.jsonPrimitive?.jsonStringOrNull != "state.updated") continue
+                    val opName = delta["op"]?.jsonPrimitive?.jsonStringOrNull
+                    if (opName == "row.appended" || opName == "row.upserted") {
+                        val row = delta["row"] as? JsonObject ?: continue
+                        if (row["kind"]?.jsonPrimitive?.jsonStringOrNull == "turnHeader") {
+                            turnFileChangesEvent(sid, row, frameTs)?.let { dispatchSessionEvent(it) }
+                        }
+                        continue
+                    }
+                    if (opName != "state.updated") continue
                     val meta = delta["patch"]?.jsonObject?.get("meta")?.jsonObject ?: continue
                     val title = meta["title"]?.jsonPrimitive?.jsonStringOrNull?.takeIf { it.isNotBlank() } ?: continue
                     ProtocolLog.info("[title-sub] meta.title synthesized from v4 frame: $sid title=${title.take(30)}")
@@ -1597,6 +1634,7 @@ class ZCodeProtocolClient private constructor(
         val subId = v4SubscriptionIds.remove(sessionId)
         v4SubscribedSessions.remove(sessionId)
         v4TitleSessions.remove(sessionId)
+        v4ProjectionRevisions.remove(sessionId)
         v4FrameProbe.remove(sessionId)
         v4MappedProbe.remove(sessionId)
         v4FrameMapper.cleanup(sessionId)
@@ -2134,6 +2172,9 @@ class ZCodeProtocolClient private constructor(
      */
     fun forkAssistantViaV4(sessionId: String, messageId: String, timeoutMs: Long = 20000): JsonObject {
         val wasSubscribed = sessionId in v4SubscribedSessions
+        // 常驻标题订阅判据：服务端对同 topic 幂等复用同一 subscriptionId，"临时订阅"
+        // 即常驻订阅本身，退订即断服务端帧流（标题/更改条静默丢失）——一律不退订
+        val wasTitle = sessionId in v4TitleSessions
         val logEpoch = tempV4Subscribe(sessionId, timeoutMs)
         try {
             // rowsRange 定位分叉行。注意四点（fork14~16/26 真会话取证定案）：
@@ -2250,7 +2291,7 @@ class ZCodeProtocolClient private constructor(
                 put("parentSessionId", sessionId)
             }
         } finally {
-            if (!wasSubscribed) {
+            if (!wasSubscribed && !wasTitle) {
                 unsubscribeConversationV4(sessionId, timeoutMs)
             }
         }
@@ -2295,6 +2336,9 @@ class ZCodeProtocolClient private constructor(
         // 订阅块与 forkAssistantViaV4 同款，收口在 tempV4Subscribe：临时订阅只为
         // ack.logEpoch/rowsRange 信封/退订，不进 v4SubscribedSessions 白名单
         val wasSubscribed = sessionId in v4SubscribedSessions
+        // 常驻标题订阅判据：服务端对同 topic 幂等复用同一 subscriptionId，"临时订阅"
+        // 即常驻订阅本身，退订即断服务端帧流（标题/更改条静默丢失）——一律不退订
+        val wasTitle = sessionId in v4TitleSessions
         val logEpoch = tempV4Subscribe(sessionId, timeoutMs)
         try {
             // rowsRange 定位目标 userInput 行：编辑目标是最新 user 消息，通常首页命中，
@@ -2416,9 +2460,430 @@ class ZCodeProtocolClient private constructor(
             }
             return res
         } finally {
-            if (!wasSubscribed) {
+            if (!wasSubscribed && !wasTitle) {
                 unsubscribeConversationV4(sessionId, timeoutMs)
             }
+        }
+    }
+
+    // ============ 回合文件更改与回退（B2：v4/conversation/fileChanges 族） ============
+    //
+    // 协议面（开源 v3.14.3 transport.ts/command.ts 实证，官方桌面端 ConversationFileSummaryPanel
+    // 同款用法）：turnHeader 行自带 fileChanges 摘要（additions/deletions/files/state）与
+    // actions.canRewindFiles，订阅帧直出；详情与回退走三条 RPC——
+    // - v4/conversation/fileChanges     查询某轮改动文件清单（每文件 unified diff hunks）
+    // - v4/conversation/fileRewindPreview 预览回退影响（safe/unsafe/ignored 三桶，hash 预检）
+    // - v4/command applyFileRewind      执行回退（恢复/删除文件，不截断聊天历史，不依赖 git）
+    // 两查询 + 命令的 CAS 都要 {rowId,entityId} 目标行 + baseRevision/baseLogEpoch 水位；
+    // 查询侧是严格相等校验（staleRevision 直接抛错、无 revisionAtDecision 可回），命令侧
+    // 与 fork 同款（baseRevision 首发可 stale，取 revisionAtDecision 重试一次）。
+
+    /**
+     * 临时 v4 订阅，快照上下文交给 block 执行后保证退订。
+     *
+     * 与 fork/editUserQuery 的 tempV4Subscribe 差异：那两个只要 ack.logEpoch，本链路
+     * 的查询 CAS 还要**当前 revision**（ack 不带）。
+     *
+     * 快照获取两路（2026-10-01 真机实证：对已订阅 topic 重复 subscribe 是幂等的，
+     * 服务端**不重推 initial 快照**——历史会话的标题订阅常驻后，等快照必超时）：
+     * - 新订阅：ack 后立即推 initial 快照帧（帧监听先于订阅白名单闸，短窗即到）
+     * - 幂等重订：等不到快照 → 用 v4ProjectionRevisions 帧水位（trackProjectionRevision
+     *   对标题订阅会话持续跟踪）+ block 内行定位走 rowsRange 无状态翻页
+     *
+     * 副作用对齐 fork：临时订阅覆盖 v4SubscriptionIds，退订会清 v4TitleSessions——
+     * 恢复标题订阅登记，让仍在推送的服务端标题订阅帧继续被路由。
+     */
+    private fun <T> withV4ConversationSnapshot(
+        sessionId: String,
+        timeoutMs: Long,
+        block: (snapshot: JsonObject, logEpoch: String, revision: Int) -> T,
+    ): T {
+        val wasSubscribed = sessionId in v4SubscribedSessions
+        val wasTitle = sessionId in v4TitleSessions
+        // 监听器必须先于订阅挂上：服务端 ack 应答后立刻推 initial 快照（同一竞态在
+        // subscribeConversationV4 的注释里有过实证），后挂必漏首帧
+        val latch = java.util.concurrent.CountDownLatch(1)
+        var snapshotRef: JsonObject? = null
+        val removeListener = addV4FrameListener { params ->
+            if (snapshotRef != null) return@addV4FrameListener
+            val topic = params["topic"]?.jsonPrimitive?.jsonStringOrNull ?: return@addV4FrameListener
+            if (topic != "conversation/$sessionId") return@addV4FrameListener
+            val payload = params["frame"]?.jsonObject?.get("payload")?.jsonObject ?: return@addV4FrameListener
+            if (payload["kind"]?.jsonPrimitive?.jsonStringOrNull != "snapshot") return@addV4FrameListener
+            val snap = payload["snapshot"]?.jsonObject ?: return@addV4FrameListener
+            snapshotRef = snap
+            latch.countDown()
+        }
+        val logEpoch = try {
+            tempV4Subscribe(sessionId, timeoutMs)
+        } catch (e: Exception) {
+            removeListener()
+            throw e
+        }
+        try {
+            try {
+                // 快照要么亚秒到达（新订阅首帧）要么不会来（幂等重订），短窗即可
+                latch.await(3000L, java.util.concurrent.TimeUnit.MILLISECONDS)
+            } catch (_: InterruptedException) {
+                Thread.currentThread().interrupt()
+            }
+            val snap = snapshotRef
+            if (snap != null && snap.isNotEmpty()) {
+                val revision = snap["revision"]?.jsonPrimitive?.intOrNull
+                    ?: throw ZCodeProtocolException("v4 快照缺 revision", reason = "snapshotMalformed")
+                return block(snap, logEpoch, revision)
+            }
+            // 幂等重订（标题订阅常驻）：用帧水位跟踪的 revision，行定位走 rowsRange
+            val tracked = v4ProjectionRevisions[sessionId]
+                ?: throw ZCodeProtocolException(
+                    "会话投影 revision 水位未知（订阅期内未见快照/revision 帧）",
+                    reason = "revisionUnknown",
+                )
+            return block(JsonObject(emptyMap()), logEpoch, tracked)
+        } finally {
+            removeListener()
+            // 退订判据必须含常驻标题订阅（wasTitle）：服务端对同 topic 幂等返回同一
+            // subscriptionId，"临时订阅"实际就是常驻订阅本身——退订即断服务端帧流，
+            // 后续所有增量（标题/更改条）静默丢失（真机实证：撤销后下一轮更改条全灭）。
+            // 常驻订阅会话一律不退订（水位兜底已不依赖快照，无订阅等待成本）
+            if (!wasSubscribed && !wasTitle) {
+                unsubscribeConversationV4(sessionId, timeoutMs)
+            }
+        }
+    }
+
+    /**
+     * turnHeader 行两步匹配：① entityId 直接命中 turnHeader；② entityId 命中该轮
+     * 任意行（assistantText/userInput 的 entityId=消息 id）→ 经 turnId 反查该轮
+     * turnHeader。webview 弹窗传来的是 assistant 消息 id（重扫锚点）或 user 消息 id
+     * （增量兜底=productTurnId），两步分别覆盖。
+     */
+    private fun matchTurnHeaderRow(rows: List<JsonObject>, messageId: String): JsonObject? {
+        for (r in rows) {
+            if (r["kind"]?.jsonPrimitive?.jsonStringOrNull == "turnHeader" &&
+                r["entityId"]?.jsonPrimitive?.jsonStringOrNull == messageId
+            ) return r
+        }
+        var turnId: String? = null
+        for (r in rows) {
+            if (r["entityId"]?.jsonPrimitive?.jsonStringOrNull == messageId) {
+                turnId = r["turnId"]?.jsonPrimitive?.jsonStringOrNull
+                if (turnId != null) break
+            }
+        }
+        if (turnId != null) {
+            for (r in rows) {
+                if (r["kind"]?.jsonPrimitive?.jsonStringOrNull == "turnHeader" &&
+                    r["turnId"]?.jsonPrimitive?.jsonStringOrNull == turnId
+                ) return r
+            }
+        }
+        return null
+    }
+
+    /**
+     * 定位某轮回合头行（rewind/fileChanges 的 CAS target = turnHeader 行自身）。
+     * messageId 可能是该轮 assistant 消息 id（弹窗从回复消息打开/重扫锚点）或 user
+     * 消息 id（=turnHeader entityId）。先扫快照窗口（尾部 60 行，最近轮一击命中），
+     * 窗口外翻 rowsRange（同 fork 手法：beforeRowId 从最新往回、50 页封顶）；行流
+     * 跨页时用 seenHeaders/turnIdsOfMessage 跨页记忆（turnHeader 行先于同轮内容行
+     * 被扫到，反查需要回头联接）。
+     */
+    private fun locateTurnHeaderRow(
+        sessionId: String,
+        messageId: String,
+        snapshot: JsonObject?,
+        timeoutMs: Long,
+    ): JsonObject {
+        if (snapshot != null && snapshot.isNotEmpty()) {
+            val window = snapshot["rows"]?.jsonObject?.get("window")?.jsonArray
+                ?.mapNotNull { it as? JsonObject }
+            if (window != null) {
+                matchTurnHeaderRow(window, messageId)?.let { return it }
+            }
+        }
+        var beforeRowId: Long? = null
+        var hasMore = true
+        var pages = 0
+        val seenHeaders = LinkedHashMap<String, JsonObject>() // turnId → turnHeader 行
+        val turnIdsOfMessage = LinkedHashMap<String, String>() // entityId → turnId
+        while (hasMore && pages < 50) {
+            val rowsParams = buildJsonObject {
+                put("sessionId", sessionId)
+                put("topic", "conversation/$sessionId")
+                put("limit", 200)
+                beforeRowId?.let { put("beforeRowId", it) }
+            }
+            val rowsResp = request("v4/conversation/rowsRange", rowsParams, timeoutMs)
+            requireOk(rowsResp)
+            val result = rowsResp["result"]?.jsonObject
+                ?: throw ZCodeProtocolException("rowsRange 应答缺 result")
+            val rows = result["rows"]?.jsonArray ?: JsonArray(emptyList())
+            if (rows.isEmpty()) break
+            val pageRows = rows.mapNotNull { it as? JsonObject }
+            for (r in pageRows) {
+                val entityId = r["entityId"]?.jsonPrimitive?.jsonStringOrNull
+                val rTurnId = r["turnId"]?.jsonPrimitive?.jsonStringOrNull
+                if (r["kind"]?.jsonPrimitive?.jsonStringOrNull == "turnHeader" && rTurnId != null) {
+                    seenHeaders.putIfAbsent(rTurnId, r)
+                } else if (entityId == messageId && rTurnId != null) {
+                    turnIdsOfMessage.putIfAbsent(entityId!!, rTurnId)
+                }
+            }
+            matchTurnHeaderRow(pageRows, messageId)?.let { return it }
+            // 跨页联接：目标 entityId 在本页命中、其轮 turnHeader 在先前页扫到过
+            turnIdsOfMessage[messageId]?.let { tid -> seenHeaders[tid]?.let { return it } }
+            hasMore = result["hasMore"]?.jsonPrimitive?.booleanOrNull == true
+            beforeRowId = rows.firstOrNull()?.jsonObject?.get("rowId")?.jsonPrimitive?.longOrNull
+            pages += 1
+        }
+        throw ZCodeProtocolException("原对话已不包含该轮的回合头行（messageId=$messageId）", reason = "targetGone")
+    }
+
+    /** 查询侧 stale 单次重试包装：快照水位与查询之间投影若又前进（罕见，点击间隙
+     *  有别的写入方），重取快照水位再试一次；staleLogEpoch（epoch 已换代）不重试。 */
+    private fun queryTurnFileRpc(
+        sessionId: String,
+        messageId: String,
+        method: String,
+        timeoutMs: Long,
+        attempt: Int = 0,
+    ): JsonObject {
+        return try {
+            withV4ConversationSnapshot(sessionId, timeoutMs) { snap, logEpoch, revision ->
+                val row = locateTurnHeaderRow(sessionId, messageId, snap.takeIf { it.isNotEmpty() }, timeoutMs)
+                val targetRowId = row["rowId"]?.jsonPrimitive?.intOrNull
+                    ?: throw ZCodeProtocolException("回合头行缺 rowId")
+                val targetEntityId = row["entityId"]?.jsonPrimitive?.jsonStringOrNull
+                    ?: throw ZCodeProtocolException("回合头行缺 entityId")
+                val params = buildJsonObject {
+                    put("sessionId", sessionId)
+                    put("target", buildJsonObject {
+                        put("rowId", targetRowId)
+                        put("entityId", targetEntityId)
+                    })
+                    put("baseRevision", revision)
+                    put("baseLogEpoch", logEpoch)
+                }
+                val r = request(method, params, timeoutMs)
+                requireOk(r)
+                r["result"]?.jsonObject ?: throw ZCodeProtocolException("$method 应答缺 result")
+            }
+        } catch (e: ZCodeProtocolException) {
+            val stale = e.message?.contains("proto.staleRevision") == true
+            if (stale && attempt == 0) {
+                queryTurnFileRpc(sessionId, messageId, method, timeoutMs, attempt = 1)
+            } else {
+                throw e
+            }
+        }
+    }
+
+    /**
+     * v4/conversation/fileChanges — 查询某轮改动的文件清单（详情弹窗数据源）。
+     * 应答：{files, additions, deletions, state?, items:[{path, additions, deletions,
+     * writeCount, toolNames, patches:[{oldStart, oldLines, newStart, newLines, lines}]}]}
+     */
+    fun fetchTurnFileChanges(sessionId: String, messageId: String, timeoutMs: Long = 20000): JsonObject =
+        queryTurnFileRpc(sessionId, messageId, "v4/conversation/fileChanges", timeoutMs)
+
+    /**
+     * v4/conversation/fileRewindPreview — 预览某轮回退的影响面。
+     * 应答：{canApply, safeFiles:[{action, operationCount, path, toolNames}],
+     * unsafeFiles:[{reason, message?, currentHash?, expectedHash?, ...}],
+     * ignoredFiles:[{reason:"bash_ignored", ...}]}
+     */
+    fun previewTurnFileRewind(sessionId: String, messageId: String, timeoutMs: Long = 20000): JsonObject =
+        queryTurnFileRpc(sessionId, messageId, "v4/conversation/fileRewindPreview", timeoutMs)
+
+    /**
+     * v4/command applyFileRewind — 执行某轮文件回退（恢复/删除文件，不截断聊天）。
+     * CAS 与 fork 同款：baseRevision 用快照水位首发，stale 取 revisionAtDecision
+     * 重试一次。应答 result 形如 {type:"applyFileRewind", applied, preview, response}。
+     */
+    fun applyTurnFileRewind(sessionId: String, messageId: String, timeoutMs: Long = 20000): JsonObject {
+        return withV4ConversationSnapshot(sessionId, timeoutMs) { snap, logEpoch, revision ->
+            val row = locateTurnHeaderRow(sessionId, messageId, snap.takeIf { it.isNotEmpty() }, timeoutMs)
+            val targetRowId = row["rowId"]?.jsonPrimitive?.intOrNull
+                ?: throw ZCodeProtocolException("回合头行缺 rowId")
+            val targetEntityId = row["entityId"]?.jsonPrimitive?.jsonStringOrNull
+                ?: throw ZCodeProtocolException("回合头行缺 entityId")
+            var baseRevision = revision
+            var res: JsonObject = JsonObject(emptyMap())
+            var accepted = false
+            for (attempt in 0 until 2) {
+                val params = buildJsonObject {
+                    put("commandId", "rewind-${java.util.UUID.randomUUID()}")
+                    put("clientId", "zcode-idea-plugin")
+                    put("sessionId", sessionId)
+                    put("type", "applyFileRewind")
+                    put("payload", buildJsonObject {
+                        put("target", buildJsonObject {
+                            put("rowId", targetRowId)
+                            put("entityId", targetEntityId)
+                        })
+                    })
+                    put("issuedAt", System.currentTimeMillis())
+                    put("baseRevision", baseRevision)
+                    put("baseLogEpoch", logEpoch)
+                }
+                val r = request("v4/command", params, timeoutMs)
+                requireOk(r)
+                res = r["result"]?.jsonObject ?: JsonObject(emptyMap())
+                val status = res["status"]?.jsonPrimitive?.content
+                if (status == "accepted" || status == "duplicate") {
+                    accepted = true
+                    break
+                }
+                if (status == "stale" && attempt == 0) {
+                    baseRevision = res["revisionAtDecision"]?.jsonPrimitive?.intOrNull ?: break
+                } else {
+                    break
+                }
+            }
+            if (!accepted) {
+                val reason = res["reasonCode"]?.jsonPrimitive?.content ?: ""
+                val detail = res["message"]?.jsonPrimitive?.content ?: ""
+                throw ZCodeProtocolException(
+                    "回退被拒绝: ${res["status"]?.jsonPrimitive?.content ?: "unknown"} $reason $detail".trim(),
+                    reason = "commandFailed",
+                )
+            }
+            res
+        }
+    }
+
+    /**
+     * 重扫会话的逐轮文件更改摘要（会话重开场景）：rowsRange 无状态翻页收集行窗口，
+     * 每个带 fileChanges 的回合头合成一条 turn.fileChanges 事件（锚定同轮
+     * assistantText 行 entityId）。返回发出的事件数。
+     *
+     * 为什么不走订阅快照（2026-10-01 真机实证）：对已订阅 topic 重复 subscribe 幂等、
+     * 服务端不重推 initial 快照——历史会话标题订阅常驻后重扫等快照必超时。rowsRange
+     * 是只读查询零订阅依赖（fork 定位同款）。翻页从最新往旧，assistantText（rowId 大）
+     * 先于同轮 turnHeader 遇到，锚定数据天然在手；连续整页无新目标即停（最近轮语义，
+     * 与快照 60 行窗口对齐，3 页 600 行封顶）。
+     */
+    fun rescanTurnFileChanges(sessionId: String, timeoutMs: Long = 15000): Int {
+        val allRows = ArrayList<JsonObject>(400)
+        var beforeRowId: Long? = null
+        var hasMore = true
+        var pages = 0
+        var foundTotal = 0
+        while (hasMore && pages < 3) {
+            val rowsParams = buildJsonObject {
+                put("sessionId", sessionId)
+                put("topic", "conversation/$sessionId")
+                put("limit", 200)
+                beforeRowId?.let { put("beforeRowId", it) }
+            }
+            val rowsResp = request("v4/conversation/rowsRange", rowsParams, timeoutMs)
+            requireOk(rowsResp)
+            val result = rowsResp["result"]?.jsonObject
+                ?: throw ZCodeProtocolException("rowsRange 应答缺 result")
+            val rows = result["rows"]?.jsonArray ?: JsonArray(emptyList())
+            if (rows.isEmpty()) break
+            val pageRows = rows.mapNotNull { it as? JsonObject }
+            allRows.addAll(pageRows)
+            var foundInPage = 0
+            for (r in pageRows) {
+                if (r["kind"]?.jsonPrimitive?.jsonStringOrNull == "turnHeader" &&
+                    (r["fileChanges"] as? JsonObject) != null
+                ) foundInPage++
+            }
+            foundTotal += foundInPage
+            hasMore = result["hasMore"]?.jsonPrimitive?.booleanOrNull == true
+            beforeRowId = rows.firstOrNull()?.jsonObject?.get("rowId")?.jsonPrimitive?.longOrNull
+            pages += 1
+            // 本页无新目标且此前已有收集 → 更旧的轮更早于快照窗口语义，停
+            if (foundInPage == 0 && foundTotal > 0) break
+        }
+        if (foundTotal == 0) return 0
+        var count = 0
+        val ts = System.currentTimeMillis()
+        for (row in allRows) {
+            if (row["kind"]?.jsonPrimitive?.jsonStringOrNull != "turnHeader") continue
+            turnFileChangesEvent(sessionId, row, ts, allRows)?.let {
+                dispatchSessionEvent(it)
+                count++
+            }
+        }
+        return count
+    }
+
+    /**
+     * turnHeader 行 → turn.fileChanges 事件（标题订阅分支与重扫共用）。行无
+     * fileChanges 键（无文件写入的轮）返回 null。payload = {messageId, rowId,
+     * fileChanges{additions,deletions,files,state?}, canRewindFiles}。
+     *
+     * messageId 锚点：turnHeader 行的 entityId = productTurnId（product-projection
+     * 3661 实证：常态=该轮 user 消息 id，队列 drain 可能是轮 id 变体）——快照窗口
+     * 可用时改锚到**同轮第一条 assistantText 行的 entityId**（=legacy assistant 消息
+     * id；必须取第一段——前端 mergeTurnMessages 把同轮多段 assistant 合并为一条时
+     * 保留第一段的 id，锚最后段会「host not in messages」挂起死锁，真机日志实证）
+     * ；窗口不可用（增量单行 upsert）时退回 entityId，由前端 user→assistant 换算
+     * +挂起重试兜底。
+     */
+    private fun turnFileChangesEvent(
+        sessionId: String,
+        row: JsonObject,
+        ts: Long,
+        window: List<JsonObject>? = null,
+    ): SessionEvent? {
+        val fc = row["fileChanges"] as? JsonObject ?: return null
+        val rowId = row["rowId"]?.jsonPrimitive?.intOrNull ?: return null
+        val turnId = row["turnId"]?.jsonPrimitive?.jsonStringOrNull
+        val anchor = if (window != null && turnId != null) {
+            window
+                .filter {
+                    it["kind"]?.jsonPrimitive?.jsonStringOrNull == "assistantText" &&
+                        it["turnId"]?.jsonPrimitive?.jsonStringOrNull == turnId
+                }
+                .minByOrNull { it["rowId"]?.jsonPrimitive?.intOrNull ?: Int.MAX_VALUE }
+                ?.get("entityId")?.jsonPrimitive?.jsonStringOrNull
+        } else null
+        val messageId = anchor
+            ?: row["entityId"]?.jsonPrimitive?.jsonStringOrNull
+            ?: return null
+        return SessionEvent(
+            type = "turn.fileChanges",
+            seq = 0L,
+            sessionId = sessionId,
+            timestamp = ts,
+            traceId = null,
+            turnId = turnId,
+            deliveryKind = null,
+            payload = buildJsonObject {
+                put("messageId", messageId)
+                put("rowId", rowId)
+                put("fileChanges", fc)
+                put(
+                    "canRewindFiles",
+                    (row["actions"] as? JsonObject)?.get("canRewindFiles")
+                        ?.jsonPrimitive?.booleanOrNull == true,
+                )
+            },
+        )
+    }
+
+    /** 投影 revision 水位跟踪（见 [v4ProjectionRevisions]）：快照帧直读 revision，
+     *  增量帧扫 state.updated 的 patch.revision。解析失败静默（诊断辅助不影响主流程）。 */
+    private fun trackProjectionRevision(sid: String, params: JsonObject) {
+        try {
+            val payload = params["frame"]?.jsonObject?.get("payload")?.jsonObject ?: return
+            if (payload["kind"]?.jsonPrimitive?.jsonStringOrNull == "snapshot") {
+                payload["snapshot"]?.jsonObject?.get("revision")?.jsonPrimitive?.intOrNull
+                    ?.let { v4ProjectionRevisions[sid] = it }
+                return
+            }
+            val deltas = payload["deltas"]?.jsonArray ?: return
+            for (d in deltas) {
+                val delta = d as? JsonObject ?: continue
+                if (delta["op"]?.jsonPrimitive?.jsonStringOrNull != "state.updated") continue
+                delta["patch"]?.jsonObject?.get("revision")?.jsonPrimitive?.intOrNull
+                    ?.let { v4ProjectionRevisions[sid] = it }
+            }
+        } catch (_: Exception) {
         }
     }
 

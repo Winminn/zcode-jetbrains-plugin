@@ -177,6 +177,55 @@
     "confirmMessage": "履歴はこの返答まで保持され、元のセッションは影響を受けません。",
     "confirmOk": "フォーク"
   },
+  "fileChanges": {
+    "summary": "{{count}} 件のファイルを変更 · +{{additions}} −{{deletions}}",
+    "reverted": "復元済み",
+    "openTitle": "このターンのファイル変更を見る",
+    "dialogTitle": "このターンのファイル変更",
+    "turnSummary": "{{files}} 件 · +{{additions}} −{{deletions}}",
+    "backToList": "ファイル一覧に戻る",
+    "rewindBtn": "このターンを復元する…",
+    "writeCount": "{{count}} 回の書き込み",
+    "noPatches": "表示できるパッチがありません",
+    "rewindTitle": "このターンのファイル変更を復元",
+    "rewindIntro": "このターンが書き込んだファイルを復元/削除します（会話履歴には影響しません；復元操作自体は元に戻せません）",
+    "safeSection": "実行される内容（{{count}}）",
+    "unsafeSection": "安全に復元できないファイル（{{count}}）",
+    "ignoredSection": "復元対象外（{{count}}）",
+    "actionRestore": "復元",
+    "tool": {
+      "Write": "書き込み",
+      "Edit": "編集",
+      "MultiEdit": "一括編集",
+      "NotebookEdit": "Notebook 編集"
+    },
+    "actionDelete": "削除",
+    "unsafeHint": "安全に復元できないファイルがあります（セッション外で修正された可能性）。ワークスペースを保護するため、今回は何も復元しません。",
+    "confirmRewind": "復元する",
+    "applying": "復元中…",
+    "empty": "このターンでのファイル変更はありません",
+    "reason": {
+      "external_modified": "セッション外で修正されています",
+      "checkpoint_missing": "チェックポイントデータがありません",
+      "checkpoint_unreadable": "チェックポイントデータが壊れています",
+      "file_read_failed": "ファイルの読み取りに失敗しました",
+      "unsupported_checkpoint": "サポート対射外のチェックポイント型"
+    },
+    "err": {
+      "unsupported": "現在の CLI バージョンでは利用できません",
+      "targetGone": "このターンのセッションデータが見つかりません",
+      "snapshotTimeout": "接続がタイムアウトしました。もう一度お願いします",
+      "revisionUnknown": "セッション状態が準備できていません。しばらくしてからお試しください",
+      "stale": "セッション状態が変化しました。もう一度お願いします",
+      "commandFailed": "復元が拒否されました",
+      "missingParams": "パラメータ不正",
+      "internal": "操作に失敗しました"
+    },
+    "review": "レビュー",
+    "reviewDiffTitle": "{{name}} の変更差分",
+    "openBtn": "開く",
+    "rewindShort": "元に戻す"
+  },
   "resend": {
     "confirmTitle": "このメッセージを再送信しますか？",
     "confirmMessage": "原文のまま再送信して回答を再生成します。現在の回答は破棄されます。",

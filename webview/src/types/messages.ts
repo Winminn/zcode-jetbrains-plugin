@@ -527,6 +527,21 @@ export type JavaRequest =  | { op: 'askUserPendingState' }
       newText: string
       attachments?: JavaEditAttachment[]
     }
+  /**
+   * 查询某轮改动的文件清单（B2 回合产物：v4/conversation/fileChanges）。
+   * messageId = 该轮 assistant 消息 id（= turnHeader entityId）；应答 turnFileChangesResult
+   */
+  | { op: 'turnFileChanges'; sessionId: string; messageId: string }
+  /** 预览撤销某轮的文件改动（v4/conversation/fileRewindPreview，hash 预检全有或全无） */
+  | { op: 'turnFileRewindPreview'; sessionId: string; messageId: string }
+  /** 执行撤销某轮的文件改动（v4/command applyFileRewind：恢复/删除文件，不截断聊天） */
+  | { op: 'turnFileRewindApply'; sessionId: string; messageId: string }
+  /** 会话重开后触发逐轮更改条重扫（标题订阅快照只在首订时有；Java 临时订阅重扫，异步） */
+  | { op: 'turnFileChangesSync'; sessionId: string }
+  /** 逐轮审查 → IDEA 侧内嵌（unified）对比弹窗：Java 把本轮 hunk 着色渲染成 Swing 弹窗
+   *  （+/-行底色、无左右分栏；数据即服务端直出 hunk，不读磁盘）。path=相对路径（error
+   *  应答回显，降级内置弹窗定位用）；缺参回 turnFileDiffError */
+  | { op: 'turnFileDiff'; filePath: string; path: string; patches: TurnFileDiffHunk[]; title?: string }
   /** 历史列表打开前定位：查所有标签是否已绑定该会话（有则 Java 直接激活宿主标签跳转，无副作用）*/
   | { op: 'locateSession'; sessionId: string }
   /** mermaid 复制图片：PNG 纯 base64 → Java 系统剪贴板（JCEF 的 clipboard.write 图片不可靠的降级通道）*/
@@ -977,6 +992,23 @@ export type JavaResponse =
    *  reason=机器可读错误码（missingParams/attachmentResolveFailed/notLatestUserMessage/
    *  commandFailed/internalError）→ 前端映射 i18n 五语言文案；message 原文仅回退兜底 */
   | { op: 'editRejected'; message?: string; reason?: string }
+  /** turnFileChanges 应答：某轮改动文件清单（B2 回合产物）。reason 错误码见 turnFileOpError */
+  | { op: 'turnFileChangesResult'; sessionId: string; messageId: string; data: TurnFileChangesDetail }
+  | { op: 'turnFileChangesError'; reason: string; message?: string }
+  /** turnFileDiff 应答：missingParams=缺 filePath/patches（正常链路不会出现，兜底降级）；
+   *  path 回显请求里的相对路径（前端降级内置弹窗定位） */
+  | { op: 'turnFileDiffError'; reason: string; message?: string; path?: string }
+  /** turnFileDiff 受理 ack（Swing 弹窗 EDT 异步弹出，Java 侧失败只落日志不回 error） */
+  | { op: 'turnFileDiffShown' }
+  /** turnFileRewindPreview 应答：safe/unsafe/ignored 三桶预览 */
+  | { op: 'turnFileRewindPreviewResult'; sessionId: string; messageId: string; data: TurnFileRewindPreview }
+  | { op: 'turnFileRewindPreviewError'; reason: string; message?: string }
+  /** turnFileRewindApply 应答：applied=服务端确认已执行（本地以随后到达的 turn.fileChanges
+   *  state=reverted 事件为准做乐观更新） */
+  | { op: 'turnFileRewindApplied'; sessionId: string; messageId: string }
+  | { op: 'turnFileRewindApplyError'; reason: string; message?: string }
+  /** turnFileChangesSync 回执（重扫异步执行，事件经流式通道后续到达） */
+  | { op: 'turnFileChangesSynced'; sessionId: string }
   /** 会话待交互计数推送（审批/提问挂起数；协议客户端反向请求计数，全量快照）。
    *  会话列表红点角标数据源——本地方案（官方 pendingInteractionSummary 在 v4
    *  sessions-index topic 订阅里，需常驻占 v4 订阅槽） */
@@ -1357,6 +1389,89 @@ export interface FileChangeItem {
 export interface FileEditContent {
   oldContent: string
   newContent: string
+}
+
+// ============ 逐轮文件更改与回退（B2 回合产物，v4 fileChanges 族）============
+
+/** 单轮文件更改摘要（turnHeader.fileChanges 订阅直出，+/−行数服务端算好）*/
+export interface TurnFileChangeSummary {
+  /** 回合头行 rowId（撤销/详情查询的 CAS target = turnHeader 行）*/
+  rowId: number
+  additions: number
+  deletions: number
+  files: number
+  /** reverted = 该轮已被回退（服务端在 applyFileRewind 后回推）*/
+  state?: 'active' | 'reverted'
+  canRewind: boolean
+  /** 原始锚（payload.messageId 原值：productTurnId 或 assistant 消息 id）——
+   *  流式壳 id→重拉真身 id 漂移时，快照落地按它重锚定（内部字段，渲染不用）*/
+  _anchor?: string
+}
+
+/** store 逐轮更改条数据（key = turnHeader entityId = 该轮 assistant 消息 id）*/
+export type TurnFileChangesMap = Record<string, TurnFileChangeSummary>
+
+/** unified diff hunk（服务端 readonlyDiffHunk 原样直出）*/
+export interface TurnFileDiffHunk {
+  oldStart: number
+  oldLines: number
+  newStart: number
+  newLines: number
+  /** unified 格式行：前缀 ' '/'+'/'-' */
+  lines: string[]
+}
+
+/** 单文件改动明细（v4/conversation/fileChanges 应答 items 元素）*/
+export interface TurnFileChangeItem {
+  path: string
+  additions: number
+  deletions: number
+  writeCount: number
+  toolNames: string[]
+  patches: TurnFileDiffHunk[]
+}
+
+/** fileChanges 查询应答 */
+export interface TurnFileChangesDetail {
+  files: number
+  additions: number
+  deletions: number
+  state?: 'active' | 'reverted'
+  items: TurnFileChangeItem[]
+}
+
+/** 回退预览单文件（safe 桶：action=restore 恢复 / delete 删除新建文件）*/
+export interface TurnFileRewindSafeFile {
+  action: 'restore' | 'delete'
+  operationCount: number
+  path: string
+  toolNames: string[]
+}
+
+/** 回退预览 unsafe 桶（hash 预检不过：外部修改过/读不到等，不可整批撤销）*/
+export interface TurnFileRewindUnsafeFile {
+  reason: 'checkpoint_missing' | 'checkpoint_unreadable' | 'external_modified' | 'file_read_failed' | 'unsupported_checkpoint'
+  message?: string
+  currentHash?: string
+  expectedHash?: string
+  operationCount: number
+  path: string
+  toolNames: string[]
+}
+
+/** 回退预览 ignored 桶（shell 工具产生的变更不在回退范围）*/
+export interface TurnFileRewindIgnoredFile {
+  operationCount: number
+  path: string
+  toolNames: string[]
+}
+
+/** fileRewindPreview 应答（全有或全无：unsafeFiles 非空时 canApply=false）*/
+export interface TurnFileRewindPreview {
+  canApply: boolean
+  safeFiles: TurnFileRewindSafeFile[]
+  unsafeFiles: TurnFileRewindUnsafeFile[]
+  ignoredFiles: TurnFileRewindIgnoredFile[]
 }
 
 // ============ 额度数据（glm plan usage API）============
