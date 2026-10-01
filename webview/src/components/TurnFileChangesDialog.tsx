@@ -43,6 +43,11 @@ function toolNameText(t: (k: string, opts?: { defaultValue: string }) => string,
   return t(`chat.fileChanges.tool.${name}`, { defaultValue: name })
 }
 
+/** 路径 → 文件名（撤销预览行与卡片行同款展示：文件名 + 灰全路径） */
+function fileNameOf(path: string): string {
+  return path.replace(/\\/g, '/').split('/').pop() || path
+}
+
 function hunkHeader(h: { oldStart: number; oldLines: number; newStart: number; newLines: number }): string {
   return `@@ -${h.oldStart},${h.oldLines} +${h.newStart},${h.newLines} @@`
 }
@@ -300,6 +305,8 @@ export function TurnFileChangesDialog() {
                           <span className="tfc-dialog__row-action">
                             {f.action === 'delete' ? t('chat.fileChanges.actionDelete') : t('chat.fileChanges.actionRestore')}
                           </span>
+                          <FileIcon path={f.path} className="file-type-icon tfc-dialog__file-icon" />
+                          <span className="tfc-dialog__row-name">{fileNameOf(f.path)}</span>
                           <span className="tfc-dialog__row-path">{f.path}</span>
                           {f.toolNames.length > 0 && (
                             <span className="tfc-dialog__row-tools">
@@ -322,6 +329,8 @@ export function TurnFileChangesDialog() {
                         >
                           <span className="codicon codicon-warning" />
                           <span className="tfc-dialog__row-action">{reasonText(t, f.reason)}</span>
+                          <FileIcon path={f.path} className="file-type-icon tfc-dialog__file-icon" />
+                          <span className="tfc-dialog__row-name">{fileNameOf(f.path)}</span>
                           <span className="tfc-dialog__row-path">{f.path}</span>
                         </div>
                       ))}
@@ -339,6 +348,8 @@ export function TurnFileChangesDialog() {
                           onMouseLeave={hideTip}
                         >
                           <span className="codicon codicon-terminal" />
+                          <FileIcon path={f.path} className="file-type-icon tfc-dialog__file-icon" />
+                          <span className="tfc-dialog__row-name">{fileNameOf(f.path)}</span>
                           <span className="tfc-dialog__row-path">{f.path}</span>
                         </div>
                       ))}

@@ -113,7 +113,6 @@
 .tfc-dialog__file {
   display: flex;
   align-items: center;
-  justify-content: space-between;
   gap: 8px;
   background: none;
   border: none;
@@ -146,6 +145,7 @@
 }
 
 .tfc-dialog__file-stat {
+  margin-left: auto;
   flex-shrink: 0;
   font-family: var(--font-mono, monospace);
   font-size: 11px;
@@ -260,11 +260,29 @@
   color: var(--text-secondary);
 }
 
+/* 行内文件段（卡片同款：类型图标 + 文件名主色 + 灰全路径） */
+.tfc-dialog__file-icon {
+  width: 13px;
+  height: 13px;
+}
+
+.tfc-dialog__row-name {
+  flex-shrink: 0;
+  max-width: 45%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-primary);
+}
+
 .tfc-dialog__row-path {
+  flex: 1;
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
   font-family: var(--font-mono, monospace);
+  color: var(--text-tertiary);
 }
 
 .tfc-dialog__row-tools {
