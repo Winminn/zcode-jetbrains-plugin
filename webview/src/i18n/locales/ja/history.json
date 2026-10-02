@@ -1,4 +1,6 @@
 {
+  "pin": "ピン留め",
+  "unpin": "ピン留め解除",
   "openChoiceTitle": "セッションを開く",
   "openChoiceMessage": "現在のタブには既にセッションがあります。「{{title}}」をどこで開きますか？",
   "openHere": "現在のタブを上書き",

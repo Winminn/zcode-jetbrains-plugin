@@ -1,4 +1,6 @@
 {
+  "pin": "고정",
+  "unpin": "고정 해제",
   "openChoiceTitle": "세션 열기",
   "openChoiceMessage": "현재 탭에 이미 세션이 있습니다. \"{{title}}\"을(를) 어디에서 열까요?",
   "openHere": "현재 탭 덮어쓰기",

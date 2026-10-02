@@ -24,6 +24,8 @@
   "deleteSession": "删除会话",
   "deleteForever": "彻底删除",
   "archive": "归档",
+  "pin": "置顶",
+  "unpin": "取消置顶",
   "restore": "恢复",
   "tabSessions": "会话",
   "tabArchived": "已归档",

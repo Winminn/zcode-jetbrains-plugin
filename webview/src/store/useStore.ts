@@ -1131,6 +1131,9 @@ interface StoreState {
   connectivityResults: Record<string, { ok: boolean; error?: string }>
   /** 会话待交互计数（审批/提问挂起；pendingInteractions 全量快照推送，红点角标）*/
   pendingInteractionCounts: Record<string, number>
+  /** 置顶会话 id 集（tasks-index.sqlite pinned 位，Kotlin 广播全量快照 + 列表加载对账；
+   * Java 库为权威源，前端不做乐观更新，sessionPinsChanged/pinnedSessions 同形覆盖）*/
+  pinnedSessionIds: string[]
   /** 回合运行中的会话集合（sessionTurnPhase 相位广播维护；值=startedAt），
    * 防列表快照把远程驱动的运行中会话降级回已完成 */
   remoteRunningTurns: Record<string, number>
@@ -1218,6 +1221,8 @@ interface StoreState {
   loadArchivedSessions: () => void
   /** 归档会话（从历史列表移入回收站，可恢复）*/
   archiveSession: (sessionId: string) => void
+  /** 置顶/取消置顶会话（写 tasks-index pinned 位，广播回调更新 pinnedSessionIds）*/
+  toggleSessionPin: (sessionId: string, pinned: boolean) => void
   /** 恢复归档会话（从回收站移回历史列表）*/
   restoreSession: (sessionId: string) => void
   /** 删除归档会话（软删对齐 ZCode 客户端：数据保留，两端列表同步隐藏）*/
@@ -1685,6 +1690,7 @@ export const useStore = create<StoreState>((set, get) => ({
   connectivityTestingId: null,
   connectivityResults: {},
   pendingInteractionCounts: {},
+  pinnedSessionIds: [],
   remoteRunningTurns: {},
   modelProvidersReordering: false,
   modelUsage: null,
@@ -1825,6 +1831,14 @@ export const useStore = create<StoreState>((set, get) => ({
     // 记录请求发出时刻：响应合并时比对 titleUpdatedAt，早于它的快照标题不采用（防回退守卫）
     listSessionsSentAt = Date.now()
     sendToJava({ op: 'listSessions', workspacePath: get().projectPath })
+    // 顺带对账置顶集（tasks-index 指纹缓存命中时零 node 进程；顺带吸收官方桌面端
+    // 在库里的 pin 变化——广播只覆盖本进程写，跨进程写靠这条对账）
+    sendToJava({ op: 'listPinnedSessions' })
+  },
+
+  toggleSessionPin: (sessionId, pinned) => {
+    // 无乐观更新：Java 写库（tasks-index UPSERT）后全标签广播真实集，广播即状态
+    sendToJava({ op: 'setSessionPinned', sessionId, pinned })
   },
 
   selectSession: (session) => {
@@ -5379,6 +5393,13 @@ export function handleResponse(
     case 'pendingInteractions':
       // 待交互计数全量快照（协议客户端反向请求计数，Kotlin 广播）：直接覆盖
       set({ pendingInteractionCounts: msg.counts ?? {} })
+      break
+
+    case 'pinnedSessions':
+    case 'sessionPinsChanged':
+      // 置顶集全量快照（op=listPinnedSessions 应答 / setSessionPinned 写库后全标签广播）：
+      // 直接覆盖（数组新引用触发订阅方重算；排序在 HistoryView 渲染层做）
+      set({ pinnedSessionIds: Array.isArray(msg.pinned) ? msg.pinned : [] })
       break
 
     case 'sessionTurnPhase': {

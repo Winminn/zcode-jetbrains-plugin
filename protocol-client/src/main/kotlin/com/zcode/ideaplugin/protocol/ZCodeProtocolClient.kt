@@ -3367,6 +3367,18 @@ class ZCodeProtocolClient private constructor(
     fun deleteArchivedSession(sessionId: String) = taskIndex.setDeleted(sessionId, cliDbPath)
 
     /**
+     * 置顶/取消置顶会话：写 tasks-index.sqlite tasks.pinned（ZCode 客户端侧栏同列同源，
+     * 两端互通；客户端自动归档判据 pinned=0，置顶会话天然免疫自动归档）。
+     * 协议 wire 面无 pin 方法（v4/controller membership 是预留位，调用 -32601），
+     * 与归档同策直写共享索引库。
+     */
+    fun setSessionPinned(sessionId: String, pinned: Boolean) = taskIndex.setPinned(sessionId, cliDbPath, pinned)
+
+    /** 当前置顶的会话 id 集（pinned=1 且未软删；按会话 id 全局唯一，跨工作区取并集无害） */
+    fun listPinnedSessionIds(): List<String> =
+        taskIndex.listTasks().filter { it.pinned && !it.deleted }.map { it.taskId }
+
+    /**
      * 自动归档陈旧任务（对齐 ZCode 客户端「自动归档旧任务」）：对本工作区执行一轮
      * 客户端同款判据扫描（详见 [TaskIndexStore.autoArchiveStale]），返回归档条目。
      */

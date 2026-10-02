@@ -378,6 +378,10 @@ export type JavaRequest =  | { op: 'askUserPendingState' }
   | { op: 'restoreSession'; sessionId: string }
   /** 删除归档会话（软删对齐 ZCode 客户端：tasks.deleted=1，数据保留可复活）*/
   | { op: 'deleteArchivedSession'; sessionId: string }
+  /** 置顶/取消置顶会话（tasks-index pinned 位，写库后 Java 全标签广播 sessionPinsChanged）*/
+  | { op: 'setSessionPinned'; sessionId: string; pinned: boolean }
+  /** 拉取当前置顶会话全量集（历史列表加载对账，顺带吸收官方桌面端库内 pin 变化）*/
+  | { op: 'listPinnedSessions' }
   /** 自动归档：读共享配置（~/.zcode/v2/setting.json，与 ZCode 客户端同源）*/
   | { op: 'getAutoArchiveConfig' }
   /** 自动归档：写共享配置（客户端下次读取同样生效）*/
@@ -1037,6 +1041,9 @@ export type JavaResponse =
    *  会话列表红点角标数据源——本地方案（官方 pendingInteractionSummary 在 v4
    *  sessions-index topic 订阅里，需常驻占 v4 订阅槽） */
   | { op: 'pendingInteractions'; counts: Record<string, number> }
+  /** 置顶会话全量集（listPinnedSessions 应答 / setSessionPinned 写库后全标签广播，同形覆盖）*/
+  | { op: 'pinnedSessions'; pinned: string[] }
+  | { op: 'sessionPinsChanged'; pinned: string[] }
   | { op: 'sessionTurnPhase'; sessionId: string; phase: 'running' | 'ended' }
   /** 会话索引推送（sessions-index v4 订阅）：full=initial 快照全量；sessions 为官方 SessionSummary 过滤后的原样字段 */
   | { op: 'sessionIndexUpdate'; full: boolean; sessions: SessionIndexEntry[]; removed: string[] }

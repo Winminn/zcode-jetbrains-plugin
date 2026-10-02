@@ -317,6 +317,9 @@ const mockSessions = [
   },
 ]
 
+// 置顶会话 mock（dev 置顶排序验收用；真实数据源为 tasks-index.sqlite pinned 位）
+let mockPinnedSessions: string[] = ['sess_mock_1']
+
 // 自动归档记录 mock（自动归档 tab 验收用；真实数据源为 Kotlin PropertiesComponent）
 const mockArchiveRecords: AutoArchiveRecord[] = [
   {
@@ -919,6 +922,18 @@ function mockResponse(req: JavaRequest): JavaResponse | null {
       return { op: 'scheduledList', ts: Date.now(), items: [], fired: [] }
     case 'listArchivedSessions':
       return { op: 'archivedSessions', sessions: mockArchivedSessions }
+    case 'listPinnedSessions':
+      // mock：预置一个置顶会话方便 dev 验收置顶排序（生产权威源=tasks-index.sqlite）
+      return { op: 'pinnedSessions', pinned: mockPinnedSessions }
+    case 'setSessionPinned': {
+      // mock：内存集翻转后直接以广播形状应答（store 对 pinnedSessions/sessionPinsChanged 同形覆盖；
+      // 生产是 Java 写库后全标签广播，此处单标签无广播通道，应答即校正）
+      const sid = req.sessionId
+      mockPinnedSessions = req.pinned
+        ? [...new Set([...mockPinnedSessions, sid])]
+        : mockPinnedSessions.filter((id) => id !== sid)
+      return { op: 'sessionPinsChanged', pinned: mockPinnedSessions }
+    }
     case 'archiveSession':
       return { op: 'sessionArchived', sessionId: req.sessionId }
     case 'restoreSession':

@@ -311,6 +311,25 @@ class ZCodeToolWindowPanel(
         }
 
         /**
+         * 会话置顶集广播（op=setSessionPinned 写库成功/失败对账 → 所有已开标签）：
+         * 全量置顶 id 列表，列表置顶排序的数据源。webview 不做乐观更新，广播即校正。
+         */
+        fun broadcastSessionPins(pinnedIds: List<String>) {
+            SwingUtilities.invokeLater {
+                activePanels.forEach { panel ->
+                    try {
+                        panel.pushToWebview(buildJsonObject {
+                            put("op", "sessionPinsChanged")
+                            put("pinned", JsonArray(pinnedIds.map { JsonPrimitive(it) }))
+                        })
+                    } catch (_: Exception) {
+                        // 懒加载未激活标签跳过：激活后 loadSessions 顺带的 listPinnedSessions 拉取兜底
+                    }
+                }
+            }
+        }
+
+        /**
          * 会话索引推送（ZCodeServiceImpl sessions-index 订阅 → 所有已开标签）：
          * 整 workspace 会话的活性数据（相位/标题/最近活动）。sessions 条目是官方
          * SessionSummary 的原样 JSON（过滤后），removed 为服务端移除的会话 id；
@@ -978,6 +997,8 @@ if (!window.__ZCODE_LOG_HOOK__) {
                         "archiveSession" -> handleArchiveSession(msg)
                         "restoreSession" -> handleRestoreSession(msg)
                         "deleteArchivedSession" -> handleDeleteArchivedSession(msg)
+                        "setSessionPinned" -> handleSetSessionPinned(msg)
+                        "listPinnedSessions" -> handleListPinnedSessions()
                         "getAutoArchiveConfig" -> handleGetAutoArchiveConfig()
                         "setAutoArchiveConfig" -> handleSetAutoArchiveConfig(msg)
                         "getAutoArchiveRecords" -> handleGetAutoArchiveRecords()
@@ -2377,6 +2398,59 @@ if (!window.__ZCODE_LOG_HOOK__) {
             put("op", "sessionArchived")
             put("sessionId", sessionId)
         }
+    }
+
+    /**
+     * op=setSessionPinned — 会话置顶/取消置顶（tasks-index.sqlite pinned 位，客户端同源）。
+     * 写库成功后向所有标签广播全量置顶集（列表置顶排序的数据源；不做前端乐观更新，
+     * 广播即校正——失败时广播库内真实集，同一回路收敛）。
+     */
+    private fun handleSetSessionPinned(msg: JsonObject): JsonObject {
+        val sessionId = msg["sessionId"]?.jsonPrimitive?.content
+            ?: return errorResponse("缺少 sessionId")
+        val pinned = msg["pinned"]?.jsonPrimitive?.booleanOrNull
+            ?: return errorResponse("缺少 pinned")
+        val client = project.zCodeService().getClient()
+        try {
+            client.setSessionPinned(sessionId, pinned)
+            log.info("Session pinned=$pinned: $sessionId")
+        } catch (e: Exception) {
+            log.warn("Session pin failed: ${e.message}")
+            // 失败同样广播真实集（webview 侧无乐观状态，这条只是对账收口）
+            broadcastSessionPinsSafe(client)
+            return errorResponse("置顶失败: ${e.message}")
+        }
+        broadcastSessionPinsSafe(client)
+        return ackOp("sessionPinChanged")
+    }
+
+    /** op=listPinnedSessions — 当前全量置顶集（历史列表加载时对账拉取） */
+    private fun handleListPinnedSessions(): JsonObject {
+        val client = project.zCodeService().getClient()
+        return try {
+            buildJsonObject {
+                put("op", "pinnedSessions")
+                put("pinned", JsonArray(client.listPinnedSessionIds().map { JsonPrimitive(it) }))
+            }
+        } catch (e: Exception) {
+            // 库不可用（schema 不兼容/客户端未装）：空集降级，置顶功能静默禁用
+            log.warn("listPinnedSessions failed: ${e.message}")
+            buildJsonObject {
+                put("op", "pinnedSessions")
+                put("pinned", JsonArray(emptyList()))
+            }
+        }
+    }
+
+    /** 写库后广播全量置顶集；读集失败按空集广播（列表退回纯时间序，不炸 UI） */
+    private fun broadcastSessionPinsSafe(client: com.zcode.ideaplugin.protocol.ZCodeProtocolClient) {
+        val pinned = try {
+            client.listPinnedSessionIds()
+        } catch (e: Exception) {
+            log.warn("broadcast session pins read failed: ${e.message}")
+            emptyList()
+        }
+        broadcastSessionPins(pinned)
     }
 
     // ============ 定时消息（ZCodeScheduledMessageService 的 webview op 入口） ============

@@ -46,6 +46,7 @@ class TaskIndexStore(
         val workspacePath: String,
         val archived: Boolean,
         val deleted: Boolean,
+        val pinned: Boolean,
         val updatedAt: Long,
     )
 
@@ -72,6 +73,7 @@ class TaskIndexStore(
                 workspacePath = o["workspace_path"]!!.jsonPrimitive.content,
                 archived = o["archived"]!!.jsonPrimitive.long == 1L,
                 deleted = o["deleted"]!!.jsonPrimitive.long == 1L,
+                pinned = o["pinned"]!!.jsonPrimitive.long == 1L,
                 updatedAt = o["updated_at"]!!.jsonPrimitive.long,
             )
         }
@@ -104,6 +106,19 @@ class TaskIndexStore(
      */
     fun setDeleted(sessionId: String, sessionDbPath: Path) {
         upsertTaskRow(sessionId, sessionDbPath, "delete")
+    }
+
+    /**
+     * 置顶/取消置顶（tasks.pinned 位，ZCode 客户端同列同语义）：
+     * - 客户端侧栏 pin 与插件互通（桌面宿主 windowHostControllerService.setTaskPinned
+     *   写同一 tasks-index.sqlite；客户端自动归档判据 pinned=0 不碰置顶会话）
+     * - 已有行仅动 pinned、**不动 updated_at**（置顶不刷新会话活动时间，置顶组内
+     *   仍按 updatedAt 倒序；归档/删除那种「动作即活动」语义在此不成立）
+     * - 无行补 UPSERT（插件创建、客户端未索引的会话）：从 cli db.sqlite 读 meta 补全
+     *   NOT NULL 字段（与归档补行同形状）
+     */
+    fun setPinned(sessionId: String, sessionDbPath: Path, pinned: Boolean) {
+        upsertTaskRow(sessionId, sessionDbPath, if (pinned) "pin" else "unpin")
     }
 
     private fun upsertTaskRow(sessionId: String, sessionDbPath: Path, mode: String) {
@@ -213,21 +228,23 @@ private val TASKS_LIST_JS = """
     if (!fs.existsSync(p)) { console.log('[]'); process.exit(0); }
     const db = new DatabaseSync(p);
     db.exec('PRAGMA busy_timeout = 5000');
-    const need = ['task_id','workspace_path','archived','deleted','updated_at'];
+    const need = ['task_id','workspace_path','archived','deleted','pinned','updated_at'];
     const cols = db.prepare('PRAGMA table_info(tasks)').all().map(c => c.name);
     const missing = need.filter(c => !cols.includes(c));
     if (missing.length) { console.error('ERR:SCHEMA:' + missing.join(',')); process.exit(2); }
-    const rows = db.prepare('SELECT task_id, workspace_path, archived, deleted, updated_at FROM tasks').all();
+    const rows = db.prepare('SELECT task_id, workspace_path, archived, deleted, pinned, updated_at FROM tasks').all();
     console.log(JSON.stringify(rows));
 """.trimIndent()
 
 /**
- * 归档/恢复/软删：session 表读 meta → tasks 表 UPSERT（ZCODE_TASKS_MODE = archive|restore|delete）。
+ * 归档/恢复/软删/置顶：session 表读 meta → tasks 表 UPSERT
+ * （ZCODE_TASKS_MODE = archive|restore|delete|pin|unpin）。
  * NOT NULL 列全覆盖（task_status='completed'/mode='build'/meta_json 最小化）。
  * 已有行：archive/restore 仅动 archived/updated_at；delete 仅动 deleted/updated_at
- * （archived 保持原值——客户端删除归档会话实库实证 archived 位不被清除）。
+ * （archived 保持原值——客户端删除归档会话实库实证 archived 位不被清除）；
+ * pin/unpin 仅动 pinned（updated_at 保持——置顶不改变会话活动时序）。
  * 无行补 INSERT：archive=归档1/删除0，restore=0/0，delete=0/1（老机制归档会话删除场景，
- * time_archived 同步清除后 archived=0 语义最干净）。
+ * time_archived 同步清除后 archived=0 语义最干净），pin/unpin=置顶位按目标值。
  */
 private val TASKS_UPSERT_JS = """
     const {DatabaseSync} = require('node:sqlite');
@@ -235,6 +252,7 @@ private val TASKS_UPSERT_JS = """
     const mode = process.env.ZCODE_TASKS_MODE;
     const archIns = mode === 'archive' ? 1 : 0;
     const delIns = mode === 'delete' ? 1 : 0;
+    const pinIns = mode === 'pin' ? 1 : 0;
     const sessDb = new DatabaseSync(process.env.ZCODE_SESS_DB);
     sessDb.exec('PRAGMA busy_timeout = 5000');
     const tdb = new DatabaseSync(process.env.ZCODE_TASKS_DB);
@@ -247,17 +265,19 @@ private val TASKS_UPSERT_JS = """
     if (!s) { console.error('ERR: session not found: ' + sid); process.exit(1); }
     const existing = tdb.prepare('SELECT workspace_key FROM tasks WHERE task_id = ?').get(sid);
     const wsKey = existing ? existing.workspace_key : s.path;
-    const conflictUpdate = mode === 'delete'
-      ? 'deleted = excluded.deleted, updated_at = excluded.updated_at'
-      : 'archived = excluded.archived, updated_at = excluded.updated_at';
-    const sql = 'INSERT INTO tasks (workspace_key, workspace_path, task_id, title, task_status, mode, created_at, updated_at, last_unread_at, pinned, archived, deleted, title_overridden, searchable_text, meta_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, 0, ?, ?, 0, ?, ?) ON CONFLICT(workspace_key, task_id) DO UPDATE SET ' + conflictUpdate;
+    let conflictUpdate;
+    if (mode === 'delete') conflictUpdate = 'deleted = excluded.deleted, updated_at = excluded.updated_at';
+    else if (mode === 'pin' || mode === 'unpin') conflictUpdate = 'pinned = excluded.pinned';
+    else conflictUpdate = 'archived = excluded.archived, updated_at = excluded.updated_at';
+    const sql = 'INSERT INTO tasks (workspace_key, workspace_path, task_id, title, task_status, mode, created_at, updated_at, last_unread_at, pinned, archived, deleted, title_overridden, searchable_text, meta_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, 0, ?, ?) ON CONFLICT(workspace_key, task_id) DO UPDATE SET ' + conflictUpdate;
     tdb.exec('BEGIN IMMEDIATE');
     try {
-      tdb.prepare(sql).run(wsKey, s.path, sid, s.title || '(未命名会话)', 'completed', 'build', s.time_created ?? Date.now(), Date.now(), archIns, delIns, '', JSON.stringify({taskId: sid}));
+      tdb.prepare(sql).run(wsKey, s.path, sid, s.title || '(未命名会话)', 'completed', 'build', s.time_created ?? Date.now(), Date.now(), pinIns, archIns, delIns, '', JSON.stringify({taskId: sid}));
       tdb.exec('COMMIT');
       // restore 清旧插件机制归档位（恢复到正常列表）；delete 同样必须清——不清则
-      // listArchivedSessions 双源合并的旧机制分支（session.time_archived）仍会命中
-      if (mode !== 'archive') sessDb.prepare('UPDATE session SET time_archived = NULL WHERE id = ?').run(sid);
+      // listArchivedSessions 双源合并的旧机制分支（session.time_archived）仍会命中。
+      // pin/unpin 与归档位无关，不碰（幂等空操作也不做）
+      if (mode === 'restore' || mode === 'delete') sessDb.prepare('UPDATE session SET time_archived = NULL WHERE id = ?').run(sid);
       console.log('ok');
     } catch (e) {
       try { tdb.exec('ROLLBACK'); } catch(_){}

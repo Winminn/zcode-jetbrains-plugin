@@ -176,6 +176,16 @@
     border: 1px solid color-mix(in srgb, var(--accent-primary) 30%, transparent);
   }
 
+  /* 置顶按钮：未置顶同 __action（hover 显现）；已置顶常显强调色（列表已置顶排序的视觉锚点）*/
+  &__pin--pinned {
+    opacity: 1;
+    color: var(--accent-primary);
+
+    &:hover {
+      color: var(--accent-primary);
+    }
+  }
+
   &:hover &__action {
     opacity: 1;
   }

@@ -14,6 +14,8 @@
  *   3s 未确认自动恢复），再点触发恢复；恢复可逆
  * - 删除（archived 变体）：hover 显示 codicon-trash，点击直接回调 onDelete（确认由
  *   HistoryView 的 danger modal 承担——删除语义重于还原，不走 3s 内联轻确认）
+ * - 置顶（active 变体）：hover 显示 codicon-pin；置顶后 codicon-pinned 常显（列表
+ *   置顶排序由 HistoryView 承担）。可逆轻操作，无确认
  * - 点击 archived 变体项不进入会话（HistoryView 拦截），操作走专属还原/删除按钮
  */
 
@@ -34,6 +36,10 @@ interface Props {
   onRestore?: (sessionId: string) => void
   /** 删除（archived 模式；软删，确认由父级 danger modal 承担）*/
   onDelete?: (sessionId: string) => void
+  /** 置顶切换（active 模式；可逆轻操作，无确认——写库后广播回调统一刷新）*/
+  onTogglePin?: (sessionId: string, pinned: boolean) => void
+  /** 当前是否置顶（图标常显 + 列表置顶排序由父级承担）*/
+  pinned?: boolean
   /** active=历史会话（默认）/ archived=已归档（回收站）*/
   variant?: 'active' | 'archived'
   /** 自定义标题渲染（搜索高亮用）*/
@@ -45,7 +51,7 @@ interface Props {
 }
 
 function SessionItemInner({
-  session, active, onSelect, onArchive, onRestore, onDelete, renderTitle,
+  session, active, onSelect, onArchive, onRestore, onDelete, onTogglePin, pinned = false, renderTitle,
   variant = 'active',
   selectionMode = false, selected = false, onToggle,
 }: Props) {
@@ -90,6 +96,11 @@ function SessionItemInner({
   const handleClick = () => {
     if (selectionMode) onToggle?.(session.sessionId)
     else onSelect(session)
+  }
+
+  const handleTogglePin = (e: React.MouseEvent) => {
+    e.stopPropagation() // 不触发会话选中
+    onTogglePin?.(session.sessionId, !pinned)
   }
 
   const title = session.title || session.sessionId.slice(0, 12)
@@ -172,18 +183,28 @@ function SessionItemInner({
                 )}
               </>
             ) : (
-              <button
-                type="button"
-                className={`session-item__action session-item__archive ${confirming ? 'session-item__archive--confirming' : ''}`}
-                onClick={handleArchive}
-                title={confirming ? t('history.confirmArchiveAgain') : t('history.archive')}
-              >
-                {confirming ? (
-                  <span className="codicon codicon-check" style={{ color: 'var(--accent-primary)' }} />
-                ) : (
-                  <span className="codicon codicon-archive" />
-                )}
-              </button>
+              <>
+                <button
+                  type="button"
+                  className={`session-item__action session-item__pin ${pinned ? 'session-item__pin--pinned' : ''}`}
+                  onClick={handleTogglePin}
+                  title={pinned ? t('history.unpin') : t('history.pin')}
+                >
+                  <span className={`codicon ${pinned ? 'codicon-pinned' : 'codicon-pin'}`} />
+                </button>
+                <button
+                  type="button"
+                  className={`session-item__action session-item__archive ${confirming ? 'session-item__archive--confirming' : ''}`}
+                  onClick={handleArchive}
+                  title={confirming ? t('history.confirmArchiveAgain') : t('history.archive')}
+                >
+                  {confirming ? (
+                    <span className="codicon codicon-check" style={{ color: 'var(--accent-primary)' }} />
+                  ) : (
+                    <span className="codicon codicon-archive" />
+                  )}
+                </button>
+              </>
             )}
           </div>
         )}
