@@ -959,6 +959,9 @@ if (!window.__ZCODE_LOG_HOOK__) {
                         "turnFileRewindApply" -> handleTurnFileRewindApply(msg)
                         "turnFileChangesSync" -> handleTurnFileChangesSync(msg)
                         "turnFileDiff" -> handleTurnFileDiff(msg)
+                        "backgroundBashOutput" -> handleBackgroundBashOutput(msg)
+                        "cancelBackgroundWork" -> handleCancelBackgroundWork(msg)
+                        "backgroundWorksList" -> handleBackgroundWorksList(msg)
                         "subscribe" -> handleSubscribe(msg)
                         "subscribeChild" -> handleSubscribeChild(msg)
                         "unsubscribeChild" -> handleUnsubscribeChild(msg)
@@ -2439,6 +2442,74 @@ if (!window.__ZCODE_LOG_HOOK__) {
                 put("op", "pinnedSessions")
                 put("pinned", JsonArray(emptyList()))
             }
+        }
+    }
+
+    /**
+     * op=backgroundBashOutput — 后台 bash 任务输出快照（H7 面板输出面，前端 1s 轮询
+     * running 态）。协议响应原样透传（output 快照或 unavailable/unsupported/read_failed
+     * 降级形态），前端按 kind 分支展示。
+     */
+    private fun handleBackgroundBashOutput(msg: JsonObject): JsonObject {
+        val sessionId = msg["sessionId"]?.jsonPrimitive?.content
+            ?: return errorResponse("缺少 sessionId")
+        val workId = msg["workId"]?.jsonPrimitive?.content
+            ?: return errorResponse("缺少 workId")
+        val client = project.zCodeService().getClient()
+        return try {
+            val result = client.backgroundBashOutput(sessionId, workId)
+            buildJsonObject {
+                put("op", "backgroundBashOutputResult")
+                put("sessionId", sessionId)
+                put("workId", workId)
+                put("result", result)
+            }
+        } catch (e: Exception) {
+            log.warn("backgroundBashOutput failed: ${e.message}")
+            errorResponse("查询后台输出失败: ${e.message}")
+        }
+    }
+
+    /**
+     * op=cancelBackgroundWork — 取消后台工作（bash/workflow；子代理另有 cancelBackgroundTask）。
+     * ACK 拒绝（not_found/not_running/cancel_not_supported）非协议错误，status 原样回传
+     * 供前端提示；accepted 即成功（投影由 backgroundWorks 事件自然收敛）。
+     */
+    private fun handleCancelBackgroundWork(msg: JsonObject): JsonObject {
+        val sessionId = msg["sessionId"]?.jsonPrimitive?.content
+            ?: return errorResponse("缺少 sessionId")
+        val workId = msg["workId"]?.jsonPrimitive?.content
+            ?: return errorResponse("缺少 workId")
+        val client = project.zCodeService().getClient()
+        return try {
+            val result = client.cancelBackgroundWork(sessionId, workId)
+            log.info("cancelBackgroundWork: $workId status=${result["status"]?.jsonPrimitive?.content}")
+            buildJsonObject {
+                put("op", "backgroundWorkCancelled")
+                put("sessionId", sessionId)
+                put("workId", workId)
+                put("status", result["status"]?.jsonPrimitive?.contentOrNull ?: "unknown")
+                result["reasonCode"]?.jsonPrimitive?.contentOrNull?.let { put("reasonCode", it) }
+            }
+        } catch (e: Exception) {
+            log.warn("cancelBackgroundWork failed: ${e.message}")
+            errorResponse("取消失败: ${e.message}")
+        }
+    }
+
+    /**
+     * op=backgroundWorksList — 后台工作投影缓存查询（历史加载兜底）。同 topic 重复 v4
+     * subscribe 幂等、服务端不重推 initial 快照（B2②坑），跨标签/重复打开会话时订阅
+     * 快照帧缺席、前端投影 map 为空——打开会话时从此查询补齐（进程级缓存，跨标签共享）。
+     */
+    private fun handleBackgroundWorksList(msg: JsonObject): JsonObject {
+        val sessionId = msg["sessionId"]?.jsonPrimitive?.content
+            ?: return errorResponse("缺少 sessionId")
+        val client = project.zCodeService().getClient()
+        return buildJsonObject {
+            put("op", "backgroundWorksList")
+            put("sessionId", sessionId)
+            put("works", client.listBackgroundWorks(sessionId))
         }
     }
 
@@ -5390,8 +5461,11 @@ if (!window.__ZCODE_LOG_HOOK__) {
         // 表现为"标题生成了但主界面不更新"。titleUpdated 是全局无害更新（前端仅改
         // 列表标题，会话不在列表即被丢弃），放行不破坏隔离语义
         // turn.fileChanges 同款豁免（重扫触发点在订阅回执后仍可能与闸门赛跑——
-        // messages/subscribe 双 op 线程池并发；前端按 currentSessionId 过滤无害）
-        if (sessionId !in subscribedSessions && event.type != "session.titleUpdated" && event.type != "turn.fileChanges") {
+        // messages/subscribe 双 op 线程池并发；前端按 currentSessionId 过滤无害）。
+        // backgroundWorks 同款豁免（H7）：投影按会话落前端 map、badge 随 currentSessionId
+        // 切换即读——不豁免则切回会话后要等下一次启停帧才有数据（badge 长时间缺失）；
+        // 事件仅在后台工作启停时出现（低频），全量放行无风暴风险
+        if (sessionId !in subscribedSessions && event.type != "session.titleUpdated" && event.type != "turn.fileChanges" && event.type != "backgroundWorks") {
             // 诊断（子会话实时流停更追查）：子会话被门禁挡住的首次打点——
             // 持续打点说明订阅簿记在任务中途被清（invalidateStaleSubscriptions 等）
             if (sessionId.startsWith("sess_subagent")) {

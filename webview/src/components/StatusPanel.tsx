@@ -1,29 +1,40 @@
 /**
  * 状态面板（对齐 cc-gui StatusPanel）
  *
- * 固定在消息列表与输入框之间的一行 tab：
- *   📋 任务 n/m（流式中且有进行中任务时转圈）
- *   🤖 Agent n/m
+ * 固定在消息列表与输入框之间的一行 tab（tab 名对齐 ZCode 客户端叫法：todos 清单=进程、
+ * 后台运行汇总=任务；i18n 键名 todoTab/workTab 按数据源命名与中文文案错位，勿按键名望文生义）：
+ *   📋 进程 n/m（流式中且有进行中任务时转圈）
+ *   ⚙ 任务（运行中优先显示总数，空闲回落完成/总数）
  *   ✏️ 文件 +n -m
  *
- * 点击 tab 弹出详情列表（点击外部 / Escape 关闭）。
- * 数据从消息历史解析（utils/parseStatus.ts），由 useStore 维护。
+ * 点击 tab 弹出详情列表（点击外部 / Escape 关闭）。任务 tab 内分两个子 tab：
+ * 「后台任务」（bash/工作流投影条目：状态/取消/bash 输出查看，H7）与「代理任务」
+ * （既有子代理列表：点击弹执行记录/报告；运行中条目加取消——经 childSessionId 匹配
+ * backgroundWorks 投影的 workId，匹配不到不显示按钮，宁可不显示也不能停错）。
+ * 数据：todos/agents/fileChanges 从消息历史解析（utils/parseStatus.ts），后台任务
+ * 是 v4 帧投影（store.backgroundWorksBySession）。
  *
  * 简化（与 cc-gui 差异）：
  * - 文件状态统一 M（ZCode 无 git 状态数据）；无 undo
  * - 文件项点击在 IDEA 编辑器打开；行尾 diff 按钮弹该文件编辑内容的前后对比
  */
 
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { createPortal } from 'react-dom'
 import { useStore } from '@/store/useStore'
 import { sendToJava } from '@/ipc/bridge'
 import { getAgentToolOutput } from '@/utils/parseStatus'
-import type { AgentItem } from '@/types/messages'
+import { mergeBackgroundWorks } from '@/utils/backgroundTask'
+import { BackgroundTaskList } from './BackgroundTaskList'
+import type { AgentItem, BackgroundWorkSummary } from '@/types/messages'
 import '../styles/status-panel.less'
 
 type TabType = 'todo' | 'agent' | 'files'
+/** 后台工作 popover 的子 tab：后台任务（bash/工作流）/ 子代理（既有列表） */
+type BgSubTab = 'bg' | 'sub'
+
+const EMPTY_WORKS: BackgroundWorkSummary[] = []
 
 /** todo/agent 状态 → codicon 图标 */
 function statusIcon(status: string): { icon: string; spin?: boolean } {
@@ -44,11 +55,16 @@ export function StatusPanel() {
   const agents = useStore((s) => s.agents)
   const fileChanges = useStore((s) => s.fileChanges)
   const streaming = useStore((s) => s.streaming)
+  const currentSessionId = useStore((s) => s.currentSessionId)
+  const bgWorks = useStore((s) => (currentSessionId ? s.backgroundWorksBySession[currentSessionId] : undefined))
+  const fromTranscript = useStore((s) => s.backgroundWorksFromTranscript)
+  const cancelBackgroundWork = useStore((s) => s.cancelBackgroundWork)
   const openSubagentDetail = useStore((s) => s.openSubagentDetail)
   const openSubagentReport = useStore((s) => s.openSubagentReport)
   const messages = useStore((s) => s.messages)
   const statusPanelCollapsed = useStore((s) => s.statusPanelCollapsed)
   const [openTab, setOpenTab] = useState<TabType | null>(null)
+  const [bgSubTab, setBgSubTab] = useState<BgSubTab>('sub')
   const panelRef = useRef<HTMLDivElement>(null)
   // popover 用 fixed 定位（脱离父级 overflow:hidden 裁剪），位置由 tab 行的 rect 计算
   const [popoverPos, setPopoverPos] = useState<{ left: number; bottom: number } | null>(null)
@@ -57,9 +73,22 @@ export function StatusPanel() {
   const todoCompleted = todos.filter((t) => t.status === 'completed').length
   const hasInProgressTodo = todos.some((t) => t.status === 'in_progress')
   const agentCompleted = agents.filter((a) => a.status === 'completed').length
-  const hasRunningAgent = agents.some((a) => a.status === 'running')
   const totalAdd = fileChanges.reduce((n, f) => n + f.additions, 0)
   const totalDel = fileChanges.reduce((n, f) => n + f.deletions, 0)
+  // 后台工作 tab 计数（后台任务与子代理两类合并，用户反馈：后台任务须纳入总数）：
+  // 数据源 = 投影 ∪ 转录重建合并（重启后投影消失，重建条目让栏不空；投影优先去重）。
+  // - running > 0：优先显示 running 总数（后台任务跨回合存活，回合结束后仍在跑——
+  //   这正是本 tab 的核心信息）
+  // - 空闲：显示 完成/总数（完成 = 后台任务 resultPending + 转录重建 + 子代理 completed）
+  const bgWorksAll = useMemo(
+    () => mergeBackgroundWorks(bgWorks ?? EMPTY_WORKS, fromTranscript),
+    [bgWorks, fromTranscript],
+  )
+  const bgTasks = bgWorksAll.filter((w: BackgroundWorkSummary) => w.kind !== 'subagent')
+  const runningBgWorks = bgWorksAll.filter((w: BackgroundWorkSummary) => w.status === 'running')
+  const runningWorkTotal = runningBgWorks.length + agents.filter((a) => a.status === 'running').length
+  const workDone = bgTasks.filter((w: BackgroundWorkSummary) => w.status === 'resultPending').length + agentCompleted
+  const workTotal = bgTasks.length + agents.length
 
   // 列表点击的默认页分流：已完成 → 最终报告弹窗（报告 md 缺失时回退执行记录），
   // 其余状态 → 执行记录弹窗。两弹窗头部按钮互斥切换的逻辑不变。
@@ -74,6 +103,20 @@ export function StatusPanel() {
       }
     }
     openSubagentDetail(a.callID)
+  }
+
+  // 子代理取消：经 childSessionId 精确匹配投影里的 running work 取 workId
+  // （AgentItem.callID 是工具调用 id 非 agentId，不能直接当取消键）；匹配不到
+  // （cold/热投影交接窗口或重复身份）不显示取消按钮——宁可不显示也不能停错（官方同款保守）
+  const runningWorkByChild = new Map(
+    (bgWorks ?? [])
+      .filter((w: BackgroundWorkSummary) => w.kind === 'subagent' && w.status === 'running')
+      .map((w: BackgroundWorkSummary) => [w.childSessionId, w]),
+  )
+  const cancelableAgentWork = (a: AgentItem): BackgroundWorkSummary | null => {
+    if (a.status !== 'running' || !a.childSessionId) return null
+    const w = runningWorkByChild.get(a.childSessionId)
+    return w && w.cancellable !== false ? w : null
   }
 
   // 点击外部 / Escape 关闭 popover
@@ -142,18 +185,20 @@ export function StatusPanel() {
           )}
         </div>
 
-        {/* Agent tab */}
+        {/* 后台工作 tab（原「子代理」扩展：bash/工作流投影 + 子代理，子 tab 切换） */}
         <div
           className={`status-panel-tab ${openTab === 'agent' ? 'active' : ''}`}
           onClick={() => toggleTab('agent')}
         >
-          <span className="codicon codicon-hubot" />
-          <span className="tab-label">{t('app.status.agentTab')}</span>
-          {agents.length > 0 && (
-            <span className="tab-progress">{agentCompleted}/{agents.length}</span>
-          )}
-          {streaming && hasRunningAgent && (
-            <span className="codicon codicon-loading status-panel-tab-loading" />
+          <span className="codicon codicon-server-process" />
+          <span className="tab-label">{t('app.status.workTab')}</span>
+          {runningWorkTotal > 0 ? (
+            <>
+              <span className="tab-progress">{runningWorkTotal}</span>
+              <span className="codicon codicon-loading status-panel-tab-loading" />
+            </>
+          ) : workTotal > 0 && (
+            <span className="tab-progress">{workDone}/{workTotal}</span>
           )}
         </div>
 
@@ -199,31 +244,66 @@ export function StatusPanel() {
           )}
 
           {openTab === 'agent' && (
-            agents.length === 0 ? (
-              <div className="status-panel-empty">{t('app.status.noAgents')}</div>
-            ) : (
-              <div className="status-panel-agent-list">
-                {agents.map((a) => {
-                  const { icon, spin } = statusIcon(a.status)
-                  return (
-                    <div
-                      key={a.callID}
-                      className={`status-panel-agent-item status-${a.status} clickable`}
-                      title={t('app.status.viewSubagentDetail')}
-                      onClick={() => handleAgentClick(a)}
-                    >
-                      <span className={`codicon ${icon} ${spin ? 'spin' : ''} status-panel-agent-icon`} />
-                      <div className="status-panel-agent-body">
-                        <span className="status-panel-agent-desc" title={a.description}>{a.description}</span>
-                        {a.subagentType && <span className="status-panel-agent-type">{a.subagentType}</span>}
-                        {a.summary && <span className="status-panel-agent-summary" title={a.summary}>{a.summary}</span>}
-                      </div>
-                      <span className="codicon codicon-chevron-right status-panel-agent-arrow" />
-                    </div>
-                  )
-                })}
+            <>
+              {/* 子 tab 切换：后台任务（bash/工作流投影）/ 子代理（既有列表），带各自计数 */}
+              <div className="status-panel-subtabs">
+                <button
+                  type="button"
+                  className={`status-panel-subtab ${bgSubTab === 'bg' ? 'active' : ''}`}
+                  onClick={() => setBgSubTab('bg')}
+                >
+                  {t('app.status.bgTab')}
+                  {bgTasks.length > 0 && <span className="status-panel-subtab-count">{bgTasks.length}</span>}
+                </button>
+                <button
+                  type="button"
+                  className={`status-panel-subtab ${bgSubTab === 'sub' ? 'active' : ''}`}
+                  onClick={() => setBgSubTab('sub')}
+                >
+                  {t('app.status.subTab')}
+                  {agents.length > 0 && <span className="status-panel-subtab-count">{agents.length}</span>}
+                </button>
               </div>
-            )
+
+              {bgSubTab === 'bg' ? (
+                <BackgroundTaskList sessionId={currentSessionId} />
+              ) : agents.length === 0 ? (
+                <div className="status-panel-empty">{t('app.status.noAgents')}</div>
+              ) : (
+                <div className="status-panel-agent-list">
+                  {agents.map((a) => {
+                    const { icon, spin } = statusIcon(a.status)
+                    const cancelWork = cancelableAgentWork(a)
+                    return (
+                      <div
+                        key={a.callID}
+                        className={`status-panel-agent-item status-${a.status} clickable`}
+                        title={t('app.status.viewSubagentDetail')}
+                        onClick={() => handleAgentClick(a)}
+                      >
+                        <span className={`codicon ${icon} ${spin ? 'spin' : ''} status-panel-agent-icon`} />
+                        <div className="status-panel-agent-body">
+                          <span className="status-panel-agent-desc" title={a.description}>{a.description}</span>
+                          {a.subagentType && <span className="status-panel-agent-type">{a.subagentType}</span>}
+                          {a.summary && <span className="status-panel-agent-summary" title={a.summary}>{a.summary}</span>}
+                        </div>
+                        {cancelWork ? (
+                          <span
+                            className="codicon codicon-close status-panel-agent-cancel"
+                            title={t('app.status.bgWorks.cancel')}
+                            onClick={(e) => {
+                              e.stopPropagation() // 不触发条目点击（详情弹窗）
+                              cancelBackgroundWork(currentSessionId!, cancelWork.workId)
+                            }}
+                          />
+                        ) : null}
+                        <span className="codicon codicon-chevron-right status-panel-agent-arrow" />
+                      </div>
+                    )
+                  })}
+                </div>
+              )}
+            </>
           )}
 
           {openTab === 'files' && (

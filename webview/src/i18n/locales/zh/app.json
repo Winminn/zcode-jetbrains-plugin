@@ -71,16 +71,36 @@
     "viewResult": "点击查看结果"
   },
   "status": {
-    "todoTab": "任务",
-    "agentTab": "子代理",
+    "todoTab": "进程",
+    "workTab": "任务",
     "fileTab": "文件",
     "noTodos": "暂无任务",
-    "noAgents": "暂无子任务",
+    "noAgents": "暂无代理任务",
     "noFiles": "暂无文件改动",
     "viewSubagentDetail": "点击查看子代理执行过程",
     "openInEditor": "在编辑器打开：{{path}}",
     "viewDiff": "查看编辑前后对比",
-    "diffTitle": "编辑对比：{{name}}"
+    "diffTitle": "编辑对比：{{name}}",
+    "bgTab": "后台任务",
+    "subTab": "代理任务",
+    "bgWorks": {
+      "empty": "暂无后台任务",
+      "statusRunning": "运行中",
+      "statusBlocked": "等待中",
+      "statusPending": "待投递",
+      "statusFailed": "失败",
+      "statusCancelled": "已取消",
+      "statusEnded": "已结束",
+      "viewOutput": "输出",
+      "hideOutput": "收起输出",
+      "cancel": "取消",
+      "outputLoading": "正在读取输出…",
+      "outputEmpty": "（暂无输出）",
+      "outputTruncated": "输出已截断（仅保留最后 8 KB）",
+      "output_unavailable": "任务输出不可用（任务已结束或被回收）",
+      "output_unsupported": "当前 CLI 版本不支持输出查询",
+      "output_read_failed": "读取任务输出失败"
+    }
   },
   "envBanner": {
     "title": "运行环境配置异常，插件暂不可用",

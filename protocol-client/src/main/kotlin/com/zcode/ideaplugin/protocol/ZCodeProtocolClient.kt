@@ -111,6 +111,18 @@ class ZCodeProtocolClient private constructor(
     private val v4SubscribedSessions = ConcurrentHashMap.newKeySet<String>()
 
     /**
+     * 后台工作投影缓存（session → 最近一次 backgroundWorks 全量数组）。投影只经订阅帧
+     * 推送且重复订阅不重推快照——打开会话时前端经 [listBackgroundWorks] 从此补齐
+     * （跨标签共享本进程数据；进程重启后缓存消失，此时后台 bash 子进程也已随
+     * app-server 死亡，空投影是正确语义非缺陷）。
+     */
+    private val backgroundWorksCache = java.util.concurrent.ConcurrentHashMap<String, kotlinx.serialization.json.JsonArray>()
+
+    /** 查会话的后台工作投影缓存（无数据返回空数组，不 hydrate 冷会话） */
+    fun listBackgroundWorks(sessionId: String): kotlinx.serialization.json.JsonArray =
+        backgroundWorksCache[sessionId] ?: kotlinx.serialization.json.JsonArray(emptyList())
+
+    /**
      * 仅订阅标题更新的主会话（v2 代）。v2 的标题生成结果只在 v4 帧
      * `state.updated` delta 的 `patch.meta.title` 上广播，legacy session/event 流
      * 不再有 session.titleUpdated——主会话（legacy 驱动）在此登记后，帧处理只抽
@@ -850,6 +862,12 @@ class ZCodeProtocolClient private constructor(
             // 增量帧扫 state.updated 的 patch.revision（投影每变更必带，见 delta.ts）。
             // 主要消费方是已全量订阅会话（子会话）重入查询时的兜底水位
             trackProjectionRevision(sid, effectiveParams)
+            // 后台工作投影（H7 汇总入口数据源）：在两类订阅的分流前提取——主会话走
+            // 标题轻订阅（v4TitleSessions，轻分支内 return），子会话走完整订阅，两条路
+            // 都需要 badge 数据。快照帧 snapshot.backgroundWorks 全量 + state.updated
+            // delta 的 patch.backgroundWorks 全量替换（服务端投影语义）。合成
+            // backgroundWorks 事件推前端，payload 原样透传不裁字段。低频（启停时各一帧）
+            extractBackgroundWorks(sid, effectiveParams["frame"]?.jsonObject?.get("payload") as? JsonObject)?.let { dispatchSessionEvent(it) }
             // 仅标题订阅的主会话：只抽 state.updated delta 的 meta.title 合成
             // session.titleUpdated（v2 标题广播唯一通道，见 v4TitleSessions），行数据
             // 不映射——主会话已有 legacy 流，映射会造成双写
@@ -935,6 +953,44 @@ class ZCodeProtocolClient private constructor(
             }
             for (ev in events) dispatchSessionEvent(ev)
         }
+    }
+
+    /** 从 v4 帧 payload 提取后台工作投影，合成 SessionEvent；帧内无该字段返回 null */
+    private fun extractBackgroundWorks(sid: String, payload: JsonObject?): SessionEvent? {
+        payload ?: return null
+        val works: kotlinx.serialization.json.JsonArray = when (
+            payload["kind"]?.jsonPrimitive?.jsonStringOrNull
+        ) {
+            "snapshot" -> payload["snapshot"]?.jsonObject?.get("backgroundWorks") as? kotlinx.serialization.json.JsonArray
+            "deltas" -> {
+                // 逐 delta 扫，取最后一个带 backgroundWorks 的 state.updated（一帧内多 delta
+                // 均为同代投影，末位即最新；全量替换语义无需 diff）
+                var latest: kotlinx.serialization.json.JsonArray? = null
+                for (d in payload["deltas"]?.jsonArray ?: kotlinx.serialization.json.JsonArray(emptyList())) {
+                    val delta = d as? JsonObject ?: continue
+                    if (delta["op"]?.jsonPrimitive?.jsonStringOrNull != "state.updated") continue
+                    val bw = delta["patch"]?.jsonObject?.get("backgroundWorks")
+                        as? kotlinx.serialization.json.JsonArray ?: continue
+                    latest = bw
+                }
+                latest
+            }
+            else -> null
+        } ?: return null
+        // 进程级投影缓存（历史加载兜底）：同 topic 重复 v4 subscribe 幂等、服务端不重推
+        // initial 快照（B2②坑），跨标签/重复打开会话时订阅快照帧缺席、前端 map 无数据——
+        // 打开会话时经 listBackgroundWorks(op) 从此缓存补齐。会话删除时随 closeSession 清理
+        backgroundWorksCache[sid] = works
+        return SessionEvent(
+            type = "backgroundWorks",
+            seq = 0L,
+            sessionId = sid,
+            timestamp = System.currentTimeMillis(),
+            traceId = null,
+            turnId = null,
+            deliveryKind = null,
+            payload = buildJsonObject { put("works", works) },
+        )
     }
 
     /** 会话事件统一分发：per-session 监听器 + 全局监听器（session/event 与 v4 映射共用出口） */
@@ -1062,6 +1118,43 @@ class ZCodeProtocolClient private constructor(
      */
     fun v4CommandRaw(envelope: JsonObject, timeoutMs: Long = 30_000): JsonObject =
         requestResultRaw("v4/command", envelope, timeoutMs)
+
+    /**
+     * v4/conversation/backgroundBashOutput — 后台 bash 任务输出快照（H7 面板输出面）。
+     * 只读观察（不 hydrate 冷会话，任务须由现有 runtime 授权）。响应两形态：
+     * {kind:"output", output≤8KB, truncated, outputPath, status} 或
+     * {kind:"unavailable"|"unsupported"|"read_failed", code?}——原样透传，前端分支展示。
+     * 幂等只读，超时可安全重发。
+     */
+    fun backgroundBashOutput(sessionId: String, workId: String, timeoutMs: Long = 10_000): JsonObject {
+        val params = buildJsonObject {
+            put("sessionId", sessionId)
+            put("workId", workId)
+        }
+        val r = requestWithRetry("v4/conversation/backgroundBashOutput", params, timeoutMs, maxAttempts = 2, backoffMs = longArrayOf(500))
+        r["error"]?.let { throw ZCodeProtocolException.fromError(it) }
+        return r["result"]?.jsonObject ?: JsonObject(emptyMap())
+    }
+
+    /**
+     * v4/command cancelBackgroundWork — 取消后台工作（bash 任务/workflow run；子代理经
+     * 既有 cancelBackgroundTask）。**刻意不带 baseRevision**（官方 command.ts 注释同款：
+     * 免 revision，假 CAS 失败只会误伤）；拒绝以 ACK fault.backgroundWorkCancelRejected.
+     * {not_found|not_running|cancel_not_supported} 回，不抛协议错误，原样返回供前端分支。
+     */
+    fun cancelBackgroundWork(sessionId: String, workId: String, timeoutMs: Long = 15_000): JsonObject {
+        val envelope = buildJsonObject {
+            put("commandId", "bgcancel-${java.util.UUID.randomUUID()}")
+            put("clientId", "zcode-idea-plugin")
+            put("sessionId", sessionId)
+            put("type", "cancelBackgroundWork")
+            put("payload", buildJsonObject { put("workId", workId) })
+            put("issuedAt", System.currentTimeMillis())
+        }
+        val r = request("v4/command", envelope, timeoutMs)
+        requireOk(r)
+        return r["result"]?.jsonObject ?: JsonObject(emptyMap())
+    }
 
     /**
      * session/read 完整结果（手机远程桥用：settings/runtime/消息基线一次取齐）。

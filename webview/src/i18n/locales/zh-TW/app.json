@@ -70,16 +70,36 @@
     "viewResult": "點擊查看結果"
   },
   "status": {
-    "todoTab": "任務",
-    "agentTab": "子代理",
+    "todoTab": "進程",
+    "workTab": "任務",
     "fileTab": "檔案",
     "noTodos": "暫無任務",
-    "noAgents": "暫無子任務",
+    "noAgents": "暫無代理任務",
     "noFiles": "暫無檔案改動",
     "viewSubagentDetail": "點選檢視子代理執行過程",
     "openInEditor": "在編輯器開啟：{{path}}",
     "viewDiff": "檢視編輯前後對比",
-    "diffTitle": "編輯對比：{{name}}"
+    "diffTitle": "編輯對比：{{name}}",
+    "bgTab": "背景任務",
+    "subTab": "代理任務",
+    "bgWorks": {
+      "empty": "暫無背景任務",
+      "statusRunning": "執行中",
+      "statusBlocked": "等待中",
+      "statusPending": "待遞送",
+      "statusFailed": "失敗",
+      "statusCancelled": "已取消",
+      "statusEnded": "已結束",
+      "viewOutput": "輸出",
+      "hideOutput": "收起輸出",
+      "cancel": "取消",
+      "outputLoading": "正在讀取輸出…",
+      "outputEmpty": "（暫無輸出）",
+      "outputTruncated": "輸出已截斷（僅保留最後 8 KB）",
+      "output_unavailable": "工作輸出不可用（工作已結束或被回收）",
+      "output_unsupported": "目前 CLI 版本不支援輸出查詢",
+      "output_read_failed": "讀取工作輸出失敗"
+    }
   },
   "envBanner": {
     "title": "執行環境設定異常，外掛暫不可用",

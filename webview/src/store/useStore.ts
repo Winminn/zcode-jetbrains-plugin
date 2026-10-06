@@ -37,6 +37,7 @@ function diagWarn(text: string): void {
 }
 
 import { parseTodos, parseAgents, parseFileChanges, mergeAgentItems } from '@/utils/parseStatus'
+import { parseBackgroundTaskWorks } from '@/utils/backgroundTask'
 import { isHiddenSyntheticMessage, isAgentNotification } from '@/utils/parseNotification'
 import { mergeTurnMessages } from '@/utils/mergeTurnMessages'
 import { getPersisted, setPersisted, removePersisted, entriesWithPrefix, KV_HYDRATED_EVENT } from '@/utils/persist'
@@ -556,6 +557,9 @@ function sessionResetBase(): Partial<StoreState> {
     todos: [],
     agents: [],
     fileChanges: [],
+    // 转录重建的后台任务（与 agents 同生命周期：切会话清空，等 messages 重解析；
+    // 运行时投影在 backgroundWorksBySession 独立存，两者读取处合并）
+    backgroundWorksFromTranscript: [],
     // 逐轮更改条与弹窗绑定当前会话（重开由 turnFileChangesSync 重扫补齐）
     turnFileChanges: {},
     turnFileChangesDialogFor: null,
@@ -844,6 +848,14 @@ interface StoreState {
    * 完成通知（session.updated taskId/toolCallId + status 离开 running）/切会话。
    */
   backgroundTasks: BackgroundTaskMap
+  /** 后台工作投影（H7 汇总入口）：v4 帧合成的服务端权威全量数组，按会话存。
+   *  会话过滤前落账（非当前会话也更新，切回不丢）；全量替换语义；跨回合存活 */
+  backgroundWorksBySession: Record<string, import('@/types/messages').BackgroundWorkSummary[]>
+  /** 从转录重建的历史后台任务（refreshStatus 派生，与 agents 同生命周期）；
+   *  IDE 重启后运行时投影消失，靠它让「后台工作」栏不空。读取处与投影合并（投影优先）*/
+  backgroundWorksFromTranscript: import('@/types/messages').BackgroundWorkSummary[]
+  /** 取消后台工作（bash/workflow；投影由 backgroundWorks 事件收敛，无乐观更新）*/
+  cancelBackgroundWork: (sessionId: string, workId: string) => void
   /** 排队消息（streaming 中 Enter 入队，回合结束自动发队头）*/
   queuedMessages: QueuedMessage[]
   /**
@@ -1691,6 +1703,8 @@ export const useStore = create<StoreState>((set, get) => ({
   connectivityResults: {},
   pendingInteractionCounts: {},
   pinnedSessionIds: [],
+  backgroundWorksBySession: {},
+  backgroundWorksFromTranscript: [],
   remoteRunningTurns: {},
   modelProvidersReordering: false,
   modelUsage: null,
@@ -1841,6 +1855,12 @@ export const useStore = create<StoreState>((set, get) => ({
     sendToJava({ op: 'setSessionPinned', sessionId, pinned })
   },
 
+  cancelBackgroundWork: (sessionId, workId) => {
+    // ACK 拒绝（not_found/not_running/cancel_not_supported）不抛错，投影不动即天然反馈；
+    // 成功后条目转 cancelled/消失由 backgroundWorks 事件收敛，此处无乐观更新
+    sendToJava({ op: 'cancelBackgroundWork', sessionId, workId })
+  },
+
   selectSession: (session) => {
     // 历史列表点回当前会话 = 无操作（HistoryView 侧只负责切回 chat 视图）。
     // 不短路的话下方 set 会清空 messages/streaming 把进行中的实时流顶掉，
@@ -1882,6 +1902,9 @@ export const useStore = create<StoreState>((set, get) => ({
     // 切换会话时订阅事件流（带 workspacePath，Java 端 subscribe 前要先 resume 激活会话）
     sendToJava({ op: 'subscribe', sessionId: session.sessionId, workspacePath })
     sendToJava({ op: 'messages', sessionId: session.sessionId, workspacePath })
+    // 后台工作投影缓存对账（历史加载兜底）：重复 v4 subscribe 不重推快照（B2②坑），
+    // 跨标签/重复打开时订阅帧缺席——Java 进程缓存是本进程最后已知投影
+    sendToJava({ op: 'backgroundWorksList', sessionId: session.sessionId })
     // P2 让路（缺陷AB 优先级编排②）：用量/子代理不再与 P0 并发挤服务端会话队列，
     // 改由 messages 首拉落地后补发（见 case 'messages'）——忙窗口期间 P0 未成功
     // 则不补发，顶栏只剩一条"恢复中"提示
@@ -3609,6 +3632,9 @@ function isModelSwitchInFlight(state: { modelSwitchInFlightAt: number | null }):
 /**
  * 从 messages 重新解析状态面板数据（todos/agents/fileChanges），返回 store patch。
  * agents 三源合并：parseAgents（兜底）+ 实时聚合活动 + session/subagents RPC（权威）。
+ * backgroundWorksFromTranscript：从转录重建的历史后台任务（IDE 重启后运行时投影消失，
+ * 子代理列表靠 parseAgents 同款思路从转录恢复——bash 后台化确认行判据单点在
+ * utils/backgroundTask，重建条目 status='ended'（任务已随进程死亡的历史呈现）。
  */
 function refreshStatus(
   messages: ZCodeMessage[],
@@ -3619,6 +3645,7 @@ function refreshStatus(
     todos: parseTodos(messages),
     agents: mergeAgentItems(parseAgents(messages), activities, rpc),
     fileChanges: parseFileChanges(messages),
+    backgroundWorksFromTranscript: parseBackgroundTaskWorks(messages),
   }
 }
 
@@ -5402,6 +5429,19 @@ export function handleResponse(
       set({ pinnedSessionIds: Array.isArray(msg.pinned) ? msg.pinned : [] })
       break
 
+    case 'backgroundWorksList':
+      // 后台工作投影缓存应答（打开会话时的对账拉取）：与实时帧同源同形（Java 缓存=
+      // 最后一次帧值），全量替换、后到者胜，竞态无害
+      if (msg.sessionId && Array.isArray(msg.works)) {
+        set({
+          backgroundWorksBySession: {
+            ...get().backgroundWorksBySession,
+            [msg.sessionId]: msg.works,
+          },
+        })
+      }
+      break
+
     case 'sessionTurnPhase': {
       // 回合相位广播（Kotlin 全局事件监听，含手机远程驱动的会话）：列表行实时翻转
       // 运行中/复位——远程会话在 IDE 无本地 streaming 状态，此前列表只能停在旧快照
@@ -5919,6 +5959,18 @@ function handleStreamBatchDirect(
   // 标题更新通知：在会话过滤前处理（切走的会话也能更新列表标题），不走消息归约
   for (const event of events) {
     if (event.type === 'session.titleUpdated') applyTitleUpdated(sessionId, event, set, get)
+  }
+  // 后台工作投影（H7）：同样在会话过滤前落账——非当前会话的启停也要记录，
+  // 切回该会话时 badge/面板才有数据（订阅常驻、快照只在订阅时推一次）
+  for (const event of events) {
+    if (event.type === 'backgroundWorks') {
+      const works = (event.payload as { works?: import('@/types/messages').BackgroundWorkSummary[] }).works
+      if (Array.isArray(works)) {
+        set({
+          backgroundWorksBySession: { ...get().backgroundWorksBySession, [sessionId]: works },
+        })
+      }
+    }
   }
   if (sessionId !== get().currentSessionId) {
     // 已注册子会话的原生事件流 → 实时归约成完整对话（运行中详情弹窗数据源，

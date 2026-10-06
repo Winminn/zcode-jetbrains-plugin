@@ -289,6 +289,38 @@ export interface SessionInfo {
 }
 
 /**
+ * 后台工作投影条目（v4 snapshot backgroundWorks 原样形状，服务端权威状态机）。
+ * resultPending = 已完成、结果等待前台空闲投递（投递后条目消失）；workId 是取消/
+ * 输出查询的主键；childSessionId 仅 subagent 条目携带。
+ * status 'ended' 是**本地转录重建合成值**（协议无此值）：IDE 重启后运行时投影消失，
+ * 从转录后台化确认行重建的历史任务已随进程死亡，以 ended 呈现（不可取消、无投影）。
+ */
+export interface BackgroundWorkSummary {
+  workId: string
+  kind: 'bash' | 'subagent' | 'workflow'
+  title: string
+  status: 'running' | 'resultPending' | 'failed' | 'cancelled' | 'ended'
+  startedAt: number
+  endedAt?: number
+  cancellable?: boolean
+  blocked?: boolean
+  anchorRowId?: number | null
+  childSessionId?: string
+}
+
+/** 后台 bash 输出快照（v4/conversation/backgroundBashOutput 响应两形态原样）*/
+export type BackgroundBashOutputResult =
+  | {
+      kind: 'output'
+      workId: string
+      status: 'running' | 'completed' | 'failed' | 'timed_out' | 'cancelled' | 'spawn_error'
+      output: string
+      truncated: boolean
+      outputPath: string
+    }
+  | { kind: 'unavailable' | 'unsupported' | 'read_failed'; workId: string; code?: string }
+
+/**
  * sessions-index v4 topic 的会话摘要（官方 SessionSummary 原样字段，Java 侧已过滤
  * 子代理会话与软删）。列表活性订阅（op=sessionIndexUpdate）的行数据。
  */
@@ -382,6 +414,12 @@ export type JavaRequest =  | { op: 'askUserPendingState' }
   | { op: 'setSessionPinned'; sessionId: string; pinned: boolean }
   /** 拉取当前置顶会话全量集（历史列表加载对账，顺带吸收官方桌面端库内 pin 变化）*/
   | { op: 'listPinnedSessions' }
+  /** 后台 bash 任务输出快照（v4/conversation/backgroundBashOutput；running 态前端 1s 轮询）*/
+  | { op: 'backgroundBashOutput'; sessionId: string; workId: string }
+  /** 取消后台工作（v4/command cancelBackgroundWork；子代理另有 stop 连带/取消链路）*/
+  | { op: 'cancelBackgroundWork'; sessionId: string; workId: string }
+  /** 后台工作投影缓存查询（打开会话对账；重复订阅不重推快照的兜底）*/
+  | { op: 'backgroundWorksList'; sessionId: string }
   /** 自动归档：读共享配置（~/.zcode/v2/setting.json，与 ZCode 客户端同源）*/
   | { op: 'getAutoArchiveConfig' }
   /** 自动归档：写共享配置（客户端下次读取同样生效）*/
@@ -1044,6 +1082,14 @@ export type JavaResponse =
   /** 置顶会话全量集（listPinnedSessions 应答 / setSessionPinned 写库后全标签广播，同形覆盖）*/
   | { op: 'pinnedSessions'; pinned: string[] }
   | { op: 'sessionPinsChanged'; pinned: string[] }
+  /** 后台工作投影（v4 帧合成的 SessionEvent type='backgroundWorks'，经 streamBatch 到达；
+   *  payload.works 为服务端权威全量数组，全量替换语义）*/
+  /** 后台 bash 输出快照应答（原样透传协议两形态；组件按 workId 匹配消费）*/
+  | { op: 'backgroundBashOutputResult'; sessionId: string; workId: string; result: BackgroundBashOutputResult }
+  /** 后台工作取消应答（ACK status=accepted|rejected...；投影由 backgroundWorks 事件收敛）*/
+  | { op: 'backgroundWorkCancelled'; sessionId: string; workId: string; status: string; reasonCode?: string }
+  /** 后台工作投影缓存应答（打开会话对账；值=本进程最后已知投影）*/
+  | { op: 'backgroundWorksList'; sessionId: string; works: BackgroundWorkSummary[] }
   | { op: 'sessionTurnPhase'; sessionId: string; phase: 'running' | 'ended' }
   /** 会话索引推送（sessions-index v4 订阅）：full=initial 快照全量；sessions 为官方 SessionSummary 过滤后的原样字段 */
   | { op: 'sessionIndexUpdate'; full: boolean; sessions: SessionIndexEntry[]; removed: string[] }

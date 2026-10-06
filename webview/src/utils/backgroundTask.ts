@@ -24,3 +24,45 @@ export function extractBackgroundTaskIdFromContent(content: string): string | nu
 export function isBackgroundTaskOutput(output: string | undefined | null): boolean {
   return typeof output === 'string' && extractBackgroundTaskIdFromContent(output) !== null
 }
+
+/**
+ * 从转录重建历史后台任务条目（refreshStatus 派生，与 parseAgents 同思路）：
+ * 遍历 Bash 工具行，state.output 命中官方后台化确认 → 提取 exec_ 任务 ID 合成条目。
+ * status 恒为 'ended'（本地合成值）——转录只能证明「启动过」，运行时真实状态由
+ * 投影（backgroundWorksBySession）承载，读取处 mergeBackgroundWorks 合并、投影优先：
+ * 本进程内同 workId 以投影为准（running 可取消），重启后投影消失即剩 ended 历史。
+ */
+export function parseBackgroundTaskWorks(messages: import('@/types/messages').ZCodeMessage[]): import('@/types/messages').BackgroundWorkSummary[] {
+  const byId = new Map<string, import('@/types/messages').BackgroundWorkSummary>()
+  for (const msg of messages) {
+    for (const part of msg.parts ?? []) {
+      if (part.type !== 'tool' || part.tool !== 'Bash') continue
+      const out = part.state?.output
+      const id = typeof out === 'string' ? extractBackgroundTaskIdFromContent(out) : null
+      if (!id || byId.has(id)) continue
+      const command = String(part.state?.input?.command ?? '').slice(0, 200)
+      byId.set(id, {
+        workId: id,
+        kind: 'bash',
+        title: command || id,
+        status: 'ended',
+        startedAt: part.state?.time?.start ?? 0,
+        cancellable: false,
+      })
+    }
+  }
+  return [...byId.values()]
+}
+
+/**
+ * 投影 ∪ 转录重建合并（读取处用）：按 workId 去重、投影优先（运行时权威状态覆盖
+ * 重建的 ended 猜测）；投影组在前——运行中条目天然置顶显示。
+ */
+export function mergeBackgroundWorks(
+  projection: import('@/types/messages').BackgroundWorkSummary[],
+  fromTranscript: import('@/types/messages').BackgroundWorkSummary[],
+): import('@/types/messages').BackgroundWorkSummary[] {
+  if (fromTranscript.length === 0) return projection
+  const seen = new Set(projection.map((w) => w.workId))
+  return [...projection, ...fromTranscript.filter((w) => !seen.has(w.workId))]
+}

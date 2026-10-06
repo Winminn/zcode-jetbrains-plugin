@@ -320,6 +320,9 @@ const mockSessions = [
 // 置顶会话 mock（dev 置顶排序验收用；真实数据源为 tasks-index.sqlite pinned 位）
 let mockPinnedSessions: string[] = ['sess_mock_1']
 
+// 后台工作投影 mock（#bgwork 魔法文本灌入；cancel 应答翻转状态后重推事件模拟收敛）
+let mockBgWorks: Array<Record<string, unknown>> = []
+
 // 自动归档记录 mock（自动归档 tab 验收用；真实数据源为 Kotlin PropertiesComponent）
 const mockArchiveRecords: AutoArchiveRecord[] = [
   {
@@ -425,6 +428,23 @@ function mockRespond(req: JavaRequest): void {
       }))
     }, 900)
     // 不推 turn.failed：模拟 app-server 对 429 按可重试分类持续退避（转圈不停止）
+    return
+  }
+
+  // send 文本 "#bgwork"：模拟后台工作投影事件（H7 汇总入口验收：badge 分型计数/面板
+  // 列表/状态多样性；真实链路 = v4 帧 state.updated patch.backgroundWorks 合成事件）
+  if (req.op === 'send' && req.text.trim() === '#bgwork') {
+    mockBgWorks = [
+      { workId: 'bgw_bash_1', kind: 'bash', title: 'npm run build（后台）', status: 'running', startedAt: Date.now() - 65_000, cancellable: true, anchorRowId: null },
+      { workId: 'bgw_sub_1', kind: 'subagent', title: '代码审查子代理', status: 'running', startedAt: Date.now() - 130_000, cancellable: true, childSessionId: 'sess_subagent_mock_1', anchorRowId: null },
+      { workId: 'bgw_wf_1', kind: 'workflow', title: '批量重构工作流', status: 'running', startedAt: Date.now() - 200_000, cancellable: true, anchorRowId: null },
+      { workId: 'bgw_bash_0', kind: 'bash', title: '已完成的后台测试', status: 'resultPending', startedAt: Date.now() - 300_000, anchorRowId: null },
+    ]
+    const works = mockBgWorks
+    setTimeout(() => {
+      streamListeners.forEach((fn) =>
+        fn(req.sessionId, { type: 'backgroundWorks', seq: 0, sessionId: req.sessionId, turnId: null, timestamp: Date.now(), payload: { works } } as unknown as StreamEvent))
+    }, 200)
     return
   }
 
@@ -922,6 +942,36 @@ function mockResponse(req: JavaRequest): JavaResponse | null {
       return { op: 'scheduledList', ts: Date.now(), items: [], fired: [] }
     case 'listArchivedSessions':
       return { op: 'archivedSessions', sessions: mockArchivedSessions }
+    case 'backgroundBashOutput': {
+      // mock：running 态假输出（组件轮询到终态停止——这里恒 running 会一直轮询，
+      // 与真实 running 任务行为一致，关闭面板即停）
+      return {
+        op: 'backgroundBashOutputResult',
+        sessionId: req.sessionId,
+        workId: req.workId,
+        result: {
+          kind: 'output',
+          workId: req.workId,
+          status: 'running',
+          output: `[mock] 后台任务输出快照 workId=${req.workId}\n编译中... 42%\n（每秒刷新一次，来自 mock 桥）`,
+          truncated: false,
+          outputPath: '/tmp/zcode-mock/background-output.log',
+        },
+      }
+    }
+    case 'cancelBackgroundWork': {
+      // mock：翻转状态并重推投影事件（模拟服务端收敛；真实链路取消后条目转 cancelled
+      // 或消失，badge 随 totalCount 归零）
+      mockBgWorks = mockBgWorks.map((w) =>
+        (w as { workId: string }).workId === req.workId ? { ...w, status: 'cancelled', endedAt: Date.now() } : w,
+      )
+      const works = mockBgWorks
+      setTimeout(() => {
+        streamListeners.forEach((fn) =>
+          fn(req.sessionId, { type: 'backgroundWorks', seq: 0, sessionId: req.sessionId, turnId: null, timestamp: Date.now(), payload: { works } } as unknown as StreamEvent))
+      }, 200)
+      return { op: 'backgroundWorkCancelled', sessionId: req.sessionId, workId: req.workId, status: 'accepted' }
+    }
     case 'listPinnedSessions':
       // mock：预置一个置顶会话方便 dev 验收置顶排序（生产权威源=tasks-index.sqlite）
       return { op: 'pinnedSessions', pinned: mockPinnedSessions }

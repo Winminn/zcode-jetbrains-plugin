@@ -135,7 +135,8 @@
     }
 
     /* 悬停展开文字标签（复制/编辑/分叉/重发）：默认收起只显图标，hover 露字。
-       width auto 自适应；footer 推尾容器下向左展开（右缘对齐不动） */
+       width auto 自适应；footer 推尾容器下向左展开（右缘对齐不动）。
+       footer 行内的触发在其块里升级为整行 hover（单按钮触发会振荡，见彼处注释） */
     .msg__action-label {
       display: none;
       margin-left: 4px;
@@ -418,6 +419,20 @@
     font-size: 11px;
     color: var(--text-muted);
     opacity: 0.8;
+
+    /* 标签展开以整行为悬停目标（而非单按钮）：footer 是 flex-wrap 换行弹性行，
+       临界宽度下按钮级 hover 会无限振荡——展开→操作组挤不下换到第 2 行→按钮
+       移出光标→hover 丢失收起→回到光标下→再展开。行级悬停时展开只让 footer
+       向下增高（footer 边界恒含光标），hover 状态必然收敛，代价是悬停行内
+       meta 文字也会展开标签（按钮隐藏期 pointer-events:none，无误触） */
+    &:hover .msg__action-btn,
+    &:focus-within .msg__action-btn {
+      padding: 0 6px;
+
+      .msg__action-label {
+        display: inline;
+      }
+    }
   }
 
   &__footer-time {
