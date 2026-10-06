@@ -830,10 +830,18 @@ class ZCodeProtocolClient private constructor(
         // v4/conversation/frame：v4 订阅会话的增量帧（子会话实时流根治通道）。
         // topic=conversation/<sessionId>；只对主动 v4 订阅过的会话映射，防与 legacy 流双写。
         // 手机远程桥的原始帧透传挂在映射链最前（onV4FrameListeners）：映射链对标题订阅/
-        // 未订阅会话多处早退（return），桥需要全量帧，必须先于任何 return 分发
+        // 未订阅会话多处早退（return），桥需要全量帧，必须先于任何 return 分发。
+        // wire 分片重组（V4WireAssembler，缺陷EK）：大会话的快照（数百 KB）被服务端拆成
+        // kind:"fragment" 的分片通知逐片下发，插件只认整帧时分会话全灭（小会话不分片所以
+        // 时好时坏）。重组放桥透传之后（桥/H5 侧自管 wire 协议），重组产物 {topic,frame}
+        // 与整帧同构，下游零改动
         else if (method == "v4/conversation/frame") {
             v4FrameListeners.forEach { runCatching { it(params) } }
-            val topic = params["topic"]?.jsonPrimitive?.jsonStringOrNull ?: return
+            val effectiveParams = wireAssembler.accept(params)
+            // 逻辑帧分发（整帧与重组产物统一走此通道；fragment 分片本身不进——快照水位
+            // 捕获等消费方挂 addV4LogicalFrameListener，见字段注释）
+            v4LogicalFrameListeners.forEach { runCatching { it(effectiveParams) } }
+            val topic = effectiveParams["topic"]?.jsonPrimitive?.jsonStringOrNull ?: return
             val sid = topic.removePrefix("conversation/")
             if (sid.length == topic.length) return
             // 投影 revision 水位跟踪：fileChanges/fileRewindPreview 两查询的 CAS 是
@@ -841,12 +849,12 @@ class ZCodeProtocolClient private constructor(
             // 无 revisionAtDecision 可回），客户端必须持有当前值。快照帧直读 revision，
             // 增量帧扫 state.updated 的 patch.revision（投影每变更必带，见 delta.ts）。
             // 主要消费方是已全量订阅会话（子会话）重入查询时的兜底水位
-            trackProjectionRevision(sid, params)
+            trackProjectionRevision(sid, effectiveParams)
             // 仅标题订阅的主会话：只抽 state.updated delta 的 meta.title 合成
             // session.titleUpdated（v2 标题广播唯一通道，见 v4TitleSessions），行数据
             // 不映射——主会话已有 legacy 流，映射会造成双写
             if (sid in v4TitleSessions && sid !in v4SubscribedSessions) {
-                val frame = params["frame"]?.jsonObject ?: return
+                val frame = effectiveParams["frame"]?.jsonObject ?: return
                 val payload = frame["payload"]?.jsonObject ?: return
                 // 逐轮文件更改摘要（B2 回合产物）：turnHeader 行自带服务端权威 fileChanges
                 // 账本（+/−行数服务端算好直出）——快照窗口（订阅 initial/重同步）与
@@ -894,7 +902,7 @@ class ZCodeProtocolClient private constructor(
                 return
             }
             if (sid !in v4SubscribedSessions) return
-            val frame = params["frame"]?.jsonObject ?: return
+            val frame = effectiveParams["frame"]?.jsonObject ?: return
             // 帧到达诊断（缺陷AO 终测：live 在快照后停更——区分"服务端没推帧"vs
             // "帧到了没渲染"）：每会话首帧 + 每 100 帧打一条心跳计数。
             // mapped=累计映射产出事件数——帧计数增长而 mapped 停滞 = 行表/映射层
@@ -947,9 +955,25 @@ class ZCodeProtocolClient private constructor(
     /** v4 帧监听器（params = v4/conversation/frame 的完整通知参数，含 topic/subscriptionId/frame） */
     private val v4FrameListeners = ConcurrentHashMap.newKeySet<(JsonObject) -> Unit>()
 
+    /** wire 分片重组器（wireVersion 3 fragment 帧；缺陷EK——大会话快照分片此前全被丢弃） */
+    private val wireAssembler = V4WireAssembler()
+
+    /**
+     * 逻辑帧监听器（wire 分片重组后的 {topic, frame}，V4WireAssembler 产物分发通道）。
+     * fragment 分片对原始透传通道不可见——快照水位捕获等「要吃完整逻辑帧」的消费方挂
+     * 本通道；远程桥保持挂原始 v4FrameListeners（H5 侧自管 wire 协议，不能收到重组后的
+     * 重复帧）
+     */
+    private val v4LogicalFrameListeners = ConcurrentHashMap.newKeySet<(JsonObject) -> Unit>()
+
     fun addV4FrameListener(listener: (JsonObject) -> Unit): () -> Unit {
         v4FrameListeners.add(listener)
         return { v4FrameListeners.remove(listener) }
+    }
+
+    fun addV4LogicalFrameListener(listener: (JsonObject) -> Unit): () -> Unit {
+        v4LogicalFrameListeners.add(listener)
+        return { v4LogicalFrameListeners.remove(listener) }
     }
 
     /**
@@ -2504,13 +2528,13 @@ class ZCodeProtocolClient private constructor(
         // subscribeConversationV4 的注释里有过实证），后挂必漏首帧
         val latch = java.util.concurrent.CountDownLatch(1)
         var snapshotRef: JsonObject? = null
-        val removeListener = addV4FrameListener { params ->
-            if (snapshotRef != null) return@addV4FrameListener
-            val topic = params["topic"]?.jsonPrimitive?.jsonStringOrNull ?: return@addV4FrameListener
-            if (topic != "conversation/$sessionId") return@addV4FrameListener
-            val payload = params["frame"]?.jsonObject?.get("payload")?.jsonObject ?: return@addV4FrameListener
-            if (payload["kind"]?.jsonPrimitive?.jsonStringOrNull != "snapshot") return@addV4FrameListener
-            val snap = payload["snapshot"]?.jsonObject ?: return@addV4FrameListener
+        val removeListener = addV4LogicalFrameListener { params ->
+            if (snapshotRef != null) return@addV4LogicalFrameListener
+            val topic = params["topic"]?.jsonPrimitive?.jsonStringOrNull ?: return@addV4LogicalFrameListener
+            if (topic != "conversation/$sessionId") return@addV4LogicalFrameListener
+            val payload = params["frame"]?.jsonObject?.get("payload")?.jsonObject ?: return@addV4LogicalFrameListener
+            if (payload["kind"]?.jsonPrimitive?.jsonStringOrNull != "snapshot") return@addV4LogicalFrameListener
+            val snap = payload["snapshot"]?.jsonObject ?: return@addV4LogicalFrameListener
             snapshotRef = snap
             latch.countDown()
         }
