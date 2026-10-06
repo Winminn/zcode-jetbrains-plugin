@@ -230,9 +230,11 @@
       opacity: 0.75;
     }
 
-    /* 基础块的 nowrap/max-width 是输入框 chip 的限宽省略，消息内要自然换行 */
+    /* 基础块的 nowrap/max-width 是输入框 chip 的限宽省略，消息内要自然换行
+       （file-ref__name 漏列致长文件名 nowrap 撑爆气泡出横向滚动条，缺陷EM）*/
     .sess-ref__name,
-    .cmd-ref__name {
+    .cmd-ref__name,
+    .file-ref__name {
       white-space: normal;
       max-width: none;
       line-height: inherit;
