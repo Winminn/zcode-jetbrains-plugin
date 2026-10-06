@@ -235,7 +235,8 @@
     "review": "審查",
     "reviewDiffTitle": "{{name}} 修改前後對比",
     "openBtn": "開啟",
-    "rewindShort": "撤銷"
+    "rewindShort": "撤銷",
+    "detailFailed": "明細載入失敗，收起後重新展開可重試"
   },
   "resend": {
     "confirmTitle": "重發這條訊息？",

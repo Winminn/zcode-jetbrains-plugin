@@ -235,7 +235,8 @@
     "review": "レビュー",
     "reviewDiffTitle": "{{name}} の変更差分",
     "openBtn": "開く",
-    "rewindShort": "元に戻す"
+    "rewindShort": "元に戻す",
+    "detailFailed": "詳細の読み込みに失敗しました。折りたたみ後にもう一度展開すると再試行できます"
   },
   "resend": {
     "confirmTitle": "このメッセージを再送信しますか？",

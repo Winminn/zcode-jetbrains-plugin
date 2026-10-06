@@ -235,7 +235,8 @@
     "review": "审查",
     "reviewDiffTitle": "{{name}} 修改前后对比",
     "openBtn": "打开",
-    "rewindShort": "撤销"
+    "rewindShort": "撤销",
+    "detailFailed": "明细加载失败，收起后重新展开可重试"
   },
   "resend": {
     "confirmTitle": "重发这条消息？",

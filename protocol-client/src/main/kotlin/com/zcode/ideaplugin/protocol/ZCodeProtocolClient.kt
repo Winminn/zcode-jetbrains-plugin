@@ -2535,11 +2535,44 @@ class ZCodeProtocolClient private constructor(
             }
             // 幂等重订（标题订阅常驻）：用帧水位跟踪的 revision，行定位走 rowsRange
             val tracked = v4ProjectionRevisions[sessionId]
-                ?: throw ZCodeProtocolException(
-                    "会话投影 revision 水位未知（订阅期内未见快照/revision 帧）",
-                    reason = "revisionUnknown",
-                )
-            return block(JsonObject(emptyMap()), logEpoch, tracked)
+            if (tracked != null) {
+                return block(JsonObject(emptyMap()), logEpoch, tracked)
+            }
+            // 水位也空（真机实锤 2026-10-06：IDE 重启后重开历史会话，标题订阅 ack 成功但
+            // initial 快照帧始终未推——v4ProjectionRevisions 永远空，op 查询全部
+            // revisionUnknown，前端变更条「加载中」无限重试+产物卡片门控抑制）。兜底：
+            // resync forceSnapshot 强制服务端整段重放快照（subscriptionId 精确命中现有
+            // 订阅不新建 id，重放是「只归位」语义幂等安全）；快照帧到达后本函数的
+            // listener 捕获 snapshotRef、trackProjectionRevision 同帧补水位，一次修复两处。
+            val subId = v4SubscriptionIds[sessionId]
+            if (subId != null) {
+                ProtocolLog.info("[v4-snapshot] projection revision unknown, forcing resync snapshot: $sessionId")
+                runCatching {
+                    v4ConversationResync(
+                        topic = "conversation/$sessionId",
+                        subscriptionId = subId,
+                        connectionId = v4ConnectionId,
+                        forceSnapshot = true,
+                    )
+                }.onFailure {
+                    ProtocolLog.info("[v4-snapshot] resync failed: ${it.message?.take(150)}")
+                }
+                try {
+                    latch.await(2000L, java.util.concurrent.TimeUnit.MILLISECONDS)
+                } catch (_: InterruptedException) {
+                    Thread.currentThread().interrupt()
+                }
+                val afterResync = snapshotRef
+                if (afterResync != null && afterResync.isNotEmpty()) {
+                    val revision = afterResync["revision"]?.jsonPrimitive?.intOrNull
+                        ?: throw ZCodeProtocolException("v4 快照缺 revision", reason = "snapshotMalformed")
+                    return block(afterResync, logEpoch, revision)
+                }
+            }
+            throw ZCodeProtocolException(
+                "会话投影 revision 水位未知（订阅期内未见快照/revision 帧）",
+                reason = "revisionUnknown",
+            )
         } finally {
             removeListener()
             // 退订判据必须含常驻标题订阅（wasTitle）：服务端对同 topic 幂等返回同一

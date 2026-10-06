@@ -909,13 +909,16 @@ export function TurnFileChangesBar({ fc, messageId }: { fc: TurnFileChangeSummar
   const [expanded, setExpanded] = useState(false)
   const [items, setItems] = useState<TurnFileChangeItem[] | null>(null)
   const [loading, setLoading] = useState(false)
+  // 查询失败态：失败后停止自动重试（真机实锤 2026-10-06：revisionUnknown 类持续性
+  // 失败时 error→复位→effect 重跑构成 3.2s 无限重发风暴）。收起再展开=用户重试
+  const [failed, setFailed] = useState(false)
 
   // 展开：懒加载明细
   useEffect(() => {
-    if (!expanded || !sessionId || items || loading) return
+    if (!expanded || !sessionId || items || loading || failed) return
     setLoading(true)
     sendToJava({ op: 'turnFileChanges', sessionId, messageId })
-  }, [expanded, sessionId, items, loading, messageId])
+  }, [expanded, sessionId, items, loading, failed, messageId])
 
   // 响应监听（按 messageId 匹配本卡片；弹窗的监听各自独立互不干扰）
   useEffect(() => {
@@ -925,6 +928,7 @@ export function TurnFileChangesBar({ fc, messageId }: { fc: TurnFileChangeSummar
         setLoading(false)
       } else if (msg.op === 'turnFileChangesError') {
         setLoading(false)
+        setFailed(true)
       } else if (msg.op === 'turnFileDiffError') {
         // IDEA 侧内嵌对比弹窗异常（正常链路不会出现，兜底）：降级内置 diff 弹窗定位该文件
         if (msg.path) openDialog(messageId, { path: msg.path })
@@ -976,9 +980,16 @@ export function TurnFileChangesBar({ fc, messageId }: { fc: TurnFileChangeSummar
         className="msg__fccard-head"
         role="button"
         tabIndex={0}
-        onClick={() => setExpanded((v) => !v)}
+        onClick={() => {
+          // 收起时清失败态：再次展开即用户主动重试
+          if (expanded) setFailed(false)
+          setExpanded((v) => !v)
+        }}
         onKeyDown={(e) => {
-          if (e.key === 'Enter' || e.key === ' ') setExpanded((v) => !v)
+          if (e.key === 'Enter' || e.key === ' ') {
+            if (expanded) setFailed(false)
+            setExpanded((v) => !v)
+          }
         }}
       >
         <span className={`codicon codicon-chevron-${expanded ? 'down' : 'right'}`} aria-hidden="true" />
@@ -1013,6 +1024,10 @@ export function TurnFileChangesBar({ fc, messageId }: { fc: TurnFileChangeSummar
           {loading && !items ? (
             <div className="msg__fccard-loading">
               <span className="codicon codicon-loading spin" /> {t('common.actions.loading')}
+            </div>
+          ) : failed && !items ? (
+            <div className="msg__fccard-loading msg__fccard-loading--failed">
+              <span className="codicon codicon-error" /> {t('chat.fileChanges.detailFailed')}
             </div>
           ) : items && items.length > 0 ? (
             items.map((it) => {

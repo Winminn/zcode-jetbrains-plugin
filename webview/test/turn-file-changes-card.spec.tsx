@@ -205,4 +205,24 @@ describe('TurnFileChangesBar', () => {
     })
     expect(screen.queryByText('x.txt')).toBeNull()
   })
+
+  it('查询失败：渲染失败文案并停止自动重试（不发第二次请求）；收起再展开=重试', () => {
+    setup()
+    render(<TurnFileChangesBar fc={summary()} messageId={MSG_A} />)
+    fireEvent.click(screen.getByText('2 个文件已更改 · +19 −10'))
+    expect(sentRequests.filter((r) => r.op === 'turnFileChanges')).toHaveLength(1)
+    act(() => {
+      messageHandler!({ op: 'turnFileChangesError', sessionId: SID, messageId: MSG_A, reason: 'revisionUnknown', message: '水位未知' })
+    })
+    // 失败文案落地、loading 停止
+    expect(screen.getByText(/明细加载失败/)).toBeTruthy()
+    expect(document.querySelector('.codicon-loading')).toBeNull()
+    // 失败后 effect 依赖变化（loading/failed 翻转）不得再发请求（重试风暴回归锚）
+    const countAfterError = sentRequests.filter((r) => r.op === 'turnFileChanges').length
+    expect(countAfterError).toBe(1)
+    // 收起（清失败态）再展开 → 重新发起查询
+    fireEvent.click(screen.getByText('2 个文件已更改 · +19 −10')) // 收起
+    fireEvent.click(screen.getByText('2 个文件已更改 · +19 −10')) // 再展开
+    expect(sentRequests.filter((r) => r.op === 'turnFileChanges')).toHaveLength(2)
+  })
 })

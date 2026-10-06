@@ -235,7 +235,8 @@
     "review": "Review",
     "reviewDiffTitle": "Changes in {{name}}",
     "openBtn": "Open",
-    "rewindShort": "Revert"
+    "rewindShort": "Revert",
+    "detailFailed": "Failed to load details — collapse and expand to retry"
   },
   "resend": {
     "confirmTitle": "Resend this message?",
