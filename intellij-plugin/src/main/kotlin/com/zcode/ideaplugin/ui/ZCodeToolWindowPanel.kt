@@ -2120,7 +2120,7 @@ if (!window.__ZCODE_LOG_HOOK__) {
 
     /** turnFileOpArgs 缺参时的统一错误（调用方缺参分支直接返回） */
     private fun turnFileOpMissingParams(errorOp: String): JsonObject =
-        turnFileOpError(errorOp, "missingParams", "缺少 sessionId/messageId")
+        turnFileOpError(errorOp, "missingParams", com.zcode.ideaplugin.ZCodeBundle.message("turnfile.error.missingParams"))
 
     private fun handleTurnFileChanges(msg: JsonObject): JsonObject {
         val errorOp = "turnFileChangesError"
@@ -2138,7 +2138,7 @@ if (!window.__ZCODE_LOG_HOOK__) {
             turnFileOpErrorFromProtocol(e, errorOp)
         } catch (e: Exception) {
             log.warn("Turn file changes query failed: ${e.message}")
-            turnFileOpError(errorOp, "internal", e.message ?: "未知错误")
+            turnFileOpError(errorOp, "internal", e.message ?: com.zcode.ideaplugin.ZCodeBundle.message("turnfile.error.unknown"))
         }
     }
 
@@ -2158,7 +2158,7 @@ if (!window.__ZCODE_LOG_HOOK__) {
             turnFileOpErrorFromProtocol(e, errorOp)
         } catch (e: Exception) {
             log.warn("Turn file rewind preview failed: ${e.message}")
-            turnFileOpError(errorOp, "internal", e.message ?: "未知错误")
+            turnFileOpError(errorOp, "internal", e.message ?: com.zcode.ideaplugin.ZCodeBundle.message("turnfile.error.unknown"))
         }
     }
 
@@ -2179,14 +2179,14 @@ if (!window.__ZCODE_LOG_HOOK__) {
             turnFileOpErrorFromProtocol(e, errorOp)
         } catch (e: Exception) {
             log.warn("Turn file rewind apply failed: ${e.message}")
-            turnFileOpError(errorOp, "internal", e.message ?: "未知错误")
+            turnFileOpError(errorOp, "internal", e.message ?: com.zcode.ideaplugin.ZCodeBundle.message("turnfile.error.unknown"))
         }
     }
 
     private fun turnFileOpErrorFromProtocol(e: ZCodeProtocolException, errorOp: String): JsonObject {
         if (e.code == -32601) {
             log.info("Turn file op unavailable (no v4 surface): $errorOp")
-            return turnFileOpError(errorOp, "unsupported", "当前 CLI 版本不支持该能力")
+            return turnFileOpError(errorOp, "unsupported", com.zcode.ideaplugin.ZCodeBundle.message("turnfile.error.unsupportedCli"))
         }
         log.info("Turn file op failed (${e.reason}): ${e.message}")
         val reason = when {
@@ -2194,7 +2194,7 @@ if (!window.__ZCODE_LOG_HOOK__) {
             e.message?.contains("proto.staleLogEpoch") == true -> "stale"
             else -> e.reason ?: "internal"
         }
-        return turnFileOpError(errorOp, reason, e.message ?: "未知错误")
+        return turnFileOpError(errorOp, reason, e.message ?: com.zcode.ideaplugin.ZCodeBundle.message("turnfile.error.unknown"))
     }
 
     /**
@@ -2204,7 +2204,7 @@ if (!window.__ZCODE_LOG_HOOK__) {
      */
     private fun handleTurnFileChangesSync(msg: JsonObject): JsonObject {
         val sessionId = msg["sessionId"]?.jsonPrimitive?.content
-            ?: return errorResponse("缺少 sessionId")
+            ?: return errorResponse(com.zcode.ideaplugin.ZCodeBundle.message("error.missing.sessionId"))
         val client = project.zCodeService().getClient()
         ApplicationManager.getApplication().executeOnPooledThread {
             try {
@@ -2231,9 +2231,9 @@ if (!window.__ZCODE_LOG_HOOK__) {
     private fun handleTurnFileDiff(msg: JsonObject): JsonObject {
         val errorOp = "turnFileDiffError"
         val filePath = msg["filePath"]?.jsonPrimitive?.content
-        if (filePath.isNullOrBlank()) return turnFileOpError(errorOp, "missingParams", "缺少 filePath")
+        if (filePath.isNullOrBlank()) return turnFileOpError(errorOp, "missingParams", com.zcode.ideaplugin.ZCodeBundle.message("turnfile.error.missingFilePath"))
         val patchList = msg["patches"]?.jsonArray?.mapNotNull { it as? JsonObject }
-        if (patchList == null || patchList.isEmpty()) return turnFileOpError(errorOp, "missingParams", "缺少 patches")
+        if (patchList == null || patchList.isEmpty()) return turnFileOpError(errorOp, "missingParams", com.zcode.ideaplugin.ZCodeBundle.message("turnfile.error.missingPatches"))
         val title = msg["title"]?.jsonPrimitive?.content ?: "Diff: ${filePath.substringAfterLast('/')}"
         com.intellij.openapi.application.invokeLater {
             try {
@@ -2445,9 +2445,9 @@ if (!window.__ZCODE_LOG_HOOK__) {
      */
     private fun handleSetSessionPinned(msg: JsonObject): JsonObject {
         val sessionId = msg["sessionId"]?.jsonPrimitive?.content
-            ?: return errorResponse("缺少 sessionId")
+            ?: return errorResponse(com.zcode.ideaplugin.ZCodeBundle.message("error.missing.sessionId"))
         val pinned = msg["pinned"]?.jsonPrimitive?.booleanOrNull
-            ?: return errorResponse("缺少 pinned")
+            ?: return errorResponse(com.zcode.ideaplugin.ZCodeBundle.message("pin.error.missingPinned"))
         val client = project.zCodeService().getClient()
         try {
             client.setSessionPinned(sessionId, pinned)
@@ -2456,7 +2456,7 @@ if (!window.__ZCODE_LOG_HOOK__) {
             log.warn("Session pin failed: ${e.message}")
             // 失败同样广播真实集（webview 侧无乐观状态，这条只是对账收口）
             broadcastSessionPinsSafe(client)
-            return errorResponse("置顶失败: ${e.message}")
+            return errorResponse(com.zcode.ideaplugin.ZCodeBundle.message("pin.error.failed", e.message ?: ""))
         }
         broadcastSessionPinsSafe(client)
         return ackOp("sessionPinChanged")
@@ -2504,9 +2504,9 @@ if (!window.__ZCODE_LOG_HOOK__) {
      */
     private fun handleBackgroundBashOutput(msg: JsonObject): JsonObject {
         val sessionId = msg["sessionId"]?.jsonPrimitive?.content
-            ?: return errorResponse("缺少 sessionId")
+            ?: return errorResponse(com.zcode.ideaplugin.ZCodeBundle.message("error.missing.sessionId"))
         val workId = msg["workId"]?.jsonPrimitive?.content
-            ?: return errorResponse("缺少 workId")
+            ?: return errorResponse(com.zcode.ideaplugin.ZCodeBundle.message("bgwork.error.missingWorkId"))
         val client = project.zCodeService().getClient()
         return try {
             val result = client.backgroundBashOutput(sessionId, workId)
@@ -2518,7 +2518,7 @@ if (!window.__ZCODE_LOG_HOOK__) {
             }
         } catch (e: Exception) {
             log.warn("backgroundBashOutput failed: ${e.message}")
-            errorResponse("查询后台输出失败: ${e.message}")
+            errorResponse(com.zcode.ideaplugin.ZCodeBundle.message("bgwork.error.outputFailed", e.message ?: ""))
         }
     }
 
@@ -2529,9 +2529,9 @@ if (!window.__ZCODE_LOG_HOOK__) {
      */
     private fun handleCancelBackgroundWork(msg: JsonObject): JsonObject {
         val sessionId = msg["sessionId"]?.jsonPrimitive?.content
-            ?: return errorResponse("缺少 sessionId")
+            ?: return errorResponse(com.zcode.ideaplugin.ZCodeBundle.message("error.missing.sessionId"))
         val workId = msg["workId"]?.jsonPrimitive?.content
-            ?: return errorResponse("缺少 workId")
+            ?: return errorResponse(com.zcode.ideaplugin.ZCodeBundle.message("bgwork.error.missingWorkId"))
         val client = project.zCodeService().getClient()
         return try {
             val result = client.cancelBackgroundWork(sessionId, workId)
@@ -2545,7 +2545,7 @@ if (!window.__ZCODE_LOG_HOOK__) {
             }
         } catch (e: Exception) {
             log.warn("cancelBackgroundWork failed: ${e.message}")
-            errorResponse("取消失败: ${e.message}")
+            errorResponse(com.zcode.ideaplugin.ZCodeBundle.message("bgwork.error.cancelFailed", e.message ?: ""))
         }
     }
 
@@ -2556,7 +2556,7 @@ if (!window.__ZCODE_LOG_HOOK__) {
      */
     private fun handleBackgroundWorksList(msg: JsonObject): JsonObject {
         val sessionId = msg["sessionId"]?.jsonPrimitive?.content
-            ?: return errorResponse("缺少 sessionId")
+            ?: return errorResponse(com.zcode.ideaplugin.ZCodeBundle.message("error.missing.sessionId"))
         val client = project.zCodeService().getClient()
         return buildJsonObject {
             put("op", "backgroundWorksList")
@@ -4147,7 +4147,7 @@ if (!window.__ZCODE_LOG_HOOK__) {
     private fun handleCheckFilesExist(msg: JsonObject): JsonObject {
         val requestId = msg["requestId"]?.jsonPrimitive?.content
         val paths = msg["paths"]?.jsonArray?.map { it.jsonPrimitive.content }
-            ?: return errorResponse("缺少 paths")
+            ?: return errorResponse(com.zcode.ideaplugin.ZCodeBundle.message("turnfile.error.missingPaths"))
         return buildJsonObject {
             put("op", "checkFilesExistResult")
             if (requestId != null) put("requestId", requestId)
@@ -4170,7 +4170,7 @@ if (!window.__ZCODE_LOG_HOOK__) {
      */
     private fun handleOpenFileSystem(msg: JsonObject): JsonObject {
         val filePath = msg["filePath"]?.jsonPrimitive?.content
-            ?: return errorResponse("缺少 filePath")
+            ?: return errorResponse(com.zcode.ideaplugin.ZCodeBundle.message("turnfile.error.missingFilePath"))
         val allowedExtensions = setOf(
             "docx", "xlsx", "pptx", "pdf", "html", "htm",
             "mp4", "mov", "webm", "m4v", "mp3", "wav", "m4a", "ogg", "opus", "flac", "weba",
@@ -4178,7 +4178,7 @@ if (!window.__ZCODE_LOG_HOOK__) {
         val ext = filePath.substringAfterLast('.', "").lowercase()
         if (ext !in allowedExtensions) {
             log.warn("openFileSystem rejected non-preview extension: ${LogRedactor.redact(filePath).take(120)}")
-            return errorResponse("unsupported file type")
+            return errorResponse(com.zcode.ideaplugin.ZCodeBundle.message("turnfile.error.unsupportedFileType"))
         }
         com.intellij.openapi.application.invokeLater {
             val f = java.io.File(filePath)
@@ -4205,7 +4205,7 @@ if (!window.__ZCODE_LOG_HOOK__) {
      */
     private fun handleOpenFile(msg: JsonObject): JsonObject {
         val filePath = msg["filePath"]?.jsonPrimitive?.content
-            ?: return errorResponse("缺少 filePath")
+            ?: return errorResponse(com.zcode.ideaplugin.ZCodeBundle.message("turnfile.error.missingFilePath"))
         val line = msg["line"]?.jsonPrimitive?.content?.toIntOrNull()
         val findText = msg["findText"]?.jsonPrimitive?.content
         com.intellij.openapi.application.invokeLater {
@@ -4286,7 +4286,7 @@ if (!window.__ZCODE_LOG_HOOK__) {
 
     /** op=showDiff — 弹出 IDEA 原生 diff 窗口（old vs new，内容由调用方全文给定）*/
     private fun handleShowDiff(msg: JsonObject): JsonObject {
-        val filePath = msg["filePath"]?.jsonPrimitive?.content ?: return errorResponse("缺少 filePath")
+        val filePath = msg["filePath"]?.jsonPrimitive?.content ?: return errorResponse(com.zcode.ideaplugin.ZCodeBundle.message("turnfile.error.missingFilePath"))
         val oldContent = msg["oldContent"]?.jsonPrimitive?.content ?: ""
         val newContent = msg["newContent"]?.jsonPrimitive?.content ?: ""
         val title = msg["title"]?.jsonPrimitive?.content ?: "Diff: ${filePath.substringAfterLast('/')}"
