@@ -1,5 +1,5 @@
 /**
- * 后台任务列表（状态面板「后台工作」popover 的后台任务子 tab；官方 ConversationStatusPanel
+ * 后台任务列表（状态面板「任务」popover 的后台任务子 tab；官方 ConversationStatusPanel
  * Terminals/Workflows 分区的简化移植）。
  *
  * 数据源 = v4 帧投影 backgroundWorks（store 按会话落账），过滤掉 subagent 条目

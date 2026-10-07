@@ -73,7 +73,7 @@
     "todoTab": "プロセス",
     "workTab": "タスク",
     "fileTab": "ファイル",
-    "noTodos": "タスクはありません",
+    "noTodos": "プロセスはありません",
     "noAgents": "エージェントタスクはありません",
     "noFiles": "ファイル変更はありません",
     "viewSubagentDetail": "クリックしてサブエージェントの実行過程を表示",

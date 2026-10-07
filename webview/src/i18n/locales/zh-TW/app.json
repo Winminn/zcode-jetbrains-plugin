@@ -73,7 +73,7 @@
     "todoTab": "進程",
     "workTab": "任務",
     "fileTab": "檔案",
-    "noTodos": "暫無任務",
+    "noTodos": "暫無進程",
     "noAgents": "暫無代理任務",
     "noFiles": "暫無檔案改動",
     "viewSubagentDetail": "點選檢視子代理執行過程",

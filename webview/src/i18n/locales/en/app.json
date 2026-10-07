@@ -74,7 +74,7 @@
     "todoTab": "Processes",
     "workTab": "Tasks",
     "fileTab": "Files",
-    "noTodos": "No tasks",
+    "noTodos": "No processes",
     "noAgents": "No agent tasks",
     "noFiles": "No file changes",
     "viewSubagentDetail": "Click to view subagent execution details",

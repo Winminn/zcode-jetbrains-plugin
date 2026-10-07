@@ -73,7 +73,7 @@
     "todoTab": "프로세스",
     "workTab": "작업",
     "fileTab": "파일",
-    "noTodos": "작업 없음",
+    "noTodos": "프로세스가 없습니다",
     "noAgents": "에이전트 작업이 없습니다",
     "noFiles": "파일 변경 없음",
     "viewSubagentDetail": "클릭하여 서브에이전트 실행 과정 보기",

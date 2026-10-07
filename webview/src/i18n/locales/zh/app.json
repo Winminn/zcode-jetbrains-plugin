@@ -74,7 +74,7 @@
     "todoTab": "进程",
     "workTab": "任务",
     "fileTab": "文件",
-    "noTodos": "暂无任务",
+    "noTodos": "暂无进程",
     "noAgents": "暂无代理任务",
     "noFiles": "暂无文件改动",
     "viewSubagentDetail": "点击查看子代理执行过程",
