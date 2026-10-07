@@ -1239,3 +1239,12 @@
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+
+// ===== $ 技能提及补全下拉（复用 .input-box__mention 定位与 .input-box__sess-main 布局，
+// 图标紫对齐内联 cmd-ref--skill / 斜杠下拉技能 wand）=====
+.input-box__skill-item {
+  .input-box__skill-icon {
+    color: #b39ddb;
+    flex-shrink: 0;
+  }
+}

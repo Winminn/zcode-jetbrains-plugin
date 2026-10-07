@@ -85,6 +85,11 @@
   "sessRef": {
     "messages": "条消息"
   },
+  "skillRef": {
+    "source_user": "用户",
+    "source_workspace": "项目",
+    "source_plugin": "插件"
+  },
   "agent": {
     "select": "智能体",
     "empty": "暂无子智能体，去设置页新建",

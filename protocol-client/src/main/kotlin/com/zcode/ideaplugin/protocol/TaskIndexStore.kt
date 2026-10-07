@@ -1,6 +1,7 @@
 package com.zcode.ideaplugin.protocol
 
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
@@ -48,6 +49,8 @@ class TaskIndexStore(
         val deleted: Boolean,
         val pinned: Boolean,
         val updatedAt: Long,
+        /** 未读标记时间戳（null=已读；官方 tasks.unread_at 同列，后台终态且无端在看时置位）*/
+        val unreadAt: Long? = null,
     )
 
     /** schema 不兼容标记（进程级；exit code 2 置位）。置位后 listTasks 返回空、写入抛异常 */
@@ -75,6 +78,7 @@ class TaskIndexStore(
                 deleted = o["deleted"]!!.jsonPrimitive.long == 1L,
                 pinned = o["pinned"]!!.jsonPrimitive.long == 1L,
                 updatedAt = o["updated_at"]!!.jsonPrimitive.long,
+                unreadAt = o["unread_at"]?.jsonPrimitive?.contentOrNull?.toLongOrNull(),
             )
         }
         cache = fp to rows
@@ -119,6 +123,44 @@ class TaskIndexStore(
      */
     fun setPinned(sessionId: String, sessionDbPath: Path, pinned: Boolean) {
         upsertTaskRow(sessionId, sessionDbPath, if (pinned) "pin" else "unpin")
+    }
+
+    /**
+     * 标记会话未读（tasks.unread_at = now，ZCode 客户端同列同语义）：
+     * - 已有行仅动 unread_at 与 last_unread_at（=MAX(旧last, 旧unread, now)——官方同款，
+     *   新未读写入瞬间把旧未读固化进历史最近未读位，清除时不再动它）
+     * - 无行补 UPSERT（插件创建、客户端未索引的会话）：从 cli db.sqlite 读 meta 补全
+     *   NOT NULL 字段（与 pin 补行同形状；updated_at 用会话真实活动时间——未读不改变时序）
+     * - 不动 updated_at；unread_at 非空即客户端自动归档判据豁免（AUTO_ARCHIVE_JS 同判据）
+     */
+    fun setUnread(sessionId: String, sessionDbPath: Path) {
+        checkAvailable()
+        if (!Files.exists(sessionDbPath)) throw IllegalStateException("db.sqlite 不存在: $sessionDbPath")
+        if (!Files.exists(dbPath)) throw IllegalStateException("tasks-index.sqlite 不存在（ZCode 客户端未初始化）: $dbPath")
+        runNode(TASKS_SET_UNREAD_JS, mapOf(
+            "ZCODE_TASKS_SID" to sessionId,
+            "ZCODE_SESS_DB" to sessionDbPath.toString(),
+        ), onSchemaMismatch = { unavailable = true })
+        checkAvailable()
+        cache = null
+    }
+
+    /**
+     * 清除未读（用户打开会话）：单事务原子 UPDATE，行不存在 0 变更无害。
+     * 与官方 clearTaskUnreadIfMatches 的差异：官方 expected 来自跨端更早的一次读
+     * （手机/桌面双端「旧点击清掉新未读」竞态），插件清位紧跟 handleSubscribe——
+     * 读（listUnreadSessionIds 判存在）与清之间没有跨端时窗，无需 CAS 比较；
+     * 若清的瞬间恰好又有新未读写入，SQLite 写事务串行化保证要么先清后写（新未读
+     * 保留）要么先写后清（丢一次提醒，用户正打开会话的场景本就可接受）。
+     */
+    fun clearUnread(sessionId: String) {
+        checkAvailable()
+        if (!Files.exists(dbPath)) return // 客户端未装：无共享索引，无可清
+        runNode(TASKS_CLEAR_UNREAD_JS, mapOf(
+            "ZCODE_TASKS_SID" to sessionId,
+        ), onSchemaMismatch = { unavailable = true })
+        checkAvailable()
+        cache = null
     }
 
     private fun upsertTaskRow(sessionId: String, sessionDbPath: Path, mode: String) {
@@ -228,11 +270,11 @@ private val TASKS_LIST_JS = """
     if (!fs.existsSync(p)) { console.log('[]'); process.exit(0); }
     const db = new DatabaseSync(p);
     db.exec('PRAGMA busy_timeout = 5000');
-    const need = ['task_id','workspace_path','archived','deleted','pinned','updated_at'];
+    const need = ['task_id','workspace_path','archived','deleted','pinned','updated_at','unread_at'];
     const cols = db.prepare('PRAGMA table_info(tasks)').all().map(c => c.name);
     const missing = need.filter(c => !cols.includes(c));
     if (missing.length) { console.error('ERR:SCHEMA:' + missing.join(',')); process.exit(2); }
-    const rows = db.prepare('SELECT task_id, workspace_path, archived, deleted, pinned, updated_at FROM tasks').all();
+    const rows = db.prepare('SELECT task_id, workspace_path, archived, deleted, pinned, updated_at, unread_at FROM tasks').all();
     console.log(JSON.stringify(rows));
 """.trimIndent()
 
@@ -278,6 +320,72 @@ private val TASKS_UPSERT_JS = """
       // listArchivedSessions 双源合并的旧机制分支（session.time_archived）仍会命中。
       // pin/unpin 与归档位无关，不碰（幂等空操作也不做）
       if (mode === 'restore' || mode === 'delete') sessDb.prepare('UPDATE session SET time_archived = NULL WHERE id = ?').run(sid);
+      console.log('ok');
+    } catch (e) {
+      try { tdb.exec('ROLLBACK'); } catch(_){}
+      console.error('ERR: ' + e.message); process.exit(1);
+    }
+""".trimIndent()
+
+
+/**
+ * 标记未读（ZCODE_TASKS_SID）：已有行仅动 unread_at/last_unread_at（MAX 固化历史未读），
+ * 无行补 UPSERT（meta 从 cli db.sqlite 读，updated_at 用会话真实活动时间）。
+ * 不动 pinned/archived/deleted/updated_at。
+ */
+private val TASKS_SET_UNREAD_JS = """
+    const {DatabaseSync} = require('node:sqlite');
+    const sid = process.env.ZCODE_TASKS_SID;
+    const now = Date.now();
+    const sessDb = new DatabaseSync(process.env.ZCODE_SESS_DB);
+    sessDb.exec('PRAGMA busy_timeout = 5000');
+    const tdb = new DatabaseSync(process.env.ZCODE_TASKS_DB);
+    tdb.exec('PRAGMA busy_timeout = 15000');
+    const need = ['workspace_key','workspace_path','task_id','title','mode','created_at','updated_at','last_unread_at','pinned','archived','deleted','title_overridden','searchable_text','meta_json','unread_at'];
+    const cols = tdb.prepare('PRAGMA table_info(tasks)').all().map(c => c.name);
+    const missing = need.filter(c => !cols.includes(c));
+    if (missing.length) { console.error('ERR:SCHEMA:' + missing.join(',')); process.exit(2); }
+    tdb.exec('BEGIN IMMEDIATE');
+    try {
+      const existing = tdb.prepare('SELECT workspace_key FROM tasks WHERE task_id = ?').get(sid);
+      if (existing) {
+        tdb.prepare('UPDATE tasks SET unread_at = ?, last_unread_at = MAX(last_unread_at, COALESCE(unread_at, 0), ?) WHERE task_id = ?').run(now, now, sid);
+      } else {
+        const s = sessDb.prepare('SELECT id, title, path, time_created, time_updated FROM session WHERE id = ?').get(sid);
+        if (!s) { console.error('ERR: session not found: ' + sid); process.exit(1); }
+        tdb.prepare(`INSERT INTO tasks (
+            workspace_key, workspace_path, task_id, title, task_status, mode,
+            created_at, updated_at, unread_at, last_unread_at, pinned, archived, deleted,
+            title_overridden, searchable_text, meta_json
+          ) VALUES (?, ?, ?, ?, 'completed', 'build', ?, ?, ?, ?, 0, 0, 0, 0, '', ?)
+          ON CONFLICT(workspace_key, task_id) DO UPDATE SET
+            unread_at = excluded.unread_at,
+            last_unread_at = MAX(tasks.last_unread_at, COALESCE(tasks.unread_at, 0), excluded.last_unread_at)`)
+          .run(s.path, s.path, sid, s.title || '(未命名会话)', s.time_created ?? now, s.time_updated ?? now, now, now, JSON.stringify({taskId: sid}));
+      }
+      tdb.exec('COMMIT');
+      console.log('ok');
+    } catch (e) {
+      try { tdb.exec('ROLLBACK'); } catch(_){}
+      console.error('ERR: ' + e.message); process.exit(1);
+    }
+""".trimIndent()
+
+/** 清除未读（ZCODE_TASKS_SID）：单事务原子 UPDATE，行不存在 0 变更无害；最小列校验 */
+private val TASKS_CLEAR_UNREAD_JS = """
+    const {DatabaseSync} = require('node:sqlite');
+    const fs = require('fs');
+    const p = process.env.ZCODE_TASKS_DB;
+    if (!fs.existsSync(p)) { console.log('ok'); process.exit(0); }
+    const tdb = new DatabaseSync(p);
+    tdb.exec('PRAGMA busy_timeout = 15000');
+    const cols = tdb.prepare('PRAGMA table_info(tasks)').all().map(c => c.name);
+    const missing = ['task_id','unread_at'].filter(c => !cols.includes(c));
+    if (missing.length) { console.error('ERR:SCHEMA:' + missing.join(',')); process.exit(2); }
+    tdb.exec('BEGIN IMMEDIATE');
+    try {
+      tdb.prepare('UPDATE tasks SET unread_at = NULL WHERE task_id = ?').run(process.env.ZCODE_TASKS_SID);
+      tdb.exec('COMMIT');
       console.log('ok');
     } catch (e) {
       try { tdb.exec('ROLLBACK'); } catch(_){}

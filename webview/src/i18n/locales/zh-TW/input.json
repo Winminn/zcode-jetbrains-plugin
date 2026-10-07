@@ -81,6 +81,11 @@
   "sessRef": {
     "messages": "條訊息"
   },
+  "skillRef": {
+    "source_user": "使用者",
+    "source_workspace": "專案",
+    "source_plugin": "外掛"
+  },
   "agent": {
     "select": "智慧體",
     "empty": "暫無子智慧體，去設定頁新建",

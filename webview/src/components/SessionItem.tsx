@@ -40,6 +40,8 @@ interface Props {
   onTogglePin?: (sessionId: string, pinned: boolean) => void
   /** 当前是否置顶（图标常显 + 列表置顶排序由父级承担）*/
   pinned?: boolean
+  /** 未读标记（tasks-index unread_at：后台终态且无标签在看；标题前蓝点，打开即清）*/
+  unread?: boolean
   /** active=历史会话（默认）/ archived=已归档（回收站）*/
   variant?: 'active' | 'archived'
   /** 自定义标题渲染（搜索高亮用）*/
@@ -51,7 +53,7 @@ interface Props {
 }
 
 function SessionItemInner({
-  session, active, onSelect, onArchive, onRestore, onDelete, onTogglePin, pinned = false, renderTitle,
+  session, active, onSelect, onArchive, onRestore, onDelete, onTogglePin, pinned = false, unread = false, renderTitle,
   variant = 'active',
   selectionMode = false, selected = false, onToggle,
 }: Props) {
@@ -109,7 +111,7 @@ function SessionItemInner({
     <li
       className={`session-item ${active ? 'session-item--active' : ''} ${
         selectionMode ? 'selection-mode' : ''
-      } ${selected ? 'selected' : ''}`}
+      } ${selected ? 'selected' : ''} ${unread ? 'session-item--unread' : ''}`}
       onClick={handleClick}
     >
       <div className="session-item__header">
@@ -125,7 +127,9 @@ function SessionItemInner({
           </span>
         )}
         <div className="session-item__title">
-          {!selectionMode && active && <span className="session-item__dot">●</span>}
+          {/* 未读蓝点优先于 active 灰点（未读会话被打开即清，两者共存窗口极小）*/}
+          {!selectionMode && unread && <span className="session-item__unread-dot" />}
+          {!selectionMode && !unread && active && <span className="session-item__dot">●</span>}
           <span className="session-item__title-text">
             {renderTitle ? renderTitle(title) : title}
           </span>

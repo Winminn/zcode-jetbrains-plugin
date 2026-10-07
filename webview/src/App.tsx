@@ -81,6 +81,7 @@ export default function App() {
   const archiveSession = useStore((s) => s.archiveSession)
   const toggleSessionPin = useStore((s) => s.toggleSessionPin)
   const pinnedSessionIds = useStore((s) => s.pinnedSessionIds)
+  const unreadSessionIds = useStore((s) => s.unreadSessionIds)
   const restoreSession = useStore((s) => s.restoreSession)
   const deleteArchivedSession = useStore((s) => s.deleteArchivedSession)
   const locateSessionTab = useStore((s) => s.locateSessionTab)
@@ -347,6 +348,7 @@ export default function App() {
             onDeleteArchived={deleteArchivedSession}
             onTogglePin={toggleSessionPin}
             pinnedSessionIds={pinnedSessionIds}
+            unreadSessionIds={unreadSessionIds}
             onRefresh={loadSessions}
             onLoadArchived={loadArchivedSessions}
           />

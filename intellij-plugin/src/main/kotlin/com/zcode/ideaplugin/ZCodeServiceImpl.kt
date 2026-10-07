@@ -582,7 +582,49 @@ class ZCodeServiceImpl(private val project: Project) : ZCodeService, com.intelli
         }
         val removedVisible = removedIds.filter { !it.startsWith("sess_subagent") && it !in hidden }
         if (visible.isEmpty() && removedVisible.isEmpty()) return
+        detectUnreadsOnPhaseChange(c, visible)
+        // 移除的会话相位缓存一并清（防泄漏；复活后按无前值处理，不误标）
+        removedIds.forEach { sessionPhaseCache.remove(it) }
         com.zcode.ideaplugin.ui.ZCodeToolWindowPanel.broadcastSessionsIndex(visible, removedVisible, full)
+    }
+
+    /**
+     * 未读标记：sessions-index 相位从 running → 终态（completedSuccess/completedInterrupted/
+     * error）且无任一标签正在看该会话 → 写 tasks-index unread_at + 全标签广播
+     * （官方 taskStatusUnreadSync「后台终态且非当前激活」语义的跨进程版——官方桌面端/
+     * 手机 H5 驱动的会话同样覆盖）。
+     *
+     * 逐条与相位缓存比对：快照首帧（IDE 重启/订阅建立）无前值不触发——快照重建不会把
+     * 历史已完成会话误标未读；只有本进程亲历的 running→终态迁移才标。
+     * 缓存 put 同步（内存操作），写库异步（帧泵热路径禁注入式副作用，缺陷EH 教训）。
+     */
+    private val sessionPhaseCache = java.util.concurrent.ConcurrentHashMap<String, String>()
+
+    private fun detectUnreadsOnPhaseChange(c: ZCodeProtocolClient, entries: List<JsonObject>) {
+        val toMark = mutableListOf<String>()
+        for (e in entries) {
+            val sid = e["sessionId"]?.jsonPrimitive?.contentOrNull ?: continue
+            val phase = e["phase"]?.jsonPrimitive?.contentOrNull ?: continue
+            val prev = sessionPhaseCache.put(sid, phase)
+            if (prev != "running") continue
+            if (phase != "completedSuccess" && phase != "completedInterrupted" && phase != "error") continue
+            // 任一已开标签正在看：用户亲历完成，不标未读
+            if (com.zcode.ideaplugin.ui.ZCodeToolWindowPanel.isSessionBeingWatched(sid)) continue
+            toMark.add(sid)
+        }
+        if (toMark.isEmpty()) return
+        com.intellij.util.concurrency.AppExecutorUtil.getAppExecutorService().submit {
+            for (sid in toMark) {
+                try {
+                    c.markSessionUnread(sid)
+                    log.info("[unread] marked (phase -> terminal, not watched): $sid")
+                } catch (e: Exception) {
+                    // 写库失败静默（schema 不兼容/客户端未装），不影响索引推送链路
+                    log.warn("[unread] mark failed: $sid: ${e.message?.take(120)}")
+                }
+            }
+            com.zcode.ideaplugin.ui.ZCodeToolWindowPanel.broadcastSessionUnreadsSafe(c)
+        }
     }
 
     /** 软删会话 id 缓存（60s TTL）。实证：归档会话不在 sessions-index（无需过滤）、

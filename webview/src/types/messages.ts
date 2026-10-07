@@ -414,6 +414,8 @@ export type JavaRequest =  | { op: 'askUserPendingState' }
   | { op: 'setSessionPinned'; sessionId: string; pinned: boolean }
   /** 拉取当前置顶会话全量集（历史列表加载对账，顺带吸收官方桌面端库内 pin 变化）*/
   | { op: 'listPinnedSessions' }
+  /** 拉取当前未读会话全量集（历史列表加载对账；tasks-index unread_at 位）*/
+  | { op: 'listUnreadSessions' }
   /** 后台 bash 任务输出快照（v4/conversation/backgroundBashOutput；running 态前端 1s 轮询）*/
   | { op: 'backgroundBashOutput'; sessionId: string; workId: string }
   /** 取消后台工作（v4/command cancelBackgroundWork；子代理另有 stop 连带/取消链路）*/
@@ -775,6 +777,8 @@ export interface SlashCommand {
   source?: string
   /** 专属图标（codicon 类名，如 codicon-target）；缺省按 kind 取 wand/terminal */
   icon?: string
+  /** 技能目录绝对路径（仅 skill 条目；$ 技能提及 chip 序列化 [$name](path) 用）*/
+  path?: string
 }
 
 /**
@@ -1082,6 +1086,9 @@ export type JavaResponse =
   /** 置顶会话全量集（listPinnedSessions 应答 / setSessionPinned 写库后全标签广播，同形覆盖）*/
   | { op: 'pinnedSessions'; pinned: string[] }
   | { op: 'sessionPinsChanged'; pinned: string[] }
+  /** 未读会话全量集（listUnreadSessions 应答 / 相位迁移标未读与打开清除后广播，同形覆盖）*/
+  | { op: 'sessionUnreads'; unread: string[] }
+  | { op: 'sessionUnreadsChanged'; unread: string[] }
   /** 后台工作投影（v4 帧合成的 SessionEvent type='backgroundWorks'，经 streamBatch 到达；
    *  payload.works 为服务端权威全量数组，全量替换语义）*/
   /** 后台 bash 输出快照应答（原样透传协议两形态；组件按 workId 匹配消费）*/

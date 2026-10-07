@@ -203,6 +203,7 @@ function UserBubble({
       map.set(c.name, {
         kind: c.kind === 'command' && c.source === 'builtin' ? (c.name as CmdRefInfo['kind']) : c.kind,
         icon: c.icon,
+        path: c.path,
       }),
     )
     if (!map.has('goal')) map.set('goal', { kind: 'goal' })

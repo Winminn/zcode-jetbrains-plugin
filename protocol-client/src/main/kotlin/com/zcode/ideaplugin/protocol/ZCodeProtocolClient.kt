@@ -3529,6 +3529,20 @@ class ZCodeProtocolClient private constructor(
         taskIndex.listTasks().filter { it.pinned && !it.deleted }.map { it.taskId }
 
     /**
+     * 标记会话未读：写 tasks-index.sqlite tasks.unread_at（ZCode 客户端侧栏同列同源）。
+     * 协议 wire 面无未读方法，与 pin/归档同策直写共享索引库；unread_at 非空即客户端
+     * 自动归档判据豁免（unread_at IS NULL 判据，TaskIndexStore.AUTO_ARCHIVE_JS 同款）。
+     */
+    fun markSessionUnread(sessionId: String) = taskIndex.setUnread(sessionId, cliDbPath)
+
+    /** 清除会话未读（用户打开会话即视为已读；行不存在为无害空操作） */
+    fun clearSessionUnread(sessionId: String) = taskIndex.clearUnread(sessionId)
+
+    /** 当前未读的会话 id 集（unread_at 非空且未软删；走 listTasks 指纹缓存，命中零 node 进程） */
+    fun listUnreadSessionIds(): List<String> =
+        taskIndex.listTasks().filter { it.unreadAt != null && !it.deleted }.map { it.taskId }
+
+    /**
      * 自动归档陈旧任务（对齐 ZCode 客户端「自动归档旧任务」）：对本工作区执行一轮
      * 客户端同款判据扫描（详见 [TaskIndexStore.autoArchiveStale]），返回归档条目。
      */

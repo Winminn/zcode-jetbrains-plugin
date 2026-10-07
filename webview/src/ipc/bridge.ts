@@ -975,6 +975,9 @@ function mockResponse(req: JavaRequest): JavaResponse | null {
     case 'listPinnedSessions':
       // mock：预置一个置顶会话方便 dev 验收置顶排序（生产权威源=tasks-index.sqlite）
       return { op: 'pinnedSessions', pinned: mockPinnedSessions }
+    case 'listUnreadSessions':
+      // mock：预置一个未读会话方便 dev 验收蓝点（生产权威源=tasks-index.sqlite unread_at）
+      return { op: 'sessionUnreads', unread: mockSessions.length > 1 ? [mockSessions[1].sessionId] : [] }
     case 'setSessionPinned': {
       // mock：内存集翻转后直接以广播形状应答（store 对 pinnedSessions/sessionPinsChanged 同形覆盖；
       // 生产是 Java 写库后全标签广播，此处单标签无广播通道，应答即校正）

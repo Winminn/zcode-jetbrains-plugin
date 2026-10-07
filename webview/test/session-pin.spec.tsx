@@ -94,6 +94,7 @@ describe('HistoryView 置顶排序', () => {
         onDeleteArchived={vi.fn()}
         onTogglePin={vi.fn()}
         pinnedSessionIds={pinnedSessionIds}
+        unreadSessionIds={[]}
         onRefresh={vi.fn()}
         onLoadArchived={vi.fn()}
       />,

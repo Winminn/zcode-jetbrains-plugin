@@ -42,10 +42,12 @@ import { AgentSelect, AgentColorDot } from './AgentSelect'
 import { PromptEnhancerDialog } from './PromptEnhancerDialog'
 import { sendToJava, onMessage } from '@/ipc/bridge'
 import type { JavaResponse, SlashCommand, AgentDef, ImageAttachmentInput } from '@/types/messages'
-import { insertChipAtCursor, insertCommandChipAtCursor, insertSessionChipAtCursor, insertPasteChipAtCursor, convertCompletedPaths, convertCompletedSessionRefs, matchSessionRefTrigger, serializeEditor, hasAnyInlineChip, type CmdChipKind } from '@/utils/inlineFileTags'
+import { insertChipAtCursor, insertCommandChipAtCursor, insertSessionChipAtCursor, insertSkillChipAtCursor, insertPasteChipAtCursor, convertCompletedPaths, convertCompletedSessionRefs, convertCompletedSkillRefs, matchSessionRefTrigger, serializeEditor, hasAnyInlineChip, type CmdChipKind } from '@/utils/inlineFileTags'
+import { matchSkillRefTrigger } from '@/utils/skillRefPattern'
 import { relativeTime } from '@/utils/time'
 import { parseGoalCommand } from '@/utils/goalCommand'
 import { KV_HYDRATED_EVENT, KV_DISABLED_EVENT } from '@/utils/persist'
+import { draftScope, isDraftStoreReady, readComposerDraft, persistComposerDraft, clearComposerDraft, sanitizeDraftHtml } from '@/utils/composerDraft'
 import { readEnhanceConfig, ENHANCE_CONFIG_CHANGED_EVENT } from '@/utils/enhanceConfig'
 import { PastedTextPreview, type PastedTextItem } from './PastedTextRef'
 import { readImageFile, decodeBase64Size, type ImageAttachmentResult } from '@/utils/imageAttachment'
@@ -140,6 +142,11 @@ export function InputBox({ onSend, isStreaming = false, onStop, disabled = false
   const [sessQuery, setSessQuery] = useState<string | null>(null)
   const [sessIndex, setSessIndex] = useState(0)
 
+  // $ 技能提及补全状态（对齐官方 MentionPlugin 三 trigger：@文件/$技能/#会话；
+  // ¥/￥ 归一为 $ 触发。选中插 cmd-ref--skill 内联 chip，序列化 [$名称](路径)）
+  const [skillQuery, setSkillQuery] = useState<string | null>(null)
+  const [skillIndex, setSkillIndex] = useState(0)
+
   // / 斜杠命令补全状态
   const [slashQuery, setSlashQuery] = useState<string | null>(null)
   const [slashItems, setSlashItems] = useState<SlashCommand[]>([])
@@ -170,9 +177,10 @@ export function InputBox({ onSend, isStreaming = false, onStop, disabled = false
     setMentionFiles([])
     setSlashQuery(null)
     setGhostSuffix('')
-    // 历史文本里的 @绝对路径 / #sess_ 会话引用 回显为内联 chip（includeTrailing：回填内容已完整）
+    // 历史文本里的 @绝对路径 / #sess_ 会话引用 / $技能提及 回显为内联 chip（includeTrailing：回填内容已完整）
     convertCompletedPaths(el, true)
     convertCompletedSessionRefs(el, (id) => sessionTitleResolverRef.current(id))
+    convertCompletedSkillRefs(el, skillPathResolverRef.current)
     placeCursorEnd(el)
   }, [])
 
@@ -325,6 +333,8 @@ export function InputBox({ onSend, isStreaming = false, onStop, disabled = false
       setMentionQuery(null)
       setMentionFiles([])
       setSlashQuery(null)
+      setSessQuery(null)
+      setSkillQuery(null)
       setGhostSuffix('')
     }
     clearEnhanceResult()
@@ -560,12 +570,16 @@ export function InputBox({ onSend, isStreaming = false, onStop, disabled = false
     }
     // 编辑器 DOM 清空即含内联粘贴 chip，原文映射同步回收（含 Backspace 删 chip 的残留条目）
     pasteTextsRef.current.clear()
+    // 内容已清（发送/goal 拦截/队列回填前重置），草稿 scope 一并清除——
+    // 留着会在下次切回该会话时复活已发出的内容
+    clearComposerDraft(draftScopeRef.current)
     setGhostSuffix('')
-    // 文本已清空，@/# 补全弹层一并关闭（弹层状态不随程序清空自动复位，缺陷BJ：
+    // 文本已清空，@/#/$ 补全弹层一并关闭（弹层状态不随程序清空自动复位，缺陷BJ：
     // 带 # 的 URL 消息发送后空态面板残留）
     setMentionQuery(null)
     setMentionFiles([])
     setSessQuery(null)
+    setSkillQuery(null)
   }
 
   /**
@@ -593,9 +607,10 @@ export function InputBox({ onSend, isStreaming = false, onStop, disabled = false
         })),
       ])
     }
-    // 回填文本里的 @绝对路径 / #sess_ 会话引用 回显为内联 chip
+    // 回填文本里的 @绝对路径 / #sess_ 会话引用 / $技能提及 回显为内联 chip
     convertCompletedPaths(el, true)
     convertCompletedSessionRefs(el, (id) => sessionTitleResolverRef.current(id))
+    convertCompletedSkillRefs(el, skillPathResolverRef.current)
     el.focus()
     // 光标移到末尾（contenteditable 聚焦后默认在开头）
     const sel = window.getSelection()
@@ -633,8 +648,12 @@ export function InputBox({ onSend, isStreaming = false, onStop, disabled = false
     // # 下拉开合取检测函数的实时返回（code-review Spec#4）：sessQuery 在本空 deps
     // useCallback 里是首渲染的陈旧值恒 null，幽灵建议的抑制会失效
     const sessOpen = !slashOpen && !mentionOpen && checkSessionRefTrigger(el)
-    // 历史前缀幽灵建议（@ / / / # 补全打开时不显示，方向键归下拉）
-    updateGhostSuggestion(el, slashOpen, mentionOpen || sessOpen)
+    // $ 技能提及（第四环互斥；¥/￥ 归一触发）
+    const skillOpen = !slashOpen && !mentionOpen && !sessOpen && checkSkillTrigger(el)
+    // 历史前缀幽灵建议（@ / / / # / $ 补全打开时不显示，方向键归下拉）
+    updateGhostSuggestion(el, slashOpen, mentionOpen || sessOpen || skillOpen)
+    // 草稿防抖保存（切换/卸载另有立即存兜底）
+    scheduleDraftPersist()
   }, [])
 
   /** 读入图片文件（剪贴板 image 项），压缩后加入附件列表 */
@@ -734,6 +753,7 @@ export function InputBox({ onSend, isStreaming = false, onStop, disabled = false
       if (!el) return
       convertCompletedPaths(el, true)
       convertCompletedSessionRefs(el, (id) => sessionTitleResolverRef.current(id))
+      convertCompletedSkillRefs(el, skillPathResolverRef.current)
       // 正文或任一类内联 chip 都是有效内容（chip 无 textContent，纯 chip 输入也要可发送）
       setHasText(!!el.textContent?.trim() || hasAnyInlineChip(el))
     }, 0)
@@ -1261,6 +1281,195 @@ export function InputBox({ onSend, isStreaming = false, onStop, disabled = false
     }
   }
 
+  // ============ $ 技能提及补全（对齐官方 MentionPlugin 三 trigger 之 $）============
+
+  /**
+   * 检测光标前是否有未完成的 $xxx，触发技能补全。与 @ / 行首 / / # 互斥（调用方保证）。
+   * ¥/￥ 归一触发（官方 promptInputTriggers 同款）；防误判（$ 前须行首/空白、
+   * 纯数字金额不触发）收在 matchSkillRefTrigger。
+   */
+  function checkSkillTrigger(el: HTMLDivElement): boolean {
+    const sel = window.getSelection()
+    if (!sel || sel.rangeCount === 0) return false
+    const beforeCursor = textBeforeCaret(el, sel.getRangeAt(0))
+    const query = matchSkillRefTrigger(beforeCursor)
+    if (query !== null) {
+      setSkillQuery(query)
+      requestCommands() // 复用斜杠命令缓存（同一次磁盘扫描，命中缓存零请求）
+      return true
+    }
+    setSkillQuery(null)
+    return false
+  }
+
+  /**
+   * $ 下拉候选：slashItems 的技能子集（kind='skill'），同名按 scope 折叠
+   * （官方 skillsMentionProvider 同策：workspace > plugin > user，$ 面板是执行入口
+   * 不是来源管理页），query 匹配 name/description，名称升序。
+   */
+  const filteredSkillItems = useMemo<SlashCommand[]>(() => {
+    if (skillQuery === null) return []
+    const q = skillQuery.toLowerCase()
+    const scopePriority: Record<string, number> = { workspace: 0, plugin: 1, user: 2 }
+    const byName = new Map<string, SlashCommand>()
+    for (const c of slashItems) {
+      if (c.kind !== 'skill') continue
+      const key = c.name.trim().toLowerCase()
+      const current = byName.get(key)
+      if (!current || (scopePriority[c.source ?? ''] ?? 9) < (scopePriority[current.source ?? ''] ?? 9)) {
+        byName.set(key, c)
+      }
+    }
+    return [...byName.values()]
+      .filter(
+        (c) =>
+          !q ||
+          c.name.toLowerCase().includes(q) ||
+          (c.description ?? '').toLowerCase().includes(q),
+      )
+      .sort((a, b) => a.name.localeCompare(b.name))
+  }, [skillQuery, slashItems])
+
+  /** 技能名 → 路径反查（裸 token 回显成 chip 时补路径；ref 转发同 sessionTitleResolverRef）*/
+  const skillPathResolverRef = useRef<(name: string) => string | undefined>(() => undefined)
+  useEffect(() => {
+    const map = new Map(slashItems.filter((c) => c.kind === 'skill').map((c) => [c.name, c.path]))
+    skillPathResolverRef.current = (name) => map.get(name)
+  }, [slashItems])
+
+  /** 从编辑器删除光标前的 $xxx 触发文本（Selection API 精确删除，同 removeSessionRefTriggerText）*/
+  function removeSkillTriggerText() {
+    const el = editorRef.current
+    if (!el) return
+    try {
+      const sel = window.getSelection()
+      if (sel && sel.rangeCount > 0) {
+        const beforeCursor = textBeforeCaret(el, sel.getRangeAt(0))
+        const m = beforeCursor.match(/(^|\s)([$¥￥])([^\s$¥￥/]*)$/)
+        if (m) {
+          // 只删 触发符+query（前置字符 m[1] 可能是多字节中文，不用 m[0].length）
+          const delLen = (m[3]?.length ?? 0) + 1
+          const tmpRange = sel.getRangeAt(0).cloneRange()
+          tmpRange.collapse(true)
+          sel.removeAllRanges()
+          sel.addRange(tmpRange)
+          for (let i = 0; i < delLen; i++) {
+            sel.modify('extend', 'backward', 'character')
+          }
+          sel.getRangeAt(0).deleteContents()
+        }
+      }
+    } catch {
+      el.textContent = el.textContent?.replace(/[$¥￥]([^\s$¥￥/]*)$/, '') ?? ''
+    }
+    setHasText(!!el.textContent?.trim() || hasAnyInlineChip(el))
+    el.focus()
+  }
+
+  /** 选中技能：删触发文本 → 光标处插内联技能 chip（序列化回 [$名称](路径)）*/
+  function selectSkillRef(c: SlashCommand) {
+    setSkillQuery(null)
+    removeSkillTriggerText()
+    const el = editorRef.current
+    if (el) {
+      insertSkillChipAtCursor(el, c.name, c.path, c.description)
+      setHasText(true)
+    }
+  }
+
+  // ============ 草稿持久化（per-session scope，候选池 O8）============
+  // scope=sessionId（待命态 "__draft__"），切换会话各归各；persist 通道跨重启保留。
+  // 输入防抖 600ms、切换/卸载立即存；发送清 scope。恢复前净化 HTML（utils 内白名单）。
+
+  const draftScopeRef = useRef(draftScope(sessionId))
+  const draftTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  // 顶栏引用镜像（防抖回调/卸载读最新值，避免 useCallback deps 陈旧闭包）
+  const draftRefsRef = useRef<{ fileRefs: string[]; skillRefs: SlashCommand[] }>({ fileRefs: [], skillRefs: [] })
+  draftRefsRef.current = { fileRefs, skillRefs }
+
+  const persistDraftNow = useCallback(() => {
+    const el = editorRef.current
+    if (!el) return
+    // 空编辑器 persist 是 no-op（utils 内守卫）：StrictMode dev 双挂载 cleanup 不误清草稿
+    persistComposerDraft(draftScopeRef.current, {
+      html: el.innerHTML,
+      fileRefs: draftRefsRef.current.fileRefs,
+      skillRefs: draftRefsRef.current.skillRefs,
+      pasteTexts: [...pasteTextsRef.current.entries()],
+    })
+  }, [])
+
+  /** 输入防抖保存（600ms 静默窗口；切会话/卸载时立即存，防抖定时器随之作废）*/
+  const scheduleDraftPersist = useCallback(() => {
+    if (draftTimerRef.current) clearTimeout(draftTimerRef.current)
+    draftTimerRef.current = setTimeout(persistDraftNow, 600)
+  }, [persistDraftNow])
+
+  /** 恢复指定 scope 草稿；无草稿清空编辑器（修正既有「切换会话输入残留」行为）*/
+  const restoreDraftFor = useCallback((scope: string) => {
+    const el = editorRef.current
+    if (!el) return
+    const d = readComposerDraft(scope)
+    if (d && (d.html || d.fileRefs.length > 0 || d.skillRefs.length > 0)) {
+      el.innerHTML = sanitizeDraftHtml(d.html)
+      setHasText(!!el.textContent?.trim() || hasAnyInlineChip(el))
+      setFileRefs(d.fileRefs)
+      setSkillRefs(d.skillRefs)
+      pasteTextsRef.current.clear()
+      for (const [k, v] of d.pasteTexts) pasteTextsRef.current.set(k, v)
+    } else {
+      el.textContent = ''
+      setHasText(false)
+      setFileRefs([])
+      setSkillRefs([])
+      pasteTextsRef.current.clear()
+    }
+    // 程序赋值不算输入：补全弹层/幽灵建议一并复位（setTextFromHistory 同款）
+    setMentionQuery(null)
+    setMentionFiles([])
+    setSessQuery(null)
+    setSlashQuery(null)
+    setSkillQuery(null)
+    setGhostSuffix('')
+  }, [])
+
+  // 切会话：先存旧 scope 当前内容，再恢复新 scope（ready 前跳过恢复——水合前草稿
+  // 恒空，清空会误伤即将恢复的内容）
+  useEffect(() => {
+    const scope = draftScope(sessionId)
+    if (draftScopeRef.current === scope) return
+    persistDraftNow()
+    draftScopeRef.current = scope
+    if (isDraftStoreReady()) restoreDraftFor(scope)
+  }, [sessionId, persistDraftNow, restoreDraftFor])
+
+  // 水合完成再补恢复：编辑器空才填（ready 前切换过的场景）；非空=用户已输入，让位
+  // 当前输入（其持久化由防抖保存承担）。ready 可能早于本 effect（kv 缓存已有值），
+  // 首挂载直接补一次——两路幂等
+  useEffect(() => {
+    const reread = () => {
+      const el = editorRef.current
+      if (el && !el.textContent?.trim() && !hasAnyInlineChip(el)) {
+        restoreDraftFor(draftScopeRef.current)
+      }
+    }
+    reread()
+    window.addEventListener(KV_HYDRATED_EVENT, reread)
+    window.addEventListener(KV_DISABLED_EVENT, reread)
+    return () => {
+      window.removeEventListener(KV_HYDRATED_EVENT, reread)
+      window.removeEventListener(KV_DISABLED_EVENT, reread)
+    }
+  }, [restoreDraftFor])
+
+  // 卸载前保存残余内容（关标签/dev 热更）；空编辑器 no-op（StrictMode 安全）
+  useEffect(() => {
+    return () => {
+      if (draftTimerRef.current) clearTimeout(draftTimerRef.current)
+      persistDraftNow()
+    }
+  }, [persistDraftNow])
+
   // 监听文件列表响应
   useEffect(() => {
     const unsub = onMessage((msg: JavaResponse) => {
@@ -1430,6 +1639,32 @@ export function InputBox({ onSend, isStreaming = false, onStop, disabled = false
         selectSessionRef(
           filteredSessionItems[Math.min(sessIndex, filteredSessionItems.length - 1)],
         )
+        return
+      }
+    }
+    // $ 技能提及补全打开时，方向键/Enter/Escape 由补全处理（与 @ / / / # 互斥）。
+    // 零候选面板不渲染，但触发态仍在：Esc 清 skillQuery，Enter/方向键放行给正常编辑
+    if (skillQuery !== null) {
+      const hasCandidates = filteredSkillItems.length > 0
+      if (hasCandidates && e.key === 'ArrowDown') {
+        e.preventDefault()
+        setSkillIndex((i) => (i + 1) % filteredSkillItems.length)
+        return
+      }
+      if (hasCandidates && e.key === 'ArrowUp') {
+        e.preventDefault()
+        setSkillIndex((i) => (i - 1 + filteredSkillItems.length) % filteredSkillItems.length)
+        return
+      }
+      if (e.key === 'Escape') {
+        e.preventDefault()
+        setSkillQuery(null)
+        return
+      }
+      if (hasCandidates && e.key === 'Enter' && !e.shiftKey) {
+        e.preventDefault()
+        // 过滤列表变短时 index 可能超界（filter 变化不重置导航位），clamp 防越界
+        selectSkillRef(filteredSkillItems[Math.min(skillIndex, filteredSkillItems.length - 1)])
         return
       }
     }
@@ -1962,6 +2197,37 @@ export function InputBox({ onSend, isStreaming = false, onStop, disabled = false
                   </span>
                 </div>
               ))}
+          </div>
+        )}
+
+        {/* $ 技能提及补全下拉（$ 触发技能列表，同名跨来源折叠 workspace>plugin>user；
+            选中以 [$名称](路径) 随正文发送——官方 MentionPlugin 技能提及协议，
+            模型据此识别技能引用并读取 SKILL.md。
+            零候选不渲染面板：$ 可能是用户的行文（金额/变量），弹「没有匹配」反成骚扰）*/}
+        {skillQuery !== null && filteredSkillItems.length > 0 && (
+          <div className="input-box__mention input-box__skill">
+            {filteredSkillItems.map((c, i) => (
+              <div
+                key={c.name}
+                className={`input-box__mention-item input-box__skill-item ${i === Math.min(skillIndex, filteredSkillItems.length - 1) ? 'active' : ''}`}
+                onMouseEnter={() => setSkillIndex(i)}
+                onMouseDown={(e) => {
+                  e.preventDefault() // 不让编辑器失焦
+                  selectSkillRef(c)
+                }}
+              >
+                <span className="codicon codicon-wand input-box__mention-icon input-box__skill-icon" />
+                  <span className="input-box__sess-main">
+                    <span className="input-box__sess-title">${c.name}</span>
+                    <span className="input-box__sess-desc">
+                      {(() => {
+                        const src = c.source && c.source !== 'builtin' ? t(`input.skillRef.source_${c.source}`) : ''
+                        return src && c.description ? `${src} · ${c.description}` : src || c.description || ''
+                      })()}
+                    </span>
+                  </span>
+              </div>
+            ))}
           </div>
         )}
 

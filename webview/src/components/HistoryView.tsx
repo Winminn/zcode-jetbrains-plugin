@@ -52,6 +52,8 @@ interface Props {
   onTogglePin: (sessionId: string, pinned: boolean) => void
   /** 置顶会话 id 集（列表置顶排序 + SessionItem 图标态）*/
   pinnedSessionIds: string[]
+  /** 未读会话 id 集（列表蓝点 + 标题加粗；打开会话即清）*/
+  unreadSessionIds: string[]
   onRefresh: () => void
   /** 进入已归档 tab 时拉取列表 */
   onLoadArchived: () => void
@@ -90,6 +92,7 @@ export function HistoryView({
   onDeleteArchived,
   onTogglePin,
   pinnedSessionIds,
+  unreadSessionIds,
   onRefresh,
   onLoadArchived,
 }: Props) {
@@ -427,6 +430,7 @@ export function HistoryView({
                   onRestore={onRestore}
                   onDelete={tab === 'archived' ? requestDeleteArchived : undefined}
                   pinned={pinned}
+                  unread={tab === 'active' && unreadSessionIds.includes(s.sessionId)}
                   onTogglePin={tab === 'active' ? onTogglePin : undefined}
                   renderTitle={(title) => <Highlight text={title} query={debouncedQuery} />}
                   selectionMode={selectionMode}

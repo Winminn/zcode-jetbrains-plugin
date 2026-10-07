@@ -20,6 +20,7 @@ import type { ReactNode } from 'react'
 import { splitReference, basename } from '@/components/FileRef'
 import { FileIcon } from '@/components/FileIcon'
 import { SESS_MD_RE, SESS_BARE_RE, sessionRefShortLabel, sessionRefTip } from '@/utils/sessionRefPattern'
+import { SKILL_MD_RE, SKILL_BARE_RE, unescapeSkillMd } from '@/utils/skillRefPattern'
 
 /** /命令·技能引用（名字字符集对齐 SlashCommand.name，如 code-review、review:code；
  *  前缀限词首，@/ 路径不会被命中）*/
@@ -36,6 +37,8 @@ const PATH_RE = new RegExp(
 export interface CmdRefInfo {
   kind: 'skill' | 'command' | 'goal' | 'compact'
   icon?: string
+  /** 技能目录路径（skill 条目；chip title 悬浮展示用）*/
+  path?: string
 }
 
 /** 消息内 cmd chip 的 kind → 图标与配色变体（inlineFileTags CMD_META 的只读子集；
@@ -75,11 +78,12 @@ function sessionChip(sessionId: string, title: string, key: string): ReactNode {
   )
 }
 
-/** 只读命令/技能 chip（显示裸名不带斜杠，对齐输入框内联 cmd chip；title 留完整 /name）*/
-function cmdChip(name: string, info: CmdRefInfo, key: string): ReactNode {
+/** 只读命令/技能 chip（显示裸名不带斜杠，对齐输入框内联 cmd chip；title 留完整前缀形态）*/
+function cmdChip(name: string, info: CmdRefInfo, key: string, titlePrefix = '/'): ReactNode {
   const meta = MSG_CMD_META[info.kind] ?? MSG_CMD_META.command
+  const title = `${titlePrefix}${name}${info.path ? ` · ${info.path}` : ''}`
   return (
-    <span key={key} className={`cmd-ref user-ref-chip cmd-ref--${meta.variant}`} title={`/${name}`}>
+    <span key={key} className={`cmd-ref user-ref-chip cmd-ref--${meta.variant}`} title={title}>
       <span className={`codicon ${info.icon ?? meta.icon} cmd-ref__icon`} />
       <span className="cmd-ref__name">{name}</span>
     </span>
@@ -108,6 +112,14 @@ export function renderUserRefChips(
     const raw = (m[1] ?? '').replace(/\\(.)/g, '$1')
     tokens.push({ start: m.index, end: m.index + m[0].length, node: sessionChip(m[2], raw, `c${chipSeq++}`) })
   }
+  // $ 技能提及 markdown 链接 [$名称](路径)（正则保证 label 以 $ 开头，与普通 md
+  // 链接/会话链接天然互斥；名称/路径按序列化侧同款转义还原）
+  SKILL_MD_RE.lastIndex = 0
+  for (let m = SKILL_MD_RE.exec(text); m; m = SKILL_MD_RE.exec(text)) {
+    const name = unescapeSkillMd(m[2] ?? '')
+    const path = unescapeSkillMd(m[3] ?? '') || undefined
+    tokens.push({ start: m.index, end: m.index + m[0].length, node: cmdChip(name, { kind: 'skill', path }, `c${chipSeq++}`, '$') })
+  }
   SESS_BARE_RE.lastIndex = 0
   for (let m = SESS_BARE_RE.exec(text); m; m = SESS_BARE_RE.exec(text)) {
     const start = m.index + m[1].length
@@ -127,6 +139,18 @@ export function renderUserRefChips(
       const end = start + name.length + 1
       if (overlap(start, end)) continue
       tokens.push({ start, end, node: cmdChip(name, info, `c${chipSeq++}`) })
+    }
+    // 裸 $技能 token（词边界 + 已知技能名白名单——$5/成本$100 这类金额不误伤；
+    // 尾部连接符处理与 CMD_TOKEN_RE 同款）
+    SKILL_BARE_RE.lastIndex = 0
+    for (let m = SKILL_BARE_RE.exec(text); m; m = SKILL_BARE_RE.exec(text)) {
+      const name = m[2].replace(/[._:-]+$/, '')
+      const info = cmdNames.get(name)
+      if (!info || info.kind !== 'skill') continue
+      const start = m.index + m[1].length
+      const end = start + name.length + 1
+      if (overlap(start, end)) continue
+      tokens.push({ start, end, node: cmdChip(name, info, `c${chipSeq++}`, '$') })
     }
   }
   PATH_RE.lastIndex = 0
@@ -157,12 +181,19 @@ export function renderUserRefChips(
 export function hasUserRefChips(text: string, cmdNames?: Map<string, CmdRefInfo>): boolean {
   SESS_MD_RE.lastIndex = 0
   if (SESS_MD_RE.test(text)) return true
+  SKILL_MD_RE.lastIndex = 0
+  if (SKILL_MD_RE.test(text)) return true
   SESS_BARE_RE.lastIndex = 0
   if (SESS_BARE_RE.test(text)) return true
   if (cmdNames) {
     CMD_TOKEN_RE.lastIndex = 0
     for (let m = CMD_TOKEN_RE.exec(text); m; m = CMD_TOKEN_RE.exec(text)) {
       if (cmdNames.has(m[2].slice(1).replace(/[._:-]+$/, ''))) return true
+    }
+    SKILL_BARE_RE.lastIndex = 0
+    for (let m = SKILL_BARE_RE.exec(text); m; m = SKILL_BARE_RE.exec(text)) {
+      const info = cmdNames.get(m[2].replace(/[._:-]+$/, ''))
+      if (info?.kind === 'skill') return true
     }
   }
   PATH_RE.lastIndex = 0

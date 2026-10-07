@@ -81,6 +81,11 @@
   "sessRef": {
     "messages": "개 메시지"
   },
+  "skillRef": {
+    "source_user": "사용자",
+    "source_workspace": "워크스페이스",
+    "source_plugin": "플러그인"
+  },
   "agent": {
     "select": "에이전트",
     "empty": "서브 에이전트가 없습니다. 설정에서 생성하세요",

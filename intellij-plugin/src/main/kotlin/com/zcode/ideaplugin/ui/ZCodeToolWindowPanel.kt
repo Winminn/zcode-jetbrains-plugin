@@ -330,6 +330,40 @@ class ZCodeToolWindowPanel(
         }
 
         /**
+         * 会话未读集广播（sessions-index 相位迁移标未读 / 打开会话清未读 → 所有已开标签）：
+         * 全量未读 id 列表，列表行蓝点数据源。语义同 [broadcastSessionPins]（广播即校正，
+         * 无乐观更新；懒加载标签靠 loadSessions 顺带的 listUnreadSessions 拉取兜底）。
+         */
+        fun broadcastSessionUnreads(unreadIds: List<String>) {
+            SwingUtilities.invokeLater {
+                activePanels.forEach { panel ->
+                    try {
+                        panel.pushToWebview(buildJsonObject {
+                            put("op", "sessionUnreadsChanged")
+                            put("unread", JsonArray(unreadIds.map { JsonPrimitive(it) }))
+                        })
+                    } catch (_: Exception) {
+                        // 懒加载未激活标签跳过
+                    }
+                }
+            }
+        }
+
+        /** 广播当前全量未读集（写库成功/失败对账共用；读失败按空集广播） */
+        fun broadcastSessionUnreadsSafe(client: com.zcode.ideaplugin.protocol.ZCodeProtocolClient) {
+            val unread = try {
+                client.listUnreadSessionIds()
+            } catch (_: Exception) {
+                emptyList()
+            }
+            broadcastSessionUnreads(unread)
+        }
+
+        /** 是否任一已开标签正在看该会话（未读豁免判据：用户亲历完成不标未读） */
+        fun isSessionBeingWatched(sessionId: String): Boolean =
+            activePanels.any { it.getCurrentSessionIdForPersist() == sessionId }
+
+        /**
          * 会话索引推送（ZCodeServiceImpl sessions-index 订阅 → 所有已开标签）：
          * 整 workspace 会话的活性数据（相位/标题/最近活动）。sessions 条目是官方
          * SessionSummary 的原样 JSON（过滤后），removed 为服务端移除的会话 id；
@@ -1002,6 +1036,7 @@ if (!window.__ZCODE_LOG_HOOK__) {
                         "deleteArchivedSession" -> handleDeleteArchivedSession(msg)
                         "setSessionPinned" -> handleSetSessionPinned(msg)
                         "listPinnedSessions" -> handleListPinnedSessions()
+                        "listUnreadSessions" -> handleListUnreadSessions()
                         "getAutoArchiveConfig" -> handleGetAutoArchiveConfig()
                         "setAutoArchiveConfig" -> handleSetAutoArchiveConfig(msg)
                         "getAutoArchiveRecords" -> handleGetAutoArchiveRecords()
@@ -2441,6 +2476,23 @@ if (!window.__ZCODE_LOG_HOOK__) {
             buildJsonObject {
                 put("op", "pinnedSessions")
                 put("pinned", JsonArray(emptyList()))
+            }
+        }
+    }
+
+    /** op=listUnreadSessions — 当前全量未读集（历史列表加载时对账拉取，失败空集降级） */
+    private fun handleListUnreadSessions(): JsonObject {
+        val client = project.zCodeService().getClient()
+        return try {
+            buildJsonObject {
+                put("op", "sessionUnreads")
+                put("unread", JsonArray(client.listUnreadSessionIds().map { JsonPrimitive(it) }))
+            }
+        } catch (e: Exception) {
+            log.warn("listUnreadSessions failed: ${e.message}")
+            buildJsonObject {
+                put("op", "sessionUnreads")
+                put("unread", JsonArray(emptyList()))
             }
         }
     }
@@ -5198,6 +5250,19 @@ if (!window.__ZCODE_LOG_HOOK__) {
         currentSessionId = sessionId
         persistSelfTabState()
 
+        // 打开会话即视为已读（tasks-index unread_at 清位 + 全标签广播；官方桌面端同语义）。
+        // listUnread 走 tasks-index 指纹缓存（命中零 node 进程），真有未读才起 clear 进程；
+        // 清理失败不影响打开会话（fail-soft，下次打开重试）
+        try {
+            if (sessionId in client.listUnreadSessionIds()) {
+                client.clearSessionUnread(sessionId)
+                log.info("Session unread cleared on open: $sessionId")
+                broadcastSessionUnreadsSafe(client)
+            }
+        } catch (e: Exception) {
+            log.warn("clear unread on open failed: ${e.message}")
+        }
+
         // 注册全局监听器（只注册一次，所有会话的事件都通过它推给前端）
         ensureGlobalStreamListener(client)
 
@@ -6053,6 +6118,7 @@ if (!window.__ZCODE_LOG_HOOK__) {
                     c.description?.let { put("description", it) }
                     put("kind", c.kind)
                     put("source", c.source)
+                    c.path?.let { put("path", it) }
                 }
             }))
         }

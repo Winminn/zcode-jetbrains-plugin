@@ -1146,6 +1146,9 @@ interface StoreState {
   /** 置顶会话 id 集（tasks-index.sqlite pinned 位，Kotlin 广播全量快照 + 列表加载对账；
    * Java 库为权威源，前端不做乐观更新，sessionPinsChanged/pinnedSessions 同形覆盖）*/
   pinnedSessionIds: string[]
+  /** 未读会话 id 集（tasks-index.sqlite unread_at 位：后台终态且无标签在看时 Java 置位、
+   * 打开会话清位；sessionUnreads/sessionUnreadsChanged 同形覆盖，权威源同在库）*/
+  unreadSessionIds: string[]
   /** 回合运行中的会话集合（sessionTurnPhase 相位广播维护；值=startedAt），
    * 防列表快照把远程驱动的运行中会话降级回已完成 */
   remoteRunningTurns: Record<string, number>
@@ -1703,6 +1706,7 @@ export const useStore = create<StoreState>((set, get) => ({
   connectivityResults: {},
   pendingInteractionCounts: {},
   pinnedSessionIds: [],
+  unreadSessionIds: [],
   backgroundWorksBySession: {},
   backgroundWorksFromTranscript: [],
   remoteRunningTurns: {},
@@ -1848,6 +1852,8 @@ export const useStore = create<StoreState>((set, get) => ({
     // 顺带对账置顶集（tasks-index 指纹缓存命中时零 node 进程；顺带吸收官方桌面端
     // 在库里的 pin 变化——广播只覆盖本进程写，跨进程写靠这条对账）
     sendToJava({ op: 'listPinnedSessions' })
+    // 顺带对账未读集（同一条 tasks-index 读缓存；吸收官方桌面端/手机端置的未读位）
+    sendToJava({ op: 'listUnreadSessions' })
   },
 
   toggleSessionPin: (sessionId, pinned) => {
@@ -5427,6 +5433,13 @@ export function handleResponse(
       // 置顶集全量快照（op=listPinnedSessions 应答 / setSessionPinned 写库后全标签广播）：
       // 直接覆盖（数组新引用触发订阅方重算；排序在 HistoryView 渲染层做）
       set({ pinnedSessionIds: Array.isArray(msg.pinned) ? msg.pinned : [] })
+      break
+
+    case 'sessionUnreads':
+    case 'sessionUnreadsChanged':
+      // 未读集全量快照（op=listUnreadSessions 应答 / 相位迁移标未读与打开清除后广播）：
+      // 直接覆盖（Java 库为权威源，前端不做乐观更新）
+      set({ unreadSessionIds: Array.isArray(msg.unread) ? msg.unread : [] })
       break
 
     case 'backgroundWorksList':

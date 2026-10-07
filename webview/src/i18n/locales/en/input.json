@@ -85,6 +85,11 @@
   "sessRef": {
     "messages": "msgs"
   },
+  "skillRef": {
+    "source_user": "User",
+    "source_workspace": "Workspace",
+    "source_plugin": "Plugin"
+  },
   "agent": {
     "select": "Agent",
     "empty": "No subagents yet — create one in Settings",

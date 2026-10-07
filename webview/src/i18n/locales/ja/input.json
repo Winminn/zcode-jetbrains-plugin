@@ -81,6 +81,11 @@
   "sessRef": {
     "messages": "件"
   },
+  "skillRef": {
+    "source_user": "ユーザー",
+    "source_workspace": "ワークスペース",
+    "source_plugin": "プラグイン"
+  },
   "agent": {
     "select": "エージェント",
     "empty": "サブエージェントがありません。設定で作成してください",
