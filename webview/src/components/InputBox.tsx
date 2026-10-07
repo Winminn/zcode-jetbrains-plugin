@@ -29,6 +29,7 @@ import { useKeyboard } from '@/hooks/useKeyboard'
 import { useInputHistory, findHistorySuggestion } from '@/hooks/useInputHistory'
 import { useStore } from '@/store/useStore'
 import { FileRef } from './FileRef'
+import { CurrentFileChip } from './CurrentFileChip'
 import { SkillRef } from './SkillRef'
 import { ModelSelect } from './ModelSelect'
 import { PlanBadge } from './PlanBadge'
@@ -106,9 +107,11 @@ interface Props {
   onOpenAgentSettings?: () => void
   /** 团队计费提醒条「去配置」：跳设置页模型管理（跳转意图经 store 传递） */
   onOpenModelSettings?: () => void
+  /** 当前打开文件 ref（`@path` / `@path#L10` / `@path#L10-20`）；null = 无文件 */
+  currentFileRef?: string | null
 }
 
-export function InputBox({ onSend, isStreaming = false, onStop, disabled = false, placeholder, currentModel, onModelSelect, onOpenAgentSettings, onOpenModelSettings }: Props) {
+export function InputBox({ onSend, isStreaming = false, onStop, disabled = false, placeholder, currentModel, onModelSelect, onOpenAgentSettings, onOpenModelSettings, currentFileRef = null }: Props) {
   const { t } = useTranslation()
   const editorRef = useRef<HTMLDivElement>(null)
   const wrapperRef = useRef<HTMLDivElement>(null)
@@ -129,6 +132,28 @@ export function InputBox({ onSend, isStreaming = false, onStop, disabled = false
   const [hasText, setHasText] = useState(false)
   /** 输入框高度（拖拽调整，null = 自适应）*/
   const [inputHeight, setInputHeight] = useState<number | null>(null)
+
+  /**
+   * 当前文件上下文 chip 勾选态（提升到 InputBox 单源，CurrentFileChip 为 prop-driven
+   * 纯展示组件）。勾选态持久化在 localStorage，刷新/重开 IDE 后保留。
+   * 本阶段勾选只控制 chip 视觉（显示当前文件名 vs 文字标签），不参与发送。
+   */
+  const [currentFileEnabled, setCurrentFileEnabled] = useState<boolean>(() => {
+    try {
+      return localStorage.getItem('zcode.currentFile.enabled') === '1'
+    } catch {
+      return false
+    }
+  })
+  useEffect(() => {
+    try {
+      localStorage.setItem('zcode.currentFile.enabled', currentFileEnabled ? '1' : '0')
+    } catch {
+      // 静默：mock 模式或 storage 禁用时不影响 UI
+    }
+  }, [currentFileEnabled])
+  /** 工作区路径（CurrentFileChip tooltip 显示相对路径用）*/
+  const projectPath = useStore((s) => s.projectPath)
 
   // @ 补全状态
   const [mentionQuery, setMentionQuery] = useState<string | null>(null)
@@ -1642,6 +1667,13 @@ export function InputBox({ onSend, isStreaming = false, onStop, disabled = false
           </div>
           <ContextRing />
           <AgentSelect onManage={onOpenAgentSettings} disabled={disabled} />
+          {/* 当前打开文件上下文（仅交互：chip 显示 + 勾选持久化，暂不接发送）*/}
+          <CurrentFileChip
+            ref={currentFileRef}
+            enabled={currentFileEnabled}
+            onEnabledChange={setCurrentFileEnabled}
+            workspace={projectPath}
+          />
           {/* 状态栏收起/展开：显示中显 chevron-down、隐藏中显 chevron-up（用户定稿）；
               推到工具条最右，气泡右对齐防溢出裁剪 */}
           <button

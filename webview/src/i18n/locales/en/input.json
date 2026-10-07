@@ -77,6 +77,10 @@
     "lines": " (line {{lines}})",
     "remove": "Remove reference"
   },
+  "currentFile": {
+    "label": "File context",
+    "tooltip": "When enabled, the current file path will be attached to the message"
+  },
   "slash": {
     "groupCommands": "Commands",
     "groupSkills": "Skills",

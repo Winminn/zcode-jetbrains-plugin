@@ -1037,9 +1037,16 @@ interface StoreState {
   // 流式看门狗豁免用：等待用户应答是合法静默，不应判 streamLost 提前收尾
   askUserPendingActive: boolean
 
+  // 当前打开文件 ref（Kotlin→webview 推送：getCurrentFile 响应 / EditorContextTracker 200ms 防抖）
+  // 形态：'@path' / '@path#L10' / '@path#L10-20' / null（无打开编辑器）
+  // 当前只驱动 CurrentFileChip 显示，不参与发送
+  currentFileRef: string | null
+
   // actions
   init: () => void
   loadSessions: () => void
+  /** 拉取当前打开文件 ref（webview mount/重连时触发；Kotlin 同步回包，case 'currentFile' 落 state）*/
+  requestCurrentFile: () => void
   selectSession: (session: SessionInfo) => void
   sendMessage: (text: string, attachments?: ImageAttachmentInput[], opts?: { scheduledFireAt?: number; scheduledProviderId?: string; scheduledModelId?: string; hiddenCommand?: boolean }) => void
   /** 进入最后一条用户消息的编辑态（MessageBubble 行内编辑框） */
@@ -1433,6 +1440,7 @@ export const useStore = create<StoreState>((set, get) => ({
   exitPlanApproval: null,
   permissionRequest: null,
   askUserPendingActive: false,
+  currentFileRef: null,
 
   models: [],
   modelsRefreshing: false,
@@ -1597,6 +1605,9 @@ export const useStore = create<StoreState>((set, get) => ({
       sendToJava({ op: 'askUserPendingState' })
       // 定时消息列表水合（页面刷新/重载会错过 Java 广播）
       sendToJava({ op: 'scheduledList' })
+      // 拉取当前打开文件 ref（Kotlin 同步回包，case 'currentFile' 落 state）；
+      // 后续变化由 EditorContextTracker 200ms 防抖主动推送覆盖
+      get().requestCurrentFile()
       get().checkEnv()
       get().loadSessions()
       get().loadModels()
@@ -1627,6 +1638,7 @@ export const useStore = create<StoreState>((set, get) => ({
         sendToJava({ op: 'askUserPendingState' })
         // 定时消息列表水合（同上）
         sendToJava({ op: 'scheduledList' })
+        get().requestCurrentFile()
         get().checkEnv()
         get().loadSessions()
         get().loadModels()
@@ -1652,6 +1664,13 @@ export const useStore = create<StoreState>((set, get) => ({
     // 记录请求发出时刻：响应合并时比对 titleUpdatedAt，早于它的快照标题不采用（防回退守卫）
     listSessionsSentAt = Date.now()
     sendToJava({ op: 'listSessions', workspacePath: get().projectPath })
+  },
+
+  requestCurrentFile: () => {
+    // 拉取当前打开文件 ref（Kotlin 端 EditorContextTracker.snapshot() 同步回包）。
+    // webview mount 时调一次，case 'currentFile' handler 落 state；
+    // 之后由 EditorContextTracker 200ms 防抖主动推送。
+    sendToJava({ op: 'getCurrentFile' })
   },
 
   selectSession: (session) => {
@@ -5262,6 +5281,13 @@ export function handleResponse(
           }),
         })
       }
+      break
+
+    case 'currentFile':
+      // Kotlin→webview 单向推送：getCurrentFile 拉取响应 / EditorContextTracker 200ms 防抖推送
+      // ref 形态：'@path' / '@path#L10' / '@path#L10-20' / null（无打开编辑器）
+      // 不做严格格式校验（chip 内对 null/脏值有兜底展示），让推送值原样落 state
+      set({ currentFileRef: msg.ref ?? null })
       break
   }
 }

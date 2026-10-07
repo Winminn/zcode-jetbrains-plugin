@@ -484,6 +484,8 @@ export type JavaRequest =  | { op: 'askUserPendingState' }
   | { op: 'checkEnv' }
   /** 保存环境路径配置：字段缺席=不改该项，空串=清除（回退自动探测）；后端验证通过才落盘 */
   | { op: 'envSave'; nodePath?: string; cliPath?: string }
+  /** 拉取当前打开文件 ref（webview mount/重连时用；Kotlin 同步回包，对应 EditorContextTracker.snapshot）*/
+  | { op: 'getCurrentFile' }
   /** 拉取网络代理配置（与 ZCode 客户端共享的 setting.json 三键） */
   | { op: 'getProxyConfig' }
   /** 保存网络代理三字段（空串=清除该项；写共享 setting.json，客户端重启后同样生效） */
@@ -1164,6 +1166,10 @@ export type JavaResponse =
   /** app-server stderr 解析出的后端模型 API 错误（APICallError 兜底通道）：
    *  429 配额超限等被服务端按可重试分类退避重试，turn 终止帧迟迟不发时的第一现场 */
   | { op: 'backendError'; statusCode?: number; code?: string; message: string }
+  /** 当前打开文件 ref（@path / @path#L10 / @path#L10-20 / null = 无打开编辑器）。
+   *  Kotlin→webview 推送：getCurrentFile 响应 / EditorContextTracker 200ms 防抖推送。
+   *  当前只驱动 CurrentFileChip 显示（topbar 当前文件 chip），不参与发送。 */
+  | { op: 'currentFile'; ref: string | null }
 
 // ============ 流式事件（session/event 透传）============
 // 基于抓包确认（scripts/capture-tool-use.json 的事件汇总）

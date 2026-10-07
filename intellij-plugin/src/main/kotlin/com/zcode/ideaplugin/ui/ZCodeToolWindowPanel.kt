@@ -239,6 +239,8 @@ class ZCodeToolWindowPanel(
     private var themeBusConn: com.intellij.util.messages.MessageBusConnection? = null
     // OS 文件拖入拦截（AWT DropTarget 挂 JBCefBrowser.component，dispose 时显式 removeComponent）
     private var fileDropTarget: DropTarget? = null
+    // 当前打开文件 + 选区 tracker（initJcef 装上，dispose 释放；onUpdate 主动推 currentFile op）
+    private var editorContextTracker: EditorContextTracker? = null
 
     // ============ 会话内嵌浏览器（AI browser-use 同屏观察用）============
     // 浏览器作为聊天 webview 的右侧分栏，AI 导航时无需切标签页——对齐 ZCode 桌面端
@@ -522,6 +524,28 @@ class ZCodeToolWindowPanel(
         // OS 文件拖入拦截：必须在 component 加入面板后才挂（否则 Swing DnD 无目标组件）
         registerFileDropTarget()
         log.info("JCEF panel initialized")
+
+        // 装上编辑器上下文 tracker：tab 切换 / 选区变化 200ms 防抖后主动推 currentFile op。
+        // 装在 initJcef 末尾：lazy tab 激活后才挂监听（未激活的标签不浪费）。
+        // panel 自身 disposed 时不装（dispose 流程中不应再启动后台任务）。
+        if (disposed) return
+        if (editorContextTracker == null) {
+            editorContextTracker = EditorContextTracker(
+                project = project,
+                onUpdate = { ref ->
+                    // Tracker Alarm 在 SWING_THREAD 跑回调，sendToJs 内部用 invokeLater
+                    // 包装，本线程调安全；disposed 后丢弃（避免释放后还往 JCEF 推）
+                    if (disposed) return@EditorContextTracker
+                    // 当前只驱动 webview 的 CurrentFileChip 显示（topbar 当前文件 chip）
+                    sendToJs(buildJsonObject {
+                        put("op", "currentFile")
+                        // ref: String? 直接序列化——null 自然变成 JSON null，
+                        // 比 ?: JsonNull 在 buildJsonObject DSL 里类型推断更稳
+                        put("ref", ref)
+                    })
+                },
+            )
+        }
     }
 
     /**
@@ -1003,6 +1027,7 @@ if (!window.__ZCODE_LOG_HOOK__) {
                         "remoteUnpair" -> handleRemote { it.unpair() }
                         "checkEnv" -> handleCheckEnv()
                         "envSave" -> handleEnvSave(msg)
+                        "getCurrentFile" -> handleGetCurrentFile(msg)
                         else -> errorResponse("未知 op: $op")
                     }
                     log.info("op=$op handled, sending back to JS")
@@ -1736,6 +1761,14 @@ if (!window.__ZCODE_LOG_HOOK__) {
         } catch (e: Exception) {
             log.warn("Failed to disconnect theme listener: ${e.message}")
         }
+        try {
+            // EditorContextTracker 自身实现 Disposable；busConn 在 Disposer 父链上自动断开，
+            // 这里显式置 null 配合 panel 早期 disposed 守卫，挡掉 200ms 内的挂起回调
+            editorContextTracker?.let { Disposer.dispose(it) }
+        } catch (e: Exception) {
+            log.warn("Failed to release editor context tracker: ${e.message}")
+        }
+        editorContextTracker = null
         try {
             // DropTarget 解绑：AWT 公开 API 没有 removeComponent，
             // 标准做法是置 null 释放引用，让 AWT 在 component dispose 时通过 removeNotify 自动清理 listener 闭包
@@ -4518,6 +4551,20 @@ if (!window.__ZCODE_LOG_HOOK__) {
         } else {
             log.warn("copyImage clipboard write failed: $clipErr")
             buildJsonObject { put("op", "imageCopied"); put("ok", false); put("error", clipErr) }
+        }
+    }
+
+    /**
+     * 拉取当前打开文件 ref（同步返回）。
+     * webview mount/重连时调；后续变化由 EditorContextTracker 200ms 防抖主动推送覆盖。
+     * 无打开编辑器 / Tracker 尚未初始化 → ref=null。
+     */
+    private fun handleGetCurrentFile(msg: JsonObject): JsonObject {
+        val ref = editorContextTracker?.snapshot()
+        return buildJsonObject {
+            put("op", "currentFile")
+            // ref: String? 直接序列化——null 自然变成 JSON null
+            put("ref", ref)
         }
     }
 

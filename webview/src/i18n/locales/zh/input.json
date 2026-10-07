@@ -77,6 +77,10 @@
     "lines": "（第 {{lines}} 行）",
     "remove": "移除引用"
   },
+  "currentFile": {
+    "label": "文件上下文",
+    "tooltip": "勾选后随消息附上当前打开的文件路径"
+  },
   "slash": {
     "groupCommands": "命令",
     "groupSkills": "技能",
