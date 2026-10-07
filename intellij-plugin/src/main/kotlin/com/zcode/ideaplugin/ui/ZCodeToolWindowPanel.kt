@@ -291,6 +291,31 @@ class ZCodeToolWindowPanel(
         val activePanels = java.util.concurrent.CopyOnWriteArraySet<ZCodeToolWindowPanel>()
 
         /**
+         * 配置目录变化广播（ZCodeServiceImpl workspace-config 订阅触发 → 所有已开标签）：
+         * 每个标签重算既有清单（op=listModels 读注册表 / listCommands 扫盘，口径与
+         * 用户主动拉取完全一致）后推送，webview 复用 case 'models'/'commands' 更新
+         * store——模型下拉无需重开即见新目录。重算在调用方后台线程，推送自切 EDT。
+         */
+        fun broadcastCatalogRefresh() {
+            activePanels.forEach { panel ->
+                try {
+                    val models = panel.handleListModels(buildJsonObject { put("op", "listModels") })
+                    val commands = panel.handleListCommands(buildJsonObject { put("op", "listCommands") })
+                    SwingUtilities.invokeLater {
+                        try {
+                            panel.pushToWebview(models)
+                            panel.pushToWebview(commands)
+                        } catch (_: Exception) {
+                            // 未初始化/销毁中的标签跳过
+                        }
+                    }
+                } catch (_: Exception) {
+                    // 单标签重算失败不影响其他标签
+                }
+            }
+        }
+
+        /**
          * 待交互计数广播（ZCodeServiceImpl 注册的协议客户端回调 → 所有已开标签，
          * 会话列表红点数据源）。EDT 上推送（sendToJs 要求），懒加载未激活标签自动跳过。
          */

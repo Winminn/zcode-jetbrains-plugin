@@ -42,6 +42,33 @@ class ZCodeServiceImpl(private val project: Project) : ZCodeService, com.intelli
 
     companion object {
         /**
+         * workspace-config topic 帧分拣（纯函数，单测覆盖）：快照帧取 payload.snapshot.config、
+         * 增量帧取 op=config.updated 的 config（整体替换语义，conflated 最新态——一帧多个
+         * delta 取末个）；其余 kind/未知 op 一律跳过（v3.14.3 容错原则：discriminatedUnion
+         * 扩 op 是常态，未知成员不得炸整帧）。非本 topic 或无 config 返回 null。
+         */
+        internal fun extractWorkspaceConfigState(params: JsonObject): JsonObject? {
+            val topic = params["topic"]?.jsonPrimitive?.contentOrNull ?: return null
+            if (!topic.startsWith("workspace-config/")) return null
+            val payload = params["frame"]?.jsonObject?.get("payload")?.jsonObject ?: return null
+            return when (payload["kind"]?.jsonPrimitive?.contentOrNull) {
+                "snapshot" -> payload["snapshot"]?.jsonObject?.get("config") as? JsonObject
+                "deltas", "delta" -> {
+                    val deltas = payload["deltas"]?.jsonArray ?: return null
+                    var cfg: JsonObject? = null
+                    for (d in deltas) {
+                        val o = d as? JsonObject ?: continue
+                        if (o["op"]?.jsonPrimitive?.contentOrNull == "config.updated") {
+                            (o["config"] as? JsonObject)?.let { cfg = it }
+                        }
+                    }
+                    cfg
+                }
+                else -> null
+            }
+        }
+
+        /**
          * interaction/requestUserInput 应答是否按 decline 处理（纯函数，单测覆盖）：
          * 显式 decline/cancel；或 ExitPlanMode 审批的 accept 但 answer 为空——
          * 空反馈 ≠ 批准，旧版 normalize 成 "approve" 会在前端防线失守（旧 webview
@@ -394,6 +421,7 @@ class ZCodeServiceImpl(private val project: Project) : ZCodeService, com.intelli
             // 用户配好环境后 handler 永远缺席（Mac 首启 PATH 探测失败即触发过）
             registerProtocolHandlersLocked(newClient)
             hookSessionsIndex(newClient)
+            hookWorkspaceConfig(newClient)
             // app-server 新进程就绪即补扫自动归档（缺陷BH）：调度器已随项目启动（eager init）
             // 但客户端可能晚起，此处保证「客户端一起来 15s 内必有一轮」，不必等 30min 周期或
             // 归档 tab 打开。扫描内部 isStarted 短路，不会递归拉起新进程；只在新进程构造路径
@@ -644,6 +672,83 @@ class ZCodeServiceImpl(private val project: Project) : ZCodeService, com.intelli
         } catch (e: Exception) {
             hiddenTaskIdCache // 读库失败沿用旧缓存（宁多显示不漏显示）
         }
+    }
+
+    // ===== 配置目录热更新订阅（workspace-config v4 topic，H3 配套）=====
+
+    /**
+     * workspace 级配置目录（模型目录+slash 命令目录）的常驻订阅：官方客户端每次打开
+     * 模型下拉都要拉一次目录，这里改为推送驱动——渠道/模型目录或命令目录变化时
+     * app-server 推 config.updated（provider_config.json 热加载、客户端渠道管理、
+     * 技能/命令文件变化都会触发），插件收到后触发各标签重算既有清单并广播，模型
+     * 下拉无需重开即见新目录（webview 复用 case 'models'/'commands'，零新协议）。
+     *
+     * 口径决策：推送只当「变化触发器」，目录数据仍走插件权威链路（listModels 读
+     * 注册表 + SlashCommandScanner 扫盘）——topic 的 configOptions 是官方 host 视角
+     * 的下拉选项（含注入项/thoughtLevels），与插件渠道管理面（计费 key、captcha 门控、
+     * enabled 过滤）口径不同，换源会牵动整个模型管理面，收益不成比例。
+     *
+     * 成本：+1 条 workspace 级 v4 订阅（不占 16 会话驻留槽，与 sessions-index 同构）。
+     * 帧监听挂逻辑帧通道：wire 分片重组产物与整帧同构、fragment 不进（缺陷EK 后
+     * 「要吃完整逻辑帧」的消费方推荐姿势，比 sessions-index 的原始通道更稳）。
+     */
+    private fun hookWorkspaceConfig(c: ZCodeProtocolClient) {
+        c.addV4LogicalFrameListener { params ->
+            runCatching { handleWorkspaceConfigFrame(params) }
+        }
+        // 订阅 RPC 异步发出（同 hookSessionsIndex：getClient 锁内不等回包）
+        com.intellij.util.concurrency.AppExecutorUtil.getAppExecutorService().submit {
+            subscribeWorkspaceConfig(c)
+        }
+    }
+
+    private fun subscribeWorkspaceConfig(c: ZCodeProtocolClient) {
+        try {
+            val ws = project.basePath ?: return
+            val ack = c.v4ConversationSubscribe(
+                "workspace-config/$ws",
+                connectionId = "zcode-plugin-config",
+                workspacePath = ws,
+            )
+            log.info("[workspace-config] subscribed: ${ack["ack"].toString().take(140)}")
+        } catch (e: Exception) {
+            // 订阅失败不致命（旧 CLI 无该 topic）：热更新缺席，清单仍走打开时拉取
+            log.warn("[workspace-config] subscribe failed: ${e.message?.take(160)}")
+        }
+    }
+
+    /** 帧分拣：快照 payload.snapshot.config 与增量 op=config.updated 同形取 config
+     *  （整体替换语义，conflated 最新态，一帧多个 delta 取末个）；内容签名比对，
+     *  无变化不触发（服务端重连重推同快照时幂等）。 */
+    private fun handleWorkspaceConfigFrame(params: JsonObject) {
+        val topic = params["topic"]?.jsonPrimitive?.contentOrNull ?: return
+        if (!topic.startsWith("workspace-config/")) return
+        val config = extractWorkspaceConfigState(params) ?: return
+        val sig = config.toString()
+        synchronized(configSigLock) {
+            if (sig == lastConfigSignature) return
+            lastConfigSignature = sig
+        }
+        scheduleCatalogRefresh()
+    }
+
+    /** 变化合并窗口：1s 内多帧只触发一轮重算（命令扫描走磁盘不宜逐帧跑）；
+     *  窗口内丢弃的中间帧无影响——广播重算读的是触发时刻的注册表/磁盘=最终态。 */
+    private val configSigLock = Any()
+    @Volatile private var lastConfigSignature: String? = null
+    private val configRefreshQueued = java.util.concurrent.atomic.AtomicBoolean(false)
+
+    private fun scheduleCatalogRefresh() {
+        if (!configRefreshQueued.compareAndSet(false, true)) return
+        com.intellij.util.concurrency.AppExecutorUtil.getAppScheduledExecutorService().schedule({
+            configRefreshQueued.set(false)
+            try {
+                com.zcode.ideaplugin.ui.ZCodeToolWindowPanel.broadcastCatalogRefresh()
+                log.info("[workspace-config] catalog refresh broadcast")
+            } catch (e: Exception) {
+                log.warn("[workspace-config] refresh broadcast failed: ${e.message}")
+            }
+        }, 1, java.util.concurrent.TimeUnit.SECONDS)
     }
 
     override fun isStarted(): Boolean = client?.isAlive() == true
