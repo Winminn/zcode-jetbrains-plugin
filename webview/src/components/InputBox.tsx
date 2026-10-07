@@ -136,7 +136,8 @@ export function InputBox({ onSend, isStreaming = false, onStop, disabled = false
   /**
    * 当前文件上下文 chip 勾选态（提升到 InputBox 单源，CurrentFileChip 为 prop-driven
    * 纯展示组件）。勾选态持久化在 localStorage，刷新/重开 IDE 后保留。
-   * 本阶段勾选只控制 chip 视觉（显示当前文件名 vs 文字标签），不参与发送。
+   * 勾选同时是发送闸门：勾选且 ref 非空时 doSend 把 ref 拼进消息文本（与 chip
+   * 显示同一取值表达式，见 doSend 末尾）。
    */
   const [currentFileEnabled, setCurrentFileEnabled] = useState<boolean>(() => {
     try {
@@ -557,8 +558,19 @@ export function InputBox({ onSend, isStreaming = false, onStop, disabled = false
     if (images.length > 0 && !currentModelSupportsImages) {
       finalText += `\n\n[附图说明：本消息附带 ${images.length} 张图片。若你无法直接看到图片内容（当前模型配置可能未启用图像直输），图片已由服务端缓存（路径见消息附件标注），请用 Read 工具读取图片文件或调用识图工具查看图片内容后再回答。]`
     }
+    // 当前文件上下文（《当前文件chip-发送链路实现.md》）：发送取值表达式 = chip
+    // 显示表达式（enabled && currentFileRef，与 CurrentFileChip renderLabel 同一
+    // 份 state 同一个式子）——任何时刻 chip 显示了什么，下一条消息就带什么。
+    // 唯一拼点在此：协议层 Zod strict 无法加字段，只能拼进 content 文本（user
+    // bubble 可见，已接受形态）；模板取历史 A/B 拍板的 F3 纯 @ref 前缀（ref 自带
+    // @ 前缀与行号）。生命周期跟随 IDE 选区——发送/切会话不清不冻，下条消息按
+    // 当时 chip 重新取值。
+    // 拼在 goal 拦截之后：/goal 是控制意图不是模型消息，不携带上下文、匹配也不
+    // 受前缀影响。输入历史只记 finalText（用户内容）：回填重发时按当时 chip
+    // 重新派生，避免上下文前缀固化进历史条目。
+    const currentFileCtx = currentFileEnabled && currentFileRef ? currentFileRef : null
     onSend(
-      finalText,
+      currentFileCtx ? `${currentFileCtx}\n\n${finalText}` : finalText,
       fileRefs,
       images.map((i) => ({
         kind: 'image',
@@ -1667,7 +1679,8 @@ export function InputBox({ onSend, isStreaming = false, onStop, disabled = false
           </div>
           <ContextRing />
           <AgentSelect onManage={onOpenAgentSettings} disabled={disabled} />
-          {/* 当前打开文件上下文（仅交互：chip 显示 + 勾选持久化，暂不接发送）*/}
+          {/* 当前打开文件上下文（chip 显示 + 勾选持久化；勾选且 ref 非空时
+              doSend 把 ref 拼进消息文本，同一取值表达式，见 doSend 末尾）*/}
           <CurrentFileChip
             ref={currentFileRef}
             enabled={currentFileEnabled}
