@@ -99,6 +99,15 @@ export function BehaviorSettings() {
           onHint={t('settings.behavior.notifyEnabled.offHint')}
           offHint={t('settings.behavior.notifyEnabled.onHint')}
         />
+        <SettingToggle
+          icon="codicon-bell-dot"
+          title={t('settings.behavior.osNotifyEnabled.title')}
+          desc={t('settings.behavior.osNotifyEnabled.desc')}
+          on={config.osNotifyEnabled}
+          onToggle={() => update({ osNotifyEnabled: !config.osNotifyEnabled })}
+          onHint={t('settings.behavior.osNotifyEnabled.offHint')}
+          offHint={t('settings.behavior.osNotifyEnabled.onHint')}
+        />
         <small className="basic-settings__hint">
           <span className="codicon codicon-info" />
           <span>{t('settings.behavior.notifyEnabled.hint')}</span>

@@ -184,6 +184,13 @@
       "onHint": "클릭하여 알림 켜기",
       "offHint": "클릭하여 알림 끄기"
     },
+    "osNotifyEnabled": {
+      "title": "Windows 시스템 알림",
+      "desc": "IDE 창을 벗어나 있을 때 AI 질문/승인 대기와 작업 완료를 Windows 시스템 알림으로 표시합니다(클릭 시 대화로 복귀)",
+      "hint": "기본 꺼짐; Windows에서만 동작하며 IDE 창이 비활성일 때만 발송합니다(IDE에서 작업 중에는 방해하지 않음). Windows 알림/집중 지원 설정을 따름",
+      "onHint": "클릭하여 시스템 알림 켜기",
+      "offHint": "클릭하여 시스템 알림 끄기"
+    },
     "enhanceTitle": "프롬프트 개선",
     "enhanceEnabled": {
       "title": "개선 버튼(✨)",

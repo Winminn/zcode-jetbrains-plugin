@@ -11,14 +11,17 @@
 import { getPersisted, setPersisted } from './persist'
 
 export interface NotifyConfig {
-  /** 对话结束系统通知开关（默认关闭）*/
+  /** 对话结束系统通知开关——IDE 内气泡（默认关闭，切走窗口不可见）*/
   notifyEnabled: boolean
+  /** Windows 系统级 toast 开关（默认关闭，切走窗口也可见，仅 IDE 非激活时发）*/
+  osNotifyEnabled: boolean
 }
 
 const KEY = 'zcode.notify.config'
 
 export const DEFAULT_NOTIFY_CONFIG: NotifyConfig = {
   notifyEnabled: false,
+  osNotifyEnabled: false,
 }
 
 export function readNotifyConfig(): NotifyConfig {
@@ -29,6 +32,8 @@ export function readNotifyConfig(): NotifyConfig {
     return {
       notifyEnabled:
         typeof obj.notifyEnabled === 'boolean' ? obj.notifyEnabled : DEFAULT_NOTIFY_CONFIG.notifyEnabled,
+      osNotifyEnabled:
+        typeof obj.osNotifyEnabled === 'boolean' ? obj.osNotifyEnabled : DEFAULT_NOTIFY_CONFIG.osNotifyEnabled,
     }
   } catch {
     return { ...DEFAULT_NOTIFY_CONFIG }

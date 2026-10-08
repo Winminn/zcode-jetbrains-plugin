@@ -34,7 +34,7 @@ describe('对话结束提醒配置', () => {
 
   it('无配置时默认关闭（不弹）', () => {
     expect(readNotifyConfig()).toEqual(DEFAULT_NOTIFY_CONFIG)
-    expect(DEFAULT_NOTIFY_CONFIG).toEqual({ notifyEnabled: false })
+    expect(DEFAULT_NOTIFY_CONFIG).toEqual({ notifyEnabled: false, osNotifyEnabled: false })
   })
 
   it('损坏 JSON 回默认值', () => {
@@ -49,12 +49,24 @@ describe('对话结束提醒配置', () => {
 
   it('旧版遗留的 notifyOnlyUnfocused 字段被忽略（废弃不迁移）', () => {
     store.set('zcode.notify.config', JSON.stringify({ notifyEnabled: true, notifyOnlyUnfocused: true }))
-    expect(readNotifyConfig()).toEqual({ notifyEnabled: true })
+    expect(readNotifyConfig()).toEqual({ notifyEnabled: true, osNotifyEnabled: false })
+  })
+
+  it('旧配置缺 osNotifyEnabled 字段回默认 false（向后兼容）', () => {
+    store.set('zcode.notify.config', JSON.stringify({ notifyEnabled: true }))
+    expect(readNotifyConfig()).toEqual({ notifyEnabled: true, osNotifyEnabled: false })
+  })
+
+  it('osNotifyEnabled 与 notifyEnabled 独立解析互不连带', () => {
+    store.set('zcode.notify.config', JSON.stringify({ osNotifyEnabled: true }))
+    const c = readNotifyConfig()
+    expect(c.osNotifyEnabled).toBe(true)
+    expect(c.notifyEnabled).toBe(false)
   })
 
   it('写入后回读一致', () => {
-    writeNotifyConfig({ notifyEnabled: true })
-    expect(readNotifyConfig()).toEqual({ notifyEnabled: true })
+    writeNotifyConfig({ notifyEnabled: true, osNotifyEnabled: true })
+    expect(readNotifyConfig()).toEqual({ notifyEnabled: true, osNotifyEnabled: true })
     expect(store.get('zcode.notify.config')).toBeTruthy()
   })
 })

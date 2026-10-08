@@ -54,6 +54,28 @@ class ZCodeNotifyServiceTest {
         assertTrue(c.notifyEnabled)
     }
 
+    // ============ 系统级 toast 开关（osNotifyEnabled，与 IDE 气泡独立）============
+
+    @Test
+    fun `osNotifyEnabled 正常解析且与 notifyEnabled 互不连带`() {
+        val onlyOs = kv("""{\"osNotifyEnabled\":true}""")
+        val c1 = ZCodeNotifyService.parseConfig(onlyOs)
+        assertTrue(c1.osNotifyEnabled)
+        assertFalse(c1.notifyEnabled)
+
+        val both = kv("""{\"notifyEnabled\":true,\"osNotifyEnabled\":true}""")
+        val c2 = ZCodeNotifyService.parseConfig(both)
+        assertTrue(c2.notifyEnabled)
+        assertTrue(c2.osNotifyEnabled)
+    }
+
+    @Test
+    fun `osNotifyEnabled 缺席与类型不对回默认 false（对齐前端语义）`() {
+        assertFalse(ZCodeNotifyService.parseConfig(kv("""{\"notifyEnabled\":true}""")).osNotifyEnabled)
+        assertFalse(ZCodeNotifyService.parseConfig(kv("""{\"osNotifyEnabled\":\"true\"}""")).osNotifyEnabled)
+        assertFalse(ZCodeNotifyService.NotifyConfig().osNotifyEnabled)
+    }
+
     // ============ 轮末通知正文组装（缺陷DZ：会话名前缀）============
 
     @Test

@@ -184,6 +184,13 @@
       "onHint": "クリックで通知を有効化",
       "offHint": "クリックで通知を無効化"
     },
+    "osNotifyEnabled": {
+      "title": "Windows システム通知",
+      "desc": "IDE ウィンドウを離れているとき、AI の質問/承認待ちとタスク完了を Windows のシステム通知で表示します（クリックで会話へ戻る）",
+      "hint": "デフォルトはオフ。Windows のみ有効で、IDE ウィンドウが非アクティブなときだけ送信します（IDE 操作中は妨げません）。Windows の通知/集中モード設定に従います",
+      "onHint": "クリックでシステム通知を有効化",
+      "offHint": "クリックでシステム通知を無効化"
+    },
     "enhanceTitle": "プロンプト改善",
     "enhanceEnabled": {
       "title": "改善ボタン（✨）",

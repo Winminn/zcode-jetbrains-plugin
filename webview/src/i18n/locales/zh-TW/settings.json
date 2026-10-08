@@ -168,6 +168,13 @@
       "onHint": "點擊開啟系統通知",
       "offHint": "點擊關閉系統通知"
     },
+    "osNotifyEnabled": {
+      "title": "Windows 系統級通知",
+      "desc": "切走 IDE 視窗時，AI 提問/審批等待與任務完成會彈出 Windows 系統通知（點擊回到對話）",
+      "hint": "預設關閉；僅 Windows 生效，且只在 IDE 視窗非啟用時發（正在 IDE 內操作時不打擾）；受 Windows 通知/專注助理設定約束",
+      "onHint": "點擊開啟系統級通知",
+      "offHint": "點擊關閉系統級通知"
+    },
     "enhanceTitle": "提示詞潤色",
     "enhanceEnabled": {
       "title": "潤色按鈕（✨）",

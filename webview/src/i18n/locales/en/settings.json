@@ -184,6 +184,13 @@
       "onHint": "Click to enable notifications",
       "offHint": "Click to disable notifications"
     },
+    "osNotifyEnabled": {
+      "title": "Windows system notification",
+      "desc": "When the IDE window is not focused, AI questions/approvals and task completion pop a Windows system notification (click to jump back)",
+      "hint": "Off by default; Windows only, and only fires while the IDE window is inactive (no interruption while you are working in the IDE); subject to Windows notification/Focus Assist settings",
+      "onHint": "Click to enable system notifications",
+      "offHint": "Click to disable system notifications"
+    },
     "enhanceTitle": "Prompt Enhancer",
     "enhanceEnabled": {
       "title": "Enhance button (✨)",

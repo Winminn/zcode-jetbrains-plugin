@@ -184,6 +184,13 @@
       "onHint": "点击开启系统通知",
       "offHint": "点击关闭系统通知"
     },
+    "osNotifyEnabled": {
+      "title": "Windows 系统级通知",
+      "desc": "切走 IDE 窗口时，AI 提问/审批等待与任务完成会弹出 Windows 系统通知（点击回到对话）",
+      "hint": "默认关闭；仅 Windows 生效，且只在 IDE 窗口非激活时发（正在 IDE 内操作时不打扰）；受 Windows 通知/专注助手设置约束",
+      "onHint": "点击开启系统级通知",
+      "offHint": "点击关闭系统级通知"
+    },
     "enhanceTitle": "提示词润色",
     "enhanceEnabled": {
       "title": "润色按钮（✨）",

@@ -14,7 +14,9 @@ import kotlinx.serialization.json.booleanOrNull
  * 对话结束系统通知（仅系统消息，无提示音、无焦点门控——开启即始终弹，默认关闭）：
  *
  * 触发：ZCodeServiceImpl 全局事件监听器收到 turn.completed / turn.failed（非手动 stop）。
- * 形式：IDE 原生气泡（NotificationGroup "ZCode"，点击/按钮聚焦 ZCode 工具窗），
+ * 形式：两条独立通道，可各自开关——IDE 原生气泡（NotificationGroup "ZCode"，
+ * 点击/按钮聚焦 ZCode 工具窗，切走窗口不可见）+ Windows 系统级 toast
+ * （ZCodeTrayNotifier，仅 IDE 主窗口非激活时发，切走窗口可见）。
  * turn.completed 走 payload.response 预览正文，turn.failed 走 error.message。
  *
  * 配置存储：复用 webview kv 通道（PropertiesComponent KEY_WEBVIEW_KV）的
@@ -45,7 +47,10 @@ object ZCodeNotifyService {
 
     /** 提醒配置（前端 JSON 持久化镜像；字段缺席时走这里的默认值——默认关闭）*/
     data class NotifyConfig(
+        /** IDE 内气泡通知（切走窗口不可见）*/
         val notifyEnabled: Boolean = false,
+        /** Windows 系统级 toast（切走窗口也可见，仅 IDE 非激活时发）*/
+        val osNotifyEnabled: Boolean = false,
     )
 
     /** 从 kv store 解析配置（缺失/损坏回默认值，绝不因配置问题抛异常）*/
@@ -79,6 +84,7 @@ object ZCodeNotifyService {
         }
         return NotifyConfig(
             notifyEnabled = obj.boolOr("notifyEnabled", false),
+            osNotifyEnabled = obj.boolOr("osNotifyEnabled", false),
         )
     }
 
@@ -95,7 +101,8 @@ object ZCodeNotifyService {
      * [sessionId] 用于点击通知时精准定位会话所在的标签（找不到/已关闭则仅显示工具窗）。
      */
     fun notifyTurnEnd(project: Project, sessionId: String?, body: String?, failed: Boolean) {
-        if (!readConfig().notifyEnabled) return
+        val config = readConfig()
+        if (!config.notifyEnabled && !config.osNotifyEnabled) return
         ApplicationManager.getApplication().executeOnPooledThread {
             try {
                 val title = ZCodeBundle.message(
@@ -110,18 +117,26 @@ object ZCodeNotifyService {
                     project.zCodeService().sessionTitleCache[sessionId]
                 }.getOrNull()
                 val content = turnEndNotificationContent(sessionTitle, body, fallbackBody)
-                val notification = NotificationGroupManager.getInstance()
-                    .getNotificationGroup("ZCode")
-                    .createNotification(title, content, if (failed) NotificationType.WARNING else NotificationType.INFORMATION)
-                notification.addAction(object : com.intellij.openapi.actionSystem.AnAction(
-                    ZCodeBundle.message("notify.turn.openToolWindow")
-                ) {
-                    override fun actionPerformed(e: com.intellij.openapi.actionSystem.AnActionEvent) {
+                if (config.osNotifyEnabled) {
+                    ZCodeTrayNotifier.notifyOsToastIfUnfocused(project, title, content, failed) {
+                        ZCodeTrayNotifier.bringIdeToFront(project)
                         openConversationTab(project, sessionId)
-                        notification.expire()
                     }
-                })
-                com.intellij.notification.Notifications.Bus.notify(notification, project)
+                }
+                if (config.notifyEnabled) {
+                    val notification = NotificationGroupManager.getInstance()
+                        .getNotificationGroup("ZCode")
+                        .createNotification(title, content, if (failed) NotificationType.WARNING else NotificationType.INFORMATION)
+                    notification.addAction(object : com.intellij.openapi.actionSystem.AnAction(
+                        ZCodeBundle.message("notify.turn.openToolWindow")
+                    ) {
+                        override fun actionPerformed(e: com.intellij.openapi.actionSystem.AnActionEvent) {
+                            openConversationTab(project, sessionId)
+                            notification.expire()
+                        }
+                    })
+                    com.intellij.notification.Notifications.Bus.notify(notification, project)
+                }
             } catch (e: Exception) {
                 com.intellij.openapi.diagnostic.Logger.getInstance("ZCodePlugin")
                     .warn("Turn-end notification failed: ${e.message}")
@@ -156,7 +171,8 @@ object ZCodeNotifyService {
      * [body] 传问题/计划/工具摘要，空则回 bundle 兜底文案；受通知总开关门控。
      */
     fun notifyPendingInput(project: Project, sessionId: String?, kind: PendingInputKind, body: String?) {
-        if (!readConfig().notifyEnabled) return
+        val config = readConfig()
+        if (!config.notifyEnabled && !config.osNotifyEnabled) return
         ApplicationManager.getApplication().executeOnPooledThread {
             try {
                 val (titleKey, bodyKey) = when (kind) {
@@ -164,20 +180,29 @@ object ZCodeNotifyService {
                     PendingInputKind.PLAN_APPROVAL -> "notify.pending.planApproval.title" to "notify.pending.planApproval.body"
                     PendingInputKind.PERMISSION -> "notify.pending.permission.title" to "notify.pending.permission.body"
                 }
+                val title = ZCodeBundle.message(titleKey)
                 val content = body?.trim()?.take(120)?.ifEmpty { null }
                     ?: ZCodeBundle.message(bodyKey)
-                val notification = NotificationGroupManager.getInstance()
-                    .getNotificationGroup("ZCode")
-                    .createNotification(ZCodeBundle.message(titleKey), content, NotificationType.INFORMATION)
-                notification.addAction(object : com.intellij.openapi.actionSystem.AnAction(
-                    ZCodeBundle.message("notify.turn.openToolWindow")
-                ) {
-                    override fun actionPerformed(e: com.intellij.openapi.actionSystem.AnActionEvent) {
+                if (config.osNotifyEnabled) {
+                    ZCodeTrayNotifier.notifyOsToastIfUnfocused(project, title, content, false) {
+                        ZCodeTrayNotifier.bringIdeToFront(project)
                         openConversationTab(project, sessionId)
-                        notification.expire()
                     }
-                })
-                com.intellij.notification.Notifications.Bus.notify(notification, project)
+                }
+                if (config.notifyEnabled) {
+                    val notification = NotificationGroupManager.getInstance()
+                        .getNotificationGroup("ZCode")
+                        .createNotification(title, content, NotificationType.INFORMATION)
+                    notification.addAction(object : com.intellij.openapi.actionSystem.AnAction(
+                        ZCodeBundle.message("notify.turn.openToolWindow")
+                    ) {
+                        override fun actionPerformed(e: com.intellij.openapi.actionSystem.AnActionEvent) {
+                            openConversationTab(project, sessionId)
+                            notification.expire()
+                        }
+                    })
+                    com.intellij.notification.Notifications.Bus.notify(notification, project)
+                }
             } catch (e: Exception) {
                 com.intellij.openapi.diagnostic.Logger.getInstance("ZCodePlugin")
                     .warn("Pending-input notification failed: ${e.message}")
