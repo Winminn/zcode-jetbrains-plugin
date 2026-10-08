@@ -479,7 +479,7 @@
 .button-area-left {
   display: flex;
   align-items: center;
-  gap: 5px;
+  gap: 0; // 0.3.9 两轮收窄（5px→2px→0）：选择器自带水平内边距负责分隔，flex 间隔归零后文字视觉间隔 ≈8px；顶栏工具组同款紧凑节奏
   flex: 1;
   min-width: 0;
 }
@@ -718,7 +718,7 @@
   display: flex;
   align-items: center;
   gap: 2px;
-  padding: 2px 5px;
+  padding: 2px 4px; /* 0.3.9 由 5px 收窄：底栏三键相邻排布时视觉更聚拢（顶栏智能体同步生效）*/
   /* 行高统一压成 1（继承到文字/chevron；图标自带）：codicon 简写 16px/1 与各元素
      font-size 覆盖叠加后，normal 行盒基线落点不一致（实测 icon/chev 基线比文字低
      2~3px），flex 只居中盒不居中墨迹——图标视觉偏上、箭头偏下 */
