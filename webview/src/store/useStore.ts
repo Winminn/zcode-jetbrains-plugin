@@ -37,7 +37,7 @@ function diagWarn(text: string): void {
 }
 
 import { parseTodos, parseAgents, parseFileChanges, mergeAgentItems } from '@/utils/parseStatus'
-import { parseBackgroundTaskWorks } from '@/utils/backgroundTask'
+import { parseBackgroundTaskWorks, parseDeliveredWorkStatuses } from '@/utils/backgroundTask'
 import { isHiddenSyntheticMessage, isAgentNotification } from '@/utils/parseNotification'
 import { mergeTurnMessages } from '@/utils/mergeTurnMessages'
 import { getPersisted, setPersisted, removePersisted, entriesWithPrefix, KV_HYDRATED_EVENT } from '@/utils/persist'
@@ -562,6 +562,7 @@ function sessionResetBase(): Partial<StoreState> {
     // 转录重建的后台任务（与 agents 同生命周期：切会话清空，等 messages 重解析；
     // 运行时投影在 backgroundWorksBySession 独立存，两者读取处合并）
     backgroundWorksFromTranscript: [],
+    deliveredWorkStatuses: new Map(),
     // 逐轮更改条与弹窗绑定当前会话（重开由 turnFileChangesSync 重扫补齐）
     turnFileChanges: {},
     turnFileChangesDialogFor: null,
@@ -856,6 +857,10 @@ interface StoreState {
   /** 从转录重建的历史后台任务（refreshStatus 派生，与 agents 同生命周期）；
    *  IDE 重启后运行时投影消失，靠它让「后台工作」栏不空。读取处与投影合并（投影优先）*/
   backgroundWorksFromTranscript: import('@/types/messages').BackgroundWorkSummary[]
+  /** 转录中已投递的后台任务终态（refreshStatus 派生，task-notification 的 task-id
+   *  为投递证据）：CLI 投影在结果投递后不推收敛帧，条目会无限期停 resultPending，
+   *  读取处 mergeBackgroundWorks 据此把 resultPending 本地升级为终态 */
+  deliveredWorkStatuses: Map<string, 'ended' | 'failed'>
   /** 取消后台工作（bash/workflow；投影由 backgroundWorks 事件收敛，无乐观更新）*/
   cancelBackgroundWork: (sessionId: string, workId: string) => void
   /** 排队消息（streaming 中 Enter 入队，回合结束自动发队头）*/
@@ -1729,6 +1734,7 @@ export const useStore = create<StoreState>((set, get) => ({
   unreadSessionIds: [],
   backgroundWorksBySession: {},
   backgroundWorksFromTranscript: [],
+  deliveredWorkStatuses: new Map(),
   remoteRunningTurns: {},
   modelProvidersReordering: false,
   modelUsage: null,
@@ -3701,6 +3707,7 @@ function refreshStatus(
     agents: mergeAgentItems(parseAgents(messages), activities, rpc),
     fileChanges: parseFileChanges(messages),
     backgroundWorksFromTranscript: parseBackgroundTaskWorks(messages),
+    deliveredWorkStatuses: parseDeliveredWorkStatuses(messages),
   }
 }
 

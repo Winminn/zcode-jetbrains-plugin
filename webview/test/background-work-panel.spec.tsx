@@ -126,17 +126,29 @@ describe('BackgroundTaskList 后台任务列表', () => {
 })
 
 describe('StatusPanel 任务 tab 集成', () => {
-  it('tab 改名「后台工作」；有 running 时徽标显示 running 总数（后台任务+子代理）', () => {
+  it('tab 改名「后台工作」；未完成>0 时 chip 显示未完成总数（后台+子代理同口径）', () => {
     injectWorks([work({ workId: 'b1' }), work({ workId: 'b2', status: 'failed' })])
     useStore.setState({ agents: [{ callID: 'c1', description: '代理甲', status: 'running' }] })
     render(<StatusPanel />)
     expect(screen.getByText('任务')).toBeTruthy()
-    // running 总数 = 1 bash running + 1 agent running = 2（failed bash 不计）
+    // 未完成 = 1 bash running + 1 agent running = 2（failed bash 不计）
     expect(screen.getByText('2')).toBeTruthy()
   })
 
+  it('chip 与子 tab 同口径：resultPending 计入 chip 未完成数（实时流对不上回归）', () => {
+    // 镜像真机场景：1 待投递 + 1 已结束 + 1 运行中 + 1 运行代理 → chip 3
+    injectWorks([
+      work({ workId: 'b1', status: 'resultPending' }),
+      work({ workId: 'b2', status: 'ended' }),
+      work({ workId: 'b3' }),
+    ])
+    useStore.setState({ agents: [{ callID: 'c1', description: '代理甲', status: 'running' }] })
+    render(<StatusPanel />)
+    expect(screen.getByText('3')).toBeTruthy()
+  })
+
   it('空闲时徽标回落「完成/总数」，后台任务条目纳入两类合并计数', () => {
-    // 后台任务 1 条 resultPending（干完待投递=完成）+ 子代理 2 完成 1 运行
+    // 后台任务 1 条 resultPending（干完待投递）+ 子代理 2 完成 1 运行
     injectWorks([work({ workId: 'b1', status: 'resultPending' })])
     useStore.setState({
       agents: [
@@ -146,14 +158,13 @@ describe('StatusPanel 任务 tab 集成', () => {
       ],
     })
     render(<StatusPanel />)
-    // 无 running？有：代理丙 running → running 优先显示 1。改用无 running 的组合验证回落
-    // （本用例仅验证回落语义：全部结束时的组合见下一用例）
-    expect(screen.getByText('1')).toBeTruthy()
+    // 未完成 = resultPending 1 + running 代理 1 = 2（旧 running 优先口径漏掉待投递）
+    expect(screen.getByText('2')).toBeTruthy()
   })
 
   it('全部结束时徽标显示「完成/总数」且含后台任务（用户反馈：后台任务纳入总数）', () => {
     injectWorks([
-      work({ workId: 'b1', status: 'resultPending' }),
+      work({ workId: 'b1', status: 'ended' }),
       work({ workId: 'b2', status: 'failed' }),
     ])
     useStore.setState({
@@ -163,13 +174,35 @@ describe('StatusPanel 任务 tab 集成', () => {
       ],
     })
     render(<StatusPanel />)
-    // 完成 = resultPending 1 + completed 2 = 3；总数 = 2 bash + 2 agents = 4
-    expect(screen.getByText('3/4')).toBeTruthy()
+    // 全部终态才走完成/总数：完成 = ended 1 + failed 1 + completed 2 = 4；总数 = 4
+    expect(screen.getByText('4/4')).toBeTruthy()
   })
 
-  it('popover 子 tab 切换：默认子代理列表，切到后台任务显示投影条目；子 tab 带计数', () => {
+  it('重启后转录重建条目（全 ended）计入完成侧：空闲徽标 N/N 而非 0/N', () => {
+    useStore.setState({
+      backgroundWorksFromTranscript: [
+        { workId: 'exec_r1', kind: 'bash', title: 'a', status: 'ended', startedAt: 1, cancellable: false },
+        { workId: 'exec_r2', kind: 'bash', title: 'b', status: 'ended', startedAt: 2, cancellable: false },
+      ],
+    })
+    render(<StatusPanel />)
+    expect(screen.getByText('2/2')).toBeTruthy()
+  })
+
+  it('resultPending 归未完成侧：有待投递条目时 chip 显示未完成数而非完成/总数', () => {
+    injectWorks([
+      work({ workId: 'b1', status: 'ended' }),
+      work({ workId: 'b2', status: 'resultPending' }),
+    ])
+    render(<StatusPanel />)
+    // 未完成 = resultPending 1 → chip 显示 1；ended 不计未完成
+    expect(screen.getByText('1')).toBeTruthy()
+    expect(screen.queryByText('1/2')).toBeNull()
+  })
+
+  it('popover 子 tab 切换：默认子代理列表，切到后台任务显示投影条目；子 tab 带未完成计数', () => {
     injectWorks([work({ workId: 'b1', title: 'npm build' })])
-    useStore.setState({ agents: [{ callID: 'c1', description: '代理甲', status: 'completed' }] })
+    useStore.setState({ agents: [{ callID: 'c1', description: '代理甲', status: 'running' }] })
     render(<StatusPanel />)
     fireEvent.click(screen.getByText('任务'))
     // 子 tab 计数徽标（后台任务 1 / 子代理 1）

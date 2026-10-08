@@ -58,6 +58,7 @@ export function StatusPanel() {
   const currentSessionId = useStore((s) => s.currentSessionId)
   const bgWorks = useStore((s) => (currentSessionId ? s.backgroundWorksBySession[currentSessionId] : undefined))
   const fromTranscript = useStore((s) => s.backgroundWorksFromTranscript)
+  const deliveredWorkStatuses = useStore((s) => s.deliveredWorkStatuses)
   const cancelBackgroundWork = useStore((s) => s.cancelBackgroundWork)
   const openSubagentDetail = useStore((s) => s.openSubagentDetail)
   const openSubagentReport = useStore((s) => s.openSubagentReport)
@@ -77,17 +78,28 @@ export function StatusPanel() {
   const totalDel = fileChanges.reduce((n, f) => n + f.deletions, 0)
   // 后台工作 tab 计数（后台任务与子代理两类合并，用户反馈：后台任务须纳入总数）：
   // 数据源 = 投影 ∪ 转录重建合并（重启后投影消失，重建条目让栏不空；投影优先去重）。
-  // - running > 0：优先显示 running 总数（后台任务跨回合存活，回合结束后仍在跑——
-  //   这正是本 tab 的核心信息）
-  // - 空闲：显示 完成/总数（完成 = 后台任务 resultPending + 转录重建 + 子代理 completed）
+  // - 未完成 > 0：chip 显示未完成总数（后台 running+resultPending + 子代理
+  //   running/pending），与两个子 tab 徽标同口径——旧「running 优先」口径在实时流
+  //   场景与面板对不上（真机三连反馈：待投递条目面板算未完成、chip 被漏掉）
+  // - 空闲：显示 完成/总数（完成 = 后台任务终态 ended/failed/cancelled + 子代理
+  //   completed；resultPending 归未完成侧——真机实勘回归：重启后转录重建条目全是
+  //   ended，分子只数 resultPending 会把整栏算成 0/N 未完成）
   const bgWorksAll = useMemo(
-    () => mergeBackgroundWorks(bgWorks ?? EMPTY_WORKS, fromTranscript),
-    [bgWorks, fromTranscript],
+    () => mergeBackgroundWorks(bgWorks ?? EMPTY_WORKS, fromTranscript, deliveredWorkStatuses),
+    [bgWorks, fromTranscript, deliveredWorkStatuses],
   )
   const bgTasks = bgWorksAll.filter((w: BackgroundWorkSummary) => w.kind !== 'subagent')
-  const runningBgWorks = bgWorksAll.filter((w: BackgroundWorkSummary) => w.status === 'running')
-  const runningWorkTotal = runningBgWorks.length + agents.filter((a) => a.status === 'running').length
-  const workDone = bgTasks.filter((w: BackgroundWorkSummary) => w.status === 'resultPending').length + agentCompleted
+  // 后台任务子 tab 徽标 = 未完成数（running + resultPending；真机反馈：全量计数被
+  // 转录重建的历史条目撑大——历史条目只进列表不进计数）
+  const bgUnfinished = bgTasks.filter(
+    (w: BackgroundWorkSummary) => w.status === 'running' || w.status === 'resultPending',
+  ).length
+  const agentsUnfinished = agents.filter((a) => a.status === 'running' || a.status === 'pending').length
+  const unfinishedWorkTotal = bgUnfinished + agentsUnfinished
+  const workDone =
+    bgTasks.filter(
+      (w: BackgroundWorkSummary) => w.status === 'ended' || w.status === 'failed' || w.status === 'cancelled',
+    ).length + agentCompleted
   const workTotal = bgTasks.length + agents.length
 
   // 列表点击的默认页分流：已完成 → 最终报告弹窗（报告 md 缺失时回退执行记录），
@@ -192,9 +204,9 @@ export function StatusPanel() {
         >
           <span className="codicon codicon-server-process" />
           <span className="tab-label">{t('app.status.workTab')}</span>
-          {runningWorkTotal > 0 ? (
+          {unfinishedWorkTotal > 0 ? (
             <>
-              <span className="tab-progress">{runningWorkTotal}</span>
+              <span className="tab-progress">{unfinishedWorkTotal}</span>
               <span className="codicon codicon-loading status-panel-tab-loading" />
             </>
           ) : workTotal > 0 && (
@@ -253,7 +265,7 @@ export function StatusPanel() {
                   onClick={() => setBgSubTab('bg')}
                 >
                   {t('app.status.bgTab')}
-                  {bgTasks.length > 0 && <span className="status-panel-subtab-count">{bgTasks.length}</span>}
+                  {bgUnfinished > 0 && <span className="status-panel-subtab-count">{bgUnfinished}</span>}
                 </button>
                 <button
                   type="button"
@@ -261,7 +273,7 @@ export function StatusPanel() {
                   onClick={() => setBgSubTab('sub')}
                 >
                   {t('app.status.subTab')}
-                  {agents.length > 0 && <span className="status-panel-subtab-count">{agents.length}</span>}
+                  {agentsUnfinished > 0 && <span className="status-panel-subtab-count">{agentsUnfinished}</span>}
                 </button>
               </div>
 

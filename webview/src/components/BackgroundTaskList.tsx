@@ -88,6 +88,7 @@ export function BackgroundTaskList({ sessionId }: { sessionId: string | null }) 
   const { t } = useTranslation()
   const projection = useStore((s) => (sessionId ? s.backgroundWorksBySession[sessionId] : undefined)) ?? EMPTY_WORKS
   const fromTranscript = useStore((s) => s.backgroundWorksFromTranscript)
+  const deliveredWorkStatuses = useStore((s) => s.deliveredWorkStatuses)
   const cancelBackgroundWork = useStore((s) => s.cancelBackgroundWork)
   const [expandedWorkId, setExpandedWorkId] = useState<string | null>(null)
   // 标题截断悬浮全文（JCEF 不渲染原生 title，复用 .inline-chip-tip fixed 挂 body 方案，
@@ -117,8 +118,12 @@ export function BackgroundTaskList({ sessionId }: { sessionId: string | null }) 
   }
   const hideTip = () => setTip(null)
 
-  // 投影 ∪ 转录重建合并（重启后投影消失，重建条目让「后台工作」栏不空）
-  const works = useMemo(() => mergeBackgroundWorks(projection, fromTranscript), [projection, fromTranscript])
+  // 投影 ∪ 转录重建合并（重启后投影消失，重建条目让「后台工作」栏不空）；
+  // 转录完成通知命中 workId 时把投影的 resultPending 本地升级终态（CLI 不为投递推帧）
+  const works = useMemo(
+    () => mergeBackgroundWorks(projection, fromTranscript, deliveredWorkStatuses),
+    [projection, fromTranscript, deliveredWorkStatuses],
+  )
 
   // 子代理条目不在本列表（子代理子 tab），bash+workflow 全状态展示
   const tasks = works.filter((w) => w.kind !== 'subagent')

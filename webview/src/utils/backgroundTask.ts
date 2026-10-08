@@ -10,6 +10,8 @@
  * 占位被 UUID 形态拒绝）。
  */
 
+import { isAgentNotification, parseNotificationText } from '@/utils/parseNotification'
+
 const RE_BG_CMD = /Command (?:running in background|was manually backgrounded by user|was moved to the background)/i
 const RE_BG_ID = /with ID:\s*(exec_[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})/i
 
@@ -55,14 +57,56 @@ export function parseBackgroundTaskWorks(messages: import('@/types/messages').ZC
 }
 
 /**
+ * 从转录收集「完成通知已投递」的后台任务终态（workId → ended/failed）。
+ *
+ * 背景（0.3.9 真机实勘）：CLI 的 backgroundWorks 数组在任务结果投递进转录
+ * （task-notification 合成消息落地）后并不推收敛帧，投影条目会无限期停在
+ * resultPending——通知卡都已渲染、面板还挂着「待投递」。task-notification 的
+ * task-id + status 就是投递证据，读取处 mergeBackgroundWorks 据此本地升级，
+ * 不再依赖 CLI 帧。只收终态（completed/failed）；agent_ 前缀的子代理完成通知
+ * 同样收（子代理投影条目同病同治）。
+ */
+export function parseDeliveredWorkStatuses(
+  messages: import('@/types/messages').ZCodeMessage[],
+): Map<string, 'ended' | 'failed'> {
+  const delivered = new Map<string, 'ended' | 'failed'>()
+  for (const msg of messages) {
+    if (!isAgentNotification(msg.info)) continue
+    const textPart = msg.parts?.find((p): p is import('@/types/messages').TextPart => p.type === 'text')
+    const text = textPart?.text
+    if (typeof text !== 'string' || !text.includes('<task-notification>')) continue
+    const parsed = parseNotificationText(text)
+    if (parsed.kind !== 'task' || !parsed.taskId) continue
+    if (parsed.status === 'completed') delivered.set(parsed.taskId, 'ended')
+    else if (parsed.status === 'failed') delivered.set(parsed.taskId, 'failed')
+  }
+  return delivered
+}
+
+/**
  * 投影 ∪ 转录重建合并（读取处用）：按 workId 去重、投影优先（运行时权威状态覆盖
  * 重建的 ended 猜测）；投影组在前——运行中条目天然置顶显示。
+ *
+ * deliveredStatuses 非空时先对投影做投递升级：resultPending 且转录已见完成通知的
+ * 条目本地翻终态（单向升级——running/resultPending 之外的投影状态不碰、转录重建
+ * 组不参与升级；标题/启动时间保留投影值，避免重建条目的命令原文标题劣化）。
  */
 export function mergeBackgroundWorks(
   projection: import('@/types/messages').BackgroundWorkSummary[],
   fromTranscript: import('@/types/messages').BackgroundWorkSummary[],
+  deliveredStatuses?: ReadonlyMap<string, 'ended' | 'failed'>,
 ): import('@/types/messages').BackgroundWorkSummary[] {
-  if (fromTranscript.length === 0) return projection
-  const seen = new Set(projection.map((w) => w.workId))
-  return [...projection, ...fromTranscript.filter((w) => !seen.has(w.workId))]
+  let effective = projection
+  if (deliveredStatuses && deliveredStatuses.size > 0) {
+    effective = projection.map((w) => {
+      const delivered = deliveredStatuses.get(w.workId)
+      if (delivered && w.status === 'resultPending') {
+        return { ...w, status: delivered, cancellable: false }
+      }
+      return w
+    })
+  }
+  if (fromTranscript.length === 0) return effective
+  const seen = new Set(effective.map((w) => w.workId))
+  return [...effective, ...fromTranscript.filter((w) => !seen.has(w.workId))]
 }
