@@ -337,6 +337,26 @@ export interface ImageAttachmentInput {
 }
 
 /**
+ * 当前文件上下文附件描述（webview→Java op 层自有形态，不是 zcode.cjs 协议字段）。
+ * InputBox doSend 按 chip 显示值（enabled && currentFileRef 同一取值表达式）派生，
+ * 放 attachments 数组首位；Java 按 path+行号读文件切片内容，转成 zcode.cjs
+ * session/send 的 kind:'file' + textContent 附件发出（ZCode 源码坐实的隐式内容
+ * 通道：模型收到 Read 工具结果形态的 system-reminder，user bubble 不显示）。
+ */
+export interface CurrentFileAttachmentInput {
+  kind: 'currentFile'
+  /** 绝对路径（ref 去 @ 前缀、去 #L 行号后缀）*/
+  path: string
+  /** 选区起始行（1 起，含）；与 lineEnd 成对出现，缺省 = 整文件 */
+  lineStart?: number
+  /** 选区结束行（1 起，含）*/
+  lineEnd?: number
+}
+
+/** session/send 可携带的附件（图片内联 base64 / 当前文件上下文描述）*/
+export type SendAttachmentInput = ImageAttachmentInput | CurrentFileAttachmentInput
+
+/**
  * 编辑附件条目（op:editUserQuery 的 attachments 元素，Java 侧解析为 v4 ref 引用
  * 形态 {ref,fileName,mime,bytes}）。cache=保留的原消息图片（url 为 /zcode-image/
  * 映射或 zcode-artifact://，背后是 zcode.cjs image-cache 落盘文件，直接引用磁盘
@@ -374,7 +394,7 @@ export type JavaRequest =  | { op: 'askUserPendingState' }
   | { op: 'messages'; sessionId: string; workspacePath?: string; reconcile?: boolean; goalRefresh?: boolean }
   | { op: 'subagents'; sessionId: string }
   | { op: 'subagentMessages'; sessionId: string; workspacePath?: string }
-  | { op: 'send'; sessionId: string; text: string; workspacePath?: string; providerId?: string; modelId?: string; thoughtLevel?: string; attachments?: ImageAttachmentInput[] }
+  | { op: 'send'; sessionId: string; text: string; workspacePath?: string; providerId?: string; modelId?: string; thoughtLevel?: string; attachments?: SendAttachmentInput[] }
   /** 剪贴板兜底：JCEF 偶发不把图片暴露给 clipboardData（CC-GUI 用 IDE action 兜底，
    *  我们用按需桥更轻）——Java 读 AWT 剪贴板 DataFlavor.imageFlavor → PNG base64 返回 */
   | { op: 'getClipboardImage' }

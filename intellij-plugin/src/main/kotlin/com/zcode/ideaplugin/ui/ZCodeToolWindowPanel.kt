@@ -14,6 +14,7 @@ import com.intellij.openapi.roots.ProjectFileIndex
 import com.intellij.openapi.fileEditor.FileEditorManager
 import com.intellij.openapi.fileChooser.FileChooser
 import com.intellij.openapi.fileChooser.FileChooserDescriptor
+import com.intellij.openapi.fileEditor.FileDocumentManager
 import com.intellij.openapi.vfs.LocalFileSystem
 import com.intellij.openapi.vfs.VirtualFile
 import com.intellij.diff.DiffManager
@@ -4442,13 +4443,20 @@ if (!window.__ZCODE_LOG_HOOK__) {
     }
 
     /**
-     * op:send 的 attachments 数组（webview InputBox 压缩后的图片附件）→ AttachmentInput 列表。
+     * op:send 的 attachments 数组 → AttachmentInput 列表。
+     * 两种条目：图片（InputBox 压缩后的 base64 内联形态，协议通道原生透传）；
+     * 当前文件上下文（kind:'currentFile' 描述——webview 只传 chip 显示的那个
+     * ref 的 path+行号，内容在此解析：IDE Document 优先（未保存修改可见）、
+     * 磁盘兜底，切片/上限见 CurrentFileAttachment）。
      * 非数组 / 空 / 字段缺失均 fail-soft 返回 null（按无附件发送，不阻断消息）。
      */
     private fun parseAttachments(el: JsonElement?): List<AttachmentInput>? {
         val arr = el as? JsonArray ?: return null
         val list = arr.mapNotNull { item ->
             val o = item as? JsonObject ?: return@mapNotNull null
+            if (o["kind"]?.jsonPrimitive?.content == "currentFile") {
+                return@mapNotNull resolveCurrentFileAttachment(o)
+            }
             val dataBase64 = o["dataBase64"]?.jsonPrimitive?.content ?: return@mapNotNull null
             AttachmentInput(
                 kind = "image",
@@ -4459,6 +4467,46 @@ if (!window.__ZCODE_LOG_HOOK__) {
             )
         }
         return list.ifEmpty { null }
+    }
+
+    /** kind:'currentFile' 描述 → kind:'file' 附件；文件不存在 = null（丢弃该条，不阻断发送）*/
+    private fun resolveCurrentFileAttachment(o: JsonObject): AttachmentInput? {
+        val path = o["path"]?.jsonPrimitive?.content?.takeIf { it.isNotBlank() } ?: return null
+        val lineStart = o["lineStart"]?.jsonPrimitive?.intOrNull
+        val lineEnd = o["lineEnd"]?.jsonPrimitive?.intOrNull
+        val (exists, text) = readCurrentFileText(path)
+        if (!exists) {
+            log.info("currentFile attachment dropped, file not found: $path")
+            return null
+        }
+        val resolved = CurrentFileAttachment.resolve(path, lineStart, lineEnd, text)
+        // 手工实测取证点：确认隐式附件已构建（内联 textContent vs 路径引用 localPath）
+        log.info(
+            "currentFile attachment built: $path lines=$lineStart-$lineEnd " +
+                (if (resolved.textContent != null) "inline(${resolved.textContent!!.length} chars)" else "localPath-ref"),
+        )
+        return resolved
+    }
+
+    /**
+     * 当前文件全文读取：IDE Document 优先（编辑器未保存修改与 chip 行号同源——
+     * 行号来自编辑器当前 Document，读磁盘会在未保存时错位）；VFS miss 时 java.nio
+     * 兜底（有损读）。返回 (exists, text?)：text=null 表示存在但不可按文本读（二进制）。
+     * 本 handler 链跑 pooled 线程，runReadAction 可直接调（阻塞等读锁，不碰 EDT）。
+     */
+    private fun readCurrentFileText(path: String): Pair<Boolean, String?> {
+        var result: Pair<Boolean, String?>? = null
+        ApplicationManager.getApplication().runReadAction {
+            val vf = LocalFileSystem.getInstance().findFileByPath(path)
+            if (vf != null && vf.exists()) {
+                val doc = FileDocumentManager.getInstance().getDocument(vf)
+                result = true to doc?.text
+            }
+        }
+        result?.let { return it }
+        val p = runCatching { java.nio.file.Path.of(path) }.getOrNull() ?: return false to null
+        if (!java.nio.file.Files.isRegularFile(p)) return false to null
+        return true to CurrentFileAttachment.readTextLossy(p)
     }
 
     /**

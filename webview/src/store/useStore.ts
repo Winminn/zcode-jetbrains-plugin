@@ -16,7 +16,7 @@ import { create } from 'zustand'
 import { onMessage, onStreamEvent, onStreamBatch, sendToJava, initBridge, isInJcef, getWorkspacePath, getInitialSessionId } from '@/ipc/bridge'
 import { parseGoalCommand } from '@/utils/goalCommand'
 import { extractTitleExcerpt } from '@/utils/titleExcerpt'
-import type { JavaResponse, SessionInfo, ZCodeMessage, StreamEvent, ModelOption, ModelManageProvider, ProviderSaveDraft, TodoItem, AgentItem, FileChangeItem, QuotaData, ModelUsageData, ToolUsageData, UsageRange, AppUsageData, AppUsageRange, ContextBreakdownItem, ThoughtLevelInfo, SubagentActivity, SubagentInfo, ToolUpdatedPayload, MemoryFileInfo, MemoryDirInfo, MemorySearchHitInfo, SkillInfo, McpServerInfo, McpToolsState, McpLogEntry, EnvStatus, BrowserClearedSite, BrowserDataOverview, AgentDef, AgentDefInput, ImageAttachmentInput, GoalState, AutoArchiveRecord, ToolPart, SlashCommand, MessagePart } from '@/types/messages'
+import type { JavaResponse, SessionInfo, ZCodeMessage, StreamEvent, ModelOption, ModelManageProvider, ProviderSaveDraft, TodoItem, AgentItem, FileChangeItem, QuotaData, ModelUsageData, ToolUsageData, UsageRange, AppUsageData, AppUsageRange, ContextBreakdownItem, ThoughtLevelInfo, SubagentActivity, SubagentInfo, ToolUpdatedPayload, MemoryFileInfo, MemoryDirInfo, MemorySearchHitInfo, SkillInfo, McpServerInfo, McpToolsState, McpLogEntry, EnvStatus, BrowserClearedSite, BrowserDataOverview, AgentDef, AgentDefInput, ImageAttachmentInput, SendAttachmentInput, GoalState, AutoArchiveRecord, ToolPart, SlashCommand, MessagePart } from '@/types/messages'
 import { applyStreamEvent, isSubagentToolEvent, applySubagentToolEvent, markActivityOutcome, finalizeActivitiesFromNotifications, asSubagentLifecycle, asGoalTargetPayload, looksLikeQuotaError, asSteerDrainedInputs, appendSteerUserMessages } from '@/utils/streamReducer'
 import type { TurnErrorInfo, SubagentLifecyclePayload } from '@/utils/streamReducer'
 import i18n from '@/i18n/config'
@@ -537,8 +537,8 @@ function scheduleNotificationTranscriptPull(sessionId: string): void {
 export interface QueuedMessage {
   id: string
   text: string
-  /** 图片附件（随消息透传 session/send attachments）*/
-  attachments?: ImageAttachmentInput[]
+  /** 附件（图片内联 / 当前文件上下文描述，随消息透传 session/send attachments）*/
+  attachments?: SendAttachmentInput[]
   queuedAt: number
   /** 定时消息来源标记（fireAt 原值）：切会话丢弃队列时回退挂起而非静默丢 */
   scheduledFireAt?: number
@@ -614,8 +614,8 @@ interface StoreState {
   creatingSession: boolean
   /** 懒创建暂存的首条消息：无会话时发送 → 先建会话，createSession 响应后自动发出 */
   pendingFirstMessage: string | null
-  /** 懒创建暂存的首条消息的图片附件（与 pendingFirstMessage 同生命周期）*/
-  pendingFirstAttachments: ImageAttachmentInput[] | null
+  /** 懒创建暂存的首条消息的附件（与 pendingFirstMessage 同生命周期）*/
+  pendingFirstAttachments: SendAttachmentInput[] | null
   /** 懒创建暂存首条消息的定时标记（定时消息在待命态触发懒创建时随行，徽标穿透）*/
   pendingFirstScheduledFireAt: number | null
   /** 待命态定时任务暂存：创建确认时先把会话建好（真实 sid 归属，防空串态跨标签串显），建好自动落库 */
@@ -1048,7 +1048,7 @@ interface StoreState {
   /** 拉取当前打开文件 ref（webview mount/重连时触发；Kotlin 同步回包，case 'currentFile' 落 state）*/
   requestCurrentFile: () => void
   selectSession: (session: SessionInfo) => void
-  sendMessage: (text: string, attachments?: ImageAttachmentInput[], opts?: { scheduledFireAt?: number; scheduledProviderId?: string; scheduledModelId?: string; hiddenCommand?: boolean }) => void
+  sendMessage: (text: string, attachments?: SendAttachmentInput[], opts?: { scheduledFireAt?: number; scheduledProviderId?: string; scheduledModelId?: string; hiddenCommand?: boolean }) => void
   /** 进入最后一条用户消息的编辑态（MessageBubble 行内编辑框） */
   startEdit: () => void
   /** 退出编辑态（不提交） */
@@ -1876,13 +1876,17 @@ export const useStore = create<StoreState>((set, get) => ({
           ...(opts?.scheduledFireAt ? { scheduledFireAt: opts.scheduledFireAt } : {}),
         },
         parts: [
-          ...(attachments ?? []).map((a) => ({
-            type: 'image' as const,
-            mediaType: a.mimeType,
-            dataUrl: `data:${a.mimeType};base64,${a.dataBase64}`,
-            dataBase64: a.dataBase64,
-            source: { kind: 'inline' as const, filename: a.filename },
-          })),
+          // 仅图片附件产生乐观 part；currentFile 上下文附件走隐式通道（zcode.cjs
+          // 转成 file part 存历史，bubble 本就不渲染非图片 file part），此处不落
+          ...(attachments ?? [])
+            .filter((a): a is ImageAttachmentInput => a.kind === 'image')
+            .map((a) => ({
+              type: 'image' as const,
+              mediaType: a.mimeType,
+              dataUrl: `data:${a.mimeType};base64,${a.dataBase64}`,
+              dataBase64: a.dataBase64,
+              source: { kind: 'inline' as const, filename: a.filename },
+            })),
           { type: 'text', text },
         ],
       }

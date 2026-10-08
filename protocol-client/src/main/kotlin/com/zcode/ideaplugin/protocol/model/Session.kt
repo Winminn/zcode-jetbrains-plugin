@@ -63,10 +63,14 @@ data class RuntimePreferences(
 }
 
 /**
- * session/send 的图片附件（ZCode Protocol 通道原生形态，2026-08-26 zcode.cjs 源码确认）：
- * base64 内联直传，服务端负责缩放（最长边 2000px）/压缩/落盘 image-cache，
+ * session/send 的附件（ZCode Protocol 通道原生形态，2026-08-26 zcode.cjs 源码确认）：
+ * 图片 base64 内联直传，服务端负责缩放（最长边 2000px）/压缩/落盘 image-cache，
  * 模型不支持图片时降级为 [Attached media] 文字占位（不报错）。
- * dataBase64 与 localPath 二选一（都填时 localPath 优先）；插件只走 dataBase64。
+ * dataBase64 与 localPath 二选一（都填时 localPath 优先）；图片只走 dataBase64。
+ * kind='file' 时 textContent 内联全文（ZCode-main 源码：mapProtocolPromptAttachment
+ * → 内联文本块 + 伪装 Read 工具结果的 prompt_attachment system-reminder，
+ * 模型必收内容、气泡不显示）；localPath 为路径引用（服务端按文本类读全文、
+ * 二进制注入路径占位）。
  */
 @Serializable
 data class AttachmentInput(
@@ -75,7 +79,9 @@ data class AttachmentInput(
     val mimeType: String,
     val sizeBytes: Long? = null,
     val dataBase64: String? = null,
-    val localPath: String? = null
+    val localPath: String? = null,
+    /** kind='file' 的内联文本载荷（当前文件上下文通道；与 localPath 二选一）*/
+    val textContent: String? = null
 )
 
 /**
