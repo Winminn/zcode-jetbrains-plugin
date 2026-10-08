@@ -40,6 +40,13 @@ const OTHER_COLOR = '#888888'
 /** "其他"分类的 i18n key */
 const OTHER_LABEL = 'usage.context.categories.other'
 
+/** 上下文圆环配色（2026-10-08 用户从四方案预览中选定 B，基环透明度两轮微调后定 30%）：
+ *  基环 = 青绿 30% 透明底（替代原灰底——灰色在顶栏彩色图标间突兀），常态弧 = 青绿实色
+ *  （与下方 BREAKDOWN_META 的 skills 分类同族色）；>70% 黄 / >90% 红警示档不变。
+ *  预览页 docs/internal/probe/context-ring-color-preview.html（本地 8471 服务） */
+const RING_TRACK_COLOR = 'rgba(43,179,163,0.30)'
+const RING_NORMAL_COLOR = '#2bb3a3'
+
 /** 额度窗口进度条颜色（对齐官方客户端：5h 蓝 / 周 绿 / 工具 紫 / 兜底行 橙）*/
 const QUOTA_WINDOW_COLORS: Record<QuotaWindowKey | 'other', string> = {
   '5h': '#4a9eff',
@@ -98,7 +105,7 @@ export function ContextRing() {
       ? 'var(--status-error)'
       : percentage > 70
         ? 'var(--status-warning)'
-        : 'var(--status-success)'
+        : RING_NORMAL_COLOR
 
   // bigmodel 系模型可查额度（coding-plan 订阅 + API Key 渠道，monitor 按账号返回套餐；
   // 第三方 provider 不显示也不拉取）
@@ -157,7 +164,7 @@ export function ContextRing() {
         data-tip={t('usage.context.titleUsage')}
       >
         <svg width={size} height={size} viewBox={`0 0 ${size} ${size}`} style={{ transform: 'rotate(-90deg)' }}>
-          <circle cx={center} cy={center} r={radius} fill="none" stroke="var(--border-primary)" strokeWidth={stroke} />
+          <circle cx={center} cy={center} r={radius} fill="none" stroke={RING_TRACK_COLOR} strokeWidth={stroke} />
           <circle
             cx={center}
             cy={center}
