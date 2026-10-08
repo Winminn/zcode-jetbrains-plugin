@@ -1,6 +1,7 @@
 {
   "errorClose": "关闭",
   "errorCloseAria": "关闭错误",
+  "zoomResetTitle": "点击重置缩放为 100%",
   "backendQuotaError": "模型配额已超限（额度窗口用尽）：服务端仍在自动重试但不会成功，建议停止本轮并切换模型或套餐，或等待额度重置",
   "backendApiError": "模型服务错误（HTTP {{statusCode}}）：{{message}}",
   "turnFailed": "本轮执行失败：{{message}}",

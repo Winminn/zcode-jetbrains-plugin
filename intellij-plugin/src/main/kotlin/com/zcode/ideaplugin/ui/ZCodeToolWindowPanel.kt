@@ -114,6 +114,8 @@ class ZCodeToolWindowPanel(
     // 前端首条 JS 消息是否已到达（就绪信号；executeJavaScript 是 fire-and-forget，注入成功不代表页面活着）
     @Volatile
     private var frontendReady = false
+    // 浏览器缩放基准补正是否已做过（每 panel 一次，见 maybeApplyZoomBase）
+    private var zoomBaseApplied = false
 
     // ============ 多标签页状态 ============
     // 所属 Content（标签标题更新用，Factory 创建后注入）
@@ -267,6 +269,11 @@ class ZCodeToolWindowPanel(
     internal companion object {
         const val KEY_BROWSER_EXPANDED = "zcode.browser.paneExpanded"
         const val KEY_CHAT_BASE_WIDTH = "zcode.browser.chatBaseWidth"
+
+        /** 浏览器缩放基准（Chromium zoom level 1.0 = 原生 120%）：webview 观感按此档
+         *  调校，原生 100% 在 HiDPI 下过小（真机 2026-10-08 反馈「120% 才正常，
+         *  100% 看不清」）。启动与重置（Ctrl+0/点胶囊）都落此档，前端百分比相对基准显示 */
+        const val ZOOM_BASE_LEVEL = 1.0
 
         /** 最近一条后端模型 API 错误（stderr APICallError 原始详情，epochMs to 文案；
          *  连通性测试失败时按时间窗捞取——服务端 JSON-RPC error 对 401/403 只回
@@ -1110,6 +1117,8 @@ if (!window.__ZCODE_LOG_HOOK__) {
                         "setTabTitle" -> handleSetTabTitle(msg)
                         "clearTabSession" -> handleClearTabSession()
                         "appearanceSave" -> handleAppearanceSave(msg)
+                        "zoomQuery" -> handleZoomQuery()
+                        "zoomReset" -> handleZoomReset()
                         "kvSave" -> handleKvSave(msg)
                         "kvLoad" -> handleKvLoad()
                         "remotePairStart" -> handleRemote { it.connect() }
@@ -1296,6 +1305,72 @@ if (!window.__ZCODE_LOG_HOOK__) {
             try {
                 project.zCodeService().getSharedBrowserPanel()?.onAppearanceThemeChanged()
             } catch (_: Exception) {}
+        }
+    }
+
+    /**
+     * 浏览器级缩放（Ctrl+滚轮 = Chromium 原生行为：CEF windowed 模式下内容层
+     * 直接缩放，平台 2024.1 Java 侧无缩放实现也无变化通知）。前端以 devicePixelRatio
+     * 变化为信号来查询，本侧读 getZoomLevel() 权威值换算百分比。
+     *
+     * 百分比相对「基准档」（原生 120%）显示：round(1.2^(level-1)×100)，即基准档
+     * 显示 100%、滚一档 ±约 9%。原生 100% 在 HiDPI 下观感过小（真机实测），不作
+     * 任何界面档位。
+     */
+    private fun zoomPercentOf(level: Double): Int =
+        Math.round(Math.pow(1.2, level - ZOOM_BASE_LEVEL) * 100.0).toInt()
+
+    private fun browserZoomPercent(): Int = try {
+        zoomPercentOf(jbCefBrowser.zoomLevel)
+    } catch (e: Exception) {
+        100 // 浏览器未就绪等异常：回落基准值，前端 toast 展示不因查询失败缺席
+    }
+
+    /**
+     * 基准补正（每 panel 一次）：生产 origin 随机端口每次重启变化，Chromium 按源记忆
+     * 的缩放随之重置——首查发现原生 100%（level 0）时直接抬到基准档。本会话内用户
+     * 已滚轮调过的非默认档不干预。返回是否刚刚执行了抬升。
+     */
+    private fun maybeApplyZoomBase(): Boolean {
+        if (zoomBaseApplied || !::jbCefBrowser.isInitialized) return false
+        zoomBaseApplied = true
+        return try {
+            if (jbCefBrowser.zoomLevel == 0.0) {
+                jbCefBrowser.setZoomLevel(ZOOM_BASE_LEVEL)
+                log.info("Browser zoom lifted to baseline (native ${Math.round(Math.pow(1.2, ZOOM_BASE_LEVEL) * 100)}%)")
+                true
+            } else {
+                false
+            }
+        } catch (e: Exception) {
+            log.warn("zoom baseline apply failed: ${e.message}")
+            false
+        }
+    }
+
+    /** 查询当前缩放百分比（zoomLevel 回包由前端 ZoomIndicator 消费） */
+    private fun handleZoomQuery(): JsonObject {
+        // 刚补正时 setZoomLevel 异步生效，直接读回可能拿到旧值——按目标档换算
+        val justLifted = maybeApplyZoomBase()
+        return buildJsonObject {
+            put("op", "zoomLevel")
+            put("percent", if (justLifted) zoomPercentOf(ZOOM_BASE_LEVEL) else browserZoomPercent())
+        }
+    }
+
+    /** 重置缩放到基准档（显示 100%，Ctrl+0 / 点击胶囊触发）。setZoomLevel 异步生效，
+     *  回包直接给基准值——缩放生效后的 resize 会再触发前端 zoomQuery 幂等校正 */
+    private fun handleZoomReset(): JsonObject {
+        try {
+            val before = browserZoomPercent()
+            jbCefBrowser.setZoomLevel(ZOOM_BASE_LEVEL)
+            log.info("Browser zoom reset to baseline 100% (was $before%)")
+        } catch (e: Exception) {
+            log.warn("zoomReset failed: ${e.message}")
+        }
+        return buildJsonObject {
+            put("op", "zoomLevel")
+            put("percent", zoomPercentOf(ZOOM_BASE_LEVEL))
         }
     }
 

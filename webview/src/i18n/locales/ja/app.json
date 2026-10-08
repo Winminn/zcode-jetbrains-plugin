@@ -1,6 +1,7 @@
 {
   "errorClose": "閉じる",
   "errorCloseAria": "エラーを閉じる",
+  "zoomResetTitle": "クリックでズームを100%にリセット",
   "backendQuotaError": "モデルの利用枠を超過しました（利用枠ウィンドウ上限）：サーバーは自動リトライを続けていますが成功しません。このターンを停止してモデル/プランを切り替えるか、リセットまでお待ちください",
   "backendApiError": "モデル API エラー（HTTP {{statusCode}}）：{{message}}",
   "turnFailed": "ターンが失敗しました：{{message}}",

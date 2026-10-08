@@ -546,6 +546,11 @@ export type JavaRequest =  | { op: 'askUserPendingState' }
   | { op: 'kvSave'; entries: Record<string, string>; deletes?: string[] }
   /** 拉取权威 kv（注入未达时的兜底通道：executeJavaScript 时序不稳 → 走消息通道必然可达）*/
   | { op: 'kvLoad' }
+  // ============ 浏览器级缩放（Ctrl+滚轮 = Chromium 原生行为，平台无变化通知）============
+  /** 查询当前缩放百分比（前端 devicePixelRatio 变化时触发；percent 权威值在 Java 侧）*/
+  | { op: 'zoomQuery' }
+  /** 重置缩放为 100%（Ctrl+0 / 点击 toast；Java 侧 setZoomLevel(0)）*/
+  | { op: 'zoomReset' }
   /** 环境三件套检测（node/zcode.cjs/凭证），启动时与主界面「重新检测」触发 */
   | { op: 'checkEnv' }
   /** 保存环境路径配置：字段缺席=不改该项，空串=清除（回退自动探测）；后端验证通过才落盘 */
@@ -1172,6 +1177,8 @@ export type JavaResponse =
   | { op: 'kvSave' }
   /** 权威 kv 下发（kvLoad 的响应；注入兜底通道）*/
   | { op: 'kvLoaded'; kv: Record<string, string> }
+  /** 浏览器缩放百分比（zoomQuery/zoomReset 的响应；percent 由 Java getZoomLevel 换算）*/
+  | { op: 'zoomLevel'; percent: number }
   /** 环境状态（checkEnv 查询 / envSave 保存成功后的重检结果 / IDE 广播同构体）*/
   | { op: 'envStatus'; status: EnvStatus }
   /** 网络代理回显（getProxyConfig 响应；restartPending=app-server 在跑需重启生效）*/

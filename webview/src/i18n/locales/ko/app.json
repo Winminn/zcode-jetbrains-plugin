@@ -1,6 +1,7 @@
 {
   "errorClose": "닫기",
   "errorCloseAria": "오류 닫기",
+  "zoomResetTitle": "클릭하면 배율이 100%로 초기화됩니다",
   "backendQuotaError": "모델 할당량 초과(할당량 창 소진): 서버가 계속 재시도 중이지만 성공하지 못합니다. 이 턴을 중지하고 모델/플랜을 전환하거나 초기화를 기다리세요",
   "backendApiError": "모델 API 오류(HTTP {{statusCode}}): {{message}}",
   "turnFailed": "턴 실패: {{message}}",

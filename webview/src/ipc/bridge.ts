@@ -294,6 +294,9 @@ export function getInitialSessionId(): string {
 let mockLongUserDemo = false
 let mockCompactDemo = false
 
+// zoom mock 基线：模块加载时刻的 dPR（dev 浏览器相对缩放倍率的参照）
+const mockDprBaseline = typeof window !== 'undefined' ? window.devicePixelRatio : 1
+
 const mockSessions = [
   {
     sessionId: 'sess_mock_1',
@@ -991,6 +994,17 @@ function mockResponse(req: JavaRequest): JavaResponse | null {
       return { op: 'sessionArchived', sessionId: req.sessionId }
     case 'restoreSession':
       return { op: 'sessionRestored', sessionId: req.sessionId }
+    case 'zoomQuery': {
+      // mock：dev 浏览器无 CEF zoom level，以加载时刻 dPR 为基线的相对倍率充当
+      // 百分比（数值近似真实浏览器缩放，toast 链路可完整验收；zoomReset 无真实
+      // 缩放可复原，仅回当前值）
+      const base = mockDprBaseline || 1
+      return { op: 'zoomLevel', percent: Math.round(((window.devicePixelRatio || 1) / base) * 100) }
+    }
+    case 'zoomReset': {
+      const base = mockDprBaseline || 1
+      return { op: 'zoomLevel', percent: Math.round(((window.devicePixelRatio || 1) / base) * 100) }
+    }
     case 'deleteArchivedSession':
       return { op: 'sessionArchiveDeleted', sessionId: req.sessionId }
     case 'getAutoArchiveConfig':

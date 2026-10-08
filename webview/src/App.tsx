@@ -32,6 +32,7 @@ import { PairingDialog } from '@/components/PairingDialog'
 import { ConfirmDialog } from '@/components/ConfirmDialog'
 import { ChangelogDialog, CHANGELOG_LAST_SEEN_KEY } from '@/components/ChangelogDialog'
 import { EnvBanner } from '@/components/EnvBanner'
+import { ZoomIndicator } from '@/components/ZoomIndicator'
 import { sendToJava, isInJcef } from '@/ipc/bridge'
 import { getPersisted, setPersisted, isKvHydrated, KV_HYDRATED_EVENT, KV_DISABLED_EVENT } from '@/utils/persist'
 import { extractTitleExcerpt } from '@/utils/titleExcerpt'
@@ -377,6 +378,9 @@ export default function App() {
 
       {/* 轻量 toast */}
       {toast && <div className="app__toast">{toast}</div>}
+
+      {/* 浏览器缩放指示器（Ctrl+滚轮缩放时的百分比胶囊，点击/Ctrl+0 重置） */}
+      <ZoomIndicator />
 
       {/* 驻留水位提醒（缺陷BA）：通栏信息条（与 notice-bar 同构）——悬浮 toast 在窄
           面板下被挤成窄卡多行且关闭钮悬空（六轮用户反馈），通栏能用满面板宽度；

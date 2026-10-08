@@ -1,6 +1,7 @@
 {
   "errorClose": "Close",
   "errorCloseAria": "Close error",
+  "zoomResetTitle": "Click to reset zoom to 100%",
   "backendQuotaError": "Model quota exceeded (quota window exhausted): the server keeps retrying but will never succeed — stop this turn and switch model/plan, or wait for the quota to reset",
   "backendApiError": "Model API error (HTTP {{statusCode}}): {{message}}",
   "turnFailed": "Turn failed: {{message}}",
