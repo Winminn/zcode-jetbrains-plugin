@@ -39,7 +39,6 @@
     "processLabel": "Execution process",
     "processThoughts": "Thoughts ×{{count}}",
     "processTools": "Tools ×{{count}}",
-    "cachePercent": "Cache {{percent}}%",
     "viewFull": "View full text ({{lines}} lines · {{count}} chars)",
     "fullTextTitle": "Full user message ({{lines}} lines · {{count}} chars)",
     "closeFull": "Close",

@@ -34,7 +34,7 @@ import { AgentNotificationCard } from './AgentNotificationCard'
 import { AssistantPreviewCards } from './AssistantPreviewCards'
 import { FileIcon } from './FileIcon'
 import { isAgentNotification, isCompactSummaryMessage, findTimelinePart } from '@/utils/parseNotification'
-import { clockTime, compactTokens, formatDuration } from '@/utils/time'
+import { clockTime, formatDuration } from '@/utils/time'
 import { readTurnCollapseConfig } from '@/utils/turnCollapseConfig'
 import { KV_HYDRATED_EVENT } from '@/utils/persist'
 import { useTick } from '@/hooks/useTick'
@@ -728,23 +728,12 @@ function AssistantBubble({
     () => (segments ? segments.flatMap((s) => s.msg.parts) : parts),
     [segments, parts],
   )
-  // 合并轮组 footer：耗时跨段（lead.created → 末段 completed）、token 求和
+  // 合并轮组 footer：耗时跨段（lead.created → 末段 completed）；token 统计已随
+  // footer 展示撤除，不再跨段求和
   const footerInfo = useMemo(() => {
     if (!segments) return info
     const lastInfo = segments[segments.length - 1].msg.info
-    let tokens: typeof info.tokens
-    for (const s of segments) {
-      const t = s.msg.info.tokens
-      if (t) {
-        tokens = {
-          total: (tokens?.total ?? 0) + t.total,
-          input: (tokens?.input ?? 0) + t.input,
-          output: (tokens?.output ?? 0) + t.output,
-          reasoning: (tokens?.reasoning ?? 0) + t.reasoning,
-        }
-      }
-    }
-    return { ...info, time: { ...info.time, completed: lastInfo.time?.completed }, tokens }
+    return { ...info, time: { ...info.time, completed: lastInfo.time?.completed } }
   }, [segments, info])
 
   // 分叉（B2 一期）：入口在 footer「已工作」行——fork 锚点是已完成的回复（保留到该回复含，
@@ -1157,7 +1146,6 @@ function MessageFooter({
   const onCopyMarkdown = () => {
     if (copy) void showCopyResult(() => copyText(copy))
   }
-  const tokens = info.tokens
   // v1 大写 D（modelID）；v2 服务端改小写驼峰（modelId，db 实测字段重命名）——双读兼容
   const model = info.modelID ?? info.modelId
 
@@ -1185,15 +1173,6 @@ function MessageFooter({
       {durationMs != null && (
         <span className={`msg__footer-duration${working ? ' msg__footer-duration--working' : ''}`}>
           ⏱ {working ? t('chat.message.working') : t('chat.message.worked')} {formatDuration(durationMs)}
-        </span>
-      )}
-      {tokens && (
-        <span
-          className="msg__footer-tokens"
-          title={`${tokens.input.toLocaleString()} in / ${tokens.output.toLocaleString()} out`}
-        >
-          💡 {compactTokens(tokens.input)} in / {compactTokens(tokens.output)} out
-          {tokens.cache?.read ? ` · ${t('chat.message.cachePercent', { percent: Math.round((tokens.cache.read / tokens.input) * 100) })}` : ''}
         </span>
       )}
       {info.cost ? <span className="msg__footer-cost">${info.cost.toFixed(4)}</span> : null}

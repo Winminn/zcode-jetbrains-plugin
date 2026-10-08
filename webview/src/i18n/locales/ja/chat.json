@@ -39,7 +39,6 @@
     "processLabel": "実行プロセス",
     "processThoughts": "思考 ×{{count}}",
     "processTools": "ツール ×{{count}}",
-    "cachePercent": "キャッシュ {{percent}}%",
     "viewFull": "全文を見る（{{lines}} 行・{{count}} 文字）",
     "fullTextTitle": "ユーザーメッセージ全文（{{lines}} 行・{{count}} 文字）",
     "closeFull": "閉じる",

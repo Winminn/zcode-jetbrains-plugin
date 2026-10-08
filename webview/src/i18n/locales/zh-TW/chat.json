@@ -39,7 +39,6 @@
     "processLabel": "執行過程",
     "processThoughts": "思考 {{count}} 次",
     "processTools": "{{count}} 個工具",
-    "cachePercent": "快取 {{percent}}%",
     "viewFull": "查看全文（{{lines}} 行 · {{count}} 字元）",
     "fullTextTitle": "使用者訊息全文（{{lines}} 行 · {{count}} 字元）",
     "closeFull": "關閉",
