@@ -84,6 +84,23 @@ describe('CurrentFileChip（阶段 A 视觉 + 阶段 B prop-driven）', () => {
     expect(screen.getByText('#L131-133')).toBeTruthy()
   })
 
+  it('长文件名（>28 字符）中段省略：保开头与扩展名，#L 后缀不受影响', () => {
+    const longName = 'SomeVeryLongComponentNameThatKeepsGoing.tsx' // 43 字符
+    render(
+      <CurrentFileChip ref={`@E:/projects/${longName}#L120-135`} enabled={true} onEnabledChange={() => {}} />,
+    )
+    const name = screen.getByText(/…/) as HTMLElement
+    expect(name.textContent!.length).toBe(28)
+    expect(name.textContent!.startsWith('SomeVeryLong')).toBe(true)
+    expect(name.textContent!.endsWith('.tsx')).toBe(true)
+    expect(screen.getByText('#L120-135')).toBeTruthy()
+  })
+
+  it('28 字符以内的文件名不缩略（原样显示）', () => {
+    render(<CurrentFileChip ref="@E:/projects/exactly-28-chars-long-ok.vue" enabled={true} onEnabledChange={() => {}} />)
+    expect(screen.getByText('exactly-28-chars-long-ok.vue')).toBeTruthy()
+  })
+
   it('勾选 + ref=null：回退到文字标签 "文件上下文"（永远显示，不隐藏）', () => {
     render(<CurrentFileChip ref={null} enabled={true} onEnabledChange={() => {}} />)
     const btn = screen.getByTestId('current-file-chip')

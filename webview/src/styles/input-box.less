@@ -77,29 +77,40 @@
   position: relative; // 定时任务弹窗的定位父级（弹窗底部锚在本栏顶部之上）
   display: flex;
   align-items: center;
-  gap: 6px;
-  padding: 6px 10px;
+  gap: 4px; // 工具组→智能体的间隔（真机反馈 8px 偏大收半；组内 2px 见 __tools）
+  padding: 4px 8px; // 0.3.9 收薄（原 6px 10px）：用户反馈顶栏占位太多
   background: var(--bg-tertiary);
   border-radius: 7px 7px 0 0;
 }
 
-/* 状态栏收起/展开按钮（cc-gui status-panel-toggle）：推到工具条最右；
+/* 顶栏左侧工具组（附件/远程/定时/用量环）：组内紧凑聚拢，cc-gui ContextBar
+   的 context-tools 分组手法。曾按 cc-gui 加 .context-tool-divider 发丝线表边界，
+   chip 钉最右后左侧只剩工具组+智能体两个元素，分隔线失去表达对象，随用户反馈撤除 */
+.input-box-topbar__tools {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+
+/* 状态栏收起/展开按钮（cc-gui status-panel-toggle）：贴工具条最右角；
    弱化风格对齐询问弹窗折叠按钮（小一号 + tertiary 灰，hover 恢复由 context-tool-btn 管）。
    必须双类选择器：单类与 .context-tool-btn 同特异性且源码顺序在前，font-size/color
-   会被后者原样压掉（实踩：11px/灰色从未生效，用户两轮反馈"还是太大不够灰"） */
+   会被后者原样压掉（实踩：11px/灰色从未生效，用户两轮反馈"还是太大不够灰"）。
+   右钉不再用 margin-left:auto（由最右的文件上下文 chip 承担，见 current-file-chip.less）：
+   chip 变宽时本按钮仍被推到贴角不动 */
 .context-tool-btn.input-box-topbar__status-toggle {
-  margin-left: auto;
   font-size: 12px;
   color: var(--text-tertiary);
 }
 
-/* 图标按钮（cc-gui .context-tool-btn：22×22 圆角，hover 变色）*/
+/* 图标按钮（cc-gui .context-tool-btn 同名同规格：20×20 圆角，hover 变色；
+   0.3.9 从 22×22 收到 cc-gui 原版 20×20，配合顶栏收薄）*/
 .context-tool-btn {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 22px;
-  height: 22px;
+  width: 20px;
+  height: 20px;
   padding: 0;
   font-size: 14px;
   color: var(--text-secondary);
@@ -479,8 +490,8 @@
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 22px;
-  height: 24px;
+  width: 20px;
+  height: 22px;
   flex-shrink: 0;
   cursor: pointer;
   user-select: none; /* 双击触发压缩，禁选防止选区蔓延到相邻按钮文字 */

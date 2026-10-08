@@ -1891,59 +1891,65 @@ export function InputBox({ onSend, isStreaming = false, onStop, disabled = false
 
         {/* 上方条（cc-gui ContextBar）：附件按钮 + 定时任务 + 上下文圆环 + 子智能体下拉（左侧依次排列）*/}
         <div className="input-box-topbar">
-          <button
-            className="context-tool-btn tip-align-left"
-            onClick={() => sendToJava({ op: 'pickFiles' })}
-            disabled={disabled}
-            data-tip={t('input.attach')}
-          >
-            <span className="codicon codicon-attach" />
-          </button>
-          {/* 手机远程配对（QR 弹窗）：附件按钮右侧、定时任务之前。字形用 codicon-remote
-              （扁平方形，device-mobile 瘦高与工具条不协调——用户两轮反馈后换字形）。
-              颜色随 relay 状态联动：paired 绿、运行中（connecting/waiting）黄、
-              停止/异常保持默认色 */}
-          <button
-            type="button"
-            className="context-tool-btn"
-            onClick={() => useStore.getState().openRemotePairing()}
-            data-tip={t('chat.header.phoneRemote')}
-          >
-            <span
-              className={`codicon codicon-remote phone-entry__icon${
-                remoteState === 'paired'
-                  ? ' phone-entry__icon--paired'
-                  : remoteState === 'connecting' || remoteState === 'waiting'
-                    ? ' phone-entry__icon--waiting'
-                    : ''
-              }`}
-            />
-          </button>
-          {/* 引用会话（#）：不设附件栏入口（非高频），输入框 # 直接触发补全 */}
-          {/* 定时任务（日历）：上下文圆环左侧排列；角标=待执行任务总数 */}
-          <div className="schedule-entry">
+          {/* 左侧工具组（附件/远程配对/定时/用量环）：组内 2px 紧凑聚拢，与智能体
+              按 topbar 4px 间隔分开——cc-gui ContextBar 分组节奏（chip 钉最右后
+              顶栏左侧只剩这两组，发丝分隔线随之撤除） */}
+          <div className="input-box-topbar__tools">
             <button
-              className="context-tool-btn"
-              onClick={() => (scheduleOpen ? closeSchedulePicker() : openSchedulePicker())}
+              className="context-tool-btn tip-align-left"
+              onClick={() => sendToJava({ op: 'pickFiles' })}
               disabled={disabled}
-              data-tip={t('input.schedule.button')}
-              type="button"
+              data-tip={t('input.attach')}
             >
-              <span className="codicon codicon-clockface" />
+              <span className="codicon codicon-attach" />
             </button>
-            {scheduledCount > 0 && <span className="schedule-entry__badge">{scheduledCount}</span>}
+            {/* 手机远程配对（QR 弹窗）：附件按钮右侧、定时任务之前。字形用 codicon-remote
+                （扁平方形，device-mobile 瘦高与工具条不协调——用户两轮反馈后换字形）。
+                颜色随 relay 状态联动：paired 绿、运行中（connecting/waiting）黄、
+                停止/异常保持默认色 */}
+            <button
+              type="button"
+              className="context-tool-btn"
+              onClick={() => useStore.getState().openRemotePairing()}
+              data-tip={t('chat.header.phoneRemote')}
+            >
+              <span
+                className={`codicon codicon-remote phone-entry__icon${
+                  remoteState === 'paired'
+                    ? ' phone-entry__icon--paired'
+                    : remoteState === 'connecting' || remoteState === 'waiting'
+                      ? ' phone-entry__icon--waiting'
+                      : ''
+                }`}
+              />
+            </button>
+            {/* 引用会话（#）：不设附件栏入口（非高频），输入框 # 直接触发补全 */}
+            {/* 定时任务（日历）：上下文圆环左侧排列；角标=待执行任务总数 */}
+            <div className="schedule-entry">
+              <button
+                className="context-tool-btn"
+                onClick={() => (scheduleOpen ? closeSchedulePicker() : openSchedulePicker())}
+                disabled={disabled}
+                data-tip={t('input.schedule.button')}
+                type="button"
+              >
+                <span className="codicon codicon-clockface" />
+              </button>
+              {scheduledCount > 0 && <span className="schedule-entry__badge">{scheduledCount}</span>}
+            </div>
+            <ContextRing />
           </div>
-          <ContextRing />
+          <AgentSelect onManage={onOpenAgentSettings} disabled={disabled} />
           {/* 当前打开文件上下文（chip 显示 + 勾选持久化；勾选且 ref 非空时
               doSend 派生附件描述随消息隐式携带，同一取值表达式，见 doSend 末尾）。
-              位置在智能体按钮前（用户定稿） */}
+              位置在最右（margin-left:auto 吸收富余空间，见 current-file-chip.less）：
+              文件名长短变化只向左生长，不推动智能体按钮（用户反馈定稿） */}
           <CurrentFileChip
             ref={currentFileRef}
             enabled={currentFileEnabled}
             onEnabledChange={setCurrentFileEnabled}
             workspace={projectPath}
           />
-          <AgentSelect onManage={onOpenAgentSettings} disabled={disabled} />
           {/* 状态栏收起/展开：显示中显 chevron-down、隐藏中显 chevron-up（用户定稿）；
               推到工具条最右，气泡右对齐防溢出裁剪 */}
           <button

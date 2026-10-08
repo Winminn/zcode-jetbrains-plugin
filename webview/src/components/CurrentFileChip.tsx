@@ -73,9 +73,13 @@ function CurrentFileChipInner({ ref, enabled, onEnabledChange, workspace = null 
   const renderLabel = () => {
     if (enabled && ref) {
       const { file, lines } = splitReference(ref)
+      const name = basename(file)
+      // 长文件名缩略（用户提案）：>28 字符中段省略保头尾——尾=扩展名不丢
+      // （如 SomeVeryLo…Going.tsx）；.file-ref__name 的 280px tail-ellipsis 只作兜底
+      const display = name.length > 28 ? truncateMiddle(name, 28) : name
       return (
         <span className="file-ref current-file-chip__ref">
-          <span className="file-ref__name">{basename(file)}</span>
+          <span className="file-ref__name">{display}</span>
           {lines && <span className="file-ref__lines">#{lines}</span>}
         </span>
       )
@@ -96,9 +100,11 @@ function CurrentFileChipInner({ ref, enabled, onEnabledChange, workspace = null 
   return (
     <button
       type="button"
-      className={`current-file-chip${enabled ? ' current-file-chip--active' : ''}`}
+      className={`current-file-chip tip-align-right${enabled ? ' current-file-chip--active' : ''}`}
       data-testid="current-file-chip"
       data-tip={tip}
+      // tip-align-right：chip 钉顶栏最右后，居中气泡会伸出 webview 容器被裁剪
+      // （global.less 已知坑，附件/状态栏开关同款），改贴按钮内缘右对齐
       // 不设 title（JCEF 原生 tooltip 不可控）；也不再渲染自定义 __tip span——
       // 0.3.8 的全局 [data-tip]:hover::after 与它叠加成双 tooltip（真机实测，缺陷见
       // docs/internal/feat/当前文件chip-前端交互重做.md）
