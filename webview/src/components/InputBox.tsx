@@ -149,25 +149,17 @@ export function InputBox({ onSend, isStreaming = false, onStop, disabled = false
   const [inputHeight, setInputHeight] = useState<number | null>(null)
 
   /**
-   * 当前文件上下文 chip 勾选态（提升到 InputBox 单源，CurrentFileChip 为 prop-driven
-   * 纯展示组件）。勾选态持久化在 localStorage，刷新/重开 IDE 后保留。
+   * 当前文件上下文 chip 勾选态（store 单源——2026-10-08 从本组件局部 state 抬入：
+   * 「新建会话自动点亮」设置需要跨组件写入点，见 useStore currentFileEnabled；
+   * CurrentFileChip 仍为 prop-driven 纯展示组件）。
+   * 勾选只管下一条消息：doSend 发送成功即自动取消（发完即关，2026-10-08 拍板）——
+   * 附件全文经 history 持久化留在会话里，后续轮次 AI 仍可见，无需每轮重发；
+   * 切去别的文件查看也不会被下一轮误带。想让 AI 看新版/新选区时重新勾一下即可。
    * 勾选同时是发送闸门：勾选且 ref 非空时 doSend 把 ref 派生为当前文件上下文
    * 附件描述（与 chip 显示同一取值表达式，见 doSend 末尾）。
    */
-  const [currentFileEnabled, setCurrentFileEnabled] = useState<boolean>(() => {
-    try {
-      return localStorage.getItem('zcode.currentFile.enabled') === '1'
-    } catch {
-      return false
-    }
-  })
-  useEffect(() => {
-    try {
-      localStorage.setItem('zcode.currentFile.enabled', currentFileEnabled ? '1' : '0')
-    } catch {
-      // 静默：mock 模式或 storage 禁用时不影响 UI
-    }
-  }, [currentFileEnabled])
+  const currentFileEnabled = useStore((s) => s.currentFileEnabled)
+  const setCurrentFileEnabled = useStore((s) => s.setCurrentFileEnabled)
   /** 工作区路径（CurrentFileChip tooltip 显示相对路径用）*/
   const projectPath = useStore((s) => s.projectPath)
 
@@ -580,8 +572,7 @@ export function InputBox({ onSend, isStreaming = false, onStop, disabled = false
     // 内——zcode.cjs 把附件块排在用户文本之后），Java 按 path+行号读文件切片
     // 内容转 zcode.cjs kind:'file' + textContent 附件——隐式通道：模型收到 Read
     // 工具结果形态的内容块，user bubble 不显示（ZCode-main 源码坐实，服务端从不
-    // 展开文本里的 @路径）。生命周期跟随 IDE 选区——发送/切会话不清不冻，下条
-    // 消息按当时 chip 重新取值。拼在 goal 拦截之后：/goal 是控制意图不是模型
+    // 展开文本里的 @路径）。拼在 goal 拦截之后：/goal 是控制意图不是模型
     // 消息，不携带上下文。
     const currentFileCtx = currentFileEnabled && currentFileRef ? currentFileRef : null
     onSend(
@@ -606,6 +597,10 @@ export function InputBox({ onSend, isStreaming = false, onStop, disabled = false
     setSkillRefs([])
     setImages([])
     setSlashQuery(null)
+    // 发完即关：勾选只管下一条消息，发送成功即取消（勾选灭掉 = 附件已带走的
+    // 回执）。goal 早退路径不经过这里——控制意图不算消息，勾选留给真正的下一条；
+    // 排队消息入队时已把附件快照进参数，这里取消只影响后续发送
+    setCurrentFileEnabled(false)
   }
 
   function clearEditor() {

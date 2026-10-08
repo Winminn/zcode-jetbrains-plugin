@@ -212,6 +212,14 @@
       "hint": "Waits indefinitely by default (no countdown, never auto-closes); plan approvals keep the 5-minute timeout. Plugin-local only, independent of the ZCode client setting",
       "onHint": "Click to disable auto-continue",
       "offHint": "Click to enable auto-continue"
+    },
+    "currentFileTitle": "File context",
+    "currentFileAuto": {
+      "title": "Auto-enable for new sessions",
+      "desc": "When enabled, starting a new session or opening a new tab lights up the file-context chip in the input box, attaching the currently open file to the first message",
+      "hint": "Affects only the first message of a new session: the chip auto-unchecks after sending (one-shot) and later messages carry nothing automatically; switching sessions is unaffected. Off by default — enable it if you use this constantly",
+      "onHint": "Click to disable auto-enable for new sessions",
+      "offHint": "Click to enable auto-enable for new sessions"
     }
   }
 }

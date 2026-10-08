@@ -79,7 +79,7 @@
   },
   "currentFile": {
     "label": "文件上下文",
-    "tooltip": "勾选后随消息附上当前打开的文件路径"
+    "tooltip": "勾选后随下一条消息附上当前打开的文件路径，发完自动关闭"
   },
   "slash": {
     "groupCommands": "命令",

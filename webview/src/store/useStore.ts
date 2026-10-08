@@ -38,6 +38,7 @@ import { getPersisted, setPersisted, removePersisted, entriesWithPrefix, KV_HYDR
 import { readStatusPanelConfig, writeStatusPanelConfig } from '@/utils/statusPanelConfig'
 import { addSteerMarkers, readSteerMarkers } from '@/utils/steerMarkers'
 import { readEnhanceConfig } from '@/utils/enhanceConfig'
+import { readCurrentFileConfig } from '@/utils/currentFileConfig'
 import { sameModel } from '@/utils/modelChoice'
 import { extractBackgroundTaskIdFromContent } from '@/utils/backgroundTask'
 import {
@@ -1041,12 +1042,21 @@ interface StoreState {
   // 形态：'@path' / '@path#L10' / '@path#L10-20' / null（无打开编辑器）
   // 当前只驱动 CurrentFileChip 显示，不参与发送
   currentFileRef: string | null
+  // 文件上下文 chip 勾选态（2026-10-08 从 InputBox 局部 state 抬入：新建会话按设置
+  // 初始化需要跨组件写入点）。发完即关：doSend 发送成功即置 false——勾选只管下一条
+  // 消息；本身不持久化（消息级状态），「新会话自动点亮」偏好走 utils/currentFileConfig
+  //（默认关）。应用点两处：resetToNewSession（新建会话按钮）+ listSessions boot 待命
+  // 分支（新标签/绑定失效，用户实测拍板"新建标签页=新建会话"）；
+  // 切会话/删当前会话/Java 自动 newSession/createSession 响应均不动它
+  currentFileEnabled: boolean
 
   // actions
   init: () => void
   loadSessions: () => void
   /** 拉取当前打开文件 ref（webview mount/重连时触发；Kotlin 同步回包，case 'currentFile' 落 state）*/
   requestCurrentFile: () => void
+  /** 文件上下文 chip 勾选开关（用户点击 chip / doSend 发完即关 / resetToNewSession 按设置初始化）*/
+  setCurrentFileEnabled: (enabled: boolean) => void
   selectSession: (session: SessionInfo) => void
   sendMessage: (text: string, attachments?: SendAttachmentInput[], opts?: { scheduledFireAt?: number; scheduledProviderId?: string; scheduledModelId?: string; hiddenCommand?: boolean }) => void
   /** 进入最后一条用户消息的编辑态（MessageBubble 行内编辑框） */
@@ -1441,6 +1451,7 @@ export const useStore = create<StoreState>((set, get) => ({
   permissionRequest: null,
   askUserPendingActive: false,
   currentFileRef: null,
+  currentFileEnabled: false,
 
   models: [],
   modelsRefreshing: false,
@@ -1671,6 +1682,10 @@ export const useStore = create<StoreState>((set, get) => ({
     // webview mount 时调一次，case 'currentFile' handler 落 state；
     // 之后由 EditorContextTracker 200ms 防抖主动推送。
     sendToJava({ op: 'getCurrentFile' })
+  },
+
+  setCurrentFileEnabled: (enabled) => {
+    set({ currentFileEnabled: enabled })
   },
 
   selectSession: (session) => {
@@ -2104,6 +2119,11 @@ export const useStore = create<StoreState>((set, get) => ({
     get().requeueScheduledQueuesFor(get().currentSessionId)
     set({
       currentSessionId: null,
+      // 「新会话自动点亮文件上下文」偏好（默认关）应用点之一：新建会话按钮手势
+      //（另一处 = listSessions boot 待命分支，新标签=新会话）。点亮也只影响首条
+      // 消息（doSend 发完即关）。切会话/删当前会话/Java 自动 newSession 均不应用
+      //——保守不点亮（utils/currentFileConfig.ts 头注释）
+      currentFileEnabled: readCurrentFileConfig().autoOnNewSession,
       creatingSession: false,
       pendingFirstMessage: null,
       pendingFirstAttachments: null,
@@ -3584,15 +3604,17 @@ export function handleResponse(
       // 恢复职责由 Java 侧 TabState 承担
       if (get().currentSessionId === null) {
         const initialId = getInitialSessionId()
-        if (initialId) {
-          const initial = merged.find((s) => s.sessionId === initialId)
-          if (initial) {
-            console.log(`[store] 恢复标签绑定的会话: ${initialId}`)
-            get().selectSession(initial)
-          } else {
-            // 绑定的会话已被删除 → 待命态（TabState 的 sessionId 由后续懒建会话的 subscribe 更新）
-            console.log('[store] 标签绑定的会话已不存在，保持无会话待命态')
-          }
+        const initial = initialId ? merged.find((s) => s.sessionId === initialId) : undefined
+        if (initial) {
+          console.log(`[store] 恢复标签绑定的会话: ${initialId}`)
+          get().selectSession(initial)
+        } else {
+          // 待命态 = 新会话（2026-10-08 用户实测拍板"新建标签页=新建会话"）：新标签
+          // 无注入绑定 / 绑定会话已被删除均落这里——应用「新会话自动点亮」设置
+          //（resetToNewSession 之外的第二应用点；懒标签激活后走同一 boot 路径一并覆盖）。
+          // 只点不灭：配置关时不动，防抹掉 listSessions 往返窗口内用户的手动勾选
+          if (readCurrentFileConfig().autoOnNewSession) get().setCurrentFileEnabled(true)
+          if (initialId) console.log('[store] 标签绑定的会话已不存在，保持无会话待命态')
         }
       }
       break

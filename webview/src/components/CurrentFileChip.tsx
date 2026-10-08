@@ -11,7 +11,7 @@
  *       勾选 + ref=@path      → 标签 = FileRef 视觉（basename + 可选 :L 行号后缀）
  *   - 阶段 A 自身落 localStorage（zcode.currentFile.enabled）
  *   - 悬浮 tooltip：
- *       未勾选             → 功能说明（"勾选后随消息附上当前打开的文件路径"）
+ *       未勾选             → 功能说明（"勾选后随下一条消息附上当前打开的文件路径…"）
  *       勾选 + ref 非空    → 当前文件路径（工作区内显相对路径，超 50 字符中间省略）
  *       勾选 + ref=null    → 不显示路径，仅功能说明
  *   - 本组件不接 onSend（勾选只控视觉）；发送链路把勾选值拼进 content 文本，
@@ -21,6 +21,12 @@
  *   - enabled 状态从自管 useState 改为 prop-driven：InputBox 持有 single source of truth
  *     并负责 localStorage 持久化；本组件 0 本地 state、0 localStorage 调用
  *   - 视觉效果与 A 阶段完全一致；行为契约变化仅在父组件层处理 filesToInput 推送守门
+ *
+ * 发完即关（2026-10-08 拍板，取代阶段 B 的 localStorage 持久化）：
+ *   - 勾选只管下一条消息：InputBox doSend 发送成功即自动取消勾选——附件全文经
+ *     history 持久化留在会话里，后续轮次 AI 可见无需每轮重发；切去别的文件
+ *     查看也不会被下一轮误带。想让 AI 看新版/新选区时重新点一下即可
+ *   - 持久化整体移除（InputBox 也不再写 LS）；本组件依旧 prop-driven 零变化
  *
  * 视觉：复用 file-ref.less 的 .file-ref（chip 形态），本组件只加图标 + 文字标签样式。
  */

@@ -79,7 +79,7 @@
   },
   "currentFile": {
     "label": "File context",
-    "tooltip": "When enabled, the current file path will be attached to the message"
+    "tooltip": "When enabled, the current file path is attached to your next message only (auto-off after sending)"
   },
   "slash": {
     "groupCommands": "Commands",
