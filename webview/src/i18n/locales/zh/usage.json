@@ -74,7 +74,6 @@
     "noBreakdown": "暂无构成明细（对话后将显示）",
     "hitRate": "平均缓存命中率",
     "glmQuota": "GLM 额度剩余",
-    "glmQuotaWithLevel": "GLM 额度剩余（{{level}}）",
     "quotaLoading": "额度加载中…",
     "noQuota": "暂无额度数据",
     "doubleClickHint": "双击圆环可压缩上下文",

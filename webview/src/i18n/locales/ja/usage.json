@@ -73,7 +73,6 @@
     "noBreakdown": "内訳データなし（対話後に表示されます）",
     "hitRate": "平均キャッシュヒット率",
     "glmQuota": "GLM 利用枠残り",
-    "glmQuotaWithLevel": "GLM 利用枠残り（{{level}}）",
     "quotaLoading": "利用枠を読み込み中…",
     "noQuota": "利用枠データなし",
     "doubleClickHint": "リングをダブルクリックするとコンテキストを圧縮します",

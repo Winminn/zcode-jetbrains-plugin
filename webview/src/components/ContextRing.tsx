@@ -17,13 +17,14 @@ import { useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { useTranslation } from 'react-i18next'
 import { useStore, isBigmodelProvider } from '@/store/useStore'
-import { fmtTokens, limitTitle, fmtResetTimeCompact, fmtResetDate, fmtTime } from '@/utils/format'
+import { fmtTokens, limitTitle, fmtResetTimeCompact, fmtTime } from '@/utils/format'
 import { quotaWindowRows, remainingPercent, formatRemainPct, WINDOW_LABEL_I18N } from '@/utils/quotaWindows'
+import type { QuotaWindowKey } from '@/utils/quotaWindows'
 import type { ContextBreakdownItem, ContextSource } from '@/types/messages'
 import { ConfirmDialog } from './ConfirmDialog'
 import '../styles/input-box.less'
 
-const POP_W = 280
+const POP_W = 320
 
 /** 分类展示元数据（顺序即显示顺序；label 为 i18n key，渲染时经 t() 转文案）*/
 const BREAKDOWN_META: { source: ContextSource; label: string; color: string }[] = [
@@ -38,6 +39,14 @@ const OTHER_SOURCES: ContextSource[] = ['meta_user_context', 'tool_prompt']
 const OTHER_COLOR = '#888888'
 /** "其他"分类的 i18n key */
 const OTHER_LABEL = 'usage.context.categories.other'
+
+/** 额度窗口进度条颜色（对齐官方客户端：5h 蓝 / 周 绿 / 工具 紫 / 兜底行 橙）*/
+const QUOTA_WINDOW_COLORS: Record<QuotaWindowKey | 'other', string> = {
+  '5h': '#4a9eff',
+  weekly: '#4caf50',
+  tool: '#b478f0',
+  other: '#e09850',
+}
 
 interface CategoryRow {
   label: string
@@ -101,6 +110,9 @@ export function ContextRing() {
 
   // 分类明细聚合
   const categoryRows = breakdown && breakdown.length > 0 ? aggregateBreakdown(breakdown) : []
+
+  // 额度窗口行（三标准窗 + 兜底行），弹窗额度区渲染唯一输入
+  const quotaRows = quotaWindowRows(quota?.limits)
 
   const onEnter = () => {
     setHovered(true)
@@ -207,30 +219,43 @@ export function ContextRing() {
               </div>
             )}
 
-            {/* GLM 额度窗口卡（仅 GLM 套餐模型）：官方 Usage Remaining 同构——
-                三标准窗（5h 池/周/工具调用）按 (type,unit,number) 挑选、剩余口径
-                （percentage 为已用占比，展示取 100-已用）；其余形状落「通用额度」行，
-                形状漂移不空窗。reset：5h 当日 HH:mm 紧凑，周/工具只显日期 */}
+            {/* GLM 额度窗口卡（仅 GLM 套餐模型）：官方客户端同构三列并排——
+                每列「窗口名 / 剩余% · 重置时间 / 彩色进度条」（5h 蓝/周 绿/工具 紫），
+                填充即剩余占比。三标准窗按 (type,unit,number) 挑选；其余形状落「通用额度」列
+                （超过 3 列自动换行）。套餐档位（MAX 等）以 chip 徽标缀标题右侧。
+                reset 统一到分（fmtResetTimeCompact：当日 HH:mm / 跨日 MM-dd HH:mm），
+                MCP 额度独立接口不在 quota/limit 返回内，不展示 */}
             {isGlmPlan && (
               <div className="ctx-popover__section">
                 <div className="ctx-popover__title">
-                  {quota?.level ? t('usage.context.glmQuotaWithLevel', { level: quota.level }) : t('usage.context.glmQuota')}
+                  {t('usage.context.glmQuota')}
+                  {quota?.level ? <span className="ctx-popover__quota-badge">{quota.level}</span> : null}
                 </div>
-                {quotaWindowRows(quota?.limits).length ? (
-                  quotaWindowRows(quota?.limits).map(({ key, limit }, i) => {
-                    const remain = remainingPercent(limit)
-                    return (
-                      <div className="ctx-popover__row" key={i}>
-                        <span className="ctx-popover__label">{key === 'other' ? limitTitle(limit) : t(WINDOW_LABEL_I18N[key])}</span>
-                        <span className="ctx-popover__num">{remain !== null ? formatRemainPct(remain) : '--'}</span>
-                        {limit.nextResetTime ? (
-                          <span className="ctx-popover__reset">
-                            {t('usage.quota.resetAt', { time: key === '5h' ? fmtResetTimeCompact(limit.nextResetTime) : fmtResetDate(limit.nextResetTime) })}
-                          </span>
-                        ) : null}
-                      </div>
-                    )
-                  })
+                {quotaRows.length ? (
+                  <div className="ctx-popover__quota-grid">
+                    {quotaRows.map(({ key, limit }, i) => {
+                      const remain = remainingPercent(limit)
+                      return (
+                        <div className="ctx-popover__quota" key={i}>
+                          <div className="ctx-popover__quota-label">
+                            {key === 'other' ? limitTitle(limit) : t(WINDOW_LABEL_I18N[key])}
+                          </div>
+                          <div className="ctx-popover__quota-meta">
+                            <span className="ctx-popover__quota-pct">{remain !== null ? formatRemainPct(remain) : '--'}</span>
+                            {limit.nextResetTime ? (
+                              <span className="ctx-popover__quota-reset">· {fmtResetTimeCompact(limit.nextResetTime)}</span>
+                            ) : null}
+                          </div>
+                          <div className="ctx-popover__quota-bar">
+                            <div
+                              className="ctx-popover__quota-bar-fill"
+                              style={{ width: `${remain ?? 0}%`, background: QUOTA_WINDOW_COLORS[key] }}
+                            />
+                          </div>
+                        </div>
+                      )
+                    })}
+                  </div>
                 ) : quotaLoading ? (
                   <div className="ctx-popover__muted">{t('usage.context.quotaLoading')}</div>
                 ) : usageError ? (

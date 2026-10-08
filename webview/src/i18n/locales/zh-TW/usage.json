@@ -73,7 +73,6 @@
     "noBreakdown": "暫無構成明細（對話後將顯示）",
     "hitRate": "平均快取命中率",
     "glmQuota": "GLM 額度剩餘",
-    "glmQuotaWithLevel": "GLM 額度剩餘（{{level}}）",
     "quotaLoading": "額度載入中…",
     "noQuota": "暫無額度資料",
     "doubleClickHint": "雙擊圓環可壓縮上下文",

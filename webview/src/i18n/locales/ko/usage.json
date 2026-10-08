@@ -73,7 +73,6 @@
     "noBreakdown": "구성 상세 없음(대화 후 표시됨)",
     "hitRate": "평균 캐시 적중률",
     "glmQuota": "GLM 잔여 할당량",
-    "glmQuotaWithLevel": "GLM 잔여 할당량({{level}})",
     "quotaLoading": "할당량 불러오는 중…",
     "noQuota": "할당량 데이터 없음",
     "doubleClickHint": "링을 더블클릭하면 컨텍스트를 압축합니다",

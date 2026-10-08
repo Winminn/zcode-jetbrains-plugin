@@ -554,6 +554,78 @@
     font-variant-numeric: tabular-nums;
   }
 
+  /* 额度窗口区（对齐官方客户端：三列并排，每列 窗口名 / 百分比·重置时间 / 彩色进度条）*/
+  &__quota-grid {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 10px 8px;
+  }
+
+  &__quota {
+    min-width: 0; /* grid 子项防长文案撑破列 */
+  }
+
+  &__quota-label {
+    font-size: 12px;
+    color: var(--text-secondary);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    margin-bottom: 2px;
+  }
+
+  &__quota-meta {
+    display: flex;
+    align-items: baseline;
+    gap: 3px;
+    margin-bottom: 4px;
+    white-space: nowrap;
+  }
+
+  &__quota-pct {
+    color: var(--text-primary);
+    font-size: 12px;
+    font-variant-numeric: tabular-nums;
+  }
+
+  &__quota-reset {
+    color: var(--text-muted);
+    font-size: 10px;
+    font-variant-numeric: tabular-nums;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  &__quota-bar {
+    height: 5px;
+    background: var(--bg-tertiary);
+    border-radius: 3px;
+    overflow: hidden;
+  }
+
+  &__quota-bar-fill {
+    height: 100%;
+    border-radius: 3px;
+    transition: width 0.3s ease;
+  }
+
+  /* 套餐档位徽标（MAX 等）：标题右侧蓝色小 chip（复位标题的 uppercase/字距）*/
+  &__quota-badge {
+    display: inline-block;
+    margin-left: 6px;
+    padding: 0 6px;
+    border-radius: 4px;
+    font-size: 10px;
+    font-weight: 700;
+    line-height: 14px;
+    text-transform: uppercase;
+    letter-spacing: 0.4px;
+    color: #7db8ff;
+    background: rgba(74, 158, 255, 0.14);
+    border: 1px solid rgba(74, 158, 255, 0.35);
+    vertical-align: 1px;
+  }
+
   &__refresh {
     font-size: 11px;
     color: var(--text-muted);
