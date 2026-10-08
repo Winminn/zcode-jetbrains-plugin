@@ -62,7 +62,8 @@ export function parseChangelog(md) {
     }
     if (!cur) continue // 文件头简介（# Changelog 之后的说明段）不属于任何版本块
     if (/^中文:\s*$/.test(line)) { startLang('zh'); continue }
-    if (/^English:\s*$/.test(line)) { startLang('en'); continue }
+    // 英文段标记两形态：`English:` 行（0.3.4 及更早）/ `<h3>English</h3>` 行（0.3.5 起）
+    if (/^English:\s*$/.test(line) || /^<h3>English<\/h3>\s*$/.test(line)) { startLang('en'); continue }
     if (!lang) {
       // 旧格式兼容：无语言标记的块，首个内容行自动开 zh 段
       if (line.trim()) startLang('zh')

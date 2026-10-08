@@ -6,7 +6,7 @@ plugins {
 }
 
 group = "com.zcode.ideaplugin"
-version = "0.3.8"
+version = "0.3.9"
 
 // 从仓库根 CHANGELOG.md 提取「最新一个版本块」（## 标题到下一个 ## 之前），
 // 输出中英双语并列的 HTML：中文段在前（主用户群），<h3>English</h3> 分隔后接英文段
@@ -22,13 +22,15 @@ fun latestChangelogSection(): String {
     val end = if (headings.size > 1) headings[1].range.first else changelog.length
     val section = changelog.substring(start, end).trim()
 
-    // 按语言标记拆段：标记行本身移除；English: 之前（含 ## 版本头）为中文段，之后为英文段
+    // 按语言标记拆段：标记行本身移除；English: / <h3>English</h3>（0.3.5 起的块用 h3
+    // 标记）之前（含 ## 版本头）为中文段，之后为英文段。只认一种标记会把另一语言的
+    // 整段并进当前段（0.3.8 实踩：change-notes 出现转义的 h3 残渣）
     val zhLines = mutableListOf<String>()
     val enLines = mutableListOf<String>()
     var inEnglish = false
     for (line in section.lines()) {
         when (line.trim()) {
-            "English:" -> inEnglish = true
+            "English:", "<h3>English</h3>" -> inEnglish = true
             "中文:" -> Unit // 标记行本身移除
             else -> (if (inEnglish) enLines else zhLines).add(line)
         }
