@@ -34,25 +34,27 @@ This project has exactly one goal: **use ZCode's core capabilities where you wri
 
 ## Features
 
-**Chat** — streaming output (thinking / content / tool calls rendered live), Markdown / Mermaid / code highlighting, thinking-time stats, message queuing (Enter while generating queues the message; queued cards can be sent or removed instantly, or steered into the running turn — the AI receives the instruction mid-turn and adjusts course without interruption, steered messages carry a ⚡ badge), edit-and-resend for the latest user message (auto rewinds that turn and regenerates), in-session scheduled sends (preset time + prompt fired automatically, with target model / new-session options and a cross-session task list), Ctrl+F in-session search (case / whole-word / regex), message anchor navigation (user-message dots + hover preview)
+**Chat** — streaming output (thinking / content / tool calls rendered live), Markdown / Mermaid / code highlighting, thinking-time stats, message queuing (Enter while generating queues the message; queued cards can be sent or removed instantly, or steered into the running turn — the AI receives the instruction mid-turn and adjusts course without interruption, steered messages carry a ⚡ badge, and queued messages can be reordered up/down), edit-and-resend for the latest user message (auto rewinds that turn and regenerates), one-click resend of AI replies (with a clear reason when not allowed), per-session input drafts that survive session switches and IDE restarts, in-session scheduled sends (preset time + prompt fired automatically, with target model / new-session options and a cross-session task list; the AI can create scheduled tasks too), Ctrl+F in-session search (case / whole-word / regex), message anchor navigation (user-message dots + hover preview)
 
-**Multi-tasking** — parallel sessions in multiple tabs (each tab has an isolated context), auto-restore on IDE restart, session list / rename (with AI title regeneration from recent conversation) / search / batch multi-select delete, archiving for rarely-used sessions (auto-archive supported), and one-click forking from any earlier reply (works even while a task is running)
+**Multi-tasking** — parallel sessions in multiple tabs (each tab has an isolated context; the new-session dialog can ask whether to replace the current tab or open a new one), auto-restore on IDE restart, session list / rename (with AI title regeneration from recent conversation) / search / batch multi-select delete, session pinning (shares the same store as the official ZCode desktop client), unread badges (sessions that received messages while out of sight are flagged, cleared on open), red badges for sessions waiting for approval / input, archiving for rarely-used sessions (auto-archive supported), one-click forking from any earlier reply (works even while a task is running), tab renaming
 
-**Process visibility** — live task list (TodoWrite) progress, subagent (Agent) panel with execution-process / final-report popups, file-change stats (click to open in the editor, inline before/after diff), AskUserQuestion interaction dialogs (docked at the bottom, minimizable, waits indefinitely by default, reviewable after the turn), plan-mode (ExitPlanMode) approval dialogs
+**Process visibility** — live task list (TodoWrite) progress, subagent (Agent) panel with execution-process / final-report popups, a background-work hub (status panel groups background tasks / agent tasks), per-turn file-change bar (which files this turn touched, added/removed lines, one-click undo of the whole turn), turn artifact preview cards (files created or modified in the turn, click to preview), file-change stats (click to open in the editor, inline before/after diff), AskUserQuestion interaction dialogs (docked at the bottom, minimizable, waits indefinitely by default, reviewable after the turn), plan-mode (ExitPlanMode) approval panel (docked above the input box, waits indefinitely, accepts feedback to refine the plan)
 
 **Goal mode** — set a long-running goal with `/goal` and it drives itself across multiple turns: after each turn the server independently verifies progress (timeline separator cards show pass/fail plus the next action), auto-continuing until the goal is met; the corner goal card tracks iterations / elapsed time / verifying status in real time, with pause / resume / replace / confirm-to-clear controls, and goal state survives restarts
 
-**Embedded browser** — the Header globe button expands a browser column to the right of the chat area: multiple tabs (globally shared, persist across sessions), back / forward / refresh / address bar / free-size viewport (DevTools device-toolbar style virtual screen) / DevTools / open externally, plus a browser console (CDP) for clearing site data and site overview; the plugin hosts the browser-use reverse protocol, so the AI can drive this browser — navigate, screenshot, execute JS, run playwright locators and CUA mouse/keyboard actions — with zero configuration
+**Embedded browser** — the Header globe button expands a browser column to the right of the chat area: multiple tabs (globally shared, persist across sessions), back / forward / refresh / address bar / free-size viewport (DevTools device-toolbar style virtual screen) / DevTools / open externally, native Ctrl+wheel zoom with a percentage indicator, plus a browser console (CDP) for clearing site data and site overview; the plugin hosts the browser-use reverse protocol, so the AI can drive this browser — navigate, screenshot, execute JS, run playwright locators and CUA mouse/keyboard actions — with zero configuration
 
-**Runtime control** — model dropdown (builtin channels follow the active channel in the ZCode client; manual refresh inside the dropdown), permission mode (build / edit / plan / yolo) and thinking level (per model), adjustable; preselectable in the standby state (before a session exists), applied when the session is created; context-capacity ring (usage breakdown + cache hits), 5-hour / weekly quota queries
+**Runtime control** — model dropdown (builtin channels follow the active channel in the ZCode client; manual refresh inside the dropdown; a Z.ai subscription account channel connects via OAuth with no API key, and the quota page shows the plan usage), permission mode (build / edit / plan / yolo) and thinking level (per model), adjustable; preselectable in the standby state (before a session exists), applied when the session is created; context-capacity ring (usage breakdown + cache hits, double-click to compact the context), 5-hour / weekly quota queries, and a quota banner that warns when the 5-hour pool runs low and shows the reset time
 
-**Settings center** — seven tabs: General (theme / font / language / custom colors + environment paths), Models (builtin channels follow the ZCode client config — only the active one is shown, annotated with how it was resolved: client-selected or fallback; builtin channels support a custom API Key — team-plan users can fill in a team project key from the BigModel open platform to bill the team quota, with the card showing the key actually used for billing (masked by default, revealable) and its source, plus a billing reminder when unset; third-party providers can be toggled; paths follow data-directory migration; add/remove guides you to ZCode config with one-click open), Usage (App usage: local session stats covering third-party models, 7-day / 30-day / all ranges; GLM plan usage: quota cards + model/tool usage curves and detail tables, with the queried credential source and key (masked) labeled), Memory (AGENTS.md instruction memory + auto memory, creatable when missing), Skills (global / project / plugin three-source scan, inline enable/disable), MCP (server list / tool list / connection logs), Other (input-history completion toggle and history management)
+**Settings center** — ten tabs: General (Appearance: theme / font / language / custom colors; Environment: manual paths or auto-detection; Behavior: input-history completion and more), Models (builtin channels follow the ZCode client config — only the active one is shown, annotated with how it was resolved: client-selected or fallback; a Z.ai account channel connects via OAuth; builtin channels support a custom API Key — team-plan users can fill in a team project key from the BigModel open platform to bill the team quota, with the card showing the key actually used for billing (masked by default, revealable) and its source, plus a billing reminder when unset; third-party providers can be toggled, with preset cards for common providers where you only fill in the key; paths follow data-directory migration; add/remove guides you to ZCode config with one-click open), Usage (App usage: local session stats covering third-party models, 7-day / 30-day / all ranges; GLM plan usage: quota cards + model/tool usage curves and detail tables, with the queried credential source and key (masked) labeled), Memory (AGENTS.md instruction memory + auto memory, creatable when missing, full-text search), Skills (global / project / plugin three-source scan, inline enable/disable), Subagents (custom agent definitions), MCP (server list / tool list / connection logs), Browser (embedded browser controls and site-data cleanup), Processes (resident / child / suspected-orphan groups with precise kill), Other (input-history completion toggle and history management)
+
+**Mobile remote sessions** — view and control desktop IDE sessions from the Z.ai mobile app: task list, model selection and device naming work end to end; HTTP proxy environments are supported
 
 **Environment check** — on startup verifies Node.js (≥18) / ZCode CLI / login credentials; on failure the top bar shows a notice with per-item fix entry points and a re-check button (missing credentials no longer block startup — a hint is shown instead); paths can be configured manually and are auto-detected when left blank
 
 **IDE integration** — right-click a file in the project view / editor tab to send it, right-click selected code in the editor to send it to the input box (Ctrl+Alt+K), copy selection reference (path + line numbers); files, memory, skills, and MCP configs all open in the editor with one click
 
-**Input enhancements** — `@` file references (chip + completion; pasted absolute paths or files dragged from the OS become chips), `/` skill invocation, long-paste collapsing, input-history browsing with prefix ghost completion (Tab to accept)
+**Input enhancements** — `@` file references (chip + completion; pasted absolute paths or files dragged from the OS become chips, folders supported), `$` skill mentions (a second skill entry alongside `/` slash commands; same-named skills fold by source), a current-file context chip that follows the editor's active file and selection (checked: carried implicitly with the message, the bubble only shows what you typed), `/` skill invocation, long-paste collapsing, input-history browsing with prefix ghost completion (Tab to accept)
 
 **Multi-language** — 简体中文 / English / 日本語 / 한국어 / 繁體中文, switches automatically with the IDE UI language
 
@@ -60,9 +62,9 @@ This project has exactly one goal: **use ZCode's core capabilities where you wri
 
 **Embedded browser · browser-use host (a highlight of ZCode client, recreated here)**
 
-![Embedded browser: right-side column of the chat area; the AI's browser-use tools drive this browser directly](docs/screenshots/embedded-browser.png)
+![Embedded browser: editor / AI session / embedded browser side by side, showing this plugin's repo page](docs/screenshots/embedded-browser.png)
 
-The Header globe button expands a browser column to the right of the chat area (above): toolbar with back / forward / refresh / address bar / free-size viewport / DevTools / open externally; tabs are globally shared and persist across sessions; the width is draggable and pages survive collapse.
+The Header globe button expands a browser column to the right of the chat area (above: the full IDE with editor, AI session and embedded browser side by side): toolbar with back / forward / refresh / address bar / free-size viewport / DevTools / open externally; tabs are globally shared and persist across sessions; the width is draggable and pages survive collapse.
 
 It is more than a built-in browser — the plugin implements the ZCode app-server's **browser-use host protocol** (reverse requests `interaction/browserList` / `browserExecute`), so when the AI calls browser-use tools they land **with zero configuration** in this embedded JCEF browser:
 
@@ -73,17 +75,19 @@ It is more than a built-in browser — the plugin implements the ZCode app-serve
 - **Free-size viewport**: DevTools device-toolbar style — centered virtual screen in a mailbox, zoom levels, size persistence
 - When playwright is unavailable, the AI degrades **gracefully** with title / get_visible_dom / screenshot, so the pipeline always works
 
-> The screenshot above is an actual scene of the AI opening the webview debug page in the embedded browser — screenshot capture, DOM reading, and GUI acceptance were all self-driven by the AI.
+> The browser column in the screenshot above shows this plugin's own repository page; screenshots, DOM reading and GUI acceptance can all be self-driven by the AI through browser-use.
 
-**Chat & process visibility** (screenshots below are from webview standalone dev mode with mock demo data; the UI is identical inside the IDE)
+**Chat & process visibility** (screenshots below are taken from the real IDE with demo sessions)
 
-| Streaming: thinking blocks / subagent cards / stop button / auto mode switch | Full session: batched tool-group cards / task list / subagent & background notification cards / Mermaid |
+| Streaming: thinking blocks / live subagent counters / stop button | Full session: tool-group cards / task lists / AI summary / per-turn file-change bar with one-click undo |
 | :---: | :---: |
 | ![Streaming](docs/screenshots/streaming.png) | ![Full session](docs/screenshots/chat-main.png) |
 | **Subagent execution popup: task instructions / tool calls / summary** | **Subagent final-report popup: full Markdown reading, switchable with the execution popup** |
 | ![Subagent execution](docs/screenshots/subagent-detail.png) | ![Subagent final report](docs/screenshots/subagent-report.png) |
-| **Plan-mode approval (ExitPlanMode): full plan in Markdown + approve / reject feedback; approving exits plan mode and starts execution** | |
+| **Plan-mode approval (ExitPlanMode): full plan docked above the input box; approve / reject / give feedback to refine the plan; waits indefinitely** | |
 | ![Plan-mode approval](docs/screenshots/plan-mode.png) | |
+| **AskUserQuestion dialog: docked at the bottom, waits indefinitely, reviewable after the turn** | |
+| ![AskUserQuestion dialog](docs/screenshots/ask-dialog.png) | |
 
 **Goal mode (/goal auto-continuing turns)**
 
@@ -91,25 +95,33 @@ It is more than a built-in browser — the plugin implements the ZCode app-serve
 | :---: | :---: |
 | ![Goal mode in progress](docs/screenshots/goal-processing.png) | ![Goal mode complete](docs/screenshots/goal-done.png) |
 
+**Scheduled tasks · mobile remote · runtime control**
+
+| Manually creating a scheduled send (preset time or quick presets, target model / new session) | An AI-created scheduled task (execution card + queued preview before it fires; send now / edit / cancel) |
+| :---: | :---: |
+| ![Scheduled send creation](docs/screenshots/scheduled-send.png) | ![AI-created scheduled task](docs/screenshots/scheduled-task.png) |
+| **Mobile remote pairing: scan to connect and control desktop sessions from the phone (pairing credential masked)** | **Model switcher dropdown: grouped by channel, marked selected / default, with a manage entry** |
+| ![Mobile remote pairing](docs/screenshots/remote-pairing.png) | ![Model switcher](docs/screenshots/model-switcher.png) |
+
 **Input enhancements & multi-tasking**
 
-| `@` file reference completion | `/` skill invocation |
-| :---: | :---: |
-| ![@ file completion](docs/screenshots/input-at.png) | ![/ skill completion](docs/screenshots/input-slash.png) |
-| **Session history (search / multi-select delete)** | **Welcome page (standby preselect of mode & thinking level)** |
-| ![Session history](docs/screenshots/history.png) | ![Welcome page](docs/screenshots/welcome.png) |
+| `@` file reference completion | `$` skill mentions (folded by source) | `/` skill invocation |
+| :---: | :---: | :---: |
+| ![@ file completion](docs/screenshots/input-at.png) | ![$ skill mentions](docs/screenshots/input-dollar.png) | ![Skill completion](docs/screenshots/input-slash.png) |
+| **Session list (pin / unread badges / search / multi-select delete)** | **Welcome page (standby preselect of mode & thinking level)** | |
+| ![Session list](docs/screenshots/history.png) | ![Welcome page](docs/screenshots/welcome.png) | |
 
 **Settings center**
 
-| General (theme / font / language / custom colors + environment paths) | Model management (builtin channel read-only + resolution badge / third-party toggles) |
+| General (theme / font / language / custom colors) | Model management (account channel / provider presets / third-party toggles) |
 | :---: | :---: |
 | ![General settings](docs/screenshots/settings-basic.png) | ![Model management](docs/screenshots/settings-models.png) |
 | **Usage (App usage: local session stats + third-party model details)** | **Memory (instruction / auto memory management)** |
 | ![Usage](docs/screenshots/settings-usage.png) | ![Memory](docs/screenshots/settings-memory.png) |
 | **Skills (three-source scan & enable management)** | **MCP (server list / tool list / connection logs)** |
 | ![Skills](docs/screenshots/settings-skills.png) | ![MCP](docs/screenshots/settings-mcp.png) |
-| **Other (input-history completion & management)** | |
-| ![Other](docs/screenshots/settings-other.png) | |
+| **Processes (resident / child / suspected-orphan, precise kill)** | **Other (input-history completion & management)** |
+| ![Processes](docs/screenshots/settings-process.png) | ![Other](docs/screenshots/settings-other.png) |
 
 ## Quick start
 
