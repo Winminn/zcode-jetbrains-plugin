@@ -3,8 +3,9 @@
  *
  * 阶段 B 行为变更：enabled 状态从组件自管 useState + localStorage 改为 prop-driven
  * （InputBox 持有 single source of truth，组件 0 本地 state / 0 LS 调用）。本文件
- * 测试因此改为显式传 enabled + onEnabledChange；localStorage 持久化由 InputBox 测试
- * 覆盖。
+ * 测试因此改为显式传 enabled + onEnabledChange。
+ * 发完即关（2026-10-08）：localStorage 持久化整体移除（InputBox 也不再写），
+ * 勾选只管下一条消息；发送链路行为断言见 current-file-send.spec.tsx。
  *
  * 视觉契约（阶段 A，2026-08-27 第三轮反馈）：
  *   - 永远渲染（开关 ON+ref=null 不再隐藏整行）
@@ -118,7 +119,7 @@ describe('CurrentFileChip（阶段 A 视觉 + 阶段 B prop-driven）', () => {
     expect(onChange).toHaveBeenLastCalledWith(true)
     // 父组件没回写 enabled：组件仍显示未勾选（prop 没变）
     expect(btn.getAttribute('aria-pressed')).toBe('false')
-    // 阶段 B 关键断言：组件不直接写 localStorage（持久化由 InputBox 持有）
+    // 组件不直接写 localStorage（持久化已随发完即关整体移除，InputBox 也不写）
     expect(localStorage.getItem('zcode.currentFile.enabled')).toBeNull()
   })
 

@@ -75,7 +75,7 @@
   },
   "currentFile": {
     "label": "檔案內容",
-    "tooltip": "勾選後隨訊息附上當前開啟的檔案路徑"
+    "tooltip": "勾選後隨下一則訊息附上當前開啟的檔案路徑，發送後自動關閉"
   },
   "slash": {
     "groupCommands": "命令",

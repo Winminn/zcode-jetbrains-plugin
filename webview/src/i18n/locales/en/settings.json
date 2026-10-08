@@ -218,6 +218,14 @@
       "saved": "Saved",
       "placeholder": "e.g. use feat#/fix# type markers (no scope parentheses); body summarizes what & why first",
       "hint": "Extra requirements for the \"Generate Commit Message with AI\" button in the IDE commit dialog, appended after the built-in spec with priority. Recent commit subjects of this repo are also fed as style reference automatically. Leave empty for the default style."
+    },
+    "currentFileTitle": "File context",
+    "currentFileAuto": {
+      "title": "Auto-enable for new sessions",
+      "desc": "When enabled, starting a new session or opening a new tab lights up the file-context chip in the input box, attaching the currently open file to the first message",
+      "hint": "Affects only the first message of a new session: the chip auto-unchecks after sending (one-shot) and later messages carry nothing automatically; switching sessions is unaffected. Off by default — enable it if you use this constantly",
+      "onHint": "Click to disable auto-enable for new sessions",
+      "offHint": "Click to enable auto-enable for new sessions"
     }
   }
 }
