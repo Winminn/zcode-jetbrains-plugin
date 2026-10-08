@@ -737,35 +737,25 @@
   text-overflow: ellipsis;
   white-space: nowrap;
   /* ≈1.2em（10px 字配 12px）让 CJK 墨迹在行盒内居中：line-height:1 时 10px 汉字
-     墨迹中心高出盒心 ~1.5px（字形整体偏上），12px 时与 codicon 图标基本重合
-     （11px 字配 13px 同理，缩放档位换算自 16px/13px 实测基准） */
+     墨迹中心高出盒心 ~1.5px（字形整体偏上），12px 时与 codicon 图标基本重合 */
   line-height: 12px;
+
+  /* 字号平档 10px（0.3.9 用户反馈底栏选项偏大，撤 --cjk/--xheight 的 11px 补偿档）：
+     对齐 cc-gui 选择器比例（文字 11px @ 编辑器 14px = 0.79，我们 13px 编辑器 → 10px），
+     顶栏（智能体/文件上下文）与底栏（模式/模型/思考）统一同档；
+     TSX 里的 --cjk/--xheight 类名保留作钩子，样式已中性化 */
 
   /* 无模型时的占位文案（请选择模型）：仅弱化色，不用斜体（中文斜体观感差）*/
   &--placeholder {
     color: var(--text-muted);
   }
-
-  /* 中文标签档（思考级别/权限模式按钮）：同 10px 下 CJK 墨迹比 ASCII 模型名显小，
-     单独提一档到 11px（line-height 按上注换算 13px）；模型按钮的拉丁 modelId 保持 10px */
-  &--cjk {
-    font-size: 11px;
-    line-height: 13px;
-  }
-
-  /* 小写拉丁档（模型按钮常态文字）：全小写 modelId（deepseek-v4-flash 等）墨迹主体
-     是 x-height 小写体，高度≈大写 cap 的 72%——同 10px 比 11px 中文标签显小一档，
-     与 --cjk 同档 11px 补偿；含大写的（GLM-5.3，cap 高≈汉字）维持 10px 基准档 */
-  &--xheight {
-    font-size: 11px;
-    line-height: 13px;
-  }
 }
 
 /* 提特异性压 codicon.css 的 .codicon[class*='codicon-'] 简写（0,2,0）——单类
-   (0,1,0) 的 font-size:10px 从未生效，箭头一直按 16px 渲染 */
+   (0,1,0) 的 font-size:10px 从未生效，箭头一直按 16px 渲染。
+   12px：选择器内图标统一档（见下），cc-gui「图标略大于文字」风格按比例适配 */
 .selector-button .selector-button-chevron {
-  font-size: 9px;
+  font-size: 12px;
   line-height: 1;
   flex-shrink: 0;
 }
@@ -787,17 +777,19 @@
 }
 
 /* 思考级别图标（按钮与下拉同款）：codicon 简写默认 16px 在小字号文案旁偏大——
-   火箭（最高）满框绘制尤其明显，压到 11px（嵌套提特异性压 codicon 0,2,0 简写）*/
+   火箭（最高）满框绘制尤其明显，压到 12px（嵌套提特异性压 codicon 0,2,0 简写）；
+   12px = 选择器内图标统一档：cc-gui 14px@11px 文字的「图标略大于文字」比例
+   按 0.79 换算 ≈ 12px@10px */
 .selector-button .thought-level-icon,
 .selector-dropdown-item .thought-level-icon {
-  font-size: 11px;
+  font-size: 12px;
   line-height: 1;
   flex-shrink: 0;
 }
 
-/* 模式图标（ModeSelect 按钮首位裸 codicon）：同样压 codicon 简写 16px 到文字档 */
+/* 模式图标（ModeSelect 按钮首位裸 codicon）：同样压 codicon 简写 16px 到统一档 */
 .selector-button .mode-icon {
-  font-size: 11px;
+  font-size: 12px;
   line-height: 1;
   flex-shrink: 0;
 }
