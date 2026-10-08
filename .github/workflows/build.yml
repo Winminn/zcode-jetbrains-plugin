@@ -54,10 +54,10 @@ jobs:
           echo "✅ zip 结构完整: $ZIP"
 
       # 兼容性验证：检查 deprecated/scheduled-for-removal API 与二进制兼容性。
-      # 选 2024.1（sinceBuild 下限）+ IU-2026.1（untilBuild 上限）两个代表性版本，
-      # 覆盖声明范围的两端；本地要跑全量版本用 ./gradlew :intellij-plugin:runPluginVerifier
+      # 选 2023.3（sinceBuild 下限，与编译 SDK 一致）+ IU-2026.1（untilBuild 上限）
+      # 两个代表性版本，覆盖声明范围的两端；本地要跑全量版本用 ./gradlew :intellij-plugin:runPluginVerifier
       - name: Plugin Verifier (binary compatibility)
-        run: ./gradlew :intellij-plugin:runPluginVerifier -PpluginVerifierIdeVersions=2024.1,IU-2026.1 --console=plain
+        run: ./gradlew :intellij-plugin:runPluginVerifier -PpluginVerifierIdeVersions=2023.3,IU-2026.1 --console=plain
         timeout-minutes: 20
 
       # verifier 报告归档：HTML 含精确的 deprecated API 调用位置（文件:方法）

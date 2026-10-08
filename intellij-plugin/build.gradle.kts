@@ -94,9 +94,11 @@ repositories {
 
 // IntelliJ Platform 配置
 intellij {
-    // 用 Idea Community Edition 2024.1 作为 SDK
+    // 用 Idea Community Edition 2023.3 作为 SDK（编译下限 = sinceBuild 下限，
+    // 源码零改动即可对 2023.3 编译通过；后续新功能不得使用 2024.1+ 独有 API，
+    // verifier 以 2023.3 为下限版本卡住）
     // （会自动下载，约 1.5GB；首次较慢，之后缓存）
-    version.set("2024.1")
+    version.set("2023.3")
     type.set("IC")  // IC = Idea Community
 
     // 用到的插件（Bundled）：Git4Idea = AI Commit Message 的真 diff 源（各家 IDE 均内置；
@@ -123,7 +125,7 @@ tasks {
     }
 
     patchPluginXml {
-        sinceBuild.set("241")  // 2024.1
+        sinceBuild.set("233")  // 2023.3
         untilBuild.set("263.*")  // 兼容到 2026.3
         changeNotes.set(latestChangelogSection())
     }

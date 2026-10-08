@@ -19,8 +19,8 @@
         <p>在 IDEA 里管理 ZCode 会话：列表、查看历史、对话、流式输出，基于 ZCode Protocol（app-server）实现，协议客户端独立可测。</p>
     ]]></description>
 
-    <!-- 兼容的 IDE 版本范围：2024.1+ 全支持（含 2026.x EAP/正式版） -->
-    <idea-version since-build="241" until-build="263.*"/>
+    <!-- 兼容的 IDE 版本范围：2023.3+ 全支持（含 2026.x EAP/正式版） -->
+    <idea-version since-build="233" until-build="263.*"/>
 
     <!-- 依赖 JCEF（嵌入式 Chromium，用于渲染 React UI）。
          2026.2 起 JCEF API 从平台核心剥离为独立捆绑插件 com.intellij.modules.jcef，
