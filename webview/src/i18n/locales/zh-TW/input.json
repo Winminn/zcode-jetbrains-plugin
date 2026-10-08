@@ -73,6 +73,10 @@
     "lines": "（第 {{lines}} 行）",
     "remove": "移除引用"
   },
+  "currentFile": {
+    "label": "檔案內容",
+    "tooltip": "勾選後隨訊息附上當前開啟的檔案路徑"
+  },
   "slash": {
     "groupCommands": "命令",
     "groupSkills": "技能",

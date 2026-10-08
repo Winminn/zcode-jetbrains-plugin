@@ -14,6 +14,7 @@ import com.intellij.openapi.roots.ProjectFileIndex
 import com.intellij.openapi.fileEditor.FileEditorManager
 import com.intellij.openapi.fileChooser.FileChooser
 import com.intellij.openapi.fileChooser.FileChooserDescriptor
+import com.intellij.openapi.fileEditor.FileDocumentManager
 import com.intellij.openapi.vfs.LocalFileSystem
 import com.intellij.openapi.vfs.VirtualFile
 import com.intellij.diff.DiffManager
@@ -241,6 +242,8 @@ class ZCodeToolWindowPanel(
     private var themeBusConn: com.intellij.util.messages.MessageBusConnection? = null
     // OS 文件拖入拦截（AWT DropTarget 挂 JBCefBrowser.component，dispose 时显式 removeComponent）
     private var fileDropTarget: DropTarget? = null
+    // 当前打开文件 + 选区 tracker（initJcef 装上，dispose 释放；onUpdate 主动推 currentFile op）
+    private var editorContextTracker: EditorContextTracker? = null
 
     // ============ 会话内嵌浏览器（AI browser-use 同屏观察用）============
     // 浏览器作为聊天 webview 的右侧分栏，AI 导航时无需切标签页——对齐 ZCode 桌面端
@@ -632,6 +635,28 @@ class ZCodeToolWindowPanel(
         // OS 文件拖入拦截：必须在 component 加入面板后才挂（否则 Swing DnD 无目标组件）
         registerFileDropTarget()
         log.info("JCEF panel initialized")
+
+        // 装上编辑器上下文 tracker：tab 切换 / 选区变化 200ms 防抖后主动推 currentFile op。
+        // 装在 initJcef 末尾：lazy tab 激活后才挂监听（未激活的标签不浪费）。
+        // panel 自身 disposed 时不装（dispose 流程中不应再启动后台任务）。
+        if (disposed) return
+        if (editorContextTracker == null) {
+            editorContextTracker = EditorContextTracker(
+                project = project,
+                onUpdate = { ref ->
+                    // Tracker Alarm 在 SWING_THREAD 跑回调，sendToJs 内部用 invokeLater
+                    // 包装，本线程调安全；disposed 后丢弃（避免释放后还往 JCEF 推）
+                    if (disposed) return@EditorContextTracker
+                    // 当前只驱动 webview 的 CurrentFileChip 显示（topbar 当前文件 chip）
+                    sendToJs(buildJsonObject {
+                        put("op", "currentFile")
+                        // ref: String? 直接序列化——null 自然变成 JSON null，
+                        // 比 ?: JsonNull 在 buildJsonObject DSL 里类型推断更稳
+                        put("ref", ref)
+                    })
+                },
+            )
+        }
     }
 
     /**
@@ -1128,6 +1153,7 @@ if (!window.__ZCODE_LOG_HOOK__) {
                         "remoteUnpair" -> handleRemote { it.unpair() }
                         "checkEnv" -> handleCheckEnv()
                         "envSave" -> handleEnvSave(msg)
+                        "getCurrentFile" -> handleGetCurrentFile(msg)
                         else -> errorResponse("未知 op: $op")
                     }
                     log.info("op=$op handled, sending back to JS")
@@ -1927,6 +1953,14 @@ if (!window.__ZCODE_LOG_HOOK__) {
         } catch (e: Exception) {
             log.warn("Failed to disconnect theme listener: ${e.message}")
         }
+        try {
+            // EditorContextTracker 自身实现 Disposable；busConn 在 Disposer 父链上自动断开，
+            // 这里显式置 null 配合 panel 早期 disposed 守卫，挡掉 200ms 内的挂起回调
+            editorContextTracker?.let { Disposer.dispose(it) }
+        } catch (e: Exception) {
+            log.warn("Failed to release editor context tracker: ${e.message}")
+        }
+        editorContextTracker = null
         try {
             // DropTarget 解绑：AWT 公开 API 没有 removeComponent，
             // 标准做法是置 null 释放引用，让 AWT 在 component dispose 时通过 removeNotify 自动清理 listener 闭包
@@ -5021,13 +5055,20 @@ if (!window.__ZCODE_LOG_HOOK__) {
     }
 
     /**
-     * op:send 的 attachments 数组（webview InputBox 压缩后的图片附件）→ AttachmentInput 列表。
+     * op:send 的 attachments 数组 → AttachmentInput 列表。
+     * 两种条目：图片（InputBox 压缩后的 base64 内联形态，协议通道原生透传）；
+     * 当前文件上下文（kind:'currentFile' 描述——webview 只传 chip 显示的那个
+     * ref 的 path+行号，内容在此解析：IDE Document 优先（未保存修改可见）、
+     * 磁盘兜底，切片/上限见 CurrentFileAttachment）。
      * 非数组 / 空 / 字段缺失均 fail-soft 返回 null（按无附件发送，不阻断消息）。
      */
     private fun parseAttachments(el: JsonElement?): List<AttachmentInput>? {
         val arr = el as? JsonArray ?: return null
         val list = arr.mapNotNull { item ->
             val o = item as? JsonObject ?: return@mapNotNull null
+            if (o["kind"]?.jsonPrimitive?.content == "currentFile") {
+                return@mapNotNull resolveCurrentFileAttachment(o)
+            }
             val dataBase64 = o["dataBase64"]?.jsonPrimitive?.content ?: return@mapNotNull null
             AttachmentInput(
                 kind = "image",
@@ -5038,6 +5079,46 @@ if (!window.__ZCODE_LOG_HOOK__) {
             )
         }
         return list.ifEmpty { null }
+    }
+
+    /** kind:'currentFile' 描述 → kind:'file' 附件；文件不存在 = null（丢弃该条，不阻断发送）*/
+    private fun resolveCurrentFileAttachment(o: JsonObject): AttachmentInput? {
+        val path = o["path"]?.jsonPrimitive?.content?.takeIf { it.isNotBlank() } ?: return null
+        val lineStart = o["lineStart"]?.jsonPrimitive?.intOrNull
+        val lineEnd = o["lineEnd"]?.jsonPrimitive?.intOrNull
+        val (exists, text) = readCurrentFileText(path)
+        if (!exists) {
+            log.info("currentFile attachment dropped, file not found: $path")
+            return null
+        }
+        val resolved = CurrentFileAttachment.resolve(path, lineStart, lineEnd, text)
+        // 手工实测取证点：确认隐式附件已构建（内联 textContent vs 路径引用 localPath）
+        log.info(
+            "currentFile attachment built: $path lines=$lineStart-$lineEnd " +
+                (if (resolved.textContent != null) "inline(${resolved.textContent!!.length} chars)" else "localPath-ref"),
+        )
+        return resolved
+    }
+
+    /**
+     * 当前文件全文读取：IDE Document 优先（编辑器未保存修改与 chip 行号同源——
+     * 行号来自编辑器当前 Document，读磁盘会在未保存时错位）；VFS miss 时 java.nio
+     * 兜底（有损读）。返回 (exists, text?)：text=null 表示存在但不可按文本读（二进制）。
+     * 本 handler 链跑 pooled 线程，runReadAction 可直接调（阻塞等读锁，不碰 EDT）。
+     */
+    private fun readCurrentFileText(path: String): Pair<Boolean, String?> {
+        var result: Pair<Boolean, String?>? = null
+        ApplicationManager.getApplication().runReadAction {
+            val vf = LocalFileSystem.getInstance().findFileByPath(path)
+            if (vf != null && vf.exists()) {
+                val doc = FileDocumentManager.getInstance().getDocument(vf)
+                result = true to doc?.text
+            }
+        }
+        result?.let { return it }
+        val p = runCatching { java.nio.file.Path.of(path) }.getOrNull() ?: return false to null
+        if (!java.nio.file.Files.isRegularFile(p)) return false to null
+        return true to CurrentFileAttachment.readTextLossy(p)
     }
 
     /**
@@ -5130,6 +5211,20 @@ if (!window.__ZCODE_LOG_HOOK__) {
         } else {
             log.warn("copyImage clipboard write failed: $clipErr")
             buildJsonObject { put("op", "imageCopied"); put("ok", false); put("error", clipErr) }
+        }
+    }
+
+    /**
+     * 拉取当前打开文件 ref（同步返回）。
+     * webview mount/重连时调；后续变化由 EditorContextTracker 200ms 防抖主动推送覆盖。
+     * 无打开编辑器 / Tracker 尚未初始化 → ref=null。
+     */
+    private fun handleGetCurrentFile(msg: JsonObject): JsonObject {
+        val ref = editorContextTracker?.snapshot()
+        return buildJsonObject {
+            put("op", "currentFile")
+            // ref: String? 直接序列化——null 自然变成 JSON null
+            put("ref", ref)
         }
     }
 

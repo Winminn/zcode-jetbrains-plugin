@@ -63,6 +63,7 @@ export default function App() {
   const currentModel = useStore((s) => s.currentModel)
   const archivedSessions = useStore((s) => s.archivedSessions)
   const archivedLoading = useStore((s) => s.archivedLoading)
+  const currentFileRef = useStore((s) => s.currentFileRef)
   // action 引用稳定，单独取不触发重渲染
   const init = useStore((s) => s.init)
   const loadSessions = useStore((s) => s.loadSessions)
@@ -331,6 +332,7 @@ export default function App() {
               setPendingSettingsSection('models')
               setCurrentView('settings')
             }}
+            currentFileRef={currentFileRef}
           />
         </div>
 

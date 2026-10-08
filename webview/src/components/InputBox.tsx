@@ -28,7 +28,8 @@ import { useTranslation } from 'react-i18next'
 import { useKeyboard } from '@/hooks/useKeyboard'
 import { useInputHistory, findHistorySuggestion } from '@/hooks/useInputHistory'
 import { useStore } from '@/store/useStore'
-import { FileRef } from './FileRef'
+import { FileRef, splitReference } from './FileRef'
+import { CurrentFileChip } from './CurrentFileChip'
 import { SkillRef } from './SkillRef'
 import { ModelSelect } from './ModelSelect'
 import { PlanBadge } from './PlanBadge'
@@ -41,7 +42,7 @@ import type { ScheduledMessageItem } from '@/store/useStore'
 import { AgentSelect, AgentColorDot } from './AgentSelect'
 import { PromptEnhancerDialog } from './PromptEnhancerDialog'
 import { sendToJava, onMessage } from '@/ipc/bridge'
-import type { JavaResponse, SlashCommand, AgentDef, ImageAttachmentInput } from '@/types/messages'
+import type { JavaResponse, SlashCommand, AgentDef, ImageAttachmentInput, SendAttachmentInput, CurrentFileAttachmentInput } from '@/types/messages'
 import { insertChipAtCursor, insertCommandChipAtCursor, insertSessionChipAtCursor, insertSkillChipAtCursor, insertPasteChipAtCursor, convertCompletedPaths, convertCompletedSessionRefs, convertCompletedSkillRefs, matchSessionRefTrigger, serializeEditor, hasAnyInlineChip, type CmdChipKind } from '@/utils/inlineFileTags'
 import { matchSkillRefTrigger } from '@/utils/skillRefPattern'
 import { relativeTime } from '@/utils/time'
@@ -89,9 +90,24 @@ const BUILTIN_COMMANDS: { name: string; icon?: string }[] = [
 const PASTE_COLLAPSE_LINES = 10
 const PASTE_COLLAPSE_CHARS = 500
 
+/**
+ * chip 显示的 ref（`@path` / `@path#L10` / `@path#L10-20`）→ 当前文件上下文附件
+ * 描述。行号区间解析自 ref 后缀（EditorContextTracker buildLineReference 产物）；
+ * 无行号 = 整文件。纯函数放模块级：doSend 唯一拼点调用，spec 可直接断言产物。
+ */
+function parseCurrentFileAttachment(ref: string): CurrentFileAttachmentInput {
+  const { file, lines } = splitReference(ref.replace(/^@/, ''))
+  const m = lines?.match(/^L(\d+)(?:-(\d+))?$/)
+  return {
+    kind: 'currentFile',
+    path: file,
+    ...(m ? { lineStart: Number(m[1]), lineEnd: Number(m[2] ?? m[1]) } : {}),
+  }
+}
+
 interface Props {
-  /** 发送回调（文本 + 引用文件路径列表 + 图片附件）*/
-  onSend: (text: string, filePaths: string[], attachments: ImageAttachmentInput[]) => void
+  /** 发送回调（文本 + 引用文件路径列表 + 附件：图片内联 / 当前文件上下文描述）*/
+  onSend: (text: string, filePaths: string[], attachments: SendAttachmentInput[]) => void
   /** 是否正在生成（显示停止按钮）*/
   isStreaming?: boolean
   /** 停止生成回调 */
@@ -108,9 +124,11 @@ interface Props {
   onOpenAgentSettings?: () => void
   /** 团队计费提醒条「去配置」：跳设置页模型管理（跳转意图经 store 传递） */
   onOpenModelSettings?: () => void
+  /** 当前打开文件 ref（`@path` / `@path#L10` / `@path#L10-20`）；null = 无文件 */
+  currentFileRef?: string | null
 }
 
-export function InputBox({ onSend, isStreaming = false, onStop, disabled = false, placeholder, currentModel, onModelSelect, onOpenAgentSettings, onOpenModelSettings }: Props) {
+export function InputBox({ onSend, isStreaming = false, onStop, disabled = false, placeholder, currentModel, onModelSelect, onOpenAgentSettings, onOpenModelSettings, currentFileRef = null }: Props) {
   const { t } = useTranslation()
   const editorRef = useRef<HTMLDivElement>(null)
   const wrapperRef = useRef<HTMLDivElement>(null)
@@ -131,6 +149,29 @@ export function InputBox({ onSend, isStreaming = false, onStop, disabled = false
   const [hasText, setHasText] = useState(false)
   /** 输入框高度（拖拽调整，null = 自适应）*/
   const [inputHeight, setInputHeight] = useState<number | null>(null)
+
+  /**
+   * 当前文件上下文 chip 勾选态（提升到 InputBox 单源，CurrentFileChip 为 prop-driven
+   * 纯展示组件）。勾选态持久化在 localStorage，刷新/重开 IDE 后保留。
+   * 勾选同时是发送闸门：勾选且 ref 非空时 doSend 把 ref 派生为当前文件上下文
+   * 附件描述（与 chip 显示同一取值表达式，见 doSend 末尾）。
+   */
+  const [currentFileEnabled, setCurrentFileEnabled] = useState<boolean>(() => {
+    try {
+      return localStorage.getItem('zcode.currentFile.enabled') === '1'
+    } catch {
+      return false
+    }
+  })
+  useEffect(() => {
+    try {
+      localStorage.setItem('zcode.currentFile.enabled', currentFileEnabled ? '1' : '0')
+    } catch {
+      // 静默：mock 模式或 storage 禁用时不影响 UI
+    }
+  }, [currentFileEnabled])
+  /** 工作区路径（CurrentFileChip tooltip 显示相对路径用）*/
+  const projectPath = useStore((s) => s.projectPath)
 
   // @ 补全状态
   const [mentionQuery, setMentionQuery] = useState<string | null>(null)
@@ -542,16 +583,30 @@ export function InputBox({ onSend, isStreaming = false, onStop, disabled = false
     if (images.length > 0 && !currentModelSupportsImages) {
       finalText += `\n\n[附图说明：本消息附带 ${images.length} 张图片。若你无法直接看到图片内容（当前模型配置可能未启用图像直输），图片已由服务端缓存（路径见消息附件标注），请用 Read 工具读取图片文件或调用识图工具查看图片内容后再回答。]`
     }
+    // 当前文件上下文（《当前文件chip-发送链路实现.md》）：发送取值表达式 = chip
+    // 显示表达式（enabled && currentFileRef，与 CurrentFileChip renderLabel 同一
+    // 份 state 同一个式子）——任何时刻 chip 显示了什么，下一条消息就带什么。
+    // 唯一拼点在此：派生为附件描述放 attachments 首位（"顺序靠前"在我方可控范围
+    // 内——zcode.cjs 把附件块排在用户文本之后），Java 按 path+行号读文件切片
+    // 内容转 zcode.cjs kind:'file' + textContent 附件——隐式通道：模型收到 Read
+    // 工具结果形态的内容块，user bubble 不显示（ZCode-main 源码坐实，服务端从不
+    // 展开文本里的 @路径）。生命周期跟随 IDE 选区——发送/切会话不清不冻，下条
+    // 消息按当时 chip 重新取值。拼在 goal 拦截之后：/goal 是控制意图不是模型
+    // 消息，不携带上下文。
+    const currentFileCtx = currentFileEnabled && currentFileRef ? currentFileRef : null
     onSend(
       finalText,
       fileRefs,
-      images.map((i) => ({
-        kind: 'image',
-        filename: i.filename,
-        mimeType: i.mediaType,
-        sizeBytes: i.sizeBytes,
-        dataBase64: i.base64,
-      })),
+      [
+        ...(currentFileCtx ? [parseCurrentFileAttachment(currentFileCtx)] : []),
+        ...images.map((i) => ({
+          kind: 'image' as const,
+          filename: i.filename,
+          mimeType: i.mediaType,
+          sizeBytes: i.sizeBytes,
+          dataBase64: i.base64,
+        })),
+      ],
     )
     record(finalText)
 
@@ -587,16 +642,19 @@ export function InputBox({ onSend, isStreaming = false, onStop, disabled = false
    * 图片附件一并回填附件栏（2026-09-08 修复：此前只回文本，带图排队消息编辑即丢图）。
    * width/height 压缩元数据不回填（0 占位），仅影响再压缩判定，不影响发送载荷。
    */
-  function editQueuedToInput(text: string, attachments?: ImageAttachmentInput[]) {
+  function editQueuedToInput(text: string, attachments?: SendAttachmentInput[]) {
     const el = editorRef.current
     if (!el) return
     const existing = serializeEditor(el, { pasteText: pasteTextResolver }).replace(/\s+$/, '')
     el.textContent = existing ? `${existing}\n${text}` : text
     setHasText(!!el.textContent?.trim())
-    if (attachments?.length) {
+    // 附件只回填图片；currentFile 上下文描述不回填——重发时 doSend 按当时 chip
+    // 显示值重新派生（队列里那份是入队时刻的快照，chip 可能已变）
+    const queuedImages = (attachments ?? []).filter((a): a is ImageAttachmentInput => a.kind === 'image')
+    if (queuedImages.length) {
       setImages((prev) => [
         ...prev,
-        ...attachments.map((a, i) => ({
+        ...queuedImages.map((a, i) => ({
           id: `img_${Date.now()}_${i}_${Math.random().toString(36).slice(2, 6)}`,
           filename: a.filename,
           mediaType: a.mimeType,
@@ -1876,6 +1934,15 @@ export function InputBox({ onSend, isStreaming = false, onStop, disabled = false
             {scheduledCount > 0 && <span className="schedule-entry__badge">{scheduledCount}</span>}
           </div>
           <ContextRing />
+          {/* 当前打开文件上下文（chip 显示 + 勾选持久化；勾选且 ref 非空时
+              doSend 派生附件描述随消息隐式携带，同一取值表达式，见 doSend 末尾）。
+              位置在智能体按钮前（用户定稿） */}
+          <CurrentFileChip
+            ref={currentFileRef}
+            enabled={currentFileEnabled}
+            onEnabledChange={setCurrentFileEnabled}
+            workspace={projectPath}
+          />
           <AgentSelect onManage={onOpenAgentSettings} disabled={disabled} />
           {/* 状态栏收起/展开：显示中显 chevron-down、隐藏中显 chevron-up（用户定稿）；
               推到工具条最右，气泡右对齐防溢出裁剪 */}

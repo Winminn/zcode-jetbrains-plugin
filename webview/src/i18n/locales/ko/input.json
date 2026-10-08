@@ -73,6 +73,10 @@
     "lines": " ({{lines}}행)",
     "remove": "참조 제거"
   },
+  "currentFile": {
+    "label": "파일 컨텍스트",
+    "tooltip": "활성화하면 현재 파일 경로가 메시지에 첨부됩니다"
+  },
   "slash": {
     "groupCommands": "명령어",
     "groupSkills": "스킬",

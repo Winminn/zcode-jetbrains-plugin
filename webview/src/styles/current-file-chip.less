@@ -1,0 +1,94 @@
+/**
+ * 当前文件上下文（InputBox topbar 同行，紧贴 AgentSelect 右侧）
+ *
+ * 形态：原生 checkbox + 标签（文字态 / chip 态）。
+ *   .current-file-chip                容器（label：点击即勾选）
+ *     &__checkbox                       原生 checkbox（小尺寸，紧贴标签）
+ *     &__label                         文字态："文件上下文"
+ *     &__ref                           chip 态：复用 .file-ref（file-ref.less）
+ *   &--active                         勾选 + 有文件时高亮（视觉与上下文条其他元素一致）
+ *
+ * 视觉：与 input-box-topbar 其他控件（context-tool-btn/agent-select）同高，flex 排布由父级控制。
+ */
+
+.current-file-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 22px;
+  padding: 0 6px;
+  // 字号与智能体按钮（.selector-button）一致 10px；勾选态内嵌 .file-ref 自带
+  // 12px/11px 显式字号，下方后代链压回基准（0,3,0 > file-ref 的 0,2,0）
+  font-size: 10px;
+  color: var(--text-secondary);
+  background: var(--bg-hover);
+  border: 1px solid transparent;
+  border-radius: 4px;
+  cursor: pointer;
+  user-select: none;
+  line-height: 1;
+  max-width: 360px;
+  // 阶段 A 兜底：ref 永远 null 时也要让"勾选"看得见
+  // 未勾选 = 透明边框 + muted 文字
+  // 勾选   = accent 边框 + primary 文字 + 更深底色
+  border-color: transparent;
+  transition: border-color 0.12s ease, background 0.12s ease, color 0.12s ease;
+
+  &__icon {
+    width: 14px;
+    height: 14px;
+    flex-shrink: 0;
+    // 未勾选 / ref=null 时：FileIcon 内部 SVG path 强制吃父级 currentColor，
+    // 与智能体按钮的 codicon-robot（继承 text-secondary）颜色保持一致
+    // 勾选 + ref 非空时：恢复 SVG 自身 hardcoded 颜色（不同文件类型不同色，如 md=#42a5f5）
+    // —— 父级不加这个规则，让 SVG path 的 HTML fill 属性（#42a5f5 等）生效
+  }
+
+  &:not(.current-file-chip--active) &__icon svg path {
+    fill: currentColor;
+  }
+
+  &__label {
+    color: var(--text-muted);
+    white-space: nowrap;
+  }
+
+  &__ref {
+    // 复用 file-ref.less 的 chip 视觉；本组件不用 ✕ 按钮，调整 padding 让它更紧凑
+    padding: 2px 6px;
+    max-width: 280px;
+    background: transparent;
+    border: none;
+  }
+
+  // 勾选态内嵌 .file-ref 自带 12px（容器）/11px（__lines）显式字号，统一压回 10px
+  // 基准（与智能体按钮一致）：(0,2,0) 压过 .file-ref 的 (0,1,0)，(0,3,0) 压过
+  // .file-ref .file-ref__lines 的 (0,2,0)，不依赖 import 顺序
+  & &__ref,
+  & &__ref .file-ref__lines {
+    font-size: 10px;
+  }
+
+  &--active {
+    color: var(--text-primary);
+    background: var(--bg-elevated);
+    border-color: var(--accent-primary, var(--border-primary));
+  }
+
+  &--active &__icon {
+    opacity: 1;
+  }
+
+  &--active &__label {
+    color: var(--text-primary);
+  }
+
+  // 内部复用的 .file-ref 没有 data-tip 属性，file-ref.less 的 &:hover::after
+  // （content: attr(data-tip)）会渲染空壳气泡——禁掉（message-bubble.less 有同款处理）。
+  // 本 chip 的悬浮提示完全走全局 [data-tip] 系统（global.less，0.3.8 起，单行 nowrap）：
+  // 曾维护自定义 __tip 气泡（与全局气泡叠成双 tooltip）和局部换行覆盖，均按用户拍板
+  // 回退——样式不动全局，长路径在组件层截断（truncateMiddle 50，见 CurrentFileChip.tsx）。
+  .file-ref:hover::after {
+    display: none;
+  }
+}

@@ -387,6 +387,26 @@ export interface ImageAttachmentInput {
 }
 
 /**
+ * 当前文件上下文附件描述（webview→Java op 层自有形态，不是 zcode.cjs 协议字段）。
+ * InputBox doSend 按 chip 显示值（enabled && currentFileRef 同一取值表达式）派生，
+ * 放 attachments 数组首位；Java 按 path+行号读文件切片内容，转成 zcode.cjs
+ * session/send 的 kind:'file' + textContent 附件发出（ZCode 源码坐实的隐式内容
+ * 通道：模型收到 Read 工具结果形态的 system-reminder，user bubble 不显示）。
+ */
+export interface CurrentFileAttachmentInput {
+  kind: 'currentFile'
+  /** 绝对路径（ref 去 @ 前缀、去 #L 行号后缀）*/
+  path: string
+  /** 选区起始行（1 起，含）；与 lineEnd 成对出现，缺省 = 整文件 */
+  lineStart?: number
+  /** 选区结束行（1 起，含）*/
+  lineEnd?: number
+}
+
+/** session/send 可携带的附件（图片内联 base64 / 当前文件上下文描述）*/
+export type SendAttachmentInput = ImageAttachmentInput | CurrentFileAttachmentInput
+
+/**
  * 编辑附件条目（op:editUserQuery 的 attachments 元素，Java 侧解析为 v4 ref 引用
  * 形态 {ref,fileName,mime,bytes}）。cache=保留的原消息图片（url 为 /zcode-image/
  * 映射或 zcode-artifact://，背后是 zcode.cjs image-cache 落盘文件，直接引用磁盘
@@ -436,7 +456,7 @@ export type JavaRequest =  | { op: 'askUserPendingState' }
   | { op: 'messages'; sessionId: string; workspacePath?: string; reconcile?: boolean; goalRefresh?: boolean }
   | { op: 'subagents'; sessionId: string }
   | { op: 'subagentMessages'; sessionId: string; workspacePath?: string }
-  | { op: 'send'; sessionId: string; text: string; workspacePath?: string; providerId?: string; modelId?: string; thoughtLevel?: string; attachments?: ImageAttachmentInput[] }
+  | { op: 'send'; sessionId: string; text: string; workspacePath?: string; providerId?: string; modelId?: string; thoughtLevel?: string; attachments?: SendAttachmentInput[] }
   /** 剪贴板兜底：JCEF 偶发不把图片暴露给 clipboardData（CC-GUI 用 IDE action 兜底，
    *  我们用按需桥更轻）——Java 读 AWT 剪贴板 DataFlavor.imageFlavor → PNG base64 返回 */
   | { op: 'getClipboardImage' }
@@ -555,6 +575,8 @@ export type JavaRequest =  | { op: 'askUserPendingState' }
   | { op: 'checkEnv' }
   /** 保存环境路径配置：字段缺席=不改该项，空串=清除（回退自动探测）；后端验证通过才落盘 */
   | { op: 'envSave'; nodePath?: string; cliPath?: string }
+  /** 拉取当前打开文件 ref（webview mount/重连时用；Kotlin 同步回包，对应 EditorContextTracker.snapshot）*/
+  | { op: 'getCurrentFile' }
   /** 拉取网络代理配置（与 ZCode 客户端共享的 setting.json 三键） */
   | { op: 'getProxyConfig' }
   /** 保存网络代理三字段（空串=清除该项；写共享 setting.json，客户端重启后同样生效） */
@@ -1289,6 +1311,10 @@ export type JavaResponse =
   /** app-server stderr 解析出的后端模型 API 错误（APICallError 兜底通道）：
    *  429 配额超限等被服务端按可重试分类退避重试，turn 终止帧迟迟不发时的第一现场 */
   | { op: 'backendError'; statusCode?: number; code?: string; message: string }
+  /** 当前打开文件 ref（@path / @path#L10 / @path#L10-20 / null = 无打开编辑器）。
+   *  Kotlin→webview 推送：getCurrentFile 响应 / EditorContextTracker 200ms 防抖推送。
+   *  当前只驱动 CurrentFileChip 显示（topbar 当前文件 chip），不参与发送。 */
+  | { op: 'currentFile'; ref: string | null }
 
 // ============ 流式事件（session/event 透传）============
 // 基于抓包确认（scripts/capture-tool-use.json 的事件汇总）

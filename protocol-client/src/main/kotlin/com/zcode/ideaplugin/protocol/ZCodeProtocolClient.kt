@@ -1901,7 +1901,7 @@ class ZCodeProtocolClient private constructor(
         return r["result"]?.jsonObject ?: JsonObject(emptyMap())
     }
 
-    /** attachments → session/send 请求体（协议通道原生形态 {kind,filename,mimeType,sizeBytes,dataBase64}）*/
+    /** attachments → session/send 请求体（协议通道原生形态 {kind,filename,mimeType,sizeBytes,dataBase64,localPath,textContent}）*/
     private fun buildAttachmentsJson(attachments: List<AttachmentInput>): JsonArray = buildJsonArray {
         attachments.forEach { a ->
             add(buildJsonObject {
@@ -1911,6 +1911,7 @@ class ZCodeProtocolClient private constructor(
                 a.sizeBytes?.let { put("sizeBytes", it) }
                 a.dataBase64?.let { put("dataBase64", it) }
                 a.localPath?.let { put("localPath", it) }
+                a.textContent?.let { put("textContent", it) }
             })
         }
     }
