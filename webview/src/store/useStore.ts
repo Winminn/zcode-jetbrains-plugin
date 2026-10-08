@@ -16,7 +16,7 @@ import { create } from 'zustand'
 import { onMessage, onStreamEvent, onStreamBatch, sendToJava, initBridge, isInJcef, getWorkspacePath, getInitialSessionId } from '@/ipc/bridge'
 import { parseGoalCommand } from '@/utils/goalCommand'
 import { extractTitleExcerpt } from '@/utils/titleExcerpt'
-import type { JavaResponse, SessionInfo, ZCodeMessage, StreamEvent, ModelOption, ModelManageProvider, ProviderSaveDraft, TodoItem, AgentItem, FileChangeItem, QuotaData, ModelUsageData, ToolUsageData, UsageRange, AppUsageData, AppUsageRange, ContextBreakdownItem, ThoughtLevelInfo, SubagentActivity, SubagentInfo, ToolUpdatedPayload, MemoryFileInfo, MemoryDirInfo, MemorySearchHitInfo, SkillInfo, McpServerInfo, McpToolsState, McpLogEntry, EnvStatus, BrowserClearedSite, BrowserDataOverview, AgentDef, AgentDefInput, ImageAttachmentInput, SendAttachmentInput, GoalState, AutoArchiveRecord, ToolPart, SlashCommand, MessagePart, TurnFileChangesMap, TurnFileChangeSummary } from '@/types/messages'
+import type { JavaResponse, SessionInfo, ZCodeMessage, StreamEvent, ModelOption, ModelManageProvider, ProviderSaveDraft, TodoItem, AgentItem, FileChangeItem, QuotaData, ModelUsageData, ToolUsageData, UsageRange, AppUsageData, AppUsageRange, ContextBreakdownItem, ThoughtLevelInfo, SubagentActivity, SubagentInfo, ToolUpdatedPayload, MemoryFileInfo, MemoryDirInfo, MemorySearchHitInfo, SkillInfo, McpServerInfo, McpToolsState, McpLogEntry, EnvStatus, BrowserClearedSite, BrowserDataOverview, AgentDef, AgentDefInput, ImageAttachmentInput, CurrentFileAttachmentInput, SendAttachmentInput, GoalState, AutoArchiveRecord, ToolPart, SlashCommand, MessagePart, TurnFileChangesMap, TurnFileChangeSummary } from '@/types/messages'
 import { applyStreamEvent, isSubagentToolEvent, applySubagentToolEvent, markActivityOutcome, finalizeActivitiesFromNotifications, asSubagentLifecycle, asGoalTargetPayload, looksLikeQuotaError, asSteerDrainedInputs, appendSteerUserMessages } from '@/utils/streamReducer'
 import type { TurnErrorInfo, SubagentLifecyclePayload } from '@/utils/streamReducer'
 import { classifyQuotaError, bannerTriggerKey, providerLimitedMessage } from '@/utils/quotaWindows'
@@ -47,6 +47,7 @@ import { readEnhanceConfig } from '@/utils/enhanceConfig'
 import { readCurrentFileConfig } from '@/utils/currentFileConfig'
 import { sameModel } from '@/utils/modelChoice'
 import { extractBackgroundTaskIdFromContent } from '@/utils/backgroundTask'
+import { fileContextPartFromAttachment } from '@/utils/fileContextParts'
 import {
   buildEditRewindCommand,
   findEditableUserMessage,
@@ -2106,8 +2107,11 @@ export const useStore = create<StoreState>((set, get) => ({
           ...(opts?.scheduledFireAt ? { scheduledFireAt: opts.scheduledFireAt } : {}),
         },
         parts: [
-          // 仅图片附件产生乐观 part；currentFile 上下文附件走隐式通道（zcode.cjs
-          // 转成 file part 存历史，bubble 本就不渲染非图片 file part），此处不落
+          // 图片附件乐观 part（dataUrl 直接渲染）；currentFile 上下文附件乐观
+          // 轻量 file part——气泡 chip 回显「这条消息带了什么」（隐式通道气泡
+          // 本不显示，两来源说明见 utils/fileContextParts 头注释）。乐观消息
+          // 就地改名接服务端 id 后 parts 不被帧覆盖，快照重拉才由服务端同构
+          // part 顶替，chip 无缝接管
           ...(attachments ?? [])
             .filter((a): a is ImageAttachmentInput => a.kind === 'image')
             .map((a) => ({
@@ -2117,6 +2121,9 @@ export const useStore = create<StoreState>((set, get) => ({
               dataBase64: a.dataBase64,
               source: { kind: 'inline' as const, filename: a.filename },
             })),
+          ...(attachments ?? [])
+            .filter((a): a is CurrentFileAttachmentInput => a.kind === 'currentFile')
+            .map(fileContextPartFromAttachment),
           { type: 'text', text },
         ],
       }

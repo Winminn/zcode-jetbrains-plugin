@@ -29,6 +29,8 @@ import { useStore } from '@/store/useStore'
 import { onMessage, sendToJava } from '@/ipc/bridge'
 
 import { renderUserRefChips, hasUserRefChips, type CmdRefInfo } from '@/utils/userRefChips'
+import { collectFileContextChips, type FileContextChip } from '@/utils/fileContextParts'
+import { truncateMiddle } from './CurrentFileChip'
 import { MarkdownBlock } from './MarkdownBlock'
 import { AgentNotificationCard } from './AgentNotificationCard'
 import { AssistantPreviewCards } from './AssistantPreviewCards'
@@ -116,6 +118,7 @@ export const MessageBubble = memo(function MessageBubble({ message, streaming, s
       <UserBubble
         text={userText}
         imageParts={collectImageParts(parts)}
+        fileCtxChips={collectFileContextChips(parts)}
         time={time}
         anchorAttr={anchorAttr}
         searchActive={searchActive}
@@ -151,6 +154,7 @@ const USER_COLLAPSE_CHARS = 500
 function UserBubble({
   text,
   imageParts,
+  fileCtxChips,
   time,
   anchorAttr,
   searchActive,
@@ -161,6 +165,8 @@ function UserBubble({
 }: {
   text: string
   imageParts: Array<ImagePart | FilePart>
+  /** 当前文件上下文附件 chip（隐式通道的气泡回显；两来源见 utils/fileContextParts）*/
+  fileCtxChips: FileContextChip[]
   time: string
   anchorAttr?: string
   searchActive?: boolean
@@ -237,7 +243,10 @@ function UserBubble({
         lines={lines}
         initialImages={imageParts.filter(
           (p): p is FilePart | ImagePart =>
-            (p.type === 'file' && !!p.url) || (p.type === 'image' && !!p.dataBase64),
+            // file 分支仅收图片附件（mime image/*）：当前文件上下文的 file part
+            // url 是磁盘路径，误收会渲染成加载不出内容的伪图片 chip
+            (p.type === 'file' && !!p.url && (p.mime ?? '').startsWith('image/')) ||
+            (p.type === 'image' && !!p.dataBase64),
         )}
       />
     )
@@ -276,6 +285,30 @@ function UserBubble({
           </button>
         )}
       </div>
+      {/* 当前文件上下文注脚（隐式通道回显）：气泡外右对齐，不占正文、不被长文
+          折叠渐隐遮盖——长消息恰是常带上下文的场景，折叠态也要看到带了什么 */}
+      {fileCtxChips.length > 0 && (
+        <div className="msg__filectx">
+          {fileCtxChips.map((c, i) => (
+            <span
+              key={`${c.path}#${c.lineStart ?? ''}-${i}`}
+              className="user-filectx-chip tip-align-right"
+              // 悬浮全路径走全局 [data-tip] CSS 气泡（JCEF 不渲染原生 title，
+              // CurrentFileChip 同款约束）；气泡贴 chip 内缘右对齐（消息区右侧
+              // 居中气泡会伸出 webview 右缘被裁，tip-align-right 向左展开）；
+              // nowrap 单行，超长调用侧中段省略（保盘符头与文件名尾）
+              data-tip={truncateMiddle(c.path, 60)}
+            >
+              <span className="codicon codicon-paperclip user-filectx-chip__attach" />
+              <FileIcon path={c.path} mono className="file-ref__icon file-type-icon" />
+              <span className="file-ref__name">{c.filename}</span>
+              {c.lineStart != null && (
+                <span className="file-ref__lines">#{c.lineStart === c.lineEnd ? `L${c.lineStart}` : `L${c.lineStart}-${c.lineEnd}`}</span>
+              )}
+            </span>
+          ))}
+        </div>
+      )}
       <div className="msg__actions">
         {/* 引用 chip 化的消息才显示「显示原文」切换（普通消息零噪音）*/}
         {hasRefChips && (

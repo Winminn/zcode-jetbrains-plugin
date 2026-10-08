@@ -99,6 +99,54 @@
     }
   }
 
+  /* ============ 当前文件上下文注脚（隐式通道回显）============
+     气泡外右对齐小 chip 排（&--user 的 align-items:flex-end 天然右贴）：
+     不占气泡正文、不被长文折叠渐隐遮盖（长消息恰是常带上下文的场景）。
+     形态=轻底色小圆角（页背景上需要形状，0.3.4「去形状」定案针对的是
+     彩色气泡内），区分色用青绿——上下文用量圆环同款语义色，与正文引用
+     chip 的金黄区分开 */
+  &__filectx {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+    gap: 4px 8px;
+    margin-top: 4px;
+    max-width: 85%;
+
+    .user-filectx-chip {
+      display: inline-flex;
+      align-items: center;
+      gap: 3px;
+      padding: 1px 7px;
+      background: var(--bg-elevated, rgba(127, 127, 127, 0.12));
+      border: 1px solid var(--border-primary, rgba(127, 127, 127, 0.25));
+      border-radius: 7px;
+      max-width: 260px;
+      font-size: 10px;
+      color: var(--color-userctx, #2bb3a3);
+      user-select: none;
+
+      .user-filectx-chip__attach {
+        font-size: 11px;
+      }
+
+      .file-ref__icon {
+        font-size: 11px;
+      }
+
+      .file-ref__name {
+        font-size: 10px;
+        line-height: 1.3;
+        font-family: var(--font-mono);
+      }
+
+      .file-ref__lines {
+        opacity: 0.85;
+        white-space: nowrap;
+      }
+    }
+  }
+
   /* ============ user 消息 hover 操作区（复制 / 编辑，对齐官方客户端）============ */
   &__actions {
     display: flex;

@@ -49,7 +49,7 @@ interface Props {
 }
 
 /** 路径过长时中间省略（全局 tooltip 是 nowrap 单行，过长会被视口裁掉尾部——global.less 约定调用侧截断）*/
-function truncateMiddle(text: string, max: number): string {
+export function truncateMiddle(text: string, max: number): string {
   if (text.length <= max) return text
   const head = Math.ceil((max - 1) / 2)
   const tail = max - 1 - head
