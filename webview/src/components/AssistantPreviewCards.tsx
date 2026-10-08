@@ -6,7 +6,8 @@
  * 去重，重挂载不重发）→ 渲染前批量 checkFilesExist（防闪卡：settled 前不渲染，
  * 已删除文件直接滤掉）→ 轮尾渲染（后提及优先，候选 15 / 渲染 10 上限）。
  *
- * 已知边界（与 B2 更改条一致）：历史窗口外老轮 fileChanges 查询为空 → md/html 抑制；
+ * 已知边界（与 B2 更改条一致）：历史窗口外老轮 fileChanges 查询为空 → 重试窗口耗尽后
+ * md/html 抑制（空/错先经退避重试自愈实时轮落库竞态，见 EMPTY_RETRY_DELAYS_MS）；
  * Office/PDF/音视频不受影响（stat 存在即出卡）。
  *
  * 点击路由：md → IDE 编辑器（openFile）；html → 系统浏览器（openFileSystem，Java 侧
@@ -32,6 +33,16 @@ import '../styles/preview-cards.less'
 /** turnFileChanges 明细路径缓存（key=回复消息 id）：二段出卡/重挂载不重发查询 */
 const changedPathsCache = new Map<string, string[]>()
 const CHANGED_PATHS_CACHE_MAX = 400
+
+/**
+ * 空结果退避重试（实时轮落库竞态修复，2026-10-08）：轮尾气泡挂卡即发查询，而服务端
+ * 该轮 fileChanges 记录（checkpoint 落库/回合头行提交）与最后一个流帧之间有时间差，
+ * 首查常拿到空/错——旧实现把空结果与命中同等缓存且无重试，卡在本 webview 生命周期内
+ * 永不出现（真机实锤：实时对话不出卡、重启重载才补出）。现对空/错在窗口内退避重试，
+ * 耗尽才按空固化（此时缓存空=保留「历史窗口外老轮查空即抑制」的既有边界，重挂载不重烧）。
+ */
+const EMPTY_RETRY_DELAYS_MS = [2000, 5000, 10000]
+const EMPTY_RETRY_WINDOW_MS = 15000
 
 let statRequestSeq = 0
 
@@ -65,7 +76,8 @@ export const AssistantPreviewCards = memo(function AssistantPreviewCards({
     [references],
   )
 
-  // md/html 门控数据：本轮 fileChanges 明细路径（懒拉一次；查询失败按空处理=抑制）
+  // md/html 门控数据：本轮 fileChanges 明细路径（懒拉一次；空/错在退避窗口内重试，
+  // 耗尽才按空固化并缓存——见 EMPTY_RETRY_DELAYS_MS 注释）
   const [changedPaths, setChangedPaths] = useState<string[] | null>(null)
   useEffect(() => {
     if (!needsChanges) return
@@ -80,22 +92,47 @@ export const AssistantPreviewCards = memo(function AssistantPreviewCards({
     }
     if (!sessionId) return
     let disposed = false
+    let retryTimer: ReturnType<typeof setTimeout> | null = null
+    let retryCount = 0
+    const startedAt = Date.now()
+    const cachePaths = (paths: string[]) => {
+      if (changedPathsCache.size >= CHANGED_PATHS_CACHE_MAX) {
+        const first = changedPathsCache.keys().next().value
+        if (first !== undefined) changedPathsCache.delete(first)
+      }
+      changedPathsCache.set(messageId, paths)
+    }
+    // 空/错统一处理：窗口内退避重试（轮末落库竞态自愈）；耗尽→固化空并缓存
+    const handleUnavailable = () => {
+      if (disposed) return
+      if (retryCount < EMPTY_RETRY_DELAYS_MS.length && Date.now() - startedAt < EMPTY_RETRY_WINDOW_MS) {
+        if (retryTimer) clearTimeout(retryTimer)
+        retryTimer = setTimeout(() => {
+          retryCount++
+          if (!disposed) sendToJava({ op: 'turnFileChanges', sessionId, messageId })
+        }, EMPTY_RETRY_DELAYS_MS[retryCount])
+        return
+      }
+      cachePaths([])
+      setChangedPaths([])
+    }
     const off = onMessage((msg) => {
       if (msg.op === 'turnFileChangesResult' && msg.messageId === messageId) {
         const paths = msg.data.state === 'reverted' ? [] : msg.data.items.map((it) => it.path)
-        if (changedPathsCache.size >= CHANGED_PATHS_CACHE_MAX) {
-          const first = changedPathsCache.keys().next().value
-          if (first !== undefined) changedPathsCache.delete(first)
+        if (paths.length > 0) {
+          cachePaths(paths)
+          setChangedPaths(paths)
+        } else {
+          handleUnavailable()
         }
-        changedPathsCache.set(messageId, paths)
-        if (!disposed) setChangedPaths(paths)
       } else if (msg.op === 'turnFileChangesError') {
-        if (!disposed) setChangedPaths([])
+        handleUnavailable()
       }
     })
     sendToJava({ op: 'turnFileChanges', sessionId, messageId })
     return () => {
       disposed = true
+      if (retryTimer) clearTimeout(retryTimer)
       off()
     }
   }, [needsChanges, fcState, messageId, sessionId])

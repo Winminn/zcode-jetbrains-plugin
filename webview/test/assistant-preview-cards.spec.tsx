@@ -7,7 +7,7 @@
  */
 // @vitest-environment jsdom
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { render, screen, fireEvent, cleanup, waitFor } from '@testing-library/react'
+import { render, screen, fireEvent, cleanup, waitFor, act } from '@testing-library/react'
 
 const messageHandlers = new Set<(msg: unknown) => void>()
 const sentRequests: Array<Record<string, unknown>> = []
@@ -188,3 +188,105 @@ function container_result_empty(): boolean {
   expect(document.querySelector('.apc')).toBeNull()
   return true
 }
+
+/**
+ * 空结果退避重试回归（2026-10-08 真机缺陷）：实时轮尾挂卡即查，服务端该轮
+ * fileChanges 落库与最后一个流帧之间有时间差，旧实现空结果与命中同等缓存且无重试
+ * → 卡在本 webview 生命周期内永不出现（真机：实时不出卡、重启重载才补出）。
+ * 用独立消息 id（msg_r*）防模块级 changedPathsCache 串扰。
+ */
+describe('AssistantPreviewCards 空结果退避重试（实时轮落库竞态）', () => {
+  beforeEach(() => {
+    vi.useFakeTimers()
+  })
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
+  /** effect/状态刷帧（fake timers 下用时间推进代替 waitFor） */
+  const flush = () => act(async () => { await vi.advanceTimersByTimeAsync(0) })
+  const queries = () => sentRequests.filter((r) => r.op === 'turnFileChanges')
+  const card = () => document.querySelector('.apc__row')
+  /** 门控命中后的二段 stat 应答（settled 出卡） */
+  const respondStatExists = () => {
+    sentRequests
+      .filter((r) => r.op === 'checkFilesExist')
+      .forEach((r) => statResultFor(r, () => true))
+  }
+
+  it('空结果按退避表重发查询，命中后出卡；命中即停（实时轮竞态自愈）', async () => {
+    render(<AssistantPreviewCards messageId="msg_r1" text="页面已生成 probe/page.html 试试" />)
+    await flush()
+    expect(queries().length).toBe(1)
+    respond({ op: 'turnFileChangesResult', messageId: 'msg_r1', data: { state: 'active', items: [] } })
+    // 第 1 档 2s 后重发
+    await act(async () => { await vi.advanceTimersByTimeAsync(2000) })
+    expect(queries().length).toBe(2)
+    respond({ op: 'turnFileChangesResult', messageId: 'msg_r1', data: { state: 'active', items: [] } })
+    // 第 2 档 5s 后再发，此时「服务端落库完成」→ 命中
+    await act(async () => { await vi.advanceTimersByTimeAsync(5000) })
+    expect(queries().length).toBe(3)
+    respond({
+      op: 'turnFileChangesResult',
+      messageId: 'msg_r1',
+      data: { state: 'active', items: [{ path: 'probe/page.html', additions: 1, deletions: 0 }] },
+    })
+    await flush()
+    respondStatExists()
+    await flush()
+    expect(card()).not.toBeNull()
+    expect(card()!.textContent).toContain('page.html')
+    // 命中即缓存+停查：时间任意推进不再发查询
+    await act(async () => { await vi.advanceTimersByTimeAsync(30000) })
+    expect(queries().length).toBe(3)
+  })
+
+  it('命中写缓存：重挂载不再发门控查询，补一次 stat 往返后直接出卡', async () => {
+    const first = render(<AssistantPreviewCards messageId="msg_r2" text="页面已生成 probe/page.html 试试" />)
+    await flush()
+    respond({
+      op: 'turnFileChangesResult',
+      messageId: 'msg_r2',
+      data: { state: 'active', items: [{ path: 'probe/page.html', additions: 1, deletions: 0 }] },
+    })
+    await flush()
+    respondStatExists()
+    await flush()
+    expect(card()).not.toBeNull()
+    first.unmount()
+    const second = render(<AssistantPreviewCards messageId="msg_r2" text="页面已生成 probe/page.html 试试" />)
+    await flush()
+    // 门控查询走缓存不再发；stat 无缓存需重走往返
+    expect(queries().length).toBe(1)
+    respondStatExists()
+    await flush()
+    expect(card()).not.toBeNull()
+    expect(card()!.textContent).toContain('page.html')
+    second.unmount()
+  })
+
+  it('窗口耗尽仍空 → 固化为空并缓存（老轮查空即抑制边界保留，重挂载不重烧）', async () => {
+    render(<AssistantPreviewCards messageId="msg_r3" text="页面已生成 probe/page.html 试试" />)
+    await flush()
+    expect(queries().length).toBe(1)
+    respond({ op: 'turnFileChangesResult', messageId: 'msg_r3', data: { state: 'active', items: [] } })
+    await act(async () => { await vi.advanceTimersByTimeAsync(2000) })
+    respond({ op: 'turnFileChangesResult', messageId: 'msg_r3', data: { state: 'active', items: [] } })
+    await act(async () => { await vi.advanceTimersByTimeAsync(5000) })
+    respond({ op: 'turnFileChangesResult', messageId: 'msg_r3', data: { state: 'active', items: [] } })
+    // 第 3 档 10s 到点重发（累计 17s），空应答到达时重试额度耗尽 → 固化
+    await act(async () => { await vi.advanceTimersByTimeAsync(10000) })
+    expect(queries().length).toBe(4)
+    respond({ op: 'turnFileChangesResult', messageId: 'msg_r3', data: { state: 'active', items: [] } })
+    await flush()
+    expect(card()).toBeNull()
+    await act(async () => { await vi.advanceTimersByTimeAsync(30000) })
+    expect(queries().length).toBe(4)
+    // 固化空已缓存：重挂载不再发查询
+    cleanup()
+    render(<AssistantPreviewCards messageId="msg_r3" text="页面已生成 probe/page.html 试试" />)
+    await flush()
+    expect(queries().length).toBe(4)
+    expect(card()).toBeNull()
+  })
+})
