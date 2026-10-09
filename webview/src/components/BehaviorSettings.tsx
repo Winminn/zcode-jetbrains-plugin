@@ -21,6 +21,11 @@
  * 不同源的插件自有配置——开启后 Agent 提问 5 分钟未回答自动继续；关闭（默认）
  * 则当前和后续提问一直等待回答（弹窗无倒计时不自动关闭）。persist kv 通道存储，
  * Kotlin 侧（ZCodeAskUserConfig）即时读取，无消息往返。
+ *
+ * 文件上下文新会话自动启用（默认关闭，utils/currentFileConfig.ts）：开启后
+ * 新建会话（按钮或新开标签页）自动点亮输入框的文件上下文 chip——仅影响新会话
+ * 首条消息（发完即关）；读取方 = resetToNewSession + listSessions boot 待命分支
+ * （均调用时取值），无变更事件。
  */
 import { useMemo, useState } from 'react'
 import { useTranslation } from 'react-i18next'
@@ -30,6 +35,8 @@ import { readNotifyConfig, writeNotifyConfig } from '@/utils/notifyConfig'
 import { readEnhanceConfig, writeEnhanceConfig, type EnhanceModel } from '@/utils/enhanceConfig'
 import { readTurnCollapseConfig, writeTurnCollapseConfig, type TurnCollapseConfig } from '@/utils/turnCollapseConfig'
 import { readAskUserAutoConfig, writeAskUserAutoConfig } from '@/utils/askUserConfig'
+import { readCommitPromptConfig, writeCommitPromptConfig } from '@/utils/commitPromptConfig'
+import { readCurrentFileConfig, writeCurrentFileConfig } from '@/utils/currentFileConfig'
 import { useStore } from '@/store/useStore'
 import '../styles/basic-settings.less'
 import '../styles/agent-select.less'
@@ -43,11 +50,30 @@ export function BehaviorSettings() {
   const [modelOpen, setModelOpen] = useState(false)
   // 提问自动继续（插件自有 persist kv 配置，默认关=一直等待回答）
   const [askUserAuto, setAskUserAuto] = useState(readAskUserAutoConfig)
+  // 文件上下文新会话自动点亮（persist kv 配置，默认关；读取方 = store.resetToNewSession）
+  const [currentFileAuto, setCurrentFileAuto] = useState(readCurrentFileConfig)
+
+  // AI 提交信息附加要求（persist kv 配置，IDE 提交框 AI 按钮读取；失焦即存）
+  const [commitPrompt, setCommitPrompt] = useState(readCommitPromptConfig)
+  const [commitPromptSaved, setCommitPromptSaved] = useState(false)
+
+  const saveCommitPrompt = (text: string) => {
+    setCommitPrompt(text)
+    writeCommitPromptConfig(text)
+    setCommitPromptSaved(true)
+    window.setTimeout(() => setCommitPromptSaved(false), 1500)
+  }
 
   const updateAskUserAuto = (patch: Partial<typeof askUserAuto>) => {
     const next = { ...askUserAuto, ...patch }
     setAskUserAuto(next)
     writeAskUserAutoConfig(next)
+  }
+
+  const updateCurrentFileAuto = (patch: Partial<typeof currentFileAuto>) => {
+    const next = { ...currentFileAuto, ...patch }
+    setCurrentFileAuto(next)
+    writeCurrentFileConfig(next)
   }
 
   // 悬浮弹窗时长输入（秒）本地态：允许编辑中间态（空串），合法整数才落配置，失焦回显
@@ -287,6 +313,47 @@ export function BehaviorSettings() {
         <small className="basic-settings__hint">
           <span className="codicon codicon-info" />
           <span>{t('settings.behavior.askUserAuto.hint')}</span>
+        </small>
+      </section>
+      <section className="basic-settings__section">
+        <div className="basic-settings__field-header">
+          <span className="codicon codicon-git-commit" />
+          <span className="basic-settings__field-label">{t('settings.behavior.commitPrompt.title')}</span>
+          {commitPromptSaved && <span className="basic-settings__saved-hint">{t('settings.behavior.commitPrompt.saved')}</span>}
+        </div>
+        <textarea
+          className="basic-settings__textarea"
+          value={commitPrompt}
+          placeholder={t('settings.behavior.commitPrompt.placeholder')}
+          onChange={(e) => setCommitPrompt(e.target.value)}
+          onBlur={(e) => {
+            // 内容有实际变化才写（失焦即存，避免每次点击都触发 kv 回存）
+            if (e.target.value !== readCommitPromptConfig()) saveCommitPrompt(e.target.value)
+          }}
+          rows={3}
+        />
+        <small className="basic-settings__hint">
+          <span className="codicon codicon-info" />
+          <span>{t('settings.behavior.commitPrompt.hint')}</span>
+        </small>
+      </section>
+      <section className="basic-settings__section">
+        <div className="basic-settings__field-header">
+          <span className="codicon codicon-file-code" />
+          <span className="basic-settings__field-label">{t('settings.behavior.currentFileTitle')}</span>
+        </div>
+        <SettingToggle
+          icon="codicon-file-code"
+          title={t('settings.behavior.currentFileAuto.title')}
+          desc={t('settings.behavior.currentFileAuto.desc')}
+          on={currentFileAuto.autoOnNewSession}
+          onToggle={() => updateCurrentFileAuto({ autoOnNewSession: !currentFileAuto.autoOnNewSession })}
+          onHint={t('settings.behavior.currentFileAuto.onHint')}
+          offHint={t('settings.behavior.currentFileAuto.offHint')}
+        />
+        <small className="basic-settings__hint">
+          <span className="codicon codicon-info" />
+          <span>{t('settings.behavior.currentFileAuto.hint')}</span>
         </small>
       </section>
     </>

@@ -6,7 +6,8 @@
     "refresh": "할당량 새로 고침",
     "loading": "불러오는 중…",
     "empty": "할당량 데이터 없음",
-    "resetAt": "리셋 {{time}}"
+    "resetAt": "리셋 {{time}}",
+    "usedPct": "사용 {{pct}}%"
   },
   "plan": {
     "tab": "GLM 플랜 사용량",
@@ -71,8 +72,7 @@
     "titleBreakdown": "컨텍스트 구성",
     "noBreakdown": "구성 상세 없음(대화 후 표시됨)",
     "hitRate": "평균 캐시 적중률",
-    "glmQuota": "GLM 할당량",
-    "glmQuotaWithLevel": "GLM 할당량({{level}})",
+    "glmQuota": "GLM 잔여 할당량",
     "quotaLoading": "할당량 불러오는 중…",
     "noQuota": "할당량 데이터 없음",
     "doubleClickHint": "링을 더블클릭하면 컨텍스트를 압축합니다",
@@ -86,5 +86,24 @@
       "mcpTools": "MCP 도구",
       "other": "기타"
     }
+  },
+  "windows": {
+    "fiveHours": "5시간 풀",
+    "weekly": "주간 할당량",
+    "toolCalls": "도구 호출"
+  },
+  "banner": {
+    "exhausted": "{{names}} 모두 사용",
+    "exhaustedReset": "{{names}} 모두 사용, {{time}} 재설정",
+    "exhaustedGeneric": "플랜 할당량이 모두 사용되었습니다",
+    "low": "{{name}} 잔여 {{pct}}",
+    "lowReset": "{{name}} 잔여 {{pct}}, {{time}} 재설정",
+    "remainPct": "{{pct}}%",
+    "concurrent": "모델 동시 실행 한도에 도달했습니다. 잠시 후 다시 시도하세요",
+    "providerLimited": "공급자가 할당량/플랜 제한을 반환했습니다",
+    "rateLimited": "요청이 너무 많습니다. 잠시 후 다시 시도하세요",
+    "refresh": "할당량 새로 고침",
+    "dismiss": "닫기",
+    "dismissAria": "할당량 알림 닫기"
   }
 }

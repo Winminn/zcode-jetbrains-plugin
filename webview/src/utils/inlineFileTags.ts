@@ -16,6 +16,7 @@
 import { getFileIcon, getFolderIcon } from '@/utils/fileIcons'
 import { splitReference, basename, refTooltip } from '@/components/FileRef'
 import { SESS_MD_RE, SESS_BARE_RE, sessionRefShortLabel, sessionRefTip } from '@/utils/sessionRefPattern'
+import { SKILL_MD_RE, SKILL_BARE_RE, skillRefText, unescapeSkillMd } from '@/utils/skillRefPattern'
 
 const CHIP_CLASS = 'file-ref--inline'
 const CMD_CHIP_CLASS = 'cmd-ref--inline'
@@ -67,6 +68,112 @@ export function hasAnyInlineChip(el: HTMLElement): boolean {
   return !!el.querySelector(
     `.${CHIP_CLASS}, .${CMD_CHIP_CLASS}, .${SESS_CHIP_CLASS}, .${PASTE_CHIP_CLASS}`,
   )
+}
+
+// ============ 内联技能提及 chip（$ 面板选中，对齐官方 MentionPlugin 三 trigger）============
+//
+// 与命令 chip 同视觉同结构（cmd-ref--skill 紫色 wand），多两个属性：
+//   data-skill="1"  序列化走 skillRefText（[$名称](路径) / 裸 $名称），区别于命令的 /name
+//   data-path       技能目录绝对路径（Kotlin 扫描器透出；缺省=裸 token 形态）
+
+/** 构造内联技能 chip 的 HTML（结构复用命令 chip；tip 完整路径/名称）*/
+export function buildSkillChipHTML(name: string, path?: string, description?: string): string {
+  const tip = path ? `$${name} — ${path}` : `$${name}${description ? ` — ${description}` : ''}`
+  return (
+    `<span class="cmd-ref cmd-ref--inline cmd-ref--skill" contenteditable="false" data-cmd="${escapeHtml(name)}" data-skill="1"` +
+    (path ? ` data-path="${escapeHtml(path)}"` : '') +
+    ` data-tip="${escapeHtml(tip)}">` +
+    `<span class="codicon codicon-wand cmd-ref__icon"></span>` +
+    `<span class="cmd-ref__name">${escapeHtml(name)}</span>` +
+    `<button class="cmd-ref__remove" type="button" tabindex="-1">✕</button>` +
+    `</span>`
+  )
+}
+
+/** 在当前光标位置插入内联技能 chip（chip 后补空格，光标移空格后可继续输入）*/
+export function insertSkillChipAtCursor(el: HTMLElement, name: string, path?: string, description?: string): void {
+  el.focus()
+  const sel = window.getSelection()
+  let range: Range
+  if (sel && sel.rangeCount > 0 && el.contains(sel.anchorNode)) {
+    range = sel.getRangeAt(0)
+    range.deleteContents()
+    range.collapse(true)
+  } else {
+    range = document.createRange()
+    range.selectNodeContents(el)
+    range.collapse(false)
+  }
+  const tpl = document.createElement('template')
+  tpl.innerHTML = buildSkillChipHTML(name, path, description)
+  const chip = tpl.content.firstElementChild as HTMLElement | null
+  if (!chip) return
+  range.insertNode(chip)
+  const space = document.createTextNode(' ')
+  chip.after(space)
+  if (sel) {
+    const after = document.createRange()
+    after.setStartAfter(space)
+    after.collapse(true)
+    sel.removeAllRanges()
+    sel.addRange(after)
+  }
+}
+
+/**
+ * 把编辑器里"已结束"的 $ 技能提及文本转成内联 chip（粘贴/历史回填/队列回填场景）。
+ * markdown 链接形态（[$名称](路径)）任意位置可转；裸 token $名称 要求词边界且
+ * 命中 skillNames 白名单（$5/成本$100 这类金额不转）。
+ * @param skillResolver 裸 token 白名单反查：返回 undefined=未知名（不转），
+ *                      空串=知名但无路径（转无 path chip），非空=路径
+ * @returns 是否发生了转换
+ */
+export function convertCompletedSkillRefs(
+  el: HTMLElement,
+  skillResolver?: (name: string) => string | undefined,
+): boolean {
+  let converted = false
+  for (let guard = 0; guard < 30; guard++) {
+    const { full, spans } = collectEditableText(el)
+    let hit: { start: number; end: number; name: string; path?: string } | null = null
+
+    SKILL_MD_RE.lastIndex = 0
+    let m: RegExpExecArray | null
+    while ((m = SKILL_MD_RE.exec(full))) {
+      // 组1 恒为 $ 符号（正则保证只匹配技能链接形态，普通 md 链接天然不命中）
+      hit = {
+        start: m.index,
+        end: m.index + m[0].length,
+        name: unescapeSkillMd(m[2] ?? ''),
+        path: unescapeSkillMd(m[3] ?? '') || undefined,
+      }
+      break
+    }
+    if (!hit) {
+      SKILL_BARE_RE.lastIndex = 0
+      while ((m = SKILL_BARE_RE.exec(full))) {
+        const name = m[2]
+        const resolved = skillResolver?.(name)
+        if (resolved === undefined) continue // 白名单外不转（未知名保留原文）
+        const start = m.index + m[1].length
+        hit = { start, end: start + name.length + 1, name, path: resolved || undefined }
+        break
+      }
+    }
+    if (!hit) break
+
+    const range = offsetToRange(spans, hit.start, hit.end)
+    if (!range) break
+    range.deleteContents()
+    const tpl = document.createElement('template')
+    tpl.innerHTML = buildSkillChipHTML(hit.name, hit.path)
+    const chip = tpl.content.firstElementChild as HTMLElement | null
+    if (!chip) break
+    range.insertNode(chip)
+    chip.after(document.createTextNode(' '))
+    converted = true
+  }
+  return converted
 }
 
 /** 收集编辑器内所有内联 chip 的路径（发送时合并引用列表用）*/
@@ -539,6 +646,7 @@ export interface SerializeOptions {
 /**
  * 序列化编辑器内容为纯文本（发送用）：
  * 内联文件 chip → @data-path（含 #L10-20 行号引用），内联命令 chip → /data-cmd，
+ * 内联技能 chip（data-skill）→ [$名称](路径) / 裸 $名称（$ 技能提及协议），
  * 内联会话 chip → [#标题](#sess_id)（ReadSessionContext 引用协议），
  * 内联粘贴 chip → 原文按位展开（pasteText resolver 取回），BR/DIV → 换行。
  */
@@ -556,6 +664,15 @@ export function serializeEditor(el: HTMLElement, opts?: SerializeOptions): strin
       return
     }
     if (elm.classList?.contains(CMD_CHIP_CLASS)) {
+      // 技能提及 chip（data-skill 标记）序列化为 [$名称](路径) / 裸 $名称（$ 面板语义，
+      // 官方 mentionMarkdown 同款双形态）；普通命令 chip 序列化为 /name
+      if (elm.getAttribute('data-skill') === '1') {
+        out += skillRefText(
+          elm.getAttribute('data-cmd') ?? '',
+          elm.getAttribute('data-path') ?? undefined,
+        )
+        return
+      }
       out += `/${elm.getAttribute('data-cmd') ?? ''}`
       return
     }

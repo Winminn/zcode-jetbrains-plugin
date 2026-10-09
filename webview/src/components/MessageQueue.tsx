@@ -21,7 +21,7 @@ import '../styles/message-queue.less'
 
 interface Props {
   /** 编辑队列消息：组件内已移出队列，回调负责把文本回填输入框、图片回填附件栏 */
-  onEdit?: (text: string, attachments?: import('@/types/messages').ImageAttachmentInput[]) => void
+  onEdit?: (text: string, attachments?: import('@/types/messages').SendAttachmentInput[]) => void
 }
 
 export function MessageQueue({ onEdit }: Props) {

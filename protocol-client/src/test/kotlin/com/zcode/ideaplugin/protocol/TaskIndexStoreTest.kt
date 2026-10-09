@@ -17,7 +17,8 @@ import kotlin.test.assertTrue
  *
  * 覆盖：归档补 UPSERT / 已有行仅动 archived（title/pinned 保留）/ 恢复（含清旧机制
  * time_archived）/ 软删（deleted=1 且 archived 位保留，对齐客户端实库语义；无行补删 +
- * 清旧机制位）/ listTasks / schema 不兼容 fail-soft
+ * 清旧机制位）/ 置顶（已有行仅动 pinned 且不动 updated_at；无行补行；不碰归档位）/
+ * listTasks / schema 不兼容 fail-soft
  */
 class TaskIndexStoreTest {
 
@@ -182,6 +183,55 @@ class TaskIndexStoreTest {
         assertTrue("\"deleted\":1" in row, "无行应补删除行: $row")
         assertTrue("\"archived\":0" in row, "补删行 archived=0（旧机制位已清，归档态由 deleted 承载）: $row")
         assertEquals("null", timeArchived("sess_test-1"), "删除应顺带清旧机制归档位 time_archived")
+    }
+
+    @Test
+    fun `pin sets flag on existing row keeping updated_at`() {
+        createDbs()
+        // 预置客户端写入的行：updated_at=200、pinned=0
+        node("-e", """
+            const {DatabaseSync} = require('node:sqlite');
+            const t = new DatabaseSync(process.env.T);
+            t.prepare(`INSERT INTO tasks (workspace_key, workspace_path, task_id, title, created_at, updated_at, pinned, meta_json)
+              VALUES (?, ?, ?, '客户端起的标题', 100, 200, 0, '{}')`).run('G:/proj/demo', 'G:/proj/demo', 'sess_test-1');
+        """.trimIndent(), env = mapOf("T" to tasksDb.toString()))
+
+        store.setPinned("sess_test-1", sessDb, pinned = true)
+
+        val row = taskRow("sess_test-1")!!
+        assertTrue("\"pinned\":1" in row, "置顶应置 pinned=1: $row")
+        assertTrue("\"updated_at\":200" in row, "置顶不刷新 updated_at（置顶组内仍按活动时序）: $row")
+        assertTrue("\"title\":\"客户端起的标题\"" in row, "置顶不动 title: $row")
+        assertTrue(store.listTasks()[0].pinned, "listTasks 投影应带出 pinned 位")
+    }
+
+    @Test
+    fun `pin upserts missing row and unpin clears flag`() {
+        createDbs()
+        store.setPinned("sess_test-1", sessDb, pinned = true)
+        val row = taskRow("sess_test-1")!!
+        assertTrue("\"pinned\":1" in row, "无行应补置顶行: $row")
+        assertTrue("\"title\":\"测试会话\"" in row, "补行 title 取自 session: $row")
+        assertTrue("\"archived\":0" in row && "\"deleted\":0" in row, "补置顶行非归档非软删: $row")
+
+        store.setPinned("sess_test-1", sessDb, pinned = false)
+        val after = taskRow("sess_test-1")!!
+        assertTrue("\"pinned\":0" in after, "取消置顶应清 pinned 位: $after")
+        assertTrue("\"title\":\"测试会话\"" in after, "取消置顶不动 title")
+    }
+
+    @Test
+    fun `pin does not clear legacy time_archived`() {
+        createDbs()
+        node("-e", """
+            const {DatabaseSync} = require('node:sqlite');
+            const s = new DatabaseSync(process.env.S);
+            s.prepare('UPDATE session SET time_archived = 999 WHERE id = ?').run('sess_test-1');
+        """.trimIndent(), env = mapOf("S" to sessDb.toString()))
+
+        store.setPinned("sess_test-1", sessDb, pinned = true)
+
+        assertEquals("999", timeArchived("sess_test-1"), "置顶与归档位无关，不碰旧机制 time_archived")
     }
 
     @Test

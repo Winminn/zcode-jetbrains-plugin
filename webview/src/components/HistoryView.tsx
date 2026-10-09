@@ -24,6 +24,7 @@ import type { SessionInfo } from '@/types/messages'
 import { SessionItem } from './SessionItem'
 import { ConfirmDialog } from './ConfirmDialog'
 import { AutoArchivePanel } from './AutoArchivePanel'
+import { sortSessionsByPin } from '@/utils/sessionPinSort'
 import '../styles/history-view.less'
 
 interface Props {
@@ -47,6 +48,12 @@ interface Props {
   onRestore: (sessionId: string) => void
   /** 删除（已归档 tab，软删对齐 ZCode 客户端：数据保留，两端列表同步隐藏）*/
   onDeleteArchived: (sessionId: string) => void
+  /** 置顶/取消置顶（会话 tab；写 tasks-index pinned 位，广播回调更新状态）*/
+  onTogglePin: (sessionId: string, pinned: boolean) => void
+  /** 置顶会话 id 集（列表置顶排序 + SessionItem 图标态）*/
+  pinnedSessionIds: string[]
+  /** 未读会话 id 集（列表蓝点 + 标题加粗；打开会话即清）*/
+  unreadSessionIds: string[]
   onRefresh: () => void
   /** 进入已归档 tab 时拉取列表 */
   onLoadArchived: () => void
@@ -83,6 +90,9 @@ export function HistoryView({
   onArchive,
   onRestore,
   onDeleteArchived,
+  onTogglePin,
+  pinnedSessionIds,
+  unreadSessionIds,
   onRefresh,
   onLoadArchived,
 }: Props) {
@@ -122,13 +132,16 @@ export function HistoryView({
   const list = tab === 'archived' ? archivedSessions : sessions
 
   const filtered = useMemo(() => {
-    if (!debouncedQuery) return list
-    return list.filter(
-      (s) =>
-        s.title.toLowerCase().includes(debouncedQuery) ||
-        s.sessionId.toLowerCase().includes(debouncedQuery),
-    )
-  }, [list, debouncedQuery])
+    const base = debouncedQuery
+      ? list.filter(
+          (s) =>
+            s.title.toLowerCase().includes(debouncedQuery) ||
+            s.sessionId.toLowerCase().includes(debouncedQuery),
+        )
+      : list
+    // 置顶分层（仅会话 tab；归档页无置顶概念）。上游已按 updatedAt 倒序，组内保序
+    return tab === 'active' ? sortSessionsByPin(base, pinnedSessionIds, (s) => s.sessionId) : base
+  }, [list, debouncedQuery, tab, pinnedSessionIds])
 
   const allVisibleSelected =
     filtered.length > 0 && filtered.every((s) => selectedIds.has(s.sessionId))
@@ -404,22 +417,28 @@ export function HistoryView({
           </div>
         ) : (
           <ul className="history-items">
-            {filtered.map((s) => (
-              <SessionItem
-                key={s.sessionId}
-                session={s}
-                active={s.sessionId === currentSessionId}
-                onSelect={handleItemClick}
-                variant={tab === 'archived' ? 'archived' : 'active'}
-                onArchive={onArchive}
-                onRestore={onRestore}
-                onDelete={tab === 'archived' ? requestDeleteArchived : undefined}
-                renderTitle={(title) => <Highlight text={title} query={debouncedQuery} />}
-                selectionMode={selectionMode}
-                selected={selectedIds.has(s.sessionId)}
-                onToggle={toggleSelection}
-              />
-            ))}
+            {filtered.map((s) => {
+              const pinned = tab === 'active' && pinnedSessionIds.includes(s.sessionId)
+              return (
+                <SessionItem
+                  key={s.sessionId}
+                  session={s}
+                  active={s.sessionId === currentSessionId}
+                  onSelect={handleItemClick}
+                  variant={tab === 'archived' ? 'archived' : 'active'}
+                  onArchive={onArchive}
+                  onRestore={onRestore}
+                  onDelete={tab === 'archived' ? requestDeleteArchived : undefined}
+                  pinned={pinned}
+                  unread={tab === 'active' && unreadSessionIds.includes(s.sessionId)}
+                  onTogglePin={tab === 'active' ? onTogglePin : undefined}
+                  renderTitle={(title) => <Highlight text={title} query={debouncedQuery} />}
+                  selectionMode={selectionMode}
+                  selected={selectedIds.has(s.sessionId)}
+                  onToggle={toggleSelection}
+                />
+              )
+            })}
           </ul>
         )}
       </div>

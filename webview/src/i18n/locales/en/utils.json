@@ -7,7 +7,7 @@
   "minutesSeconds": "{{m}}m {{s}}s",
   "minutesSecondsCompact": "{{m}}m{{s}}s",
   "format": {
-    "mcpMonthlyLimit": "MCP Monthly Quota",
+    "toolCallsMonthlyLimit": "Tool Calls Quota (Monthly)",
     "cycleLimit": "Cycle Quota",
     "per5HoursLimit": "Every 5 Hours Quota",
     "weeklyLimit": "Weekly Quota",

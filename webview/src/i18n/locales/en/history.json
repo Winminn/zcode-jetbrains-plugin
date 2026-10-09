@@ -24,6 +24,8 @@
   "deleteSession": "Delete session",
   "deleteForever": "Delete forever",
   "archive": "Archive",
+  "pin": "Pin",
+  "unpin": "Unpin",
   "restore": "Restore",
   "tabSessions": "Sessions",
   "tabArchived": "Archived",

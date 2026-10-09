@@ -16,9 +16,14 @@ import { create } from 'zustand'
 import { onMessage, onStreamEvent, onStreamBatch, sendToJava, initBridge, isInJcef, getWorkspacePath, getInitialSessionId } from '@/ipc/bridge'
 import { parseGoalCommand } from '@/utils/goalCommand'
 import { extractTitleExcerpt } from '@/utils/titleExcerpt'
-import type { JavaResponse, SessionInfo, ZCodeMessage, StreamEvent, ModelOption, ModelManageProvider, ProviderSaveDraft, TodoItem, AgentItem, FileChangeItem, QuotaData, ModelUsageData, ToolUsageData, UsageRange, AppUsageData, AppUsageRange, ContextBreakdownItem, ThoughtLevelInfo, SubagentActivity, SubagentInfo, ToolUpdatedPayload, MemoryFileInfo, MemoryDirInfo, MemorySearchHitInfo, SkillInfo, McpServerInfo, McpToolsState, McpLogEntry, EnvStatus, BrowserClearedSite, BrowserDataOverview, AgentDef, AgentDefInput, ImageAttachmentInput, GoalState, AutoArchiveRecord, ToolPart, SlashCommand, MessagePart } from '@/types/messages'
+import type { JavaResponse, SessionInfo, ZCodeMessage, StreamEvent, ModelOption, ModelManageProvider, ProviderSaveDraft, TodoItem, AgentItem, FileChangeItem, QuotaData, ModelUsageData, ToolUsageData, UsageRange, AppUsageData, AppUsageRange, ContextBreakdownItem, ThoughtLevelInfo, SubagentActivity, SubagentInfo, ToolUpdatedPayload, MemoryFileInfo, MemoryDirInfo, MemorySearchHitInfo, SkillInfo, McpServerInfo, McpToolsState, McpLogEntry, EnvStatus, BrowserClearedSite, BrowserDataOverview, AgentDef, AgentDefInput, ImageAttachmentInput, CurrentFileAttachmentInput, SendAttachmentInput, GoalState, AutoArchiveRecord, ToolPart, SlashCommand, MessagePart, TurnFileChangesMap, TurnFileChangeSummary } from '@/types/messages'
 import { applyStreamEvent, isSubagentToolEvent, applySubagentToolEvent, markActivityOutcome, finalizeActivitiesFromNotifications, asSubagentLifecycle, asGoalTargetPayload, looksLikeQuotaError, asSteerDrainedInputs, appendSteerUserMessages } from '@/utils/streamReducer'
 import type { TurnErrorInfo, SubagentLifecyclePayload } from '@/utils/streamReducer'
+import { classifyQuotaError, bannerTriggerKey, providerLimitedMessage } from '@/utils/quotaWindows'
+import type { QuotaBannerTrigger } from '@/utils/quotaWindows'
+import { isDefaultSessionTitle } from '@/utils/format'
+import { mergeSessionsIndex } from '@/utils/sessionIndexMerge'
+import type { SessionIndexEntry } from '@/types/messages'
 import i18n from '@/i18n/config'
 
 /** 前端诊断日志直落 idea.log（Java __jsLog 通道——console.warn 不被 JCEF 转发，
@@ -32,14 +37,17 @@ function diagWarn(text: string): void {
 }
 
 import { parseTodos, parseAgents, parseFileChanges, mergeAgentItems } from '@/utils/parseStatus'
+import { parseBackgroundTaskWorks, parseDeliveredWorkStatuses } from '@/utils/backgroundTask'
 import { isHiddenSyntheticMessage, isAgentNotification } from '@/utils/parseNotification'
 import { mergeTurnMessages } from '@/utils/mergeTurnMessages'
 import { getPersisted, setPersisted, removePersisted, entriesWithPrefix, KV_HYDRATED_EVENT } from '@/utils/persist'
 import { readStatusPanelConfig, writeStatusPanelConfig } from '@/utils/statusPanelConfig'
 import { addSteerMarkers, readSteerMarkers } from '@/utils/steerMarkers'
 import { readEnhanceConfig } from '@/utils/enhanceConfig'
+import { readCurrentFileConfig } from '@/utils/currentFileConfig'
 import { sameModel } from '@/utils/modelChoice'
 import { extractBackgroundTaskIdFromContent } from '@/utils/backgroundTask'
+import { fileContextPartFromAttachment } from '@/utils/fileContextParts'
 import {
   buildEditRewindCommand,
   findEditableUserMessage,
@@ -406,6 +414,134 @@ function cancelBrowserBusyTimer(mode: string): void {
 }
 
 /**
+ * turnHeader entityId → 宿主 assistant 消息 id 换算。
+ * 服务端 turnHeader 行的 entityId = productTurnId（常态=该轮 user 消息 id，product-projection
+ * 3661 实证；也可能是轮 id 变体），不是 assistant 消息 id——逐条换算：
+ * ① id 命中 assistant 消息 → 直接用（重扫路径 Java 侧已解析 assistantId）
+ * ② id 命中 user 消息 → 取其后第一条 assistant（该轮回复）
+ * ③ 都命中不了 → null（调用方决定挂起或丢弃）
+ */
+function resolveTurnFileHost(messages: ZCodeMessage[], messageId: string): string | null {
+  const idx = messages.findIndex((m) => m.info.id === messageId)
+  if (idx < 0) return null
+  const hit = messages[idx]
+  if (hit.info.role === 'assistant') return messageId
+  for (let i = idx + 1; i < messages.length; i++) {
+    if (messages[i].info.role === 'assistant') return messages[i].info.id
+  }
+  return null
+}
+
+/** 匹配失败的挂起队列（流式轮收尾时 user 消息还是乐观 id，等轮末权威重拉后重试） */
+let pendingTurnFileEvents: StreamEvent[] = []
+
+/** 更改条链路诊断：JCEF console 不转发，走 __jsLog 直落 idea.log（真机排障入口） */
+function tfcLog(text: string): void {
+  sendToJava({ op: '__jsLog', level: 'warn', text: `[tfc] ${text}` })
+}
+
+/**
+ * 逐轮文件更改摘要落地（B2 回合产物）：turn.fileChanges 事件的幂等归并。
+ * 事件源三路（标题订阅快照/增量、turnFileChangesSync 重扫），数据同源幂等——
+ * 换算宿主 assistant 消息 id 后以它为键整体覆盖。
+ *
+ * 键漂移问题（真机实证「结束瞬间出现→被重拉顶掉」）：事件锚定到的是**当时列表**
+ * 的 assistant 消息——流式期的壳 id 与轮末权威重拉后的真身 id 可能不同，整包替换
+ * 后键失配即消失。entry 保留原始锚（_anchor=payload.messageId），快照落地时统一
+ * 重锚定（remapTurnFileChangeKeys）。
+ */
+function applyTurnFileChanges(
+  event: StreamEvent,
+  set: (partial: Partial<StoreState>) => void,
+  get: () => StoreState,
+  allowPending = true,
+) {
+  const p = event.payload as {
+    messageId?: string
+    rowId?: number
+    fileChanges?: { additions?: number; deletions?: number; files?: number; state?: string }
+    canRewindFiles?: boolean
+  }
+  const messageId = p.messageId
+  const fc = p.fileChanges
+  if (
+    !messageId ||
+    !fc ||
+    typeof fc.additions !== 'number' ||
+    typeof fc.deletions !== 'number' ||
+    typeof fc.files !== 'number' ||
+    typeof p.rowId !== 'number'
+  ) {
+    return
+  }
+  const host = resolveTurnFileHost(get().messages, messageId)
+  if (!host) {
+    // 宿主未落地（流式乐观 user id 未被服务端 id 替换/快照窗口外）：挂起等快照重试
+    if (allowPending && pendingTurnFileEvents.length < 64) {
+      pendingTurnFileEvents.push(event)
+      tfcLog(`pending anchor=${messageId} (host not in messages, queued=${pendingTurnFileEvents.length})`)
+    } else {
+      tfcLog(`drop anchor=${messageId} (host not in messages, allowPending=${allowPending})`)
+    }
+    return
+  }
+  const entry: TurnFileChangeSummary = {
+    rowId: p.rowId,
+    additions: fc.additions,
+    deletions: fc.deletions,
+    files: fc.files,
+    ...(fc.state === 'reverted' ? { state: 'reverted' as const } : fc.state === 'active' ? { state: 'active' as const } : {}),
+    canRewind: p.canRewindFiles === true,
+    _anchor: messageId,
+  }
+  set({ turnFileChanges: { ...get().turnFileChanges, [host]: entry } })
+  tfcLog(`apply sid=${event.sessionId.slice(-8)} anchor=${messageId.slice(-12)} host=${host.slice(-12)} files=${fc.files} state=${fc.state ?? '-'}`)
+}
+
+/**
+ * 键重锚定（applyMessagesSnapshot 落地后调用）：壳 id→真身 id 漂移自愈。遍历已有
+ * map，用每条的 _anchor 在新列表重新解析宿主；解析不到（窗口外/会话已切）保留原键。
+ */
+function remapTurnFileChangeKeys(
+  set: (partial: Partial<StoreState>) => void,
+  get: () => StoreState,
+) {
+  const cur = get().turnFileChanges
+  const keys = Object.keys(cur)
+  if (keys.length === 0) return
+  let next: TurnFileChangesMap | null = null
+  for (const key of keys) {
+    const entry = cur[key]
+    if (!entry?._anchor) continue
+    const host = resolveTurnFileHost(get().messages, entry._anchor)
+    if (host && host !== key) {
+      if (!next) next = { ...cur }
+      delete next[key]
+      next[host] = entry
+      tfcLog(`remap ${key.slice(-12)} -> ${host.slice(-12)} (anchor=${entry._anchor.slice(-12)})`)
+    }
+  }
+  if (next) set({ turnFileChanges: next })
+}
+
+/** 快照落地后 flush 挂起的更改事件（权威消息 id 已就位；仍匹配不上的丢弃——
+ *  窗口外语义，下次重开会话由 turnFileChangesSync 重扫补齐）。跨会话事件丢弃：
+ *  挂起期间用户可能已切走，宿主换算必须对当前会话的 messages 做 */
+function flushPendingTurnFileChanges(
+  set: (partial: Partial<StoreState>) => void,
+  get: () => StoreState,
+) {
+  if (pendingTurnFileEvents.length === 0) return
+  const queued = pendingTurnFileEvents
+  pendingTurnFileEvents = []
+  const sid = get().currentSessionId
+  for (const ev of queued) {
+    if (ev.sessionId !== sid) continue
+    applyTurnFileChanges(ev, set, get, false)
+  }
+}
+
+/**
  * 会话视图清空基底（切会话/清空待命/新建会话/删除当前会话/newSession 五处共用）：
  * 清掉绑定旧会话的消息、流式、队列与底部栏/子代理派生数据。
  * 各调用点的差异字段（loadingMessages/thoughtLevel/currentMode/弹窗关闭/compacting/
@@ -423,6 +559,15 @@ function sessionResetBase(): Partial<StoreState> {
     todos: [],
     agents: [],
     fileChanges: [],
+    // 转录重建的后台任务（与 agents 同生命周期：切会话清空，等 messages 重解析；
+    // 运行时投影在 backgroundWorksBySession 独立存，两者读取处合并）
+    backgroundWorksFromTranscript: [],
+    deliveredWorkStatuses: new Map(),
+    // 逐轮更改条与弹窗绑定当前会话（重开由 turnFileChangesSync 重扫补齐）
+    turnFileChanges: {},
+    turnFileChangesDialogFor: null,
+    turnFileChangesDialogPath: null,
+    turnFileChangesDialogRewind: false,
     subagentActivities: [],
     subagents: [],
     subagentDetail: null,
@@ -537,8 +682,8 @@ function scheduleNotificationTranscriptPull(sessionId: string): void {
 export interface QueuedMessage {
   id: string
   text: string
-  /** 图片附件（随消息透传 session/send attachments）*/
-  attachments?: ImageAttachmentInput[]
+  /** 附件（图片内联 / 当前文件上下文描述，随消息透传 session/send attachments）*/
+  attachments?: SendAttachmentInput[]
   queuedAt: number
   /** 定时消息来源标记（fireAt 原值）：切会话丢弃队列时回退挂起而非静默丢 */
   scheduledFireAt?: number
@@ -614,8 +759,8 @@ interface StoreState {
   creatingSession: boolean
   /** 懒创建暂存的首条消息：无会话时发送 → 先建会话，createSession 响应后自动发出 */
   pendingFirstMessage: string | null
-  /** 懒创建暂存的首条消息的图片附件（与 pendingFirstMessage 同生命周期）*/
-  pendingFirstAttachments: ImageAttachmentInput[] | null
+  /** 懒创建暂存的首条消息的附件（与 pendingFirstMessage 同生命周期）*/
+  pendingFirstAttachments: SendAttachmentInput[] | null
   /** 懒创建暂存首条消息的定时标记（定时消息在待命态触发懒创建时随行，徽标穿透）*/
   pendingFirstScheduledFireAt: number | null
   /** 待命态定时任务暂存：创建确认时先把会话建好（真实 sid 归属，防空串态跨标签串显），建好自动落库 */
@@ -635,6 +780,15 @@ interface StoreState {
   todos: TodoItem[]
   agents: AgentItem[]
   fileChanges: FileChangeItem[]
+
+  // 逐轮文件更改条（B2 回合产物：turnHeader.fileChanges 订阅直出，key=回复消息 id）
+  turnFileChanges: TurnFileChangesMap
+  /** 打开更改详情弹窗的轮（key 同上；null=关闭） */
+  turnFileChangesDialogFor: string | null
+  /** 弹窗初始定位的文件 path（文件行「审查」按钮用；null=默认首个） */
+  turnFileChangesDialogPath: string | null
+  /** 弹窗打开即进撤销模式（头部「撤销」按钮直达预览） */
+  turnFileChangesDialogRewind: boolean
 
   // 子代理（流式实时聚合 + session/subagents RPC 权威列表 + 详情弹窗）
   /** 流式期间从 tool.updated(source=subagent) 实时聚合的活动（键 = Agent 工具 callID）*/
@@ -697,6 +851,18 @@ interface StoreState {
    * 完成通知（session.updated taskId/toolCallId + status 离开 running）/切会话。
    */
   backgroundTasks: BackgroundTaskMap
+  /** 后台工作投影（H7 汇总入口）：v4 帧合成的服务端权威全量数组，按会话存。
+   *  会话过滤前落账（非当前会话也更新，切回不丢）；全量替换语义；跨回合存活 */
+  backgroundWorksBySession: Record<string, import('@/types/messages').BackgroundWorkSummary[]>
+  /** 从转录重建的历史后台任务（refreshStatus 派生，与 agents 同生命周期）；
+   *  IDE 重启后运行时投影消失，靠它让「后台工作」栏不空。读取处与投影合并（投影优先）*/
+  backgroundWorksFromTranscript: import('@/types/messages').BackgroundWorkSummary[]
+  /** 转录中已投递的后台任务终态（refreshStatus 派生，task-notification 的 task-id
+   *  为投递证据）：CLI 投影在结果投递后不推收敛帧，条目会无限期停 resultPending，
+   *  读取处 mergeBackgroundWorks 据此把 resultPending 本地升级为终态 */
+  deliveredWorkStatuses: Map<string, 'ended' | 'failed'>
+  /** 取消后台工作（bash/workflow；投影由 backgroundWorks 事件收敛，无乐观更新）*/
+  cancelBackgroundWork: (sessionId: string, workId: string) => void
   /** 排队消息（streaming 中 Enter 入队，回合结束自动发队头）*/
   queuedMessages: QueuedMessage[]
   /**
@@ -984,6 +1150,12 @@ interface StoreState {
   connectivityResults: Record<string, { ok: boolean; error?: string }>
   /** 会话待交互计数（审批/提问挂起；pendingInteractions 全量快照推送，红点角标）*/
   pendingInteractionCounts: Record<string, number>
+  /** 置顶会话 id 集（tasks-index.sqlite pinned 位，Kotlin 广播全量快照 + 列表加载对账；
+   * Java 库为权威源，前端不做乐观更新，sessionPinsChanged/pinnedSessions 同形覆盖）*/
+  pinnedSessionIds: string[]
+  /** 未读会话 id 集（tasks-index.sqlite unread_at 位：后台终态且无标签在看时 Java 置位、
+   * 打开会话清位；sessionUnreads/sessionUnreadsChanged 同形覆盖，权威源同在库）*/
+  unreadSessionIds: string[]
   /** 回合运行中的会话集合（sessionTurnPhase 相位广播维护；值=startedAt），
    * 防列表快照把远程驱动的运行中会话降级回已完成 */
   remoteRunningTurns: Record<string, number>
@@ -997,6 +1169,12 @@ interface StoreState {
   customEnd: string | null
   /** 用量查询局部错误（凭证/HTTP 失败，不污染全局 lastError）*/
   usageError: string | null
+
+  // 会话额度横幅错误触发源（turn.failed / backendError 分类命中时写入；展示视图由
+  // useQuotaBanner 与 quota 数据派生，见 utils/quotaWindows.ts）。null = 无触发
+  quotaBannerError: import('@/utils/quotaWindows').QuotaBannerTrigger | null
+  /** 已关闭的横幅去重键（内存级：本 webview 生命周期内同源错误不重复打扰）*/
+  quotaBannerDismissed: string[]
 
   // 应用用量（usage/stats：app-server 本地聚合，含第三方模型，无 apiKey 依赖）
   appUsage: AppUsageData | null
@@ -1037,11 +1215,27 @@ interface StoreState {
   // 流式看门狗豁免用：等待用户应答是合法静默，不应判 streamLost 提前收尾
   askUserPendingActive: boolean
 
+  // 当前打开文件 ref（Kotlin→webview 推送：getCurrentFile 响应 / EditorContextTracker 200ms 防抖）
+  // 形态：'@path' / '@path#L10' / '@path#L10-20' / null（无打开编辑器）
+  // 当前只驱动 CurrentFileChip 显示，不参与发送
+  currentFileRef: string | null
+  // 文件上下文 chip 勾选态（2026-10-08 从 InputBox 局部 state 抬入：新建会话按设置
+  // 初始化需要跨组件写入点）。发完即关：doSend 发送成功即置 false——勾选只管下一条
+  // 消息；本身不持久化（消息级状态），「新会话自动点亮」偏好走 utils/currentFileConfig
+  //（默认关）。应用点两处：resetToNewSession（新建会话按钮）+ listSessions boot 待命
+  // 分支（新标签/绑定失效，用户实测拍板"新建标签页=新建会话"）；
+  // 切会话/删当前会话/Java 自动 newSession/createSession 响应均不动它
+  currentFileEnabled: boolean
+
   // actions
   init: () => void
   loadSessions: () => void
+  /** 拉取当前打开文件 ref（webview mount/重连时触发；Kotlin 同步回包，case 'currentFile' 落 state）*/
+  requestCurrentFile: () => void
+  /** 文件上下文 chip 勾选开关（用户点击 chip / doSend 发完即关 / resetToNewSession 按设置初始化）*/
+  setCurrentFileEnabled: (enabled: boolean) => void
   selectSession: (session: SessionInfo) => void
-  sendMessage: (text: string, attachments?: ImageAttachmentInput[], opts?: { scheduledFireAt?: number; scheduledProviderId?: string; scheduledModelId?: string; hiddenCommand?: boolean }) => void
+  sendMessage: (text: string, attachments?: SendAttachmentInput[], opts?: { scheduledFireAt?: number; scheduledProviderId?: string; scheduledModelId?: string; hiddenCommand?: boolean }) => void
   /** 进入最后一条用户消息的编辑态（MessageBubble 行内编辑框） */
   startEdit: () => void
   /** 退出编辑态（不提交） */
@@ -1065,6 +1259,8 @@ interface StoreState {
   loadArchivedSessions: () => void
   /** 归档会话（从历史列表移入回收站，可恢复）*/
   archiveSession: (sessionId: string) => void
+  /** 置顶/取消置顶会话（写 tasks-index pinned 位，广播回调更新 pinnedSessionIds）*/
+  toggleSessionPin: (sessionId: string, pinned: boolean) => void
   /** 恢复归档会话（从回收站移回历史列表）*/
   restoreSession: (sessionId: string) => void
   /** 删除归档会话（软删对齐 ZCode 客户端：数据保留，两端列表同步隐藏）*/
@@ -1142,6 +1338,10 @@ interface StoreState {
   loadUsage: () => void
   /** 拉取额度（设置视图 + 圆环 popover 用）*/
   loadQuota: () => void
+  /** 关闭当前额度横幅（记录去重键，同源触发不再展示）*/
+  dismissQuotaBanner: (key: string) => void
+  /** 清除额度横幅错误触发源（窗口恢复/新回合开始时由 useQuotaBanner 调用）*/
+  clearQuotaBannerError: () => void
   /** 拉取记忆文件清单（设置视图「记忆」条目）*/
   loadMemoryFiles: () => void
   /** 自动记忆全文搜索（调用方防抖；空 query 退出搜索态）*/
@@ -1256,6 +1456,11 @@ interface StoreState {
   openSubagentDetail: (key: string) => void
   /** 关闭子代理详情弹窗 */
   closeSubagentDetail: () => void
+  /** 打开逐轮文件更改弹窗（key = 该轮 assistant 消息 id = turnHeader entityId）。
+   *  opts.path=初始定位文件（文件行「审查」）；opts.rewind=打开即进撤销预览模式 */
+  openTurnFileChanges: (messageId: string, opts?: { path?: string; rewind?: boolean }) => void
+  /** 关闭逐轮文件更改弹窗 */
+  closeTurnFileChanges: () => void
   /** 打开子代理报告弹窗（markdown = Agent 工具 part 的最终输出）*/
   openSubagentReport: (r: { callID: string; title: string; markdown: string }) => void
   /** 关闭子代理报告弹窗 */
@@ -1390,6 +1595,11 @@ export const useStore = create<StoreState>((set, get) => ({
   agents: [],
   fileChanges: [],
 
+  turnFileChanges: {},
+  turnFileChangesDialogFor: null,
+  turnFileChangesDialogPath: null,
+  turnFileChangesDialogRewind: false,
+
   subagentActivities: [],
   subagents: [],
   subagentDetail: null,
@@ -1433,6 +1643,8 @@ export const useStore = create<StoreState>((set, get) => ({
   exitPlanApproval: null,
   permissionRequest: null,
   askUserPendingActive: false,
+  currentFileRef: null,
+  currentFileEnabled: false,
 
   models: [],
   modelsRefreshing: false,
@@ -1518,6 +1730,11 @@ export const useStore = create<StoreState>((set, get) => ({
   connectivityTestingId: null,
   connectivityResults: {},
   pendingInteractionCounts: {},
+  pinnedSessionIds: [],
+  unreadSessionIds: [],
+  backgroundWorksBySession: {},
+  backgroundWorksFromTranscript: [],
+  deliveredWorkStatuses: new Map(),
   remoteRunningTurns: {},
   modelProvidersReordering: false,
   modelUsage: null,
@@ -1526,6 +1743,8 @@ export const useStore = create<StoreState>((set, get) => ({
   customStart: null,
   customEnd: null,
   usageError: null,
+  quotaBannerError: null,
+  quotaBannerDismissed: [],
   appUsage: null,
   appUsageRange: '7d',
   appUsageError: null,
@@ -1588,19 +1807,26 @@ export const useStore = create<StoreState>((set, get) => ({
     const ws = getWorkspacePath()
     set({ projectPath: ws })
 
-    if (isInJcef()) {
-      // 桥已就绪（热启动/刷新）：直接拉数据
+    // 桥就绪统一动作（热启动/冷启动轮询就绪/mock 态迟到恢复三处共用）：
+    // 拉反向请求挂起状态 + 定时消息列表（页面刷新/重载会错过 Java 广播）+ 环境检查 +
+    // 会话与模型列表 + 配额轮询
+    const onBridgeReady = (how: string) => {
       set({ connectionStatus: 'connected' })
-      console.log(`[store] 桥已就绪，workspace=${ws || '(空)'}`)
-      // 拉取反向请求挂起状态：页面刷新/重载会错过 Java 的 askUserPending 广播，
-      // 看门狗豁免标志（askUserPendingActive）需重新同步
+      console.log(`[store] 桥就绪（${how}），workspace=${ws || '(空)'}`)
       sendToJava({ op: 'askUserPendingState' })
-      // 定时消息列表水合（页面刷新/重载会错过 Java 广播）
       sendToJava({ op: 'scheduledList' })
+      // 拉取当前打开文件 ref（Kotlin 同步回包，case 'currentFile' 落 state）；
+      // 后续变化由 EditorContextTracker 200ms 防抖主动推送覆盖
+      get().requestCurrentFile()
       get().checkEnv()
       get().loadSessions()
       get().loadModels()
       startQuotaPolling()
+    }
+
+    if (isInJcef()) {
+      // 桥已就绪（热启动/刷新）：直接拉数据
+      onBridgeReady('热启动')
       return
     }
 
@@ -1621,29 +1847,29 @@ export const useStore = create<StoreState>((set, get) => ({
     let bridgeRetries = 0
     const waitForBridge = () => {
       if (typeof window !== 'undefined' && typeof window.__ZCODE_CEF_QUERY__ === 'function') {
-        set({ connectionStatus: 'connected' })
-        console.log(`[store] 桥就绪（轮询 ${bridgeRetries}×50ms），workspace=${ws || '(空)'}`)
-        // 冷启动就绪同样拉取挂起状态（广播可能在桥注入前已错过）
-        sendToJava({ op: 'askUserPendingState' })
-        // 定时消息列表水合（同上）
-        sendToJava({ op: 'scheduledList' })
-        get().checkEnv()
-        get().loadSessions()
-        get().loadModels()
-        startQuotaPolling()
+        onBridgeReady(`轮询 ${bridgeRetries}×50ms`)
         return
       }
-      if (++bridgeRetries <= 40) {
+      if (++bridgeRetries <= 200) {
         setTimeout(waitForBridge, 50)
         return
       }
-      // 超时：dev 环境或桥注入异常，走 mock
+      // 超时先落 mock（200×50ms=10s：真机冷启动/重装后首开桥注入可能显著慢于 2s，
+      // 放宽前超时误入 mock 态——假会话列表+「mock 不支持」横幅）。
+      // 同时挂低频恢复轮询：桥迟到注入完成（IDE 卡顿场景）时自动从 mock 恢复 connected
+      // 并重拉真数据，避免永远停在假列表。恢复动作幂等（loadSessions/loadModels 全量拉）
       set({ connectionStatus: 'mock' })
-      console.log(`[store] 桥等待超时，回退 mock，workspace=${ws || '(空)'}`)
+      console.log(`[store] 桥等待超时，回退 mock（低频恢复轮询已挂），workspace=${ws || '(空)'}`)
       get().checkEnv()
       get().loadSessions()
       get().loadModels()
       startQuotaPolling()
+      const recoverTimer = setInterval(() => {
+        if (isInJcef()) {
+          clearInterval(recoverTimer)
+          onBridgeReady('mock 态迟到恢复')
+        }
+      }, 2000)
     }
     waitForBridge()
   },
@@ -1652,6 +1878,33 @@ export const useStore = create<StoreState>((set, get) => ({
     // 记录请求发出时刻：响应合并时比对 titleUpdatedAt，早于它的快照标题不采用（防回退守卫）
     listSessionsSentAt = Date.now()
     sendToJava({ op: 'listSessions', workspacePath: get().projectPath })
+    // 顺带对账置顶集（tasks-index 指纹缓存命中时零 node 进程；顺带吸收官方桌面端
+    // 在库里的 pin 变化——广播只覆盖本进程写，跨进程写靠这条对账）
+    sendToJava({ op: 'listPinnedSessions' })
+    // 顺带对账未读集（同一条 tasks-index 读缓存；吸收官方桌面端/手机端置的未读位）
+    sendToJava({ op: 'listUnreadSessions' })
+  },
+
+  toggleSessionPin: (sessionId, pinned) => {
+    // 无乐观更新：Java 写库（tasks-index UPSERT）后全标签广播真实集，广播即状态
+    sendToJava({ op: 'setSessionPinned', sessionId, pinned })
+  },
+
+  cancelBackgroundWork: (sessionId, workId) => {
+    // ACK 拒绝（not_found/not_running/cancel_not_supported）不抛错，投影不动即天然反馈；
+    // 成功后条目转 cancelled/消失由 backgroundWorks 事件收敛，此处无乐观更新
+    sendToJava({ op: 'cancelBackgroundWork', sessionId, workId })
+  },
+
+  requestCurrentFile: () => {
+    // 拉取当前打开文件 ref（Kotlin 端 EditorContextTracker.snapshot() 同步回包）。
+    // webview mount 时调一次，case 'currentFile' handler 落 state；
+    // 之后由 EditorContextTracker 200ms 防抖主动推送。
+    sendToJava({ op: 'getCurrentFile' })
+  },
+
+  setCurrentFileEnabled: (enabled) => {
+    set({ currentFileEnabled: enabled })
   },
 
   selectSession: (session) => {
@@ -1695,6 +1948,9 @@ export const useStore = create<StoreState>((set, get) => ({
     // 切换会话时订阅事件流（带 workspacePath，Java 端 subscribe 前要先 resume 激活会话）
     sendToJava({ op: 'subscribe', sessionId: session.sessionId, workspacePath })
     sendToJava({ op: 'messages', sessionId: session.sessionId, workspacePath })
+    // 后台工作投影缓存对账（历史加载兜底）：重复 v4 subscribe 不重推快照（B2②坑），
+    // 跨标签/重复打开时订阅帧缺席——Java 进程缓存是本进程最后已知投影
+    sendToJava({ op: 'backgroundWorksList', sessionId: session.sessionId })
     // P2 让路（缺陷AB 优先级编排②）：用量/子代理不再与 P0 并发挤服务端会话队列，
     // 改由 messages 首拉落地后补发（见 case 'messages'）——忙窗口期间 P0 未成功
     // 则不补发，顶栏只剩一条"恢复中"提示
@@ -1857,13 +2113,23 @@ export const useStore = create<StoreState>((set, get) => ({
           ...(opts?.scheduledFireAt ? { scheduledFireAt: opts.scheduledFireAt } : {}),
         },
         parts: [
-          ...(attachments ?? []).map((a) => ({
-            type: 'image' as const,
-            mediaType: a.mimeType,
-            dataUrl: `data:${a.mimeType};base64,${a.dataBase64}`,
-            dataBase64: a.dataBase64,
-            source: { kind: 'inline' as const, filename: a.filename },
-          })),
+          // 图片附件乐观 part（dataUrl 直接渲染）；currentFile 上下文附件乐观
+          // 轻量 file part——气泡 chip 回显「这条消息带了什么」（隐式通道气泡
+          // 本不显示，两来源说明见 utils/fileContextParts 头注释）。乐观消息
+          // 就地改名接服务端 id 后 parts 不被帧覆盖，快照重拉才由服务端同构
+          // part 顶替，chip 无缝接管
+          ...(attachments ?? [])
+            .filter((a): a is ImageAttachmentInput => a.kind === 'image')
+            .map((a) => ({
+              type: 'image' as const,
+              mediaType: a.mimeType,
+              dataUrl: `data:${a.mimeType};base64,${a.dataBase64}`,
+              dataBase64: a.dataBase64,
+              source: { kind: 'inline' as const, filename: a.filename },
+            })),
+          ...(attachments ?? [])
+            .filter((a): a is CurrentFileAttachmentInput => a.kind === 'currentFile')
+            .map(fileContextPartFromAttachment),
           { type: 'text', text },
         ],
       }
@@ -2081,6 +2347,11 @@ export const useStore = create<StoreState>((set, get) => ({
     get().requeueScheduledQueuesFor(get().currentSessionId)
     set({
       currentSessionId: null,
+      // 「新会话自动点亮文件上下文」偏好（默认关）应用点之一：新建会话按钮手势
+      //（另一处 = listSessions boot 待命分支，新标签=新会话）。点亮也只影响首条
+      // 消息（doSend 发完即关）。切会话/删当前会话/Java 自动 newSession 均不应用
+      //——保守不点亮（utils/currentFileConfig.ts 头注释）
+      currentFileEnabled: readCurrentFileConfig().autoOnNewSession,
       creatingSession: false,
       pendingFirstMessage: null,
       pendingFirstAttachments: null,
@@ -2611,6 +2882,15 @@ export const useStore = create<StoreState>((set, get) => ({
     sendToJava({ op: 'getQuota' })
   },
 
+  dismissQuotaBanner: (key: string) => {
+    const { quotaBannerDismissed } = get()
+    // 去重键由组件层经 deriveQuotaBanner 得出后回传（store 只存，不重复派生）
+    if (quotaBannerDismissed.includes(key)) return
+    set({ quotaBannerDismissed: [...quotaBannerDismissed, key] })
+  },
+
+  clearQuotaBannerError: () => set({ quotaBannerError: null }),
+
   loadMemoryFiles: () => {
     set({ memoryLoading: true, memoryError: null })
     sendToJava({ op: 'listMemoryFiles' })
@@ -3015,6 +3295,20 @@ export const useStore = create<StoreState>((set, get) => ({
   },
 
   closeSubagentDetail: () => set({ subagentDetail: null, childMessagesError: null }),
+
+  openTurnFileChanges: (messageId, opts) => {
+    // 与报告/预览弹窗互斥（同 openSubagentDetail 的互斥语义）
+    set({
+      turnFileChangesDialogFor: messageId,
+      turnFileChangesDialogPath: opts?.path ?? null,
+      turnFileChangesDialogRewind: opts?.rewind === true,
+      subagentReport: null,
+      markdownPreview: null,
+    })
+  },
+  closeTurnFileChanges: () =>
+    set({ turnFileChangesDialogFor: null, turnFileChangesDialogPath: null, turnFileChangesDialogRewind: false }),
+
   // 弹窗分层（2026-09-02 缺陷修复 + 用户定案细化）：
   // - 报告弹窗 = 详情弹窗的"互斥切换"（过程↔结论 头部按钮来回切——从详情开报告
   //   即关详情，从报告切过程同理，不叠两层）
@@ -3104,12 +3398,6 @@ let listSessionsSentAt = 0
  * 服务端标题是否仍是占位（未生成正式标题）：
  * 空 / 会话 id 本身 / sess_ 前缀（CLI 新会话初始 title 即会话 id）。
  */
-function isDefaultSessionTitle(title: string | undefined, sessionId: string): boolean {
-  const t = title?.trim()
-  if (!t) return true
-  return t === sessionId || t.startsWith('sess_')
-}
-
 /** 从用户消息提炼临时标题：首个非空行，超 40 字符截断（与 CLI 首轮输入作标题的行为一致）*/
 function deriveProvisionalTitle(text: string): string {
   const firstLine = text.trim().split('\n').map((l) => l.trim()).find((l) => l.length > 0) ?? ''
@@ -3405,6 +3693,9 @@ function isModelSwitchInFlight(state: { modelSwitchInFlightAt: number | null }):
 /**
  * 从 messages 重新解析状态面板数据（todos/agents/fileChanges），返回 store patch。
  * agents 三源合并：parseAgents（兜底）+ 实时聚合活动 + session/subagents RPC（权威）。
+ * backgroundWorksFromTranscript：从转录重建的历史后台任务（IDE 重启后运行时投影消失，
+ * 子代理列表靠 parseAgents 同款思路从转录恢复——bash 后台化确认行判据单点在
+ * utils/backgroundTask，重建条目 status='ended'（任务已随进程死亡的历史呈现）。
  */
 function refreshStatus(
   messages: ZCodeMessage[],
@@ -3415,6 +3706,8 @@ function refreshStatus(
     todos: parseTodos(messages),
     agents: mergeAgentItems(parseAgents(messages), activities, rpc),
     fileChanges: parseFileChanges(messages),
+    backgroundWorksFromTranscript: parseBackgroundTaskWorks(messages),
+    deliveredWorkStatuses: parseDeliveredWorkStatuses(messages),
   }
 }
 
@@ -3431,6 +3724,26 @@ function formatTurnError(err: TurnErrorInfo): string {
   return err.message
     ? i18n.t('app.turnFailed', { message: err.message.slice(0, 300) })
     : i18n.t('app.turnFailedNoDetail')
+}
+
+/**
+ * 错误 → 额度横幅触发源（会话额度横幅，见 utils/quotaWindows.ts）。
+ * 仅 bigmodel 系渠道进横幅：第三方渠道的 429/quota 语义不可比，只走顶栏错误条。
+ */
+function quotaBannerTriggerFrom(
+  providerId: string | null | undefined,
+  code: string | number | undefined,
+  message: string | undefined,
+  statusCode?: number,
+): QuotaBannerTrigger | null {
+  if (!isBigmodelProvider(providerId)) return null
+  const kind = classifyQuotaError(code, message, statusCode)
+  if (!kind) return null
+  return {
+    kind,
+    ...(kind === 'provider-limited' ? { message: providerLimitedMessage(message) ?? undefined } : {}),
+    triggerKey: bannerTriggerKey(kind, code, message),
+  }
 }
 
 /**
@@ -3561,15 +3874,17 @@ export function handleResponse(
       // 恢复职责由 Java 侧 TabState 承担
       if (get().currentSessionId === null) {
         const initialId = getInitialSessionId()
-        if (initialId) {
-          const initial = merged.find((s) => s.sessionId === initialId)
-          if (initial) {
-            console.log(`[store] 恢复标签绑定的会话: ${initialId}`)
-            get().selectSession(initial)
-          } else {
-            // 绑定的会话已被删除 → 待命态（TabState 的 sessionId 由后续懒建会话的 subscribe 更新）
-            console.log('[store] 标签绑定的会话已不存在，保持无会话待命态')
-          }
+        const initial = initialId ? merged.find((s) => s.sessionId === initialId) : undefined
+        if (initial) {
+          console.log(`[store] 恢复标签绑定的会话: ${initialId}`)
+          get().selectSession(initial)
+        } else {
+          // 待命态 = 新会话（2026-10-08 用户实测拍板"新建标签页=新建会话"）：新标签
+          // 无注入绑定 / 绑定会话已被删除均落这里——应用「新会话自动点亮」设置
+          //（resetToNewSession 之外的第二应用点；懒标签激活后走同一 boot 路径一并覆盖）。
+          // 只点不灭：配置关时不动，防抹掉 listSessions 往返窗口内用户的手动勾选
+          if (readCurrentFileConfig().autoOnNewSession) get().setCurrentFileEnabled(true)
+          if (initialId) console.log('[store] 标签绑定的会话已不存在，保持无会话待命态')
         }
       }
       break
@@ -3995,6 +4310,22 @@ export function handleResponse(
       break
     }
 
+    case 'turnFileRewindApplied': {
+      // 撤销受理（B2 回合产物）：乐观置 reverted + 收掉弹窗——服务端随后推的
+      // turn.fileChanges（state=reverted）权威对齐（标题订阅增量/重扫同键幂等）
+      const fcMap = get().turnFileChanges
+      const fcEntry = fcMap[msg.messageId]
+      const patch: Partial<StoreState> = {}
+      if (fcEntry) {
+        patch.turnFileChanges = { ...fcMap, [msg.messageId]: { ...fcEntry, state: 'reverted', canRewind: false } }
+      }
+      if (get().turnFileChangesDialogFor === msg.messageId) {
+        patch.turnFileChangesDialogFor = null
+      }
+      if (Object.keys(patch).length > 0) set(patch)
+      break
+    }
+
     case 'steerMessage': {
       // 仅失败需要处理（成功由 turn.steerDrained 事件驱动）：清乐观 chip + 横幅
       // 提示 + 队列条目回滚（乐观移除发生在受理之前，失败必须物归原主——按
@@ -4140,6 +4471,10 @@ export function handleResponse(
         if (firstFetch) {
           get().loadSubagents()
           get().loadUsage()
+          // 逐轮更改条重扫（B2）不在此发：messages 与 subscribe 两 op 在 Java 线程池
+          // 并发执行，此刻 subscribedSessions.add 可能未落位——重扫事件会被
+          // pushStreamEvent 的多标签闸门静默丢弃（历史会话不显示的根因，2026-10-01
+          // 实证：重扫 count=3 正常但界面无数据）。改由 case 'subscribed' 触发
         }
         // 压缩回合结束后延迟的队列 flush 在此触发：摘要卡已随快照落地，排队消息
         // 再发出的新 turn 不会丢它（scheduleDeferredCompactFlush 的正路径）
@@ -4226,6 +4561,12 @@ export function handleResponse(
       // 同水位 Java 侧只带一次标志，前端置位后由 toast 自动消失/手动关闭清除
       if (msg.residentPoolWarning && !get().residentPoolNotice) {
         set({ residentPoolNotice: i18n.t('app.residentPoolWarning') })
+      }
+      // 逐轮更改条重扫（B2）：订阅落定（Java subscribedSessions.add 已完成）后触发，
+      // 重扫事件过 pushStreamEvent 闸门才有保障——messages 首拉触发会与 subscribe
+      // 并发赛跑（2026-10-01 历史会话不显示的根因）。幂等：重扫数据同源覆盖
+      if (msg.sessionId === get().currentSessionId) {
+        sendToJava({ op: 'turnFileChangesSync', sessionId: msg.sessionId })
       }
       // 待命态目标补发（订阅已生效，goal 控制轮事件从第一条起可达——时序背景见
       // case 'createSession' 的 pendingGoal 注释；2.5s 兜底定时器与本处幂等竞速）
@@ -4409,6 +4750,10 @@ export function handleResponse(
       // 到达（服务端按可重试分类持续退避，事件流上无迹象）——只提示，
       // 不复位 streaming（turn 可能仍在服务端重试，由终止帧收尾）
       set({ lastError: formatBackendError(msg.statusCode, msg.code, msg.message) })
+      // 会话额度横幅：分类命中且当前模型属 bigmodel 系时同步点亮（展示视图由
+      // useQuotaBanner 与额度数据派生；同源去重键防重复打扰）
+      const banner = quotaBannerTriggerFrom(get().currentModel?.providerId, msg.code, msg.message, msg.statusCode)
+      if (banner) set({ quotaBannerError: banner })
       break
     }
 
@@ -5141,6 +5486,33 @@ export function handleResponse(
       set({ pendingInteractionCounts: msg.counts ?? {} })
       break
 
+    case 'pinnedSessions':
+    case 'sessionPinsChanged':
+      // 置顶集全量快照（op=listPinnedSessions 应答 / setSessionPinned 写库后全标签广播）：
+      // 直接覆盖（数组新引用触发订阅方重算；排序在 HistoryView 渲染层做）
+      set({ pinnedSessionIds: Array.isArray(msg.pinned) ? msg.pinned : [] })
+      break
+
+    case 'sessionUnreads':
+    case 'sessionUnreadsChanged':
+      // 未读集全量快照（op=listUnreadSessions 应答 / 相位迁移标未读与打开清除后广播）：
+      // 直接覆盖（Java 库为权威源，前端不做乐观更新）
+      set({ unreadSessionIds: Array.isArray(msg.unread) ? msg.unread : [] })
+      break
+
+    case 'backgroundWorksList':
+      // 后台工作投影缓存应答（打开会话时的对账拉取）：与实时帧同源同形（Java 缓存=
+      // 最后一次帧值），全量替换、后到者胜，竞态无害
+      if (msg.sessionId && Array.isArray(msg.works)) {
+        set({
+          backgroundWorksBySession: {
+            ...get().backgroundWorksBySession,
+            [msg.sessionId]: msg.works,
+          },
+        })
+      }
+      break
+
     case 'sessionTurnPhase': {
       // 回合相位广播（Kotlin 全局事件监听，含手机远程驱动的会话）：列表行实时翻转
       // 运行中/复位——远程会话在 IDE 无本地 streaming 状态，此前列表只能停在旧快照
@@ -5165,6 +5537,30 @@ export function handleResponse(
           ),
         })
         if (!running) scheduleTurnEndListRefresh(get)
+      }
+      break
+    }
+
+    case 'sessionIndexUpdate': {
+      // 会话列表活性订阅（sessions-index v4 topic，Kotlin 过滤软删/子会话后推送）：
+      // 官方桌面端/手机 H5 驱动的会话此前在本进程零事件流、列表只能停在旧快照
+      // （跨进程改动须重启 agent runtime 才可见）——索引推送补齐这个面。合并是
+      // 叠加语义（session/list 快照仍是权威底座），纯函数见 utils/sessionIndexMerge
+      const merged = mergeSessionsIndex({
+        prev: get().sessions,
+        entries: (msg.sessions ?? []) as SessionIndexEntry[],
+        removed: (msg.removed ?? []) as string[],
+        currentId: get().currentSessionId,
+      })
+      if (merged !== get().sessions) {
+        // 回合运行中的行强制 running（与 listSessions 收口同法）：remoteRunningTurns
+        // 是本进程事件流的投影，相位可能晚于索引帧到达
+        const runningIds = Object.keys(get().remoteRunningTurns)
+        set({
+          sessions: runningIds.length
+            ? merged.map((s) => (runningIds.includes(s.sessionId) ? { ...s, status: 'running' } : s))
+            : merged,
+        })
       }
       break
     }
@@ -5262,6 +5658,13 @@ export function handleResponse(
           }),
         })
       }
+      break
+
+    case 'currentFile':
+      // Kotlin→webview 单向推送：getCurrentFile 拉取响应 / EditorContextTracker 200ms 防抖推送
+      // ref 形态：'@path' / '@path#L10' / '@path#L10-20' / null（无打开编辑器）
+      // 不做严格格式校验（chip 内对 null/脏值有兜底展示），让推送值原样落 state
+      set({ currentFileRef: msg.ref ?? null })
       break
   }
 }
@@ -5635,6 +6038,18 @@ function handleStreamBatchDirect(
   for (const event of events) {
     if (event.type === 'session.titleUpdated') applyTitleUpdated(sessionId, event, set, get)
   }
+  // 后台工作投影（H7）：同样在会话过滤前落账——非当前会话的启停也要记录，
+  // 切回该会话时 badge/面板才有数据（订阅常驻、快照只在订阅时推一次）
+  for (const event of events) {
+    if (event.type === 'backgroundWorks') {
+      const works = (event.payload as { works?: import('@/types/messages').BackgroundWorkSummary[] }).works
+      if (Array.isArray(works)) {
+        set({
+          backgroundWorksBySession: { ...get().backgroundWorksBySession, [sessionId]: works },
+        })
+      }
+    }
+  }
   if (sessionId !== get().currentSessionId) {
     // 已注册子会话的原生事件流 → 实时归约成完整对话（运行中详情弹窗数据源，
     // 含 AI 文本增量；Java 全局监听器本就把所有会话事件推到了前端）
@@ -5644,6 +6059,11 @@ function handleStreamBatchDirect(
     return
   }
   if (events.length === 0) return
+
+  // 逐轮文件更改摘要（B2 回合产物）：幂等更新逐轮更改条（同事件重复到达安全）
+  for (const event of events) {
+    if (event.type === 'turn.fileChanges') applyTurnFileChanges(event, set, get)
+  }
 
   // 看门狗心跳：当前会话有任何事件到达 = 回合活着（静默对账不会触发）
   lastStreamActivityAt = Date.now()
@@ -5879,6 +6299,11 @@ function handleStreamBatchDirect(
     patch.childSessionKeys = { ...get().childSessionKeys, ...childKeyPatch }
   }
   if (turnStarted) patch.streaming = true, patch.waitingSince = null
+  // 新回合开跑 = 瞬态额度问题（并发/限频/服务商边界）已被服务端放行，撤下横幅触发源；
+  // 耗尽类保留——窗口恢复由 useQuotaBanner 依据额度数据判定（额度未恢复时新回合仍会失败）
+  if (turnStarted && get().quotaBannerError && get().quotaBannerError!.kind !== 'window-exhausted') {
+    patch.quotaBannerError = null
+  }
   // 同批 completed+started（服务端自动续轮）时保留 reducer 返回的新 streamingMessageId，
   // 不能按"turn 结束"清空——清了后续 delta 全部丢失（实时断流）
   if (turnEnded && !turnStarted) {
@@ -5890,7 +6315,12 @@ function handleStreamBatchDirect(
     // 后台任务指示器不在回合结束清除（后台化确认后回合可能立即结束，
     // 任务仍在后台跑——由任务完成通知清除，见 bgCompleted 分支）
     // 失败回合展示错误详情（同批 failed+started 的自动续轮不打扰）
-    if (turnError) patch.lastError = formatTurnError(turnError)
+    if (turnError) {
+      patch.lastError = formatTurnError(turnError)
+      // 会话额度横幅触发源：与顶栏错误条并行点亮（耗尽类附窗口信息由视图层派生）
+      const banner = quotaBannerTriggerFrom(get().currentModel?.providerId, turnError.code, turnError.message)
+      if (banner) patch.quotaBannerError = banner
+    }
     // steer 插队 chip 活到回合结束：未落位（guide 降级队列被弃/命令失败等，罕见
     // 路径——实测 guide 命中时 steerDrained 早于 completed 到达），清 chip 并横幅
     // 提示可重发。带附件引导已砍（0.3.4 定案），不再有回合末促发分支。
@@ -5995,6 +6425,12 @@ function handleStreamEvent(
 
   // 看门狗心跳：当前会话有任何事件到达 = 回合活着（静默对账不会触发）
   lastStreamActivityAt = Date.now()
+
+  // 逐轮文件更改摘要（B2）：同批量路径
+  if (event.type === 'turn.fileChanges') {
+    applyTurnFileChanges(event, set, get)
+    return
+  }
 
   // 通知卡实时落地（缺陷CI）：轮开始 = CLI 轮界注入的通知合成消息已落地的可靠
   // 信号（实验实证：任务结束事件在完成时刻发，注入拖到轮界——完成时刻拉转录
@@ -6216,6 +6652,10 @@ function handleStreamEvent(
   // turn.started：进入流式，清除 waiting（开始有内容了）
   if (event.type === 'turn.started') {
     set({ streaming: true, waitingSince: null })
+    // 瞬态额度横幅随新回合撤下（同批量路径；耗尽类保留，由额度数据判定恢复）
+    if (get().quotaBannerError && get().quotaBannerError!.kind !== 'window-exhausted') {
+      set({ quotaBannerError: null })
+    }
   }
 
   const st = get()
@@ -6241,8 +6681,12 @@ function handleStreamEvent(
     // cancelling 在途不碰（同批量路径：撤回应答要按 restore 回插，先清 pending
     // 会让回插落空）
     const steerDropped = get().steerPending
+    // 失败回合同时点亮额度横幅触发源（同批量路径；与顶栏错误条并行）
+    const bannerTrigger = turnError
+      ? quotaBannerTriggerFrom(get().currentModel?.providerId, turnError.code, turnError.message)
+      : null
     const steerEndPatch: Partial<StoreState> = turnError
-      ? { lastError: formatTurnError(turnError), steerPending: steerDropped?.cancelling ? steerDropped : null }
+      ? { lastError: formatTurnError(turnError), ...(bannerTrigger ? { quotaBannerError: bannerTrigger } : {}), steerPending: steerDropped?.cancelling ? steerDropped : null }
       : steerDropped
         ? steerDropped.cancelling
           ? { steerPending: steerDropped }
@@ -6800,6 +7244,10 @@ function applyMessagesSnapshot(
   }
   set(patch)
   if (activities !== st.subagentActivities) get().loadSubagents()
+  // 权威消息 id 已就位：①flush 挂起的逐轮更改事件（流式轮收尾时乐观 id 匹配不上的那批）
+  // ②已有条目键重锚定（流式壳 id→真身 id 漂移自愈，防「结束瞬间出现→被重拉顶掉」）
+  flushPendingTurnFileChanges(set, get)
+  remapTurnFileChangeKeys(set, get)
 }
 
 /** 消息是否带非空正文（判定"末尾是完整 assistant 回复"用）*/

@@ -214,4 +214,82 @@ class ZCodeServiceImplTest {
             buildJsonObject { put("input", buildJsonObject { put("plan", "") }) },
         ))
     }
+
+    // ===== workspace-config topic 帧分拣（H3 配套，extractWorkspaceConfigState）=====
+
+    @Test
+    fun `workspace-config 快照帧取 snapshot config`() {
+        val config = buildJsonObject { put("configOptions", buildJsonArray { }); put("slashCommands", buildJsonArray { }) }
+        val frame = buildJsonObject {
+            put("topic", "workspace-config/G:/proj")
+            put("frame", buildJsonObject {
+                put("payload", buildJsonObject {
+                    put("kind", "snapshot")
+                    put("snapshot", buildJsonObject {
+                        put("protocolVersion", 1)
+                        put("workspaceId", "G:/proj")
+                        put("config", config)
+                    })
+                })
+            })
+        }
+        assertEquals(config, ZCodeServiceImpl.extractWorkspaceConfigState(frame))
+    }
+
+    @Test
+    fun `workspace-config 增量帧取末个 config updated 且未知 op 跳过`() {
+        val first = buildJsonObject { put("configOptions", buildJsonArray { add(buildJsonObject { put("id", "old") }) }) }
+        val last = buildJsonObject { put("configOptions", buildJsonArray { add(buildJsonObject { put("id", "new") }) }) }
+        val frame = buildJsonObject {
+            put("topic", "workspace-config/G:/proj")
+            put("frame", buildJsonObject {
+                put("payload", buildJsonObject {
+                    put("kind", "deltas")
+                    put("deltas", buildJsonArray {
+                        add(buildJsonObject { put("op", "config.updated"); put("config", first) })
+                        // 未知 op（v3.14.3 容错原则：discriminatedUnion 扩 op 不得炸帧）
+                        add(buildJsonObject { put("op", "future.op"); put("config", buildJsonObject { }) })
+                        add(buildJsonObject { put("op", "config.updated"); put("config", last) })
+                    })
+                })
+            })
+        }
+        assertEquals(last, ZCodeServiceImpl.extractWorkspaceConfigState(frame))
+    }
+
+    @Test
+    fun `workspace-config 形态不符回 null`() {
+        // 非 workspace-config topic
+        assertNull(ZCodeServiceImpl.extractWorkspaceConfigState(buildJsonObject {
+            put("topic", "conversation/sess_1")
+            put("frame", buildJsonObject { put("payload", buildJsonObject { put("kind", "snapshot") }) })
+        }))
+        // 未知 kind
+        assertNull(ZCodeServiceImpl.extractWorkspaceConfigState(buildJsonObject {
+            put("topic", "workspace-config/G:/proj")
+            put("frame", buildJsonObject { put("payload", buildJsonObject { put("kind", "future-kind") }) })
+        }))
+        // deltas 无 config.updated
+        assertNull(ZCodeServiceImpl.extractWorkspaceConfigState(buildJsonObject {
+            put("topic", "workspace-config/G:/proj")
+            put("frame", buildJsonObject {
+                put("payload", buildJsonObject {
+                    put("kind", "deltas")
+                    put("deltas", buildJsonArray { add(buildJsonObject { put("op", "future.op") }) })
+                })
+            })
+        }))
+        // 快照缺 config
+        assertNull(ZCodeServiceImpl.extractWorkspaceConfigState(buildJsonObject {
+            put("topic", "workspace-config/G:/proj")
+            put("frame", buildJsonObject {
+                put("payload", buildJsonObject {
+                    put("kind", "snapshot")
+                    put("snapshot", buildJsonObject { put("protocolVersion", 1) })
+                })
+            })
+        }))
+        // 缺 frame
+        assertNull(ZCodeServiceImpl.extractWorkspaceConfigState(buildJsonObject { put("topic", "workspace-config/G:/proj") }))
+    }
 }

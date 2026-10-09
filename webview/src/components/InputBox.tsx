@@ -28,7 +28,8 @@ import { useTranslation } from 'react-i18next'
 import { useKeyboard } from '@/hooks/useKeyboard'
 import { useInputHistory, findHistorySuggestion } from '@/hooks/useInputHistory'
 import { useStore } from '@/store/useStore'
-import { FileRef } from './FileRef'
+import { FileRef, splitReference } from './FileRef'
+import { CurrentFileChip } from './CurrentFileChip'
 import { SkillRef } from './SkillRef'
 import { ModelSelect } from './ModelSelect'
 import { PlanBadge } from './PlanBadge'
@@ -41,11 +42,13 @@ import type { ScheduledMessageItem } from '@/store/useStore'
 import { AgentSelect, AgentColorDot } from './AgentSelect'
 import { PromptEnhancerDialog } from './PromptEnhancerDialog'
 import { sendToJava, onMessage } from '@/ipc/bridge'
-import type { JavaResponse, SlashCommand, AgentDef, ImageAttachmentInput } from '@/types/messages'
-import { insertChipAtCursor, insertCommandChipAtCursor, insertSessionChipAtCursor, insertPasteChipAtCursor, convertCompletedPaths, convertCompletedSessionRefs, matchSessionRefTrigger, serializeEditor, hasAnyInlineChip, type CmdChipKind } from '@/utils/inlineFileTags'
+import type { JavaResponse, SlashCommand, AgentDef, ImageAttachmentInput, SendAttachmentInput, CurrentFileAttachmentInput } from '@/types/messages'
+import { insertChipAtCursor, insertCommandChipAtCursor, insertSessionChipAtCursor, insertSkillChipAtCursor, insertPasteChipAtCursor, convertCompletedPaths, convertCompletedSessionRefs, convertCompletedSkillRefs, matchSessionRefTrigger, serializeEditor, hasAnyInlineChip, type CmdChipKind } from '@/utils/inlineFileTags'
+import { matchSkillRefTrigger } from '@/utils/skillRefPattern'
 import { relativeTime } from '@/utils/time'
 import { parseGoalCommand } from '@/utils/goalCommand'
 import { KV_HYDRATED_EVENT, KV_DISABLED_EVENT } from '@/utils/persist'
+import { draftScope, isDraftStoreReady, readComposerDraft, persistComposerDraft, clearComposerDraft, sanitizeDraftHtml } from '@/utils/composerDraft'
 import { readEnhanceConfig, ENHANCE_CONFIG_CHANGED_EVENT } from '@/utils/enhanceConfig'
 import { PastedTextPreview, type PastedTextItem } from './PastedTextRef'
 import { readImageFile, decodeBase64Size, type ImageAttachmentResult } from '@/utils/imageAttachment'
@@ -87,9 +90,24 @@ const BUILTIN_COMMANDS: { name: string; icon?: string }[] = [
 const PASTE_COLLAPSE_LINES = 10
 const PASTE_COLLAPSE_CHARS = 500
 
+/**
+ * chip 显示的 ref（`@path` / `@path#L10` / `@path#L10-20`）→ 当前文件上下文附件
+ * 描述。行号区间解析自 ref 后缀（EditorContextTracker buildLineReference 产物）；
+ * 无行号 = 整文件。纯函数放模块级：doSend 唯一拼点调用，spec 可直接断言产物。
+ */
+function parseCurrentFileAttachment(ref: string): CurrentFileAttachmentInput {
+  const { file, lines } = splitReference(ref.replace(/^@/, ''))
+  const m = lines?.match(/^L(\d+)(?:-(\d+))?$/)
+  return {
+    kind: 'currentFile',
+    path: file,
+    ...(m ? { lineStart: Number(m[1]), lineEnd: Number(m[2] ?? m[1]) } : {}),
+  }
+}
+
 interface Props {
-  /** 发送回调（文本 + 引用文件路径列表 + 图片附件）*/
-  onSend: (text: string, filePaths: string[], attachments: ImageAttachmentInput[]) => void
+  /** 发送回调（文本 + 引用文件路径列表 + 附件：图片内联 / 当前文件上下文描述）*/
+  onSend: (text: string, filePaths: string[], attachments: SendAttachmentInput[]) => void
   /** 是否正在生成（显示停止按钮）*/
   isStreaming?: boolean
   /** 停止生成回调 */
@@ -106,9 +124,11 @@ interface Props {
   onOpenAgentSettings?: () => void
   /** 团队计费提醒条「去配置」：跳设置页模型管理（跳转意图经 store 传递） */
   onOpenModelSettings?: () => void
+  /** 当前打开文件 ref（`@path` / `@path#L10` / `@path#L10-20`）；null = 无文件 */
+  currentFileRef?: string | null
 }
 
-export function InputBox({ onSend, isStreaming = false, onStop, disabled = false, placeholder, currentModel, onModelSelect, onOpenAgentSettings, onOpenModelSettings }: Props) {
+export function InputBox({ onSend, isStreaming = false, onStop, disabled = false, placeholder, currentModel, onModelSelect, onOpenAgentSettings, onOpenModelSettings, currentFileRef = null }: Props) {
   const { t } = useTranslation()
   const editorRef = useRef<HTMLDivElement>(null)
   const wrapperRef = useRef<HTMLDivElement>(null)
@@ -130,6 +150,21 @@ export function InputBox({ onSend, isStreaming = false, onStop, disabled = false
   /** 输入框高度（拖拽调整，null = 自适应）*/
   const [inputHeight, setInputHeight] = useState<number | null>(null)
 
+  /**
+   * 当前文件上下文 chip 勾选态（store 单源——2026-10-08 从本组件局部 state 抬入：
+   * 「新建会话自动点亮」设置需要跨组件写入点，见 useStore currentFileEnabled；
+   * CurrentFileChip 仍为 prop-driven 纯展示组件）。
+   * 勾选只管下一条消息：doSend 发送成功即自动取消（发完即关，2026-10-08 拍板）——
+   * 附件全文经 history 持久化留在会话里，后续轮次 AI 仍可见，无需每轮重发；
+   * 切去别的文件查看也不会被下一轮误带。想让 AI 看新版/新选区时重新勾一下即可。
+   * 勾选同时是发送闸门：勾选且 ref 非空时 doSend 把 ref 派生为当前文件上下文
+   * 附件描述（与 chip 显示同一取值表达式，见 doSend 末尾）。
+   */
+  const currentFileEnabled = useStore((s) => s.currentFileEnabled)
+  const setCurrentFileEnabled = useStore((s) => s.setCurrentFileEnabled)
+  /** 工作区路径（CurrentFileChip tooltip 显示相对路径用）*/
+  const projectPath = useStore((s) => s.projectPath)
+
   // @ 补全状态
   const [mentionQuery, setMentionQuery] = useState<string | null>(null)
   const [mentionFiles, setMentionFiles] = useState<string[]>([])
@@ -139,6 +174,11 @@ export function InputBox({ onSend, isStreaming = false, onStop, disabled = false
   // 序列化 [#标题](#sess_id) 随正文发送，模型侧 ReadSessionContext 工具拉取上下文）
   const [sessQuery, setSessQuery] = useState<string | null>(null)
   const [sessIndex, setSessIndex] = useState(0)
+
+  // $ 技能提及补全状态（对齐官方 MentionPlugin 三 trigger：@文件/$技能/#会话；
+  // ¥/￥ 归一为 $ 触发。选中插 cmd-ref--skill 内联 chip，序列化 [$名称](路径)）
+  const [skillQuery, setSkillQuery] = useState<string | null>(null)
+  const [skillIndex, setSkillIndex] = useState(0)
 
   // / 斜杠命令补全状态
   const [slashQuery, setSlashQuery] = useState<string | null>(null)
@@ -170,9 +210,10 @@ export function InputBox({ onSend, isStreaming = false, onStop, disabled = false
     setMentionFiles([])
     setSlashQuery(null)
     setGhostSuffix('')
-    // 历史文本里的 @绝对路径 / #sess_ 会话引用 回显为内联 chip（includeTrailing：回填内容已完整）
+    // 历史文本里的 @绝对路径 / #sess_ 会话引用 / $技能提及 回显为内联 chip（includeTrailing：回填内容已完整）
     convertCompletedPaths(el, true)
     convertCompletedSessionRefs(el, (id) => sessionTitleResolverRef.current(id))
+    convertCompletedSkillRefs(el, skillPathResolverRef.current)
     placeCursorEnd(el)
   }, [])
 
@@ -325,6 +366,8 @@ export function InputBox({ onSend, isStreaming = false, onStop, disabled = false
       setMentionQuery(null)
       setMentionFiles([])
       setSlashQuery(null)
+      setSessQuery(null)
+      setSkillQuery(null)
       setGhostSuffix('')
     }
     clearEnhanceResult()
@@ -532,16 +575,29 @@ export function InputBox({ onSend, isStreaming = false, onStop, disabled = false
     if (images.length > 0 && !currentModelSupportsImages) {
       finalText += `\n\n[附图说明：本消息附带 ${images.length} 张图片。若你无法直接看到图片内容（当前模型配置可能未启用图像直输），图片已由服务端缓存（路径见消息附件标注），请用 Read 工具读取图片文件或调用识图工具查看图片内容后再回答。]`
     }
+    // 当前文件上下文（《当前文件chip-发送链路实现.md》）：发送取值表达式 = chip
+    // 显示表达式（enabled && currentFileRef，与 CurrentFileChip renderLabel 同一
+    // 份 state 同一个式子）——任何时刻 chip 显示了什么，下一条消息就带什么。
+    // 唯一拼点在此：派生为附件描述放 attachments 首位（"顺序靠前"在我方可控范围
+    // 内——zcode.cjs 把附件块排在用户文本之后），Java 按 path+行号读文件切片
+    // 内容转 zcode.cjs kind:'file' + textContent 附件——隐式通道：模型收到 Read
+    // 工具结果形态的内容块，user bubble 不显示（ZCode-main 源码坐实，服务端从不
+    // 展开文本里的 @路径）。拼在 goal 拦截之后：/goal 是控制意图不是模型
+    // 消息，不携带上下文。
+    const currentFileCtx = currentFileEnabled && currentFileRef ? currentFileRef : null
     onSend(
       finalText,
       fileRefs,
-      images.map((i) => ({
-        kind: 'image',
-        filename: i.filename,
-        mimeType: i.mediaType,
-        sizeBytes: i.sizeBytes,
-        dataBase64: i.base64,
-      })),
+      [
+        ...(currentFileCtx ? [parseCurrentFileAttachment(currentFileCtx)] : []),
+        ...images.map((i) => ({
+          kind: 'image' as const,
+          filename: i.filename,
+          mimeType: i.mediaType,
+          sizeBytes: i.sizeBytes,
+          dataBase64: i.base64,
+        })),
+      ],
     )
     record(finalText)
 
@@ -551,6 +607,10 @@ export function InputBox({ onSend, isStreaming = false, onStop, disabled = false
     setSkillRefs([])
     setImages([])
     setSlashQuery(null)
+    // 发完即关：勾选只管下一条消息，发送成功即取消（勾选灭掉 = 附件已带走的
+    // 回执）。goal 早退路径不经过这里——控制意图不算消息，勾选留给真正的下一条；
+    // 排队消息入队时已把附件快照进参数，这里取消只影响后续发送
+    setCurrentFileEnabled(false)
   }
 
   function clearEditor() {
@@ -560,12 +620,16 @@ export function InputBox({ onSend, isStreaming = false, onStop, disabled = false
     }
     // 编辑器 DOM 清空即含内联粘贴 chip，原文映射同步回收（含 Backspace 删 chip 的残留条目）
     pasteTextsRef.current.clear()
+    // 内容已清（发送/goal 拦截/队列回填前重置），草稿 scope 一并清除——
+    // 留着会在下次切回该会话时复活已发出的内容
+    clearComposerDraft(draftScopeRef.current)
     setGhostSuffix('')
-    // 文本已清空，@/# 补全弹层一并关闭（弹层状态不随程序清空自动复位，缺陷BJ：
+    // 文本已清空，@/#/$ 补全弹层一并关闭（弹层状态不随程序清空自动复位，缺陷BJ：
     // 带 # 的 URL 消息发送后空态面板残留）
     setMentionQuery(null)
     setMentionFiles([])
     setSessQuery(null)
+    setSkillQuery(null)
   }
 
   /**
@@ -573,16 +637,19 @@ export function InputBox({ onSend, isStreaming = false, onStop, disabled = false
    * 图片附件一并回填附件栏（2026-09-08 修复：此前只回文本，带图排队消息编辑即丢图）。
    * width/height 压缩元数据不回填（0 占位），仅影响再压缩判定，不影响发送载荷。
    */
-  function editQueuedToInput(text: string, attachments?: ImageAttachmentInput[]) {
+  function editQueuedToInput(text: string, attachments?: SendAttachmentInput[]) {
     const el = editorRef.current
     if (!el) return
     const existing = serializeEditor(el, { pasteText: pasteTextResolver }).replace(/\s+$/, '')
     el.textContent = existing ? `${existing}\n${text}` : text
     setHasText(!!el.textContent?.trim())
-    if (attachments?.length) {
+    // 附件只回填图片；currentFile 上下文描述不回填——重发时 doSend 按当时 chip
+    // 显示值重新派生（队列里那份是入队时刻的快照，chip 可能已变）
+    const queuedImages = (attachments ?? []).filter((a): a is ImageAttachmentInput => a.kind === 'image')
+    if (queuedImages.length) {
       setImages((prev) => [
         ...prev,
-        ...attachments.map((a, i) => ({
+        ...queuedImages.map((a, i) => ({
           id: `img_${Date.now()}_${i}_${Math.random().toString(36).slice(2, 6)}`,
           filename: a.filename,
           mediaType: a.mimeType,
@@ -593,9 +660,10 @@ export function InputBox({ onSend, isStreaming = false, onStop, disabled = false
         })),
       ])
     }
-    // 回填文本里的 @绝对路径 / #sess_ 会话引用 回显为内联 chip
+    // 回填文本里的 @绝对路径 / #sess_ 会话引用 / $技能提及 回显为内联 chip
     convertCompletedPaths(el, true)
     convertCompletedSessionRefs(el, (id) => sessionTitleResolverRef.current(id))
+    convertCompletedSkillRefs(el, skillPathResolverRef.current)
     el.focus()
     // 光标移到末尾（contenteditable 聚焦后默认在开头）
     const sel = window.getSelection()
@@ -633,8 +701,12 @@ export function InputBox({ onSend, isStreaming = false, onStop, disabled = false
     // # 下拉开合取检测函数的实时返回（code-review Spec#4）：sessQuery 在本空 deps
     // useCallback 里是首渲染的陈旧值恒 null，幽灵建议的抑制会失效
     const sessOpen = !slashOpen && !mentionOpen && checkSessionRefTrigger(el)
-    // 历史前缀幽灵建议（@ / / / # 补全打开时不显示，方向键归下拉）
-    updateGhostSuggestion(el, slashOpen, mentionOpen || sessOpen)
+    // $ 技能提及（第四环互斥；¥/￥ 归一触发）
+    const skillOpen = !slashOpen && !mentionOpen && !sessOpen && checkSkillTrigger(el)
+    // 历史前缀幽灵建议（@ / / / # / $ 补全打开时不显示，方向键归下拉）
+    updateGhostSuggestion(el, slashOpen, mentionOpen || sessOpen || skillOpen)
+    // 草稿防抖保存（切换/卸载另有立即存兜底）
+    scheduleDraftPersist()
   }, [])
 
   /** 读入图片文件（剪贴板 image 项），压缩后加入附件列表 */
@@ -734,6 +806,7 @@ export function InputBox({ onSend, isStreaming = false, onStop, disabled = false
       if (!el) return
       convertCompletedPaths(el, true)
       convertCompletedSessionRefs(el, (id) => sessionTitleResolverRef.current(id))
+      convertCompletedSkillRefs(el, skillPathResolverRef.current)
       // 正文或任一类内联 chip 都是有效内容（chip 无 textContent，纯 chip 输入也要可发送）
       setHasText(!!el.textContent?.trim() || hasAnyInlineChip(el))
     }, 0)
@@ -1261,6 +1334,195 @@ export function InputBox({ onSend, isStreaming = false, onStop, disabled = false
     }
   }
 
+  // ============ $ 技能提及补全（对齐官方 MentionPlugin 三 trigger 之 $）============
+
+  /**
+   * 检测光标前是否有未完成的 $xxx，触发技能补全。与 @ / 行首 / / # 互斥（调用方保证）。
+   * ¥/￥ 归一触发（官方 promptInputTriggers 同款）；防误判（$ 前须行首/空白、
+   * 纯数字金额不触发）收在 matchSkillRefTrigger。
+   */
+  function checkSkillTrigger(el: HTMLDivElement): boolean {
+    const sel = window.getSelection()
+    if (!sel || sel.rangeCount === 0) return false
+    const beforeCursor = textBeforeCaret(el, sel.getRangeAt(0))
+    const query = matchSkillRefTrigger(beforeCursor)
+    if (query !== null) {
+      setSkillQuery(query)
+      requestCommands() // 复用斜杠命令缓存（同一次磁盘扫描，命中缓存零请求）
+      return true
+    }
+    setSkillQuery(null)
+    return false
+  }
+
+  /**
+   * $ 下拉候选：slashItems 的技能子集（kind='skill'），同名按 scope 折叠
+   * （官方 skillsMentionProvider 同策：workspace > plugin > user，$ 面板是执行入口
+   * 不是来源管理页），query 匹配 name/description，名称升序。
+   */
+  const filteredSkillItems = useMemo<SlashCommand[]>(() => {
+    if (skillQuery === null) return []
+    const q = skillQuery.toLowerCase()
+    const scopePriority: Record<string, number> = { workspace: 0, plugin: 1, user: 2 }
+    const byName = new Map<string, SlashCommand>()
+    for (const c of slashItems) {
+      if (c.kind !== 'skill') continue
+      const key = c.name.trim().toLowerCase()
+      const current = byName.get(key)
+      if (!current || (scopePriority[c.source ?? ''] ?? 9) < (scopePriority[current.source ?? ''] ?? 9)) {
+        byName.set(key, c)
+      }
+    }
+    return [...byName.values()]
+      .filter(
+        (c) =>
+          !q ||
+          c.name.toLowerCase().includes(q) ||
+          (c.description ?? '').toLowerCase().includes(q),
+      )
+      .sort((a, b) => a.name.localeCompare(b.name))
+  }, [skillQuery, slashItems])
+
+  /** 技能名 → 路径反查（裸 token 回显成 chip 时补路径；ref 转发同 sessionTitleResolverRef）*/
+  const skillPathResolverRef = useRef<(name: string) => string | undefined>(() => undefined)
+  useEffect(() => {
+    const map = new Map(slashItems.filter((c) => c.kind === 'skill').map((c) => [c.name, c.path]))
+    skillPathResolverRef.current = (name) => map.get(name)
+  }, [slashItems])
+
+  /** 从编辑器删除光标前的 $xxx 触发文本（Selection API 精确删除，同 removeSessionRefTriggerText）*/
+  function removeSkillTriggerText() {
+    const el = editorRef.current
+    if (!el) return
+    try {
+      const sel = window.getSelection()
+      if (sel && sel.rangeCount > 0) {
+        const beforeCursor = textBeforeCaret(el, sel.getRangeAt(0))
+        const m = beforeCursor.match(/(^|\s)([$¥￥])([^\s$¥￥/]*)$/)
+        if (m) {
+          // 只删 触发符+query（前置字符 m[1] 可能是多字节中文，不用 m[0].length）
+          const delLen = (m[3]?.length ?? 0) + 1
+          const tmpRange = sel.getRangeAt(0).cloneRange()
+          tmpRange.collapse(true)
+          sel.removeAllRanges()
+          sel.addRange(tmpRange)
+          for (let i = 0; i < delLen; i++) {
+            sel.modify('extend', 'backward', 'character')
+          }
+          sel.getRangeAt(0).deleteContents()
+        }
+      }
+    } catch {
+      el.textContent = el.textContent?.replace(/[$¥￥]([^\s$¥￥/]*)$/, '') ?? ''
+    }
+    setHasText(!!el.textContent?.trim() || hasAnyInlineChip(el))
+    el.focus()
+  }
+
+  /** 选中技能：删触发文本 → 光标处插内联技能 chip（序列化回 [$名称](路径)）*/
+  function selectSkillRef(c: SlashCommand) {
+    setSkillQuery(null)
+    removeSkillTriggerText()
+    const el = editorRef.current
+    if (el) {
+      insertSkillChipAtCursor(el, c.name, c.path, c.description)
+      setHasText(true)
+    }
+  }
+
+  // ============ 草稿持久化（per-session scope，候选池 O8）============
+  // scope=sessionId（待命态 "__draft__"），切换会话各归各；persist 通道跨重启保留。
+  // 输入防抖 600ms、切换/卸载立即存；发送清 scope。恢复前净化 HTML（utils 内白名单）。
+
+  const draftScopeRef = useRef(draftScope(sessionId))
+  const draftTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  // 顶栏引用镜像（防抖回调/卸载读最新值，避免 useCallback deps 陈旧闭包）
+  const draftRefsRef = useRef<{ fileRefs: string[]; skillRefs: SlashCommand[] }>({ fileRefs: [], skillRefs: [] })
+  draftRefsRef.current = { fileRefs, skillRefs }
+
+  const persistDraftNow = useCallback(() => {
+    const el = editorRef.current
+    if (!el) return
+    // 空编辑器 persist 是 no-op（utils 内守卫）：StrictMode dev 双挂载 cleanup 不误清草稿
+    persistComposerDraft(draftScopeRef.current, {
+      html: el.innerHTML,
+      fileRefs: draftRefsRef.current.fileRefs,
+      skillRefs: draftRefsRef.current.skillRefs,
+      pasteTexts: [...pasteTextsRef.current.entries()],
+    })
+  }, [])
+
+  /** 输入防抖保存（600ms 静默窗口；切会话/卸载时立即存，防抖定时器随之作废）*/
+  const scheduleDraftPersist = useCallback(() => {
+    if (draftTimerRef.current) clearTimeout(draftTimerRef.current)
+    draftTimerRef.current = setTimeout(persistDraftNow, 600)
+  }, [persistDraftNow])
+
+  /** 恢复指定 scope 草稿；无草稿清空编辑器（修正既有「切换会话输入残留」行为）*/
+  const restoreDraftFor = useCallback((scope: string) => {
+    const el = editorRef.current
+    if (!el) return
+    const d = readComposerDraft(scope)
+    if (d && (d.html || d.fileRefs.length > 0 || d.skillRefs.length > 0)) {
+      el.innerHTML = sanitizeDraftHtml(d.html)
+      setHasText(!!el.textContent?.trim() || hasAnyInlineChip(el))
+      setFileRefs(d.fileRefs)
+      setSkillRefs(d.skillRefs)
+      pasteTextsRef.current.clear()
+      for (const [k, v] of d.pasteTexts) pasteTextsRef.current.set(k, v)
+    } else {
+      el.textContent = ''
+      setHasText(false)
+      setFileRefs([])
+      setSkillRefs([])
+      pasteTextsRef.current.clear()
+    }
+    // 程序赋值不算输入：补全弹层/幽灵建议一并复位（setTextFromHistory 同款）
+    setMentionQuery(null)
+    setMentionFiles([])
+    setSessQuery(null)
+    setSlashQuery(null)
+    setSkillQuery(null)
+    setGhostSuffix('')
+  }, [])
+
+  // 切会话：先存旧 scope 当前内容，再恢复新 scope（ready 前跳过恢复——水合前草稿
+  // 恒空，清空会误伤即将恢复的内容）
+  useEffect(() => {
+    const scope = draftScope(sessionId)
+    if (draftScopeRef.current === scope) return
+    persistDraftNow()
+    draftScopeRef.current = scope
+    if (isDraftStoreReady()) restoreDraftFor(scope)
+  }, [sessionId, persistDraftNow, restoreDraftFor])
+
+  // 水合完成再补恢复：编辑器空才填（ready 前切换过的场景）；非空=用户已输入，让位
+  // 当前输入（其持久化由防抖保存承担）。ready 可能早于本 effect（kv 缓存已有值），
+  // 首挂载直接补一次——两路幂等
+  useEffect(() => {
+    const reread = () => {
+      const el = editorRef.current
+      if (el && !el.textContent?.trim() && !hasAnyInlineChip(el)) {
+        restoreDraftFor(draftScopeRef.current)
+      }
+    }
+    reread()
+    window.addEventListener(KV_HYDRATED_EVENT, reread)
+    window.addEventListener(KV_DISABLED_EVENT, reread)
+    return () => {
+      window.removeEventListener(KV_HYDRATED_EVENT, reread)
+      window.removeEventListener(KV_DISABLED_EVENT, reread)
+    }
+  }, [restoreDraftFor])
+
+  // 卸载前保存残余内容（关标签/dev 热更）；空编辑器 no-op（StrictMode 安全）
+  useEffect(() => {
+    return () => {
+      if (draftTimerRef.current) clearTimeout(draftTimerRef.current)
+      persistDraftNow()
+    }
+  }, [persistDraftNow])
+
   // 监听文件列表响应
   useEffect(() => {
     const unsub = onMessage((msg: JavaResponse) => {
@@ -1433,6 +1695,32 @@ export function InputBox({ onSend, isStreaming = false, onStop, disabled = false
         return
       }
     }
+    // $ 技能提及补全打开时，方向键/Enter/Escape 由补全处理（与 @ / / / # 互斥）。
+    // 零候选面板不渲染，但触发态仍在：Esc 清 skillQuery，Enter/方向键放行给正常编辑
+    if (skillQuery !== null) {
+      const hasCandidates = filteredSkillItems.length > 0
+      if (hasCandidates && e.key === 'ArrowDown') {
+        e.preventDefault()
+        setSkillIndex((i) => (i + 1) % filteredSkillItems.length)
+        return
+      }
+      if (hasCandidates && e.key === 'ArrowUp') {
+        e.preventDefault()
+        setSkillIndex((i) => (i - 1 + filteredSkillItems.length) % filteredSkillItems.length)
+        return
+      }
+      if (e.key === 'Escape') {
+        e.preventDefault()
+        setSkillQuery(null)
+        return
+      }
+      if (hasCandidates && e.key === 'Enter' && !e.shiftKey) {
+        e.preventDefault()
+        // 过滤列表变短时 index 可能超界（filter 变化不重置导航位），clamp 防越界
+        selectSkillRef(filteredSkillItems[Math.min(skillIndex, filteredSkillItems.length - 1)])
+        return
+      }
+    }
     // 历史前缀幽灵建议：Tab 采纳 / Escape 关闭（IME 合成中按键留给输入法）
     if (!e.nativeEvent.isComposing && ghostSuffix) {
       if (e.key === 'Tab') {
@@ -1598,50 +1886,65 @@ export function InputBox({ onSend, isStreaming = false, onStop, disabled = false
 
         {/* 上方条（cc-gui ContextBar）：附件按钮 + 定时任务 + 上下文圆环 + 子智能体下拉（左侧依次排列）*/}
         <div className="input-box-topbar">
-          <button
-            className="context-tool-btn tip-align-left"
-            onClick={() => sendToJava({ op: 'pickFiles' })}
-            disabled={disabled}
-            data-tip={t('input.attach')}
-          >
-            <span className="codicon codicon-attach" />
-          </button>
-          {/* 手机远程配对（QR 弹窗）：附件按钮右侧、定时任务之前。字形用 codicon-remote
-              （扁平方形，device-mobile 瘦高与工具条不协调——用户两轮反馈后换字形）。
-              颜色随 relay 状态联动：paired 绿、运行中（connecting/waiting）黄、
-              停止/异常保持默认色 */}
-          <button
-            type="button"
-            className="context-tool-btn"
-            onClick={() => useStore.getState().openRemotePairing()}
-            data-tip={t('chat.header.phoneRemote')}
-          >
-            <span
-              className={`codicon codicon-remote phone-entry__icon${
-                remoteState === 'paired'
-                  ? ' phone-entry__icon--paired'
-                  : remoteState === 'connecting' || remoteState === 'waiting'
-                    ? ' phone-entry__icon--waiting'
-                    : ''
-              }`}
-            />
-          </button>
-          {/* 引用会话（#）：不设附件栏入口（非高频），输入框 # 直接触发补全 */}
-          {/* 定时任务（日历）：上下文圆环左侧排列；角标=待执行任务总数 */}
-          <div className="schedule-entry">
+          {/* 左侧工具组（附件/远程配对/定时/用量环）：组内 2px 紧凑聚拢，与智能体
+              按 topbar 4px 间隔分开——cc-gui ContextBar 分组节奏（chip 钉最右后
+              顶栏左侧只剩这两组，发丝分隔线随之撤除） */}
+          <div className="input-box-topbar__tools">
             <button
-              className="context-tool-btn"
-              onClick={() => (scheduleOpen ? closeSchedulePicker() : openSchedulePicker())}
+              className="context-tool-btn tip-align-left"
+              onClick={() => sendToJava({ op: 'pickFiles' })}
               disabled={disabled}
-              data-tip={t('input.schedule.button')}
-              type="button"
+              data-tip={t('input.attach')}
             >
-              <span className="codicon codicon-clockface" />
+              <span className="codicon codicon-attach" />
             </button>
-            {scheduledCount > 0 && <span className="schedule-entry__badge">{scheduledCount}</span>}
+            {/* 手机远程配对（QR 弹窗）：附件按钮右侧、定时任务之前。字形用 codicon-remote
+                （扁平方形，device-mobile 瘦高与工具条不协调——用户两轮反馈后换字形）。
+                颜色随 relay 状态联动：paired 绿、运行中（connecting/waiting）黄、
+                停止/异常保持默认色 */}
+            <button
+              type="button"
+              className="context-tool-btn"
+              onClick={() => useStore.getState().openRemotePairing()}
+              data-tip={t('chat.header.phoneRemote')}
+            >
+              <span
+                className={`codicon codicon-remote phone-entry__icon${
+                  remoteState === 'paired'
+                    ? ' phone-entry__icon--paired'
+                    : remoteState === 'connecting' || remoteState === 'waiting'
+                      ? ' phone-entry__icon--waiting'
+                      : ''
+                }`}
+              />
+            </button>
+            {/* 引用会话（#）：不设附件栏入口（非高频），输入框 # 直接触发补全 */}
+            {/* 定时任务（日历）：上下文圆环左侧排列；角标=待执行任务总数 */}
+            <div className="schedule-entry">
+              <button
+                className="context-tool-btn"
+                onClick={() => (scheduleOpen ? closeSchedulePicker() : openSchedulePicker())}
+                disabled={disabled}
+                data-tip={t('input.schedule.button')}
+                type="button"
+              >
+                <span className="codicon codicon-clockface" />
+              </button>
+              {scheduledCount > 0 && <span className="schedule-entry__badge">{scheduledCount}</span>}
+            </div>
+            <ContextRing />
           </div>
-          <ContextRing />
           <AgentSelect onManage={onOpenAgentSettings} disabled={disabled} />
+          {/* 当前打开文件上下文（chip 显示 + 勾选持久化；勾选且 ref 非空时
+              doSend 派生附件描述随消息隐式携带，同一取值表达式，见 doSend 末尾）。
+              位置在最右（margin-left:auto 吸收富余空间，见 current-file-chip.less）：
+              文件名长短变化只向左生长，不推动智能体按钮（用户反馈定稿） */}
+          <CurrentFileChip
+            ref={currentFileRef}
+            enabled={currentFileEnabled}
+            onEnabledChange={setCurrentFileEnabled}
+            workspace={projectPath}
+          />
           {/* 状态栏收起/展开：显示中显 chevron-down、隐藏中显 chevron-up（用户定稿）；
               推到工具条最右，气泡右对齐防溢出裁剪 */}
           <button
@@ -1962,6 +2265,37 @@ export function InputBox({ onSend, isStreaming = false, onStop, disabled = false
                   </span>
                 </div>
               ))}
+          </div>
+        )}
+
+        {/* $ 技能提及补全下拉（$ 触发技能列表，同名跨来源折叠 workspace>plugin>user；
+            选中以 [$名称](路径) 随正文发送——官方 MentionPlugin 技能提及协议，
+            模型据此识别技能引用并读取 SKILL.md。
+            零候选不渲染面板：$ 可能是用户的行文（金额/变量），弹「没有匹配」反成骚扰）*/}
+        {skillQuery !== null && filteredSkillItems.length > 0 && (
+          <div className="input-box__mention input-box__skill">
+            {filteredSkillItems.map((c, i) => (
+              <div
+                key={c.name}
+                className={`input-box__mention-item input-box__skill-item ${i === Math.min(skillIndex, filteredSkillItems.length - 1) ? 'active' : ''}`}
+                onMouseEnter={() => setSkillIndex(i)}
+                onMouseDown={(e) => {
+                  e.preventDefault() // 不让编辑器失焦
+                  selectSkillRef(c)
+                }}
+              >
+                <span className="codicon codicon-wand input-box__mention-icon input-box__skill-icon" />
+                  <span className="input-box__sess-main">
+                    <span className="input-box__sess-title">${c.name}</span>
+                    <span className="input-box__sess-desc">
+                      {(() => {
+                        const src = c.source && c.source !== 'builtin' ? t(`input.skillRef.source_${c.source}`) : ''
+                        return src && c.description ? `${src} · ${c.description}` : src || c.description || ''
+                      })()}
+                    </span>
+                  </span>
+              </div>
+            ))}
           </div>
         )}
 

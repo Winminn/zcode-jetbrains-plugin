@@ -6,7 +6,8 @@
     "refresh": "Refresh quota",
     "loading": "Loading…",
     "empty": "No quota data",
-    "resetAt": "Resets {{time}}"
+    "resetAt": "Resets {{time}}",
+    "usedPct": "{{pct}}% used"
   },
   "plan": {
     "tab": "GLM Plan Usage",
@@ -72,8 +73,7 @@
     "titleBreakdown": "Context breakdown",
     "noBreakdown": "No breakdown yet (shown after chatting)",
     "hitRate": "Avg. cache hit rate",
-    "glmQuota": "GLM quota",
-    "glmQuotaWithLevel": "GLM quota ({{level}})",
+    "glmQuota": "GLM quota remaining",
     "quotaLoading": "Loading quota…",
     "noQuota": "No quota data",
     "doubleClickHint": "Double-click the ring to compact the context",
@@ -87,5 +87,24 @@
       "mcpTools": "MCP tools",
       "other": "Other"
     }
+  },
+  "windows": {
+    "fiveHours": "5-hour pool",
+    "weekly": "Weekly quota",
+    "toolCalls": "Tool calls"
+  },
+  "banner": {
+    "exhausted": "{{names}} exhausted",
+    "exhaustedReset": "{{names}} exhausted, resets {{time}}",
+    "exhaustedGeneric": "Plan quota exhausted",
+    "low": "{{name}} only {{pct}} left",
+    "lowReset": "{{name}} only {{pct}} left, resets {{time}}",
+    "remainPct": "{{pct}}%",
+    "concurrent": "Model concurrency limit reached, please retry later",
+    "providerLimited": "Provider returned a quota/plan restriction",
+    "rateLimited": "Too many requests, please retry later",
+    "refresh": "Refresh quota",
+    "dismiss": "Dismiss",
+    "dismissAria": "Dismiss quota banner"
   }
 }

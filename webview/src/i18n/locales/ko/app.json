@@ -1,7 +1,8 @@
 {
   "errorClose": "닫기",
   "errorCloseAria": "오류 닫기",
-  "backendQuotaError": "모델 할당량 초과(월간 토큰 한도): 서버가 계속 재시도 중이지만 성공하지 못합니다. 이 턴을 중지하고 모델/플랜을 전환하거나 초기화를 기다리세요",
+  "zoomResetTitle": "클릭하면 배율이 100%로 초기화됩니다",
+  "backendQuotaError": "모델 할당량 초과(할당량 창 소진): 서버가 계속 재시도 중이지만 성공하지 못합니다. 이 턴을 중지하고 모델/플랜을 전환하거나 초기화를 기다리세요",
   "backendApiError": "모델 API 오류(HTTP {{statusCode}}): {{message}}",
   "turnFailed": "턴 실패: {{message}}",
   "turnFailedNoDetail": "턴 실패(서버가 오류 상세를 반환하지 않음)",
@@ -70,16 +71,36 @@
     "viewResult": "클릭하여 결과 보기"
   },
   "status": {
-    "todoTab": "작업",
-    "agentTab": "서브에이전트",
+    "todoTab": "프로세스",
+    "workTab": "작업",
     "fileTab": "파일",
-    "noTodos": "작업 없음",
-    "noAgents": "하위 작업 없음",
+    "noTodos": "프로세스가 없습니다",
+    "noAgents": "에이전트 작업이 없습니다",
     "noFiles": "파일 변경 없음",
     "viewSubagentDetail": "클릭하여 서브에이전트 실행 과정 보기",
     "openInEditor": "에디터에서 열기: {{path}}",
     "viewDiff": "편집 전후 비교 보기",
-    "diffTitle": "편집 비교: {{name}}"
+    "diffTitle": "편집 비교: {{name}}",
+    "bgTab": "작업",
+    "subTab": "에이전트 작업",
+    "bgWorks": {
+      "empty": "백그라운드 작업이 없습니다",
+      "statusRunning": "실행 중",
+      "statusBlocked": "대기 중",
+      "statusPending": "전달 대기",
+      "statusFailed": "실패",
+      "statusCancelled": "취소됨",
+      "statusEnded": "종료됨",
+      "viewOutput": "출력",
+      "hideOutput": "출력 숨기기",
+      "cancel": "취소",
+      "outputLoading": "출력을 읽는 중…",
+      "outputEmpty": "(아직 출력 없음)",
+      "outputTruncated": "출력이 마지막 8 KB로 잘렸습니다",
+      "output_unavailable": "작업 출력을 사용할 수 없습니다(종료 또는 회수됨)",
+      "output_unsupported": "현재 CLI 버전은 출력 조회를 지원하지 않습니다",
+      "output_read_failed": "작업 출력 읽기 실패"
+    }
   },
   "envBanner": {
     "title": "실행 환경에 문제가 있어 플러그인을 사용할 수 없습니다",

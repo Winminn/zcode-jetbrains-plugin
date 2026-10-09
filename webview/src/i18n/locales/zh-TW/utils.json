@@ -7,7 +7,7 @@
   "minutesSeconds": "{{m}} 分 {{s}} 秒",
   "minutesSecondsCompact": "{{m}}分{{s}}秒",
   "format": {
-    "mcpMonthlyLimit": "MCP 每月額度",
+    "toolCallsMonthlyLimit": "工具呼叫額度（月）",
     "cycleLimit": "週期額度",
     "per5HoursLimit": "每 5 小時使用額度",
     "weeklyLimit": "每週使用額度",

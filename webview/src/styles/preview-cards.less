@@ -1,0 +1,96 @@
+/**
+ * 产物预览卡（AssistantPreviewCards）：轮尾文档/网站卡，视觉对齐逐轮更改条
+ * （msg__fccard 的边框/圆角/密度令牌），行内 hover 提亮 + 右侧外链图标。
+ */
+
+.apc {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 8px;
+  margin-bottom: 6px;
+  max-width: 720px;
+}
+
+.apc__row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 7px 12px;
+  border: 1px solid var(--border-primary);
+  border-radius: 8px;
+  cursor: pointer;
+  user-select: none;
+  min-width: 0;
+
+  &:hover {
+    background: var(--bg-hover, rgba(128, 128, 128, 0.08));
+
+    .apc__open {
+      color: var(--text-primary);
+    }
+  }
+}
+
+.apc__badge {
+  flex-shrink: 0;
+  width: 28px;
+  height: 28px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 6px;
+  background: var(--bg-hover, rgba(128, 128, 128, 0.08));
+  font-size: 16px;
+  color: var(--text-secondary);
+}
+
+/* 图标与徽标容器分层后：内层自身要约束 SVG 尺寸（预览卡传入的 className 覆盖了
+ * FileIcon 默认的 .file-type-icon 14x14，SVG 无 width/height 属性，失去约束会按
+ * 替换元素默认尺寸炸掉——md 图标丢失即此）。地球是 codicon 字体图标（默认继承
+ * 文字色近白），给浏览器联想的主题强调色，与 md 图标的品牌蓝同层观感 */
+.apc__badge-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  line-height: 1;
+
+  svg {
+    width: 16px;
+    height: 16px;
+    display: block;
+  }
+
+  &.codicon-globe {
+    color: var(--accent-primary);
+  }
+}
+
+.apc__meta {
+  flex: 1;
+  min-width: 0;
+}
+
+.apc__title {
+  font-size: 12.5px;
+  font-weight: 500;
+  color: var(--text-primary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.apc__subtitle {
+  font-size: 11px;
+  color: var(--text-secondary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.apc__open {
+  flex-shrink: 0;
+  font-size: 13px;
+  color: var(--text-secondary);
+  opacity: 0.6;
+}

@@ -14,6 +14,7 @@ import com.intellij.openapi.roots.ProjectFileIndex
 import com.intellij.openapi.fileEditor.FileEditorManager
 import com.intellij.openapi.fileChooser.FileChooser
 import com.intellij.openapi.fileChooser.FileChooserDescriptor
+import com.intellij.openapi.fileEditor.FileDocumentManager
 import com.intellij.openapi.vfs.LocalFileSystem
 import com.intellij.openapi.vfs.VirtualFile
 import com.intellij.diff.DiffManager
@@ -114,6 +115,8 @@ class ZCodeToolWindowPanel(
     // 前端首条 JS 消息是否已到达（就绪信号；executeJavaScript 是 fire-and-forget，注入成功不代表页面活着）
     @Volatile
     private var frontendReady = false
+    // 浏览器缩放基准补正是否已做过（每 panel 一次，见 maybeApplyZoomBase）
+    private var zoomBaseApplied = false
 
     // ============ 多标签页状态 ============
     // 所属 Content（标签标题更新用，Factory 创建后注入）
@@ -239,6 +242,8 @@ class ZCodeToolWindowPanel(
     private var themeBusConn: com.intellij.util.messages.MessageBusConnection? = null
     // OS 文件拖入拦截（AWT DropTarget 挂 JBCefBrowser.component，dispose 时显式 removeComponent）
     private var fileDropTarget: DropTarget? = null
+    // 当前打开文件 + 选区 tracker（initJcef 装上，dispose 释放；onUpdate 主动推 currentFile op）
+    private var editorContextTracker: EditorContextTracker? = null
 
     // ============ 会话内嵌浏览器（AI browser-use 同屏观察用）============
     // 浏览器作为聊天 webview 的右侧分栏，AI 导航时无需切标签页——对齐 ZCode 桌面端
@@ -268,6 +273,11 @@ class ZCodeToolWindowPanel(
         const val KEY_BROWSER_EXPANDED = "zcode.browser.paneExpanded"
         const val KEY_CHAT_BASE_WIDTH = "zcode.browser.chatBaseWidth"
 
+        /** 浏览器缩放基准（Chromium zoom level 1.0 = 原生 120%）：webview 观感按此档
+         *  调校，原生 100% 在 HiDPI 下过小（真机 2026-10-08 反馈「120% 才正常，
+         *  100% 看不清」）。启动与重置（Ctrl+0/点胶囊）都落此档，前端百分比相对基准显示 */
+        const val ZOOM_BASE_LEVEL = 1.0
+
         /** 最近一条后端模型 API 错误（stderr APICallError 原始详情，epochMs to 文案；
          *  连通性测试失败时按时间窗捞取——服务端 JSON-RPC error 对 401/403 只回
          *  "Provider authentication failed." 归类文案，原始报文只在 stderr 第一现场）*/
@@ -291,6 +301,31 @@ class ZCodeToolWindowPanel(
         val activePanels = java.util.concurrent.CopyOnWriteArraySet<ZCodeToolWindowPanel>()
 
         /**
+         * 配置目录变化广播（ZCodeServiceImpl workspace-config 订阅触发 → 所有已开标签）：
+         * 每个标签重算既有清单（op=listModels 读注册表 / listCommands 扫盘，口径与
+         * 用户主动拉取完全一致）后推送，webview 复用 case 'models'/'commands' 更新
+         * store——模型下拉无需重开即见新目录。重算在调用方后台线程，推送自切 EDT。
+         */
+        fun broadcastCatalogRefresh() {
+            activePanels.forEach { panel ->
+                try {
+                    val models = panel.handleListModels(buildJsonObject { put("op", "listModels") })
+                    val commands = panel.handleListCommands(buildJsonObject { put("op", "listCommands") })
+                    SwingUtilities.invokeLater {
+                        try {
+                            panel.pushToWebview(models)
+                            panel.pushToWebview(commands)
+                        } catch (_: Exception) {
+                            // 未初始化/销毁中的标签跳过
+                        }
+                    }
+                } catch (_: Exception) {
+                    // 单标签重算失败不影响其他标签
+                }
+            }
+        }
+
+        /**
          * 待交互计数广播（ZCodeServiceImpl 注册的协议客户端回调 → 所有已开标签，
          * 会话列表红点数据源）。EDT 上推送（sendToJs 要求），懒加载未激活标签自动跳过。
          */
@@ -305,6 +340,84 @@ class ZCodeToolWindowPanel(
                     } catch (_: Exception) {
                         // 未初始化/销毁中的标签跳过（懒激活后 subscribe 拉不到此状态——
                         // 红点短暂缺失可接受，下次交互变更即恢复）
+                    }
+                }
+            }
+        }
+
+        /**
+         * 会话置顶集广播（op=setSessionPinned 写库成功/失败对账 → 所有已开标签）：
+         * 全量置顶 id 列表，列表置顶排序的数据源。webview 不做乐观更新，广播即校正。
+         */
+        fun broadcastSessionPins(pinnedIds: List<String>) {
+            SwingUtilities.invokeLater {
+                activePanels.forEach { panel ->
+                    try {
+                        panel.pushToWebview(buildJsonObject {
+                            put("op", "sessionPinsChanged")
+                            put("pinned", JsonArray(pinnedIds.map { JsonPrimitive(it) }))
+                        })
+                    } catch (_: Exception) {
+                        // 懒加载未激活标签跳过：激活后 loadSessions 顺带的 listPinnedSessions 拉取兜底
+                    }
+                }
+            }
+        }
+
+        /**
+         * 会话未读集广播（sessions-index 相位迁移标未读 / 打开会话清未读 → 所有已开标签）：
+         * 全量未读 id 列表，列表行蓝点数据源。语义同 [broadcastSessionPins]（广播即校正，
+         * 无乐观更新；懒加载标签靠 loadSessions 顺带的 listUnreadSessions 拉取兜底）。
+         */
+        fun broadcastSessionUnreads(unreadIds: List<String>) {
+            SwingUtilities.invokeLater {
+                activePanels.forEach { panel ->
+                    try {
+                        panel.pushToWebview(buildJsonObject {
+                            put("op", "sessionUnreadsChanged")
+                            put("unread", JsonArray(unreadIds.map { JsonPrimitive(it) }))
+                        })
+                    } catch (_: Exception) {
+                        // 懒加载未激活标签跳过
+                    }
+                }
+            }
+        }
+
+        /** 广播当前全量未读集（写库成功/失败对账共用；读失败按空集广播） */
+        fun broadcastSessionUnreadsSafe(client: com.zcode.ideaplugin.protocol.ZCodeProtocolClient) {
+            val unread = try {
+                client.listUnreadSessionIds()
+            } catch (_: Exception) {
+                emptyList()
+            }
+            broadcastSessionUnreads(unread)
+        }
+
+        /** 是否任一已开标签正在看该会话（未读豁免判据：用户亲历完成不标未读） */
+        fun isSessionBeingWatched(sessionId: String): Boolean =
+            activePanels.any { it.getCurrentSessionIdForPersist() == sessionId }
+
+        /**
+         * 会话索引推送（ZCodeServiceImpl sessions-index 订阅 → 所有已开标签）：
+         * 整 workspace 会话的活性数据（相位/标题/最近活动）。sessions 条目是官方
+         * SessionSummary 的原样 JSON（过滤后），removed 为服务端移除的会话 id；
+         * full=true 表示 initial 快照全量。合并语义在前端 store（叠加不替换）。
+         */
+        fun broadcastSessionsIndex(sessions: List<JsonObject>, removedIds: List<String>, full: Boolean) {
+            val sessionsJson = JsonArray(sessions)
+            val removedJson = JsonArray(removedIds.map { JsonPrimitive(it) })
+            SwingUtilities.invokeLater {
+                activePanels.forEach { panel ->
+                    try {
+                        panel.pushToWebview(buildJsonObject {
+                            put("op", "sessionIndexUpdate")
+                            put("full", full)
+                            put("sessions", sessionsJson)
+                            put("removed", removedJson)
+                        })
+                    } catch (_: Exception) {
+                        // 未初始化/销毁中的标签跳过
                     }
                 }
             }
@@ -522,6 +635,28 @@ class ZCodeToolWindowPanel(
         // OS 文件拖入拦截：必须在 component 加入面板后才挂（否则 Swing DnD 无目标组件）
         registerFileDropTarget()
         log.info("JCEF panel initialized")
+
+        // 装上编辑器上下文 tracker：tab 切换 / 选区变化 200ms 防抖后主动推 currentFile op。
+        // 装在 initJcef 末尾：lazy tab 激活后才挂监听（未激活的标签不浪费）。
+        // panel 自身 disposed 时不装（dispose 流程中不应再启动后台任务）。
+        if (disposed) return
+        if (editorContextTracker == null) {
+            editorContextTracker = EditorContextTracker(
+                project = project,
+                onUpdate = { ref ->
+                    // Tracker Alarm 在 SWING_THREAD 跑回调，sendToJs 内部用 invokeLater
+                    // 包装，本线程调安全；disposed 后丢弃（避免释放后还往 JCEF 推）
+                    if (disposed) return@EditorContextTracker
+                    // 当前只驱动 webview 的 CurrentFileChip 显示（topbar 当前文件 chip）
+                    sendToJs(buildJsonObject {
+                        put("op", "currentFile")
+                        // ref: String? 直接序列化——null 自然变成 JSON null，
+                        // 比 ?: JsonNull 在 buildJsonObject DSL 里类型推断更稳
+                        put("ref", ref)
+                    })
+                },
+            )
+        }
     }
 
     /**
@@ -910,6 +1045,14 @@ if (!window.__ZCODE_LOG_HOOK__) {
                         "createSession" -> handleCreateSession(msg)
                         "forkSession" -> handleForkSession(msg)
                         "editUserQuery" -> handleEditUserQuery(msg)
+                        "turnFileChanges" -> handleTurnFileChanges(msg)
+                        "turnFileRewindPreview" -> handleTurnFileRewindPreview(msg)
+                        "turnFileRewindApply" -> handleTurnFileRewindApply(msg)
+                        "turnFileChangesSync" -> handleTurnFileChangesSync(msg)
+                        "turnFileDiff" -> handleTurnFileDiff(msg)
+                        "backgroundBashOutput" -> handleBackgroundBashOutput(msg)
+                        "cancelBackgroundWork" -> handleCancelBackgroundWork(msg)
+                        "backgroundWorksList" -> handleBackgroundWorksList(msg)
                         "subscribe" -> handleSubscribe(msg)
                         "subscribeChild" -> handleSubscribeChild(msg)
                         "unsubscribeChild" -> handleUnsubscribeChild(msg)
@@ -948,6 +1091,9 @@ if (!window.__ZCODE_LOG_HOOK__) {
                         "archiveSession" -> handleArchiveSession(msg)
                         "restoreSession" -> handleRestoreSession(msg)
                         "deleteArchivedSession" -> handleDeleteArchivedSession(msg)
+                        "setSessionPinned" -> handleSetSessionPinned(msg)
+                        "listPinnedSessions" -> handleListPinnedSessions()
+                        "listUnreadSessions" -> handleListUnreadSessions()
                         "getAutoArchiveConfig" -> handleGetAutoArchiveConfig()
                         "setAutoArchiveConfig" -> handleSetAutoArchiveConfig(msg)
                         "getAutoArchiveRecords" -> handleGetAutoArchiveRecords()
@@ -986,6 +1132,8 @@ if (!window.__ZCODE_LOG_HOOK__) {
                         "getModelUsage" -> handleGetModelUsage(msg)
                         "getToolUsage" -> handleGetToolUsage(msg)
                         "openFile" -> handleOpenFile(msg)
+                        "checkFilesExist" -> handleCheckFilesExist(msg)
+                        "openFileSystem" -> handleOpenFileSystem(msg)
                         "showDiff" -> handleShowDiff(msg)
                         "refreshFile" -> handleRefreshFile(msg)
                         "createTab" -> handleCreateTab()
@@ -994,6 +1142,8 @@ if (!window.__ZCODE_LOG_HOOK__) {
                         "setTabTitle" -> handleSetTabTitle(msg)
                         "clearTabSession" -> handleClearTabSession()
                         "appearanceSave" -> handleAppearanceSave(msg)
+                        "zoomQuery" -> handleZoomQuery()
+                        "zoomReset" -> handleZoomReset()
                         "kvSave" -> handleKvSave(msg)
                         "kvLoad" -> handleKvLoad()
                         "remotePairStart" -> handleRemote { it.connect() }
@@ -1003,6 +1153,7 @@ if (!window.__ZCODE_LOG_HOOK__) {
                         "remoteUnpair" -> handleRemote { it.unpair() }
                         "checkEnv" -> handleCheckEnv()
                         "envSave" -> handleEnvSave(msg)
+                        "getCurrentFile" -> handleGetCurrentFile(msg)
                         else -> errorResponse("未知 op: $op")
                     }
                     log.info("op=$op handled, sending back to JS")
@@ -1180,6 +1331,72 @@ if (!window.__ZCODE_LOG_HOOK__) {
             try {
                 project.zCodeService().getSharedBrowserPanel()?.onAppearanceThemeChanged()
             } catch (_: Exception) {}
+        }
+    }
+
+    /**
+     * 浏览器级缩放（Ctrl+滚轮 = Chromium 原生行为：CEF windowed 模式下内容层
+     * 直接缩放，平台 2024.1 Java 侧无缩放实现也无变化通知）。前端以 devicePixelRatio
+     * 变化为信号来查询，本侧读 getZoomLevel() 权威值换算百分比。
+     *
+     * 百分比相对「基准档」（原生 120%）显示：round(1.2^(level-1)×100)，即基准档
+     * 显示 100%、滚一档 ±约 9%。原生 100% 在 HiDPI 下观感过小（真机实测），不作
+     * 任何界面档位。
+     */
+    private fun zoomPercentOf(level: Double): Int =
+        Math.round(Math.pow(1.2, level - ZOOM_BASE_LEVEL) * 100.0).toInt()
+
+    private fun browserZoomPercent(): Int = try {
+        zoomPercentOf(jbCefBrowser.zoomLevel)
+    } catch (e: Exception) {
+        100 // 浏览器未就绪等异常：回落基准值，前端 toast 展示不因查询失败缺席
+    }
+
+    /**
+     * 基准补正（每 panel 一次）：生产 origin 随机端口每次重启变化，Chromium 按源记忆
+     * 的缩放随之重置——首查发现原生 100%（level 0）时直接抬到基准档。本会话内用户
+     * 已滚轮调过的非默认档不干预。返回是否刚刚执行了抬升。
+     */
+    private fun maybeApplyZoomBase(): Boolean {
+        if (zoomBaseApplied || !::jbCefBrowser.isInitialized) return false
+        zoomBaseApplied = true
+        return try {
+            if (jbCefBrowser.zoomLevel == 0.0) {
+                jbCefBrowser.setZoomLevel(ZOOM_BASE_LEVEL)
+                log.info("Browser zoom lifted to baseline (native ${Math.round(Math.pow(1.2, ZOOM_BASE_LEVEL) * 100)}%)")
+                true
+            } else {
+                false
+            }
+        } catch (e: Exception) {
+            log.warn("zoom baseline apply failed: ${e.message}")
+            false
+        }
+    }
+
+    /** 查询当前缩放百分比（zoomLevel 回包由前端 ZoomIndicator 消费） */
+    private fun handleZoomQuery(): JsonObject {
+        // 刚补正时 setZoomLevel 异步生效，直接读回可能拿到旧值——按目标档换算
+        val justLifted = maybeApplyZoomBase()
+        return buildJsonObject {
+            put("op", "zoomLevel")
+            put("percent", if (justLifted) zoomPercentOf(ZOOM_BASE_LEVEL) else browserZoomPercent())
+        }
+    }
+
+    /** 重置缩放到基准档（显示 100%，Ctrl+0 / 点击胶囊触发）。setZoomLevel 异步生效，
+     *  回包直接给基准值——缩放生效后的 resize 会再触发前端 zoomQuery 幂等校正 */
+    private fun handleZoomReset(): JsonObject {
+        try {
+            val before = browserZoomPercent()
+            jbCefBrowser.setZoomLevel(ZOOM_BASE_LEVEL)
+            log.info("Browser zoom reset to baseline 100% (was $before%)")
+        } catch (e: Exception) {
+            log.warn("zoomReset failed: ${e.message}")
+        }
+        return buildJsonObject {
+            put("op", "zoomLevel")
+            put("percent", zoomPercentOf(ZOOM_BASE_LEVEL))
         }
     }
 
@@ -1737,6 +1954,14 @@ if (!window.__ZCODE_LOG_HOOK__) {
             log.warn("Failed to disconnect theme listener: ${e.message}")
         }
         try {
+            // EditorContextTracker 自身实现 Disposable；busConn 在 Disposer 父链上自动断开，
+            // 这里显式置 null 配合 panel 早期 disposed 守卫，挡掉 200ms 内的挂起回调
+            editorContextTracker?.let { Disposer.dispose(it) }
+        } catch (e: Exception) {
+            log.warn("Failed to release editor context tracker: ${e.message}")
+        }
+        editorContextTracker = null
+        try {
             // DropTarget 解绑：AWT 公开 API 没有 removeComponent，
             // 标准做法是置 null 释放引用，让 AWT 在 component dispose 时通过 removeNotify 自动清理 listener 闭包
             // （JBR / JCEF 释放 jbCefBrowser 走 Disposer.dispose 会触发 component.removeNotify）
@@ -2000,6 +2225,217 @@ if (!window.__ZCODE_LOG_HOOK__) {
         reason?.let { put("reason", it) }
     }
 
+    // ============ 回合文件更改与回退（B2：v4/conversation/fileChanges 族桥接） ============
+    //
+    // 三个直通 op（详情/回退预览/回退执行）+ 一个重扫 op（会话重开后补逐轮更改条）。
+    // 错误走专用 *Error op 而非 errorResponse（op:error 会全量复位前端流式态——
+    // 更改条在回合进行中也可见可点，不能误清 streaming；与编辑链路同理由）。
+
+    /** 逐轮回退桥接 op 的公共错误应答（reason 机器码：unsupported=老 CLI 无 v4 面，
+     *  targetGone/snapshotTimeout/revisionUnknown=定位失败，commandFailed/stale=服务端拒绝） */
+    private fun turnFileOpError(op: String, reason: String, message: String): JsonObject = buildJsonObject {
+        put("op", op)
+        put("reason", reason)
+        put("message", message)
+    }
+
+    /** 逐轮回退桥接 op 公共入参解析；缺参返回错误应答（调用方直接作为 op 结果返回） */
+    private fun turnFileOpArgs(
+        msg: JsonObject,
+        errorOp: String,
+    ): Pair<String, String>? {
+        val sessionId = msg["sessionId"]?.jsonPrimitive?.content
+        val messageId = msg["messageId"]?.jsonPrimitive?.content
+        if (sessionId.isNullOrBlank() || messageId.isNullOrBlank()) {
+            return null
+        }
+        return sessionId to messageId
+    }
+
+    /** turnFileOpArgs 缺参时的统一错误（调用方缺参分支直接返回） */
+    private fun turnFileOpMissingParams(errorOp: String): JsonObject =
+        turnFileOpError(errorOp, "missingParams", com.zcode.ideaplugin.ZCodeBundle.message("turnfile.error.missingParams"))
+
+    private fun handleTurnFileChanges(msg: JsonObject): JsonObject {
+        val errorOp = "turnFileChangesError"
+        val (sessionId, messageId) = turnFileOpArgs(msg, errorOp) ?: return turnFileOpMissingParams(errorOp)
+        val client = project.zCodeService().getClient()
+        return try {
+            val result = client.fetchTurnFileChanges(sessionId, messageId)
+            buildJsonObject {
+                put("op", "turnFileChangesResult")
+                put("sessionId", sessionId)
+                put("messageId", messageId)
+                put("data", result)
+            }
+        } catch (e: ZCodeProtocolException) {
+            turnFileOpErrorFromProtocol(e, errorOp)
+        } catch (e: Exception) {
+            log.warn("Turn file changes query failed: ${e.message}")
+            turnFileOpError(errorOp, "internal", e.message ?: com.zcode.ideaplugin.ZCodeBundle.message("turnfile.error.unknown"))
+        }
+    }
+
+    private fun handleTurnFileRewindPreview(msg: JsonObject): JsonObject {
+        val errorOp = "turnFileRewindPreviewError"
+        val (sessionId, messageId) = turnFileOpArgs(msg, errorOp) ?: return turnFileOpMissingParams(errorOp)
+        val client = project.zCodeService().getClient()
+        return try {
+            val result = client.previewTurnFileRewind(sessionId, messageId)
+            buildJsonObject {
+                put("op", "turnFileRewindPreviewResult")
+                put("sessionId", sessionId)
+                put("messageId", messageId)
+                put("data", result)
+            }
+        } catch (e: ZCodeProtocolException) {
+            turnFileOpErrorFromProtocol(e, errorOp)
+        } catch (e: Exception) {
+            log.warn("Turn file rewind preview failed: ${e.message}")
+            turnFileOpError(errorOp, "internal", e.message ?: com.zcode.ideaplugin.ZCodeBundle.message("turnfile.error.unknown"))
+        }
+    }
+
+    private fun handleTurnFileRewindApply(msg: JsonObject): JsonObject {
+        val errorOp = "turnFileRewindApplyError"
+        val (sessionId, messageId) = turnFileOpArgs(msg, errorOp) ?: return turnFileOpMissingParams(errorOp)
+        val client = project.zCodeService().getClient()
+        return try {
+            val result = client.applyTurnFileRewind(sessionId, messageId)
+            log.info("Turn file rewind applied: $sessionId msg=$messageId")
+            buildJsonObject {
+                put("op", "turnFileRewindApplied")
+                put("sessionId", sessionId)
+                put("messageId", messageId)
+                put("data", result)
+            }
+        } catch (e: ZCodeProtocolException) {
+            turnFileOpErrorFromProtocol(e, errorOp)
+        } catch (e: Exception) {
+            log.warn("Turn file rewind apply failed: ${e.message}")
+            turnFileOpError(errorOp, "internal", e.message ?: com.zcode.ideaplugin.ZCodeBundle.message("turnfile.error.unknown"))
+        }
+    }
+
+    private fun turnFileOpErrorFromProtocol(e: ZCodeProtocolException, errorOp: String): JsonObject {
+        if (e.code == -32601) {
+            log.info("Turn file op unavailable (no v4 surface): $errorOp")
+            return turnFileOpError(errorOp, "unsupported", com.zcode.ideaplugin.ZCodeBundle.message("turnfile.error.unsupportedCli"))
+        }
+        log.info("Turn file op failed (${e.reason}): ${e.message}")
+        val reason = when {
+            e.message?.contains("proto.staleRevision") == true -> "stale"
+            e.message?.contains("proto.staleLogEpoch") == true -> "stale"
+            else -> e.reason ?: "internal"
+        }
+        return turnFileOpError(errorOp, reason, e.message ?: com.zcode.ideaplugin.ZCodeBundle.message("turnfile.error.unknown"))
+    }
+
+    /**
+     * 会话重开后补逐轮更改条：rowsRange 无状态重扫（零订阅依赖），webview 在
+     * messages 落地后调本 op 触发。异步执行，事件经流式通道后续到达，此处只回执。
+     * 全链路 info 日志（count=0/异常可见）——真机排障入口。
+     */
+    private fun handleTurnFileChangesSync(msg: JsonObject): JsonObject {
+        val sessionId = msg["sessionId"]?.jsonPrimitive?.content
+            ?: return errorResponse(com.zcode.ideaplugin.ZCodeBundle.message("error.missing.sessionId"))
+        val client = project.zCodeService().getClient()
+        ApplicationManager.getApplication().executeOnPooledThread {
+            try {
+                val count = client.rescanTurnFileChanges(sessionId)
+                log.info("[turn-file-changes] rescan: $sessionId count=$count")
+            } catch (e: ZCodeProtocolException) {
+                log.info("[turn-file-changes] rescan skipped: $sessionId code=${e.code} reason=${e.reason} ${e.message}")
+            } catch (e: Exception) {
+                log.info("[turn-file-changes] rescan failed: $sessionId ${e.message}")
+            }
+        }
+        return buildJsonObject {
+            put("op", "turnFileChangesSynced")
+            put("sessionId", sessionId)
+        }
+    }
+
+    /**
+     * op=turnFileDiff — 逐轮更改「审查」的 IDEA 侧内嵌（unified）对比弹窗。
+     * 数据面：本轮 hunk 由服务端 fileChanges 查询直出（与 +N−N 徽标同源，永不失真）——
+     * 不读磁盘（历史轮审查时磁盘已是后续状态，反推必错）。hunk 原样渲染 +/−/上下文行，
+     * 无左右分栏；Swing DialogWrapper 非模态（可边看边操作，Esc/关闭按钮收起）。
+     */
+    private fun handleTurnFileDiff(msg: JsonObject): JsonObject {
+        val errorOp = "turnFileDiffError"
+        val filePath = msg["filePath"]?.jsonPrimitive?.content
+        if (filePath.isNullOrBlank()) return turnFileOpError(errorOp, "missingParams", com.zcode.ideaplugin.ZCodeBundle.message("turnfile.error.missingFilePath"))
+        val patchList = msg["patches"]?.jsonArray?.mapNotNull { it as? JsonObject }
+        if (patchList == null || patchList.isEmpty()) return turnFileOpError(errorOp, "missingParams", com.zcode.ideaplugin.ZCodeBundle.message("turnfile.error.missingPatches"))
+        val title = msg["title"]?.jsonPrimitive?.content ?: "Diff: ${filePath.substringAfterLast('/')}"
+        com.intellij.openapi.application.invokeLater {
+            try {
+                showUnifiedPatchDialog(filePath, patchList, title)
+            } catch (e: Exception) {
+                log.warn("Unified patch dialog failed: ${e.message}")
+            }
+        }
+        return buildJsonObject { put("op", "turnFileDiffShown") }
+    }
+
+    /** 当前审查弹窗（同一标签连点多个文件时先关旧窗，防窗口堆叠；仅 EDT 访问） */
+    private var turnDiffDialog: com.intellij.openapi.ui.DialogWrapper? = null
+
+    /** 本轮变更内嵌对比弹窗：unified hunk 着色渲染（+/−行底色区分、上下文灰），跟随 IDE 主题底色 */
+    private fun showUnifiedPatchDialog(filePath: String, patches: List<JsonObject>, title: String) {
+        // 关掉已有的审查弹窗再开新的（引用读写都在 EDT，无并发）
+        turnDiffDialog?.let {
+            if (!it.isDisposed()) com.intellij.openapi.util.Disposer.dispose(it.getDisposable())
+        }
+        turnDiffDialog = null
+        val scheme = com.intellij.openapi.editor.colors.EditorColorsManager.getInstance().globalScheme
+        val bg = String.format("#%06x", scheme.defaultBackground.rgb and 0xFFFFFF)
+        val fg = String.format("#%06x", scheme.defaultForeground.rgb and 0xFFFFFF)
+        val html = buildString {
+            append("<html><body style='margin:0'><pre style='")
+            append("background:$bg;color:$fg;font-family:'JetBrains Mono',Consolas,monospace;font-size:12px;")
+            append("padding:8px;white-space:pre-wrap;word-break:break-all;margin:0'>")
+            append("<span style='color:$fg;font-weight:bold'>").append(escapeHtml(filePath)).append("</span>\n")
+            for (h in patches) {
+                val oldStart = h["oldStart"]?.jsonPrimitive?.intOrNull ?: 0
+                val oldLines = h["oldLines"]?.jsonPrimitive?.intOrNull ?: 0
+                val newStart = h["newStart"]?.jsonPrimitive?.intOrNull ?: 0
+                val newLines = h["newLines"]?.jsonPrimitive?.intOrNull ?: 0
+                append("<span style='color:#8899a6'>@@ -").append(oldStart).append(',').append(oldLines)
+                    .append(" +").append(newStart).append(',').append(newLines).append(" @@</span>\n")
+                val lines = (h["lines"] as? JsonArray)?.mapNotNull { it.jsonPrimitive.contentOrNull } ?: emptyList()
+                for (line in lines) {
+                    val text = escapeHtml(line.drop(1))
+                    when (line.take(1)) {
+                        "+" -> append("<span style='background:rgba(78,201,148,.18);color:#4ec994'>+").append(text).append("</span>\n")
+                        "-" -> append("<span style='background:rgba(224,85,101,.18);color:#e05565'>-").append(text).append("</span>\n")
+                        else -> append("<span>").append(text).append("</span>\n")
+                    }
+                }
+            }
+            append("</pre></body></html>")
+        }
+        val pane = javax.swing.JEditorPane("text/html", html)
+        pane.isEditable = false
+        val scroll = com.intellij.ui.components.JBScrollPane(pane)
+        scroll.preferredSize = java.awt.Dimension(780, 520)
+        val dialog = object : com.intellij.openapi.ui.DialogWrapper(project, null, true,
+            com.intellij.openapi.ui.DialogWrapper.IdeModalityType.MODELESS, false) {
+            init { init(); this.title = title }
+            override fun createCenterPanel(): javax.swing.JComponent = scroll
+            override fun createActions(): Array<javax.swing.Action> = arrayOf(okAction)
+        }
+        turnDiffDialog = dialog
+        dialog.show()
+    }
+
+    /** HTML 文本转义（diff 行内容来自文件原文，含 <> 需转义防吞字） */
+    private fun escapeHtml(text: String): String = text
+        .replace("&", "&amp;")
+        .replace("<", "&lt;")
+        .replace(">", "&gt;")
+
     /**
      * op:editUserQuery 的 attachments 数组 → v4 ref 引用形态列表。
      * 两种来源（webview EditComposer）：
@@ -2134,6 +2570,144 @@ if (!window.__ZCODE_LOG_HOOK__) {
             put("op", "sessionArchived")
             put("sessionId", sessionId)
         }
+    }
+
+    /**
+     * op=setSessionPinned — 会话置顶/取消置顶（tasks-index.sqlite pinned 位，客户端同源）。
+     * 写库成功后向所有标签广播全量置顶集（列表置顶排序的数据源；不做前端乐观更新，
+     * 广播即校正——失败时广播库内真实集，同一回路收敛）。
+     */
+    private fun handleSetSessionPinned(msg: JsonObject): JsonObject {
+        val sessionId = msg["sessionId"]?.jsonPrimitive?.content
+            ?: return errorResponse(com.zcode.ideaplugin.ZCodeBundle.message("error.missing.sessionId"))
+        val pinned = msg["pinned"]?.jsonPrimitive?.booleanOrNull
+            ?: return errorResponse(com.zcode.ideaplugin.ZCodeBundle.message("pin.error.missingPinned"))
+        val client = project.zCodeService().getClient()
+        try {
+            client.setSessionPinned(sessionId, pinned)
+            log.info("Session pinned=$pinned: $sessionId")
+        } catch (e: Exception) {
+            log.warn("Session pin failed: ${e.message}")
+            // 失败同样广播真实集（webview 侧无乐观状态，这条只是对账收口）
+            broadcastSessionPinsSafe(client)
+            return errorResponse(com.zcode.ideaplugin.ZCodeBundle.message("pin.error.failed", e.message ?: ""))
+        }
+        broadcastSessionPinsSafe(client)
+        return ackOp("sessionPinChanged")
+    }
+
+    /** op=listPinnedSessions — 当前全量置顶集（历史列表加载时对账拉取） */
+    private fun handleListPinnedSessions(): JsonObject {
+        val client = project.zCodeService().getClient()
+        return try {
+            buildJsonObject {
+                put("op", "pinnedSessions")
+                put("pinned", JsonArray(client.listPinnedSessionIds().map { JsonPrimitive(it) }))
+            }
+        } catch (e: Exception) {
+            // 库不可用（schema 不兼容/客户端未装）：空集降级，置顶功能静默禁用
+            log.warn("listPinnedSessions failed: ${e.message}")
+            buildJsonObject {
+                put("op", "pinnedSessions")
+                put("pinned", JsonArray(emptyList()))
+            }
+        }
+    }
+
+    /** op=listUnreadSessions — 当前全量未读集（历史列表加载时对账拉取，失败空集降级） */
+    private fun handleListUnreadSessions(): JsonObject {
+        val client = project.zCodeService().getClient()
+        return try {
+            buildJsonObject {
+                put("op", "sessionUnreads")
+                put("unread", JsonArray(client.listUnreadSessionIds().map { JsonPrimitive(it) }))
+            }
+        } catch (e: Exception) {
+            log.warn("listUnreadSessions failed: ${e.message}")
+            buildJsonObject {
+                put("op", "sessionUnreads")
+                put("unread", JsonArray(emptyList()))
+            }
+        }
+    }
+
+    /**
+     * op=backgroundBashOutput — 后台 bash 任务输出快照（H7 面板输出面，前端 1s 轮询
+     * running 态）。协议响应原样透传（output 快照或 unavailable/unsupported/read_failed
+     * 降级形态），前端按 kind 分支展示。
+     */
+    private fun handleBackgroundBashOutput(msg: JsonObject): JsonObject {
+        val sessionId = msg["sessionId"]?.jsonPrimitive?.content
+            ?: return errorResponse(com.zcode.ideaplugin.ZCodeBundle.message("error.missing.sessionId"))
+        val workId = msg["workId"]?.jsonPrimitive?.content
+            ?: return errorResponse(com.zcode.ideaplugin.ZCodeBundle.message("bgwork.error.missingWorkId"))
+        val client = project.zCodeService().getClient()
+        return try {
+            val result = client.backgroundBashOutput(sessionId, workId)
+            buildJsonObject {
+                put("op", "backgroundBashOutputResult")
+                put("sessionId", sessionId)
+                put("workId", workId)
+                put("result", result)
+            }
+        } catch (e: Exception) {
+            log.warn("backgroundBashOutput failed: ${e.message}")
+            errorResponse(com.zcode.ideaplugin.ZCodeBundle.message("bgwork.error.outputFailed", e.message ?: ""))
+        }
+    }
+
+    /**
+     * op=cancelBackgroundWork — 取消后台工作（bash/workflow；子代理另有 cancelBackgroundTask）。
+     * ACK 拒绝（not_found/not_running/cancel_not_supported）非协议错误，status 原样回传
+     * 供前端提示；accepted 即成功（投影由 backgroundWorks 事件自然收敛）。
+     */
+    private fun handleCancelBackgroundWork(msg: JsonObject): JsonObject {
+        val sessionId = msg["sessionId"]?.jsonPrimitive?.content
+            ?: return errorResponse(com.zcode.ideaplugin.ZCodeBundle.message("error.missing.sessionId"))
+        val workId = msg["workId"]?.jsonPrimitive?.content
+            ?: return errorResponse(com.zcode.ideaplugin.ZCodeBundle.message("bgwork.error.missingWorkId"))
+        val client = project.zCodeService().getClient()
+        return try {
+            val result = client.cancelBackgroundWork(sessionId, workId)
+            log.info("cancelBackgroundWork: $workId status=${result["status"]?.jsonPrimitive?.content}")
+            buildJsonObject {
+                put("op", "backgroundWorkCancelled")
+                put("sessionId", sessionId)
+                put("workId", workId)
+                put("status", result["status"]?.jsonPrimitive?.contentOrNull ?: "unknown")
+                result["reasonCode"]?.jsonPrimitive?.contentOrNull?.let { put("reasonCode", it) }
+            }
+        } catch (e: Exception) {
+            log.warn("cancelBackgroundWork failed: ${e.message}")
+            errorResponse(com.zcode.ideaplugin.ZCodeBundle.message("bgwork.error.cancelFailed", e.message ?: ""))
+        }
+    }
+
+    /**
+     * op=backgroundWorksList — 后台工作投影缓存查询（历史加载兜底）。同 topic 重复 v4
+     * subscribe 幂等、服务端不重推 initial 快照（B2②坑），跨标签/重复打开会话时订阅
+     * 快照帧缺席、前端投影 map 为空——打开会话时从此查询补齐（进程级缓存，跨标签共享）。
+     */
+    private fun handleBackgroundWorksList(msg: JsonObject): JsonObject {
+        val sessionId = msg["sessionId"]?.jsonPrimitive?.content
+            ?: return errorResponse(com.zcode.ideaplugin.ZCodeBundle.message("error.missing.sessionId"))
+        val client = project.zCodeService().getClient()
+        return buildJsonObject {
+            put("op", "backgroundWorksList")
+            put("sessionId", sessionId)
+            put("works", client.listBackgroundWorks(sessionId))
+        }
+    }
+
+    /** 写库后广播全量置顶集；读集失败按空集广播（列表退回纯时间序，不炸 UI） */
+    private fun broadcastSessionPinsSafe(client: com.zcode.ideaplugin.protocol.ZCodeProtocolClient) {
+        val pinned = try {
+            client.listPinnedSessionIds()
+        } catch (e: Exception) {
+            log.warn("broadcast session pins read failed: ${e.message}")
+            emptyList()
+        }
+        broadcastSessionPins(pinned)
     }
 
     // ============ 定时消息（ZCodeScheduledMessageService 的 webview op 入口） ============
@@ -3700,6 +4274,64 @@ if (!window.__ZCODE_LOG_HOOK__) {
     }
 
     /**
+     * op=checkFilesExist — 批量文件存在性检查（产物预览卡渲染前校验，防闪卡）。
+     * 纯 java.io.File 探测（不走 VFS：候选可能不在项目内，且只判存在不打开）。
+     * requestId 原样回显供前端配对；文件多时也只做 stat（µs 级），无需异步。
+     */
+    private fun handleCheckFilesExist(msg: JsonObject): JsonObject {
+        val requestId = msg["requestId"]?.jsonPrimitive?.content
+        val paths = msg["paths"]?.jsonArray?.map { it.jsonPrimitive.content }
+            ?: return errorResponse(com.zcode.ideaplugin.ZCodeBundle.message("turnfile.error.missingPaths"))
+        return buildJsonObject {
+            put("op", "checkFilesExistResult")
+            if (requestId != null) put("requestId", requestId)
+            put("results", buildJsonArray {
+                for (p in paths) {
+                    add(buildJsonObject {
+                        put("path", p)
+                        put("exists", runCatching { java.io.File(p).exists() }.getOrDefault(false))
+                    })
+                }
+            })
+        }
+    }
+
+    /**
+     * op=openFileSystem — 用系统默认程序打开文件（产物预览卡的 Office/PDF/音视频路由）。
+     * 扩展名白名单与 webview 提取表同源收口：AI 文本里出现的任意路径不得被拉起。
+     * html/htm 例外走 BrowserUtil.browse 强制系统浏览器（用户定案：html 产物直接看渲染
+     * 效果不进 IDE 编辑器；Desktop.open 走文件关联可能落到编辑器，browse 不受影响）。
+     */
+    private fun handleOpenFileSystem(msg: JsonObject): JsonObject {
+        val filePath = msg["filePath"]?.jsonPrimitive?.content
+            ?: return errorResponse(com.zcode.ideaplugin.ZCodeBundle.message("turnfile.error.missingFilePath"))
+        val allowedExtensions = setOf(
+            "docx", "xlsx", "pptx", "pdf", "html", "htm",
+            "mp4", "mov", "webm", "m4v", "mp3", "wav", "m4a", "ogg", "opus", "flac", "weba",
+        )
+        val ext = filePath.substringAfterLast('.', "").lowercase()
+        if (ext !in allowedExtensions) {
+            log.warn("openFileSystem rejected non-preview extension: ${LogRedactor.redact(filePath).take(120)}")
+            return errorResponse(com.zcode.ideaplugin.ZCodeBundle.message("turnfile.error.unsupportedFileType"))
+        }
+        com.intellij.openapi.application.invokeLater {
+            val f = java.io.File(filePath)
+            if (!f.exists()) {
+                log.warn("Open file (system) failed: not found $filePath")
+                return@invokeLater
+            }
+            runCatching {
+                if (ext == "html" || ext == "htm") {
+                    BrowserUtil.browse(f.toURI())
+                } else {
+                    java.awt.Desktop.getDesktop().open(f)
+                }
+            }.onFailure { log.warn("Open file (system) failed: ${it.message}") }
+        }
+        return buildJsonObject { put("op", "fileOpened") }
+    }
+
+    /**
      * op=openFile — 在 IDEA 编辑器打开文件（支持行号定位）
      *
      * findText 可选：打开后在编辑器 Find 栏填充该关键词（EditorSearchSession，
@@ -3707,11 +4339,43 @@ if (!window.__ZCODE_LOG_HOOK__) {
      */
     private fun handleOpenFile(msg: JsonObject): JsonObject {
         val filePath = msg["filePath"]?.jsonPrimitive?.content
-            ?: return errorResponse("缺少 filePath")
+            ?: return errorResponse(com.zcode.ideaplugin.ZCodeBundle.message("turnfile.error.missingFilePath"))
         val line = msg["line"]?.jsonPrimitive?.content?.toIntOrNull()
         val findText = msg["findText"]?.jsonPrimitive?.content
         com.intellij.openapi.application.invokeLater {
+            // 归档扩展名路由（真机反馈：zip 链接点击"没反应"——IDEA 对归档容器没有
+            // 编辑器形态，FileEditorManager.openFile 静默落空）：zip/7z/rar/tar/gz/tgz
+            // 在系统文件管理器中定位（打开所在目录并选中：Windows explorer /select、
+            // macOS open -R、Linux 打开父目录）。jar/war 刻意不路由：
+            // .jar 的文件关联可能是 javaw 直接运行，系统打开等于执行它
+            val ext = filePath.substringAfterLast('.', "").lowercase()
+            if (ext in setOf("zip", "7z", "rar", "tar", "gz", "tgz")) {
+                val f = java.io.File(filePath)
+                if (!f.exists()) {
+                    log.warn("Reveal archive in file manager failed: not found $filePath")
+                    return@invokeLater
+                }
+                runCatching {
+                    when {
+                        com.intellij.openapi.util.SystemInfo.isWindows ->
+                            ProcessBuilder("explorer", "/select,${f.absolutePath}").start()
+                        com.intellij.openapi.util.SystemInfo.isMac ->
+                            ProcessBuilder("open", "-R", f.absolutePath).start()
+                        else -> java.awt.Desktop.getDesktop().open(f.parentFile)
+                    }
+                }.onFailure { log.warn("Reveal archive in file manager failed: ${it.message}") }
+                return@invokeLater
+            }
+            // VFS 刷新兜底（AI 刚创建的文件可能尚未进 LocalFileSystem VFS——"打开初始
+            // 打不开，IDEA 没刷新"实锤）：找不到时同步刷新该文件后重取
+            val ioFile = java.io.File(filePath)
             val vfile = LocalFileSystem.getInstance().findFileByPath(filePath)
+                ?: if (ioFile.exists()) {
+                    com.intellij.openapi.application.ApplicationManager.getApplication()
+                        .runWriteAction<com.intellij.openapi.vfs.VirtualFile?> {
+                            LocalFileSystem.getInstance().refreshAndFindFileByIoFile(ioFile)
+                        }
+                } else null
             if (vfile != null) {
                 FileEditorManager.getInstance(project).openFile(vfile, true)
                 val editor = FileEditorManager.getInstance(project).selectedTextEditor
@@ -3726,7 +4390,7 @@ if (!window.__ZCODE_LOG_HOOK__) {
                     openEditorSearch(editor, findText)
                 }
             } else {
-                log.warn("Open file failed: file not found $filePath")
+                log.warn("Open file failed: file not found after VFS refresh $filePath")
             }
         }
         return buildJsonObject { put("op", "fileOpened") }
@@ -3756,12 +4420,8 @@ if (!window.__ZCODE_LOG_HOOK__) {
         }
     }
 
-    /** op=showDiff — 弹出 IDEA 原生 diff 窗口（old vs new）*/
-    private fun handleShowDiff(msg: JsonObject): JsonObject {
-        val filePath = msg["filePath"]?.jsonPrimitive?.content ?: return errorResponse("缺少 filePath")
-        val oldContent = msg["oldContent"]?.jsonPrimitive?.content ?: ""
-        val newContent = msg["newContent"]?.jsonPrimitive?.content ?: ""
-        val title = msg["title"]?.jsonPrimitive?.content ?: "Diff: ${filePath.substringAfterLast('/')}"
+    /** IDEA 原生 diff 弹窗（文件类型按文件名推断，左旧右新；EDT 异步弹出） */
+    private fun showIdeDiff(filePath: String, oldContent: String, newContent: String, title: String) {
         com.intellij.openapi.application.invokeLater {
             try {
                 // 按文件名推断类型，否则 diff 页无语法高亮（全灰）
@@ -3779,6 +4439,15 @@ if (!window.__ZCODE_LOG_HOOK__) {
                 log.warn("Diff display failed: ${e.message}")
             }
         }
+    }
+
+    /** op=showDiff — 弹出 IDEA 原生 diff 窗口（old vs new，内容由调用方全文给定）*/
+    private fun handleShowDiff(msg: JsonObject): JsonObject {
+        val filePath = msg["filePath"]?.jsonPrimitive?.content ?: return errorResponse(com.zcode.ideaplugin.ZCodeBundle.message("turnfile.error.missingFilePath"))
+        val oldContent = msg["oldContent"]?.jsonPrimitive?.content ?: ""
+        val newContent = msg["newContent"]?.jsonPrimitive?.content ?: ""
+        val title = msg["title"]?.jsonPrimitive?.content ?: "Diff: ${filePath.substringAfterLast('/')}"
+        showIdeDiff(filePath, oldContent, newContent, title)
         return buildJsonObject { put("op", "diffShown") }
     }
 
@@ -4409,13 +5078,20 @@ if (!window.__ZCODE_LOG_HOOK__) {
     }
 
     /**
-     * op:send 的 attachments 数组（webview InputBox 压缩后的图片附件）→ AttachmentInput 列表。
+     * op:send 的 attachments 数组 → AttachmentInput 列表。
+     * 两种条目：图片（InputBox 压缩后的 base64 内联形态，协议通道原生透传）；
+     * 当前文件上下文（kind:'currentFile' 描述——webview 只传 chip 显示的那个
+     * ref 的 path+行号，内容在此解析：IDE Document 优先（未保存修改可见）、
+     * 磁盘兜底，切片/上限见 CurrentFileAttachment）。
      * 非数组 / 空 / 字段缺失均 fail-soft 返回 null（按无附件发送，不阻断消息）。
      */
     private fun parseAttachments(el: JsonElement?): List<AttachmentInput>? {
         val arr = el as? JsonArray ?: return null
         val list = arr.mapNotNull { item ->
             val o = item as? JsonObject ?: return@mapNotNull null
+            if (o["kind"]?.jsonPrimitive?.content == "currentFile") {
+                return@mapNotNull resolveCurrentFileAttachment(o)
+            }
             val dataBase64 = o["dataBase64"]?.jsonPrimitive?.content ?: return@mapNotNull null
             AttachmentInput(
                 kind = "image",
@@ -4426,6 +5102,46 @@ if (!window.__ZCODE_LOG_HOOK__) {
             )
         }
         return list.ifEmpty { null }
+    }
+
+    /** kind:'currentFile' 描述 → kind:'file' 附件；文件不存在 = null（丢弃该条，不阻断发送）*/
+    private fun resolveCurrentFileAttachment(o: JsonObject): AttachmentInput? {
+        val path = o["path"]?.jsonPrimitive?.content?.takeIf { it.isNotBlank() } ?: return null
+        val lineStart = o["lineStart"]?.jsonPrimitive?.intOrNull
+        val lineEnd = o["lineEnd"]?.jsonPrimitive?.intOrNull
+        val (exists, text) = readCurrentFileText(path)
+        if (!exists) {
+            log.info("currentFile attachment dropped, file not found: $path")
+            return null
+        }
+        val resolved = CurrentFileAttachment.resolve(path, lineStart, lineEnd, text)
+        // 手工实测取证点：确认隐式附件已构建（内联 textContent vs 路径引用 localPath）
+        log.info(
+            "currentFile attachment built: $path lines=$lineStart-$lineEnd " +
+                (if (resolved.textContent != null) "inline(${resolved.textContent!!.length} chars)" else "localPath-ref"),
+        )
+        return resolved
+    }
+
+    /**
+     * 当前文件全文读取：IDE Document 优先（编辑器未保存修改与 chip 行号同源——
+     * 行号来自编辑器当前 Document，读磁盘会在未保存时错位）；VFS miss 时 java.nio
+     * 兜底（有损读）。返回 (exists, text?)：text=null 表示存在但不可按文本读（二进制）。
+     * 本 handler 链跑 pooled 线程，runReadAction 可直接调（阻塞等读锁，不碰 EDT）。
+     */
+    private fun readCurrentFileText(path: String): Pair<Boolean, String?> {
+        var result: Pair<Boolean, String?>? = null
+        ApplicationManager.getApplication().runReadAction {
+            val vf = LocalFileSystem.getInstance().findFileByPath(path)
+            if (vf != null && vf.exists()) {
+                val doc = FileDocumentManager.getInstance().getDocument(vf)
+                result = true to doc?.text
+            }
+        }
+        result?.let { return it }
+        val p = runCatching { java.nio.file.Path.of(path) }.getOrNull() ?: return false to null
+        if (!java.nio.file.Files.isRegularFile(p)) return false to null
+        return true to CurrentFileAttachment.readTextLossy(p)
     }
 
     /**
@@ -4518,6 +5234,20 @@ if (!window.__ZCODE_LOG_HOOK__) {
         } else {
             log.warn("copyImage clipboard write failed: $clipErr")
             buildJsonObject { put("op", "imageCopied"); put("ok", false); put("error", clipErr) }
+        }
+    }
+
+    /**
+     * 拉取当前打开文件 ref（同步返回）。
+     * webview mount/重连时调；后续变化由 EditorContextTracker 200ms 防抖主动推送覆盖。
+     * 无打开编辑器 / Tracker 尚未初始化 → ref=null。
+     */
+    private fun handleGetCurrentFile(msg: JsonObject): JsonObject {
+        val ref = editorContextTracker?.snapshot()
+        return buildJsonObject {
+            put("op", "currentFile")
+            // ref: String? 直接序列化——null 自然变成 JSON null
+            put("ref", ref)
         }
     }
 
@@ -4737,6 +5467,19 @@ if (!window.__ZCODE_LOG_HOOK__) {
         // 记录当前会话（标签持久化 + 生成中状态归属判断）+ 同步 TabState
         currentSessionId = sessionId
         persistSelfTabState()
+
+        // 打开会话即视为已读（tasks-index unread_at 清位 + 全标签广播；官方桌面端同语义）。
+        // listUnread 走 tasks-index 指纹缓存（命中零 node 进程），真有未读才起 clear 进程；
+        // 清理失败不影响打开会话（fail-soft，下次打开重试）
+        try {
+            if (sessionId in client.listUnreadSessionIds()) {
+                client.clearSessionUnread(sessionId)
+                log.info("Session unread cleared on open: $sessionId")
+                broadcastSessionUnreadsSafe(client)
+            }
+        } catch (e: Exception) {
+            log.warn("clear unread on open failed: ${e.message}")
+        }
 
         // 注册全局监听器（只注册一次，所有会话的事件都通过它推给前端）
         ensureGlobalStreamListener(client)
@@ -5000,7 +5743,12 @@ if (!window.__ZCODE_LOG_HOOK__) {
         // 2026-09-19 [title-sub] 日志实锤：4 次 blocked 0 放行），首帧标题更新被拦即丢，
         // 表现为"标题生成了但主界面不更新"。titleUpdated 是全局无害更新（前端仅改
         // 列表标题，会话不在列表即被丢弃），放行不破坏隔离语义
-        if (sessionId !in subscribedSessions && event.type != "session.titleUpdated") {
+        // turn.fileChanges 同款豁免（重扫触发点在订阅回执后仍可能与闸门赛跑——
+        // messages/subscribe 双 op 线程池并发；前端按 currentSessionId 过滤无害）。
+        // backgroundWorks 同款豁免（H7）：投影按会话落前端 map、badge 随 currentSessionId
+        // 切换即读——不豁免则切回会话后要等下一次启停帧才有数据（badge 长时间缺失）；
+        // 事件仅在后台工作启停时出现（低频），全量放行无风暴风险
+        if (sessionId !in subscribedSessions && event.type != "session.titleUpdated" && event.type != "turn.fileChanges" && event.type != "backgroundWorks") {
             // 诊断（子会话实时流停更追查）：子会话被门禁挡住的首次打点——
             // 持续打点说明订阅簿记在任务中途被清（invalidateStaleSubscriptions 等）
             if (sessionId.startsWith("sess_subagent")) {
@@ -5588,6 +6336,7 @@ if (!window.__ZCODE_LOG_HOOK__) {
                     c.description?.let { put("description", it) }
                     put("kind", c.kind)
                     put("source", c.source)
+                    c.path?.let { put("path", it) }
                 }
             }))
         }

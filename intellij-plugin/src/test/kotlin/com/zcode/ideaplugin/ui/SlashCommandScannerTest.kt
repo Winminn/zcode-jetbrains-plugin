@@ -61,6 +61,24 @@ class SlashCommandScannerTest {
         assertEquals("command", nested.kind)
     }
 
+    @Test
+    fun `技能条目带目录路径（$ 技能提及 chip 序列化用）命令不带`() {
+        val skillDir = File(tmp, ".zcode/skills/reviewer").apply { mkdirs() }
+        File(skillDir, "SKILL.md").writeText("---\nname: reviewer\ndescription: 代码审查\n---\n内容")
+        val cmdDir = File(tmp, ".zcode/commands").apply { mkdirs() }
+        File(cmdDir, "build.md").writeText("构建命令")
+
+        val commands = SlashCommandScanner.scan(tmp.absolutePath)
+        val skill = commands.firstOrNull { it.name == "reviewer" }
+        assertNotNull(skill)
+        assertEquals("skill", skill.kind)
+        assertEquals(skillDir.absolutePath, skill.path, "技能条目应透出技能目录绝对路径")
+        val cmd = commands.firstOrNull { it.name == "build" }
+        assertNotNull(cmd)
+        assertEquals("command", cmd.kind)
+        assertEquals(null, cmd.path, "命令条目无 path（$ 面板只列技能）")
+    }
+
     // ============ 插件贡献（home 注入 tmp 隔离，不受本机真实插件影响）============
 
     /** 在 tmp 下造一个插件：data/<名>@<市场> 启用标记 + cache/<市场>/<名>/<版本> 安装内容 */

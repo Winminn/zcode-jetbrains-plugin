@@ -24,14 +24,19 @@
 import { Fragment, memo, useEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { useTranslation } from 'react-i18next'
-import type { ZCodeMessage, MessagePart, TextPart, ImagePart, FilePart } from '@/types/messages'
+import type { ZCodeMessage, MessagePart, TextPart, ImagePart, FilePart, TurnFileChangeSummary, TurnFileChangeItem, JavaResponse } from '@/types/messages'
 import { useStore } from '@/store/useStore'
+import { onMessage, sendToJava } from '@/ipc/bridge'
 
 import { renderUserRefChips, hasUserRefChips, type CmdRefInfo } from '@/utils/userRefChips'
+import { collectFileContextChips, type FileContextChip } from '@/utils/fileContextParts'
+import { truncateMiddle } from './CurrentFileChip'
 import { MarkdownBlock } from './MarkdownBlock'
 import { AgentNotificationCard } from './AgentNotificationCard'
+import { AssistantPreviewCards } from './AssistantPreviewCards'
+import { FileIcon } from './FileIcon'
 import { isAgentNotification, isCompactSummaryMessage, findTimelinePart } from '@/utils/parseNotification'
-import { clockTime, compactTokens, formatDuration } from '@/utils/time'
+import { clockTime, formatDuration } from '@/utils/time'
 import { readTurnCollapseConfig } from '@/utils/turnCollapseConfig'
 import { KV_HYDRATED_EVENT } from '@/utils/persist'
 import { useTick } from '@/hooks/useTick'
@@ -113,6 +118,7 @@ export const MessageBubble = memo(function MessageBubble({ message, streaming, s
       <UserBubble
         text={userText}
         imageParts={collectImageParts(parts)}
+        fileCtxChips={collectFileContextChips(parts)}
         time={time}
         anchorAttr={anchorAttr}
         searchActive={searchActive}
@@ -148,6 +154,7 @@ const USER_COLLAPSE_CHARS = 500
 function UserBubble({
   text,
   imageParts,
+  fileCtxChips,
   time,
   anchorAttr,
   searchActive,
@@ -158,6 +165,8 @@ function UserBubble({
 }: {
   text: string
   imageParts: Array<ImagePart | FilePart>
+  /** 当前文件上下文附件 chip（隐式通道的气泡回显；两来源见 utils/fileContextParts）*/
+  fileCtxChips: FileContextChip[]
   time: string
   anchorAttr?: string
   searchActive?: boolean
@@ -200,6 +209,7 @@ function UserBubble({
       map.set(c.name, {
         kind: c.kind === 'command' && c.source === 'builtin' ? (c.name as CmdRefInfo['kind']) : c.kind,
         icon: c.icon,
+        path: c.path,
       }),
     )
     if (!map.has('goal')) map.set('goal', { kind: 'goal' })
@@ -233,7 +243,10 @@ function UserBubble({
         lines={lines}
         initialImages={imageParts.filter(
           (p): p is FilePart | ImagePart =>
-            (p.type === 'file' && !!p.url) || (p.type === 'image' && !!p.dataBase64),
+            // file 分支仅收图片附件（mime image/*）：当前文件上下文的 file part
+            // url 是磁盘路径，误收会渲染成加载不出内容的伪图片 chip
+            (p.type === 'file' && !!p.url && (p.mime ?? '').startsWith('image/')) ||
+            (p.type === 'image' && !!p.dataBase64),
         )}
       />
     )
@@ -272,6 +285,30 @@ function UserBubble({
           </button>
         )}
       </div>
+      {/* 当前文件上下文注脚（隐式通道回显）：气泡外右对齐，不占正文、不被长文
+          折叠渐隐遮盖——长消息恰是常带上下文的场景，折叠态也要看到带了什么 */}
+      {fileCtxChips.length > 0 && (
+        <div className="msg__filectx">
+          {fileCtxChips.map((c, i) => (
+            <span
+              key={`${c.path}#${c.lineStart ?? ''}-${i}`}
+              className="user-filectx-chip tip-align-right"
+              // 悬浮全路径走全局 [data-tip] CSS 气泡（JCEF 不渲染原生 title，
+              // CurrentFileChip 同款约束）；气泡贴 chip 内缘右对齐（消息区右侧
+              // 居中气泡会伸出 webview 右缘被裁，tip-align-right 向左展开）；
+              // nowrap 单行，超长调用侧中段省略（保盘符头与文件名尾）
+              data-tip={truncateMiddle(c.path, 60)}
+            >
+              <span className="codicon codicon-paperclip user-filectx-chip__attach" />
+              <FileIcon path={c.path} mono className="file-ref__icon file-type-icon" />
+              <span className="file-ref__name">{c.filename}</span>
+              {c.lineStart != null && (
+                <span className="file-ref__lines">#{c.lineStart === c.lineEnd ? `L${c.lineStart}` : `L${c.lineStart}-${c.lineEnd}`}</span>
+              )}
+            </span>
+          ))}
+        </div>
+      )}
       <div className="msg__actions">
         {/* 引用 chip 化的消息才显示「显示原文」切换（普通消息零噪音）*/}
         {hasRefChips && (
@@ -724,23 +761,12 @@ function AssistantBubble({
     () => (segments ? segments.flatMap((s) => s.msg.parts) : parts),
     [segments, parts],
   )
-  // 合并轮组 footer：耗时跨段（lead.created → 末段 completed）、token 求和
+  // 合并轮组 footer：耗时跨段（lead.created → 末段 completed）；token 统计已随
+  // footer 展示撤除，不再跨段求和
   const footerInfo = useMemo(() => {
     if (!segments) return info
     const lastInfo = segments[segments.length - 1].msg.info
-    let tokens: typeof info.tokens
-    for (const s of segments) {
-      const t = s.msg.info.tokens
-      if (t) {
-        tokens = {
-          total: (tokens?.total ?? 0) + t.total,
-          input: (tokens?.input ?? 0) + t.input,
-          output: (tokens?.output ?? 0) + t.output,
-          reasoning: (tokens?.reasoning ?? 0) + t.reasoning,
-        }
-      }
-    }
-    return { ...info, time: { ...info.time, completed: lastInfo.time?.completed }, tokens }
+    return { ...info, time: { ...info.time, completed: lastInfo.time?.completed } }
   }, [segments, info])
 
   // 分叉（B2 一期）：入口在 footer「已工作」行——fork 锚点是已完成的回复（保留到该回复含，
@@ -752,6 +778,9 @@ function AssistantBubble({
   const [confirmFork, setConfirmFork] = useState(false)
   const forkBusy = useStore((s) => s.forkBusy)
   const forkSupported = useStore((s) => s.forkSupported)
+  // 逐轮文件更改条（B2 回合产物）：key = 消息 id = turnHeader entityId（mapper 构造
+  // UI 轮身份的同源约定）；无数据（纯对话轮/老 CLI/历史窗口外）不渲染
+  const turnFileChanges = useStore((s) => s.turnFileChanges[info.id])
   const forkMsgId = lastSeg ? lastSeg.msg.info.id : info.id
   const forkable =
     forkSupported &&
@@ -811,6 +840,8 @@ function AssistantBubble({
     collapsible && info.time?.created && info.time.completed
       ? info.time.completed - info.time.created
       : null
+  // 产物预览卡数据源：整组 assistant 文本（合并轮组含续段），与「复制 Markdown」同源拼接
+  const turnText = useMemo(() => collectAssistantMarkdown(allParts), [allParts])
 
   return (
     <div className="msg msg--assistant">
@@ -850,6 +881,16 @@ function AssistantBubble({
           renderedUnits
         )}
       </div>
+      {turnFileChanges && turnFileChanges.files > 0 && (
+        <TurnFileChangesBar fc={turnFileChanges} messageId={info.id} />
+      )}
+      {/* 产物预览卡（B2 二期）：轮末文档/网站卡——轮文本五源提取，md/html 需命中
+          本轮 fileChanges，stat 校验后出卡；流式中不出（轮未定型）；流式壳 id
+          （stream_msg_* 聚合壳/local_* 乐观壳）不出——轮末重拉后真身 id 重挂载，
+          壳 id 查询注定失败（服务端行流无此 id）只添失败日志 */}
+      {!streaming && turnText.trim() && !/^(stream_|local_)/.test(info.id) && (
+        <AssistantPreviewCards messageId={info.id} text={turnText} />
+      )}
       <MessageFooter
         info={footerInfo}
         time={time}
@@ -868,6 +909,185 @@ function AssistantBubble({
           }}
           onCancel={() => setConfirmFork(false)}
         />
+      )}
+    </div>
+  )
+}
+
+/**
+ * 逐轮文件更改卡片（B2 回合产物，UI 对齐官方客户端）：
+ * 头部行（chevron + 「N 个文件已更改 +x −y」+ 撤销按钮）点击展开逐文件行——
+ * 文件名 + 目录（灰）+ 行数统计 + 「审查」（IDEA 侧内嵌对比弹窗：本轮 hunk 着色渲染
+ * unified patch，数据即服务端直出、不读磁盘永不失真；异常时降级内置 diff 弹窗定位）/
+ * 「打开」（IDE 编辑器打开原文件）。明细懒加载（首次展开发 turnFileChanges 查询，
+ * 响应与弹窗各自消费互不干扰）。
+ * reverted（该轮已撤销）时头部弱化 + 徽标，无撤销按钮。
+ */
+/** 导出仅供测试（卡片交互：展开懒加载/审查/打开按钮） */
+export function TurnFileChangesBar({ fc, messageId }: { fc: TurnFileChangeSummary; messageId: string }) {
+  const { t } = useTranslation()
+  const sessionId = useStore((s) => s.currentSessionId)
+  const workspacePath = useStore((s) => s.projectPath)
+  const openDialog = useStore((s) => s.openTurnFileChanges)
+  const [expanded, setExpanded] = useState(false)
+  const [items, setItems] = useState<TurnFileChangeItem[] | null>(null)
+  const [loading, setLoading] = useState(false)
+  // 查询失败态：失败后停止自动重试（真机实锤 2026-10-06：revisionUnknown 类持续性
+  // 失败时 error→复位→effect 重跑构成 3.2s 无限重发风暴）。收起再展开=用户重试
+  const [failed, setFailed] = useState(false)
+
+  // 展开：懒加载明细
+  useEffect(() => {
+    if (!expanded || !sessionId || items || loading || failed) return
+    setLoading(true)
+    sendToJava({ op: 'turnFileChanges', sessionId, messageId })
+  }, [expanded, sessionId, items, loading, failed, messageId])
+
+  // 响应监听（按 messageId 匹配本卡片；弹窗的监听各自独立互不干扰）
+  useEffect(() => {
+    const off = onMessage((msg: JavaResponse) => {
+      if (msg.op === 'turnFileChangesResult' && msg.messageId === messageId) {
+        setItems(msg.data.items)
+        setLoading(false)
+      } else if (msg.op === 'turnFileChangesError') {
+        setLoading(false)
+        setFailed(true)
+      } else if (msg.op === 'turnFileDiffError') {
+        // IDEA 侧内嵌对比弹窗异常（正常链路不会出现，兜底）：降级内置 diff 弹窗定位该文件
+        if (msg.path) openDialog(messageId, { path: msg.path })
+      }
+    })
+    return off
+  }, [messageId, openDialog])
+
+  // v4 协议 items[].path 相对 workspace；容忍服务端给绝对路径的形态
+  const toAbsPath = (path: string) => {
+    const norm = path.replace(/\\/g, '/')
+    const base = (workspacePath || '').replace(/\\/g, '/').replace(/\/$/, '')
+    const full =
+      base && !norm.startsWith(base) && !/^[a-zA-Z]:\//.test(norm)
+        ? `${base}/${norm.replace(/^\//, '')}`
+        : norm
+    return full
+  }
+
+  const openInEditor = (path: string) => {
+    sendToJava({ op: 'openFile', filePath: toAbsPath(path) })
+  }
+
+  const reverted = fc.state === 'reverted'
+
+  // 审查 → IDEA 侧内嵌对比弹窗（op:turnFileDiff）：本轮 hunk 由服务端直出（与 +N−N
+  // 徽标同源），Java Swing 渲染 unified patch（+/−着色、无左右分栏）；不读磁盘——
+  // 历史轮审查时磁盘已是后续状态，任何「当前磁盘 vs 本轮」的构造都必错。工具流 edits
+  // 片段级拼不出文件级 diff（真机实证）。无 hunk 直接降级内置弹窗；Java 端异常回
+  // turnFileDiffError 由监听处降级。
+  const reviewInIde = (it: TurnFileChangeItem) => {
+    const key = it.path.replace(/\\/g, '/')
+    if (it.patches.length > 0) {
+      const name = key.split('/').pop() || key
+      sendToJava({
+        op: 'turnFileDiff',
+        filePath: toAbsPath(key),
+        path: it.path,
+        patches: it.patches,
+        title: t('chat.fileChanges.reviewDiffTitle', { name }),
+      })
+    } else {
+      openDialog(messageId, { path: it.path })
+    }
+  }
+  return (
+    <div className={`msg__fccard${reverted ? ' msg__fccard--reverted' : ''}`}>
+      <div
+        className="msg__fccard-head"
+        role="button"
+        tabIndex={0}
+        onClick={() => {
+          // 收起时清失败态：再次展开即用户主动重试
+          if (expanded) setFailed(false)
+          setExpanded((v) => !v)
+        }}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter' || e.key === ' ') {
+            if (expanded) setFailed(false)
+            setExpanded((v) => !v)
+          }
+        }}
+      >
+        <span className={`codicon codicon-chevron-${expanded ? 'down' : 'right'}`} aria-hidden="true" />
+        <span className="msg__fccard-title">
+          {t('chat.fileChanges.summary', { count: fc.files, additions: fc.additions, deletions: fc.deletions })}
+        </span>
+        {reverted && <span className="msg__fcbar-tag">{t('chat.fileChanges.reverted')}</span>}
+        {fc.canRewind && !reverted && (
+          <span
+            className="msg__fccard-undo"
+            role="button"
+            tabIndex={0}
+            title={t('chat.fileChanges.rewindTitle')}
+            onClick={(e) => {
+              e.stopPropagation()
+              openDialog(messageId, { rewind: true })
+            }}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' || e.key === ' ') {
+                e.stopPropagation()
+                openDialog(messageId, { rewind: true })
+              }
+            }}
+          >
+            <span className="codicon codicon-discard" />
+            {t('chat.fileChanges.rewindShort')}
+          </span>
+        )}
+      </div>
+      {expanded && (
+        <div className="msg__fccard-list">
+          {loading && !items ? (
+            <div className="msg__fccard-loading">
+              <span className="codicon codicon-loading spin" /> {t('common.actions.loading')}
+            </div>
+          ) : failed && !items ? (
+            <div className="msg__fccard-loading msg__fccard-loading--failed">
+              <span className="codicon codicon-error" /> {t('chat.fileChanges.detailFailed')}
+            </div>
+          ) : items && items.length > 0 ? (
+            items.map((it) => {
+              const norm = it.path.replace(/\\/g, '/')
+              const seg = norm.split('/')
+              const name = seg.pop() || norm
+              const dir = seg.join('/')
+              return (
+                <div key={it.path} className="msg__fccard-file">
+                  <FileIcon path={it.path} className="file-type-icon msg__fccard-file-icon" />
+                  <div className="msg__fccard-file-main">
+                    <span className="msg__fccard-file-name" title={it.path}>{name}</span>
+                    {dir && <span className="msg__fccard-file-dir" title={it.path}>{dir}/</span>}
+                    <span className="msg__fccard-file-stat">
+                      <span className="tfc-add">+{it.additions}</span>
+                      <span className="tfc-del">−{it.deletions}</span>
+                    </span>
+                  </div>
+                  <div className="msg__fccard-file-actions">
+                    <button
+                      type="button"
+                      className="msg__fccard-btn"
+                      onClick={() => reviewInIde(it)}
+                    >
+                      {t('chat.fileChanges.review')}
+                    </button>
+                    <button type="button" className="msg__fccard-btn" onClick={() => openInEditor(it.path)}>
+                      {t('chat.fileChanges.openBtn')}
+                    </button>
+                  </div>
+                </div>
+              )
+            })
+          ) : (
+            <div className="msg__fccard-loading">{t('chat.fileChanges.empty')}</div>
+          )}
+        </div>
       )}
     </div>
   )
@@ -959,7 +1179,6 @@ function MessageFooter({
   const onCopyMarkdown = () => {
     if (copy) void showCopyResult(() => copyText(copy))
   }
-  const tokens = info.tokens
   // v1 大写 D（modelID）；v2 服务端改小写驼峰（modelId，db 实测字段重命名）——双读兼容
   const model = info.modelID ?? info.modelId
 
@@ -987,15 +1206,6 @@ function MessageFooter({
       {durationMs != null && (
         <span className={`msg__footer-duration${working ? ' msg__footer-duration--working' : ''}`}>
           ⏱ {working ? t('chat.message.working') : t('chat.message.worked')} {formatDuration(durationMs)}
-        </span>
-      )}
-      {tokens && (
-        <span
-          className="msg__footer-tokens"
-          title={`${tokens.input.toLocaleString()} in / ${tokens.output.toLocaleString()} out`}
-        >
-          💡 {compactTokens(tokens.input)} in / {compactTokens(tokens.output)} out
-          {tokens.cache?.read ? ` · ${t('chat.message.cachePercent', { percent: Math.round((tokens.cache.read / tokens.input) * 100) })}` : ''}
         </span>
       )}
       {info.cost ? <span className="msg__footer-cost">${info.cost.toFixed(4)}</span> : null}

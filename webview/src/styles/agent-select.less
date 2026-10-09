@@ -17,10 +17,11 @@
   height: 8px;
 }
 
-/* codicon 基础样式 (0,2,0) 特异性压单类，后代选择器对齐 */
+/* codicon 基础样式 (0,2,0) 特异性压单类，后代选择器对齐；
+   12px = 选择器内图标统一档（input-box.less 选择器图标同款） */
 .agent-select-button {
   .codicon.agent-select-button__icon {
-    font-size: 11px;
+    font-size: 12px;
     line-height: 1;
     color: var(--text-secondary);
   }
@@ -109,7 +110,8 @@
   }
 
   .codicon {
-    font-size: 15px;
+    /* 14px 与相邻发送键同档（此前 15px 独一档，右邻两键差 1px 是用户指出的不协调点）*/
+    font-size: 14px;
     line-height: 1;
   }
 }

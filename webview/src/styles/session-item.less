@@ -77,6 +77,17 @@
     flex-shrink: 0;
   }
 
+  /* 未读蓝点（tasks-index unread_at：后台终态且无标签在看；实心圆+光晕，
+     与 active 的 ● 字符区分；未读时替换渲染，打开会话即清）*/
+  &__unread-dot {
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: var(--accent-primary, #4a9eff);
+    box-shadow: 0 0 5px color-mix(in srgb, var(--accent-primary, #4a9eff) 55%, transparent);
+    flex-shrink: 0;
+  }
+
   // 会话徽标（fork 分支 / goal 靶心）：标题文字后、时间前，muted 弱化不抢标题焦点；
   // 字号走组件内联 style（codicon 特异性坑，单类 font-size 不稳）
   &__fork-badge {
@@ -112,6 +123,14 @@
   &__title-text {
     overflow: hidden;
     text-overflow: ellipsis;
+  }
+
+  /* 未读行：标题加粗提亮（官方侧栏未读同款强调）*/
+  &.session-item--unread {
+    .session-item__title-text {
+      font-weight: 700;
+      color: var(--text-primary);
+    }
   }
 
   &__time {
@@ -174,6 +193,16 @@
     background: color-mix(in srgb, var(--accent-primary) 15%, transparent);
     color: var(--accent-primary);
     border: 1px solid color-mix(in srgb, var(--accent-primary) 30%, transparent);
+  }
+
+  /* 置顶按钮：未置顶同 __action（hover 显现）；已置顶常显强调色（列表已置顶排序的视觉锚点）*/
+  &__pin--pinned {
+    opacity: 1;
+    color: var(--accent-primary);
+
+    &:hover {
+      color: var(--accent-primary);
+    }
   }
 
   &:hover &__action {

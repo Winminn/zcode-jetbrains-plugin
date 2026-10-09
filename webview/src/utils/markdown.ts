@@ -13,6 +13,7 @@ import hljs from 'highlight.js/lib/core'
 import DOMPurify from 'dompurify'
 import i18n from '@/i18n/config'
 import { makeStreamSafe } from './streamSafe'
+import { linkifyFilePaths } from './linkifyFilePaths'
 
 // ============ 按需注册 highlight.js 语言（减少体积）============
 // 规划文档第一节："按需注册 18 种语言"
@@ -189,11 +190,14 @@ DOMPurify.addHook('afterSanitizeAttributes', (node) => {
  *
  * @param md markdown 文本
  * @param isStreaming 是否在流式中（true 时先做 streamSafe 补全）
+ * @param workspaceRoot 工作区根（文件路径链接化解析相对路径用；空 = 仅绝对路径可点）
  */
-export function renderMarkdown(md: string, isStreaming: boolean = false): string {
+export function renderMarkdown(md: string, isStreaming: boolean = false, workspaceRoot: string = ''): string {
   const safe = isStreaming ? makeStreamSafe(md) : md
   const rawHtml = marked.parse(safe, { async: false }) as string
-  return DOMPurify.sanitize(rawHtml, PURIFY_CONFIG)
+  // linkify 在 DOMPurify 之后：.md-file-link 的 span/data-* 由我们自己注入，
+  // 用 DOM API 构造（textContent/setAttribute），安全性不依赖清洗
+  return linkifyFilePaths(DOMPurify.sanitize(rawHtml, PURIFY_CONFIG), workspaceRoot)
 }
 
 /** 从代码块提取语言标签（用于显示）*/

@@ -144,7 +144,7 @@ export function ModelSelect({ currentModel, onSelect, disabled = false, onManage
           <ModelIcon
             modelId={currentModel?.modelId ?? displayName ?? undefined}
             providerId={currentModel?.providerId}
-            size={11}
+            size={12}
           />
         )}
         <span

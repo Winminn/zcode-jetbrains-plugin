@@ -73,6 +73,10 @@
     "lines": "（第 {{lines}} 行）",
     "remove": "移除引用"
   },
+  "currentFile": {
+    "label": "檔案內容",
+    "tooltip": "勾選後隨下一則訊息附上當前開啟的檔案路徑，發送後自動關閉"
+  },
   "slash": {
     "groupCommands": "命令",
     "groupSkills": "技能",
@@ -80,6 +84,11 @@
   },
   "sessRef": {
     "messages": "條訊息"
+  },
+  "skillRef": {
+    "source_user": "使用者",
+    "source_workspace": "專案",
+    "source_plugin": "外掛"
   },
   "agent": {
     "select": "智慧體",

@@ -1,4 +1,6 @@
 {
+  "pin": "置頂",
+  "unpin": "取消置頂",
   "openChoiceTitle": "開啟會話",
   "openChoiceMessage": "目前標籤頁已有會話，「{{title}}」要開啟到哪裡？",
   "openHere": "覆蓋目前標籤頁",

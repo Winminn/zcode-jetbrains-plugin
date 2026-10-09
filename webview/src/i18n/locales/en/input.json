@@ -77,6 +77,10 @@
     "lines": " (line {{lines}})",
     "remove": "Remove reference"
   },
+  "currentFile": {
+    "label": "File context",
+    "tooltip": "When enabled, the current file path is attached to your next message only (auto-off after sending)"
+  },
   "slash": {
     "groupCommands": "Commands",
     "groupSkills": "Skills",
@@ -84,6 +88,11 @@
   },
   "sessRef": {
     "messages": "msgs"
+  },
+  "skillRef": {
+    "source_user": "User",
+    "source_workspace": "Workspace",
+    "source_plugin": "Plugin"
   },
   "agent": {
     "select": "Agent",

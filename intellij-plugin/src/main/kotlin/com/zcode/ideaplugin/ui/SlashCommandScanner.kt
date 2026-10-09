@@ -29,6 +29,8 @@ object SlashCommandScanner {
         val kind: String,
         /** user / workspace / plugin / builtin */
         val source: String,
+        /** 技能目录绝对路径（仅 skill 条目；$ 技能提及 chip 序列化 [$name](path) 用）*/
+        val path: String? = null,
     )
 
     private val FRONTMATTER_RE = Regex("^---\\s*\\r?\\n([\\s\\S]*?)\\r?\\n---")
@@ -87,7 +89,7 @@ object SlashCommandScanner {
                 val fm = parseFrontmatter(skillFile.readText(Charsets.UTF_8).take(MAX_READ))
                 if (!isUserInvocable(fm)) return@forEach
                 val name = fm["name"] ?: skillDir.name
-                putIfAbsent(result, name, fm["description"], "skill", source)
+                putIfAbsent(result, name, fm["description"], "skill", source, skillDir.absolutePath)
             } catch (_: Exception) {
                 // frontmatter 解析失败跳过（不中断整体扫描）
             }
@@ -141,8 +143,8 @@ object SlashCommandScanner {
                 try {
                     val fm = parseFrontmatter(skillFile.readText(Charsets.UTF_8).take(MAX_READ))
                     if (!isUserInvocable(fm)) return@forEach
-                    val name = fm["name"] ?: skillDir.name
-                    putIfAbsent(result, "$pluginName:$name", fm["description"], "skill", "plugin")
+                val name = fm["name"] ?: skillDir.name
+                putIfAbsent(result, "$pluginName:$name", fm["description"], "skill", "plugin", skillDir.absolutePath)
                 } catch (_: Exception) { }
             }
             scanCommandDir(File(versionDir, "commands"), "plugin", result, namespace = pluginName)
@@ -186,9 +188,10 @@ object SlashCommandScanner {
         description: String?,
         kind: String,
         source: String,
+        path: String? = null,
     ) {
         if (!result.containsKey(name)) {
-            result[name] = SlashCommand(name, description?.takeIf { it.isNotBlank() }, kind, source)
+            result[name] = SlashCommand(name, description?.takeIf { it.isNotBlank() }, kind, source, path)
         }
     }
 

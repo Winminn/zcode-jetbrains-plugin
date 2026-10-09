@@ -73,6 +73,10 @@
     "lines": " ({{lines}}행)",
     "remove": "참조 제거"
   },
+  "currentFile": {
+    "label": "파일 컨텍스트",
+    "tooltip": "활성화하면 다음 메시지 한 건에만 현재 파일 경로를 첨부합니다(전송 후 자동 해제)"
+  },
   "slash": {
     "groupCommands": "명령어",
     "groupSkills": "스킬",
@@ -80,6 +84,11 @@
   },
   "sessRef": {
     "messages": "개 메시지"
+  },
+  "skillRef": {
+    "source_user": "사용자",
+    "source_workspace": "워크스페이스",
+    "source_plugin": "플러그인"
   },
   "agent": {
     "select": "에이전트",

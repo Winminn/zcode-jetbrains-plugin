@@ -1,0 +1,13 @@
+<!-- Git4Idea 可选依赖的扩展注册（主 plugin.xml 以 optional depends 引入）。
+     AI Commit Message：提交框上方 Vcs.MessageActionGroup 的 AI 生成按钮。
+     text/description 不走 XML %key%（2026.1 实测解析为占位符原文），由 action 类
+     构造器经 ZCodeBundle.message 取值（主配置同款做法）。 -->
+<idea-plugin>
+    <actions>
+        <action id="ZCode.GenerateCommitMessage"
+                class="com.zcode.ideaplugin.ui.vcs.ZCodeCommitMessageAction"
+                icon="com.zcode.ideaplugin.ZCodeIcons.ZcGui">
+            <add-to-group group-id="Vcs.MessageActionGroup" anchor="last"/>
+        </action>
+    </actions>
+</idea-plugin>

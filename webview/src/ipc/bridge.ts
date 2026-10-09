@@ -219,9 +219,18 @@ export function initBridge(): void {
  * 发请求到 Java 端（通过 JBCefJSQuery）。
  * 在 JCEF 环境调用 window.__ZCODE_CEF_QUERY__；非 JCEF 环境（dev/单测）走 mock。
  */
+/**
+ * 真机桥曾就绪标记：sendToJava 任一真实通道（CEF_QUERY / window.sendToJava）成立过即置位。
+ * JBCefJSQuery 引用在标签重建/插件重载后会失效——此刻注入函数 typeof 仍是 function 但
+ * 调用抛错，catch 后若落 mockRespond 会用假数据顶替真数据（实测现象：真机弹
+ * 「mock 不支持 op: scheduledList」）。曾见过桥的环境一律不允许再走 mock。
+ */
+let realBridgeSeen = false
+
 export function sendToJava(req: JavaRequest): void {
   // 优先用 Java 注入的 CEF_QUERY 函数
   if (typeof window.__ZCODE_CEF_QUERY__ === 'function') {
+    realBridgeSeen = true
     try {
       window.__ZCODE_CEF_QUERY__({
         request: JSON.stringify(req),
@@ -231,12 +240,14 @@ export function sendToJava(req: JavaRequest): void {
       })
       return
     } catch (e) {
-      console.error('[bridge] __ZCODE_CEF_QUERY__ 调用异常', e)
+      // 桥失效（标签重建/dispose 后旧 query 引用）：不再落 mock，由 realBridgeSeen 守卫丢弃
+      console.error('[bridge] __ZCODE_CEF_QUERY__ 调用异常（桥可能已失效）', e)
     }
   }
 
   // 兼容旧版（buildInitialHtml 路径直接挂 sendToJava）
   if (typeof window.sendToJava === 'function') {
+    realBridgeSeen = true
     window.sendToJava(req)
     return
   }
@@ -283,6 +294,9 @@ export function getInitialSessionId(): string {
 let mockLongUserDemo = false
 let mockCompactDemo = false
 
+// zoom mock 基线：模块加载时刻的 dPR（dev 浏览器相对缩放倍率的参照）
+const mockDprBaseline = typeof window !== 'undefined' ? window.devicePixelRatio : 1
+
 const mockSessions = [
   {
     sessionId: 'sess_mock_1',
@@ -305,6 +319,12 @@ const mockSessions = [
     updatedAt: Date.now() - 86400_000,
   },
 ]
+
+// 置顶会话 mock（dev 置顶排序验收用；真实数据源为 tasks-index.sqlite pinned 位）
+let mockPinnedSessions: string[] = ['sess_mock_1']
+
+// 后台工作投影 mock（#bgwork 魔法文本灌入；cancel 应答翻转状态后重推事件模拟收敛）
+let mockBgWorks: Array<Record<string, unknown>> = []
 
 // 自动归档记录 mock（自动归档 tab 验收用；真实数据源为 Kotlin PropertiesComponent）
 const mockArchiveRecords: AutoArchiveRecord[] = [
@@ -353,6 +373,13 @@ const mockArchivedSessions = [  {
 ]
 
 function mockRespond(req: JavaRequest): void {
+  // 真机守卫：曾见过真实桥的环境绝不允许回 mock 假数据（桥失效后静默丢弃该请求，
+  // 由各功能的既有兜底自愈；上 __jsLog 落 idea.log 便于排查——__jsLog 自身走 sendToJava，
+  // 在此守卫下同样被丢弃，故本地 console.warn 保底）
+  if (realBridgeSeen) {
+    console.warn('[bridge] 真机桥已失效，丢弃请求（不回 mock 假数据）:', req.op)
+    return
+  }
   console.log('[bridge:mock] 收到请求', req.op)
 
   // send 文本 "#plan"：模拟 plan 模式下 ExitPlanMode 审批弹窗（验收 PlanApprovalDialog）
@@ -404,6 +431,23 @@ function mockRespond(req: JavaRequest): void {
       }))
     }, 900)
     // 不推 turn.failed：模拟 app-server 对 429 按可重试分类持续退避（转圈不停止）
+    return
+  }
+
+  // send 文本 "#bgwork"：模拟后台工作投影事件（H7 汇总入口验收：badge 分型计数/面板
+  // 列表/状态多样性；真实链路 = v4 帧 state.updated patch.backgroundWorks 合成事件）
+  if (req.op === 'send' && req.text.trim() === '#bgwork') {
+    mockBgWorks = [
+      { workId: 'bgw_bash_1', kind: 'bash', title: 'npm run build（后台）', status: 'running', startedAt: Date.now() - 65_000, cancellable: true, anchorRowId: null },
+      { workId: 'bgw_sub_1', kind: 'subagent', title: '代码审查子代理', status: 'running', startedAt: Date.now() - 130_000, cancellable: true, childSessionId: 'sess_subagent_mock_1', anchorRowId: null },
+      { workId: 'bgw_wf_1', kind: 'workflow', title: '批量重构工作流', status: 'running', startedAt: Date.now() - 200_000, cancellable: true, anchorRowId: null },
+      { workId: 'bgw_bash_0', kind: 'bash', title: '已完成的后台测试', status: 'resultPending', startedAt: Date.now() - 300_000, anchorRowId: null },
+    ]
+    const works = mockBgWorks
+    setTimeout(() => {
+      streamListeners.forEach((fn) =>
+        fn(req.sessionId, { type: 'backgroundWorks', seq: 0, sessionId: req.sessionId, turnId: null, timestamp: Date.now(), payload: { works } } as unknown as StreamEvent))
+    }, 200)
     return
   }
 
@@ -895,12 +939,72 @@ function mockResponse(req: JavaRequest): JavaResponse | null {
   switch (req.op) {
     case 'listSessions':
       return { op: 'listSessions', sessions: mockSessions }
+    case 'scheduledList':
+      // mock：空定时列表（形状对齐 Java buildListMessage；此前缺分支会在 dev/mock 态
+      // 弹「mock 不支持 op」误报——init 的桥就绪分支每次都发它）
+      return { op: 'scheduledList', ts: Date.now(), items: [], fired: [] }
     case 'listArchivedSessions':
       return { op: 'archivedSessions', sessions: mockArchivedSessions }
+    case 'backgroundBashOutput': {
+      // mock：running 态假输出（组件轮询到终态停止——这里恒 running 会一直轮询，
+      // 与真实 running 任务行为一致，关闭面板即停）
+      return {
+        op: 'backgroundBashOutputResult',
+        sessionId: req.sessionId,
+        workId: req.workId,
+        result: {
+          kind: 'output',
+          workId: req.workId,
+          status: 'running',
+          output: `[mock] 后台任务输出快照 workId=${req.workId}\n编译中... 42%\n（每秒刷新一次，来自 mock 桥）`,
+          truncated: false,
+          outputPath: '/tmp/zcode-mock/background-output.log',
+        },
+      }
+    }
+    case 'cancelBackgroundWork': {
+      // mock：翻转状态并重推投影事件（模拟服务端收敛；真实链路取消后条目转 cancelled
+      // 或消失，badge 随 totalCount 归零）
+      mockBgWorks = mockBgWorks.map((w) =>
+        (w as { workId: string }).workId === req.workId ? { ...w, status: 'cancelled', endedAt: Date.now() } : w,
+      )
+      const works = mockBgWorks
+      setTimeout(() => {
+        streamListeners.forEach((fn) =>
+          fn(req.sessionId, { type: 'backgroundWorks', seq: 0, sessionId: req.sessionId, turnId: null, timestamp: Date.now(), payload: { works } } as unknown as StreamEvent))
+      }, 200)
+      return { op: 'backgroundWorkCancelled', sessionId: req.sessionId, workId: req.workId, status: 'accepted' }
+    }
+    case 'listPinnedSessions':
+      // mock：预置一个置顶会话方便 dev 验收置顶排序（生产权威源=tasks-index.sqlite）
+      return { op: 'pinnedSessions', pinned: mockPinnedSessions }
+    case 'listUnreadSessions':
+      // mock：预置一个未读会话方便 dev 验收蓝点（生产权威源=tasks-index.sqlite unread_at）
+      return { op: 'sessionUnreads', unread: mockSessions.length > 1 ? [mockSessions[1].sessionId] : [] }
+    case 'setSessionPinned': {
+      // mock：内存集翻转后直接以广播形状应答（store 对 pinnedSessions/sessionPinsChanged 同形覆盖；
+      // 生产是 Java 写库后全标签广播，此处单标签无广播通道，应答即校正）
+      const sid = req.sessionId
+      mockPinnedSessions = req.pinned
+        ? [...new Set([...mockPinnedSessions, sid])]
+        : mockPinnedSessions.filter((id) => id !== sid)
+      return { op: 'sessionPinsChanged', pinned: mockPinnedSessions }
+    }
     case 'archiveSession':
       return { op: 'sessionArchived', sessionId: req.sessionId }
     case 'restoreSession':
       return { op: 'sessionRestored', sessionId: req.sessionId }
+    case 'zoomQuery': {
+      // mock：dev 浏览器无 CEF zoom level，以加载时刻 dPR 为基线的相对倍率充当
+      // 百分比（数值近似真实浏览器缩放，toast 链路可完整验收；zoomReset 无真实
+      // 缩放可复原，仅回当前值）
+      const base = mockDprBaseline || 1
+      return { op: 'zoomLevel', percent: Math.round(((window.devicePixelRatio || 1) / base) * 100) }
+    }
+    case 'zoomReset': {
+      const base = mockDprBaseline || 1
+      return { op: 'zoomLevel', percent: Math.round(((window.devicePixelRatio || 1) / base) * 100) }
+    }
     case 'deleteArchivedSession':
       return { op: 'sessionArchiveDeleted', sessionId: req.sessionId }
     case 'getAutoArchiveConfig':
@@ -1016,7 +1120,8 @@ function mockResponse(req: JavaRequest): JavaResponse | null {
       // mock：27.9% 上下文使用率（与真实场景接近）
       return { op: 'usage', sessionId: req.sessionId, used: 278937, size: 1000000, hitRate: 0.988 }
     case 'getQuota':
-      // mock：额度数据（5小时 86% / 每周 64%）；provider* 模拟订阅渠道凭证提示
+      // mock：额度数据（5h 池 86% / 每周 64% / 工具调用 40%）；number 对齐官方
+      // (type,unit,number) 三标准窗挑选，dev 模式可验窗口卡与横幅；provider* 模拟订阅渠道凭证提示
       return {
         op: 'quota',
         providerId: 'builtin:bigmodel-coding-plan',
@@ -1024,8 +1129,9 @@ function mockResponse(req: JavaRequest): JavaResponse | null {
         data: {
           level: 'Max',
           limits: [
-            { type: 'TOKENS_LIMIT', unit: 3, percentage: 86, currentValue: 430000, usage: 500000, nextResetTime: Date.now() + 3 * 3600 * 1000 },
+            { type: 'TOKENS_LIMIT', unit: 3, number: 5, percentage: 86, currentValue: 430000, usage: 500000, nextResetTime: Date.now() + 3 * 3600 * 1000 },
             { type: 'TOKENS_LIMIT', unit: 6, percentage: 64, currentValue: 1280000, usage: 2000000, nextResetTime: Date.now() + 5 * 24 * 3600 * 1000 },
+            { type: 'TIME_LIMIT', unit: 5, number: 1, percentage: 40, nextResetTime: Date.now() + 20 * 24 * 3600 * 1000 },
           ],
         },
       }
@@ -2025,6 +2131,101 @@ flowchart LR
       // mock：v4 编辑受理 ack。真实编排（rewind.triggered 截断 + 服务端重发流式）
       // 由事件流驱动，mock 无事件流——ack 后指示器挂着属预期，新文本重发/截断需真机验
       return { op: 'editAccepted', sessionId: req.sessionId, disposition: 'rewind' }
+    case 'turnFileChanges':
+      // mock：某轮改动文件清单（B2 更改条弹窗验收：双文件 + 含 +/− hunk）
+      return {
+        op: 'turnFileChangesResult',
+        sessionId: req.sessionId,
+        messageId: req.messageId,
+        data: {
+          files: 2,
+          additions: 26,
+          deletions: 4,
+          state: 'active',
+          items: [
+            {
+              path: 'mock/src/utils/format.ts',
+              additions: 18,
+              deletions: 3,
+              writeCount: 2,
+              toolNames: ['Edit'],
+              patches: [
+                {
+                  oldStart: 10,
+                  oldLines: 5,
+                  newStart: 10,
+                  newLines: 20,
+                  lines: [
+                    ' export function fmt(x: number): string {',
+                    '+  const scaled = x * 2',
+                    '-  return String(x)',
+                    '+  return String(scaled)',
+                    ' }',
+                  ],
+                },
+              ],
+            },
+            {
+              path: 'mock/src/App.tsx',
+              additions: 8,
+              deletions: 1,
+              writeCount: 1,
+              toolNames: ['Write'],
+              patches: [
+                {
+                  oldStart: 1,
+                  oldLines: 0,
+                  newStart: 1,
+                  newLines: 8,
+                  lines: ['+import { fmt } from "@/utils/format"', '+', '+export const demo = fmt(21)'],
+                },
+              ],
+            },
+          ],
+        },
+      }
+    case 'turnFileRewindPreview':
+      // mock：回退预览（1 可安全恢复 + 1 外部修改不可撤 → canApply=false 验禁用态；
+      // 全绿路径改 safeFiles 两项即可）
+      return {
+        op: 'turnFileRewindPreviewResult',
+        sessionId: req.sessionId,
+        messageId: req.messageId,
+        data: {
+          canApply: false,
+          safeFiles: [{ action: 'restore', operationCount: 2, path: 'mock/src/utils/format.ts', toolNames: ['Edit'] }],
+          unsafeFiles: [
+            {
+              reason: 'external_modified',
+              message: 'file modified outside the session',
+              operationCount: 1,
+              path: 'mock/src/App.tsx',
+              toolNames: ['Write'],
+            },
+          ],
+          ignoredFiles: [],
+        },
+      }
+    case 'turnFileRewindApply':
+      // mock：撤销受理 ack（store 乐观置 reverted；服务端 reverted 事件 mock 不推）
+      return { op: 'turnFileRewindApplied', sessionId: req.sessionId, messageId: req.messageId }
+    case 'turnFileChangesSync':
+      // mock：重扫回执（dev 无真实订阅，事件由 mock 流单独注入）
+      return { op: 'turnFileChangesSynced', sessionId: req.sessionId }
+    case 'checkFilesExist':
+      // mock：全部视为存在（dev 验收预览卡渲染链路；真实过滤行为须真机验）
+      return {
+        op: 'checkFilesExistResult',
+        requestId: req.requestId,
+        results: req.paths.map((path) => ({ path, exists: true })),
+      }
+    case 'openFileSystem':
+      // mock：生产走 Java Desktop.open 调系统默认程序，dev 无真实产物文件仅记日志
+      console.info('[mock] openFileSystem', req.filePath)
+      return { op: 'fileOpened' }
+    case 'turnFileDiff':
+      // mock：dev 无 IDEA Swing 弹窗，回 shown 受理 ack（真实侧由 Java 弹内嵌对比窗）
+      return { op: 'turnFileDiffShown' }
     case 'gotoSession':
       // mock：跳转会话 ack（dev 无多标签宿主，仅防误报"mock 不支持 op"错误条）
       return { op: 'gotoSessionOpened' }

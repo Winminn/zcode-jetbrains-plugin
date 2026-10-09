@@ -16,6 +16,7 @@ import { useTheme } from '@/hooks/useTheme'
 import { ChatHeader } from '@/components/ChatHeader'
 import { ChatView } from '@/components/ChatView'
 import { StatusPanel } from '@/components/StatusPanel'
+import { QuotaBanner } from '@/components/QuotaBanner'
 import { HistoryView } from '@/components/HistoryView'
 import { SettingsView } from '@/components/SettingsView'
 import { InputBox } from '@/components/InputBox'
@@ -26,10 +27,12 @@ import { SubagentDetailDialog } from '@/components/SubagentDetailDialog'
 import { SubagentReportDialog } from '@/components/SubagentReportDialog'
 import { MarkdownPreviewDialog } from '@/components/MarkdownPreviewDialog'
 import { AskUserReviewDialog } from '@/components/AskUserReviewDialog'
+import { TurnFileChangesDialog } from '@/components/TurnFileChangesDialog'
 import { PairingDialog } from '@/components/PairingDialog'
 import { ConfirmDialog } from '@/components/ConfirmDialog'
 import { ChangelogDialog, CHANGELOG_LAST_SEEN_KEY } from '@/components/ChangelogDialog'
 import { EnvBanner } from '@/components/EnvBanner'
+import { ZoomIndicator } from '@/components/ZoomIndicator'
 import { sendToJava, isInJcef } from '@/ipc/bridge'
 import { getPersisted, setPersisted, isKvHydrated, KV_HYDRATED_EVENT, KV_DISABLED_EVENT } from '@/utils/persist'
 import { extractTitleExcerpt } from '@/utils/titleExcerpt'
@@ -60,6 +63,7 @@ export default function App() {
   const currentModel = useStore((s) => s.currentModel)
   const archivedSessions = useStore((s) => s.archivedSessions)
   const archivedLoading = useStore((s) => s.archivedLoading)
+  const currentFileRef = useStore((s) => s.currentFileRef)
   // action 引用稳定，单独取不触发重渲染
   const init = useStore((s) => s.init)
   const loadSessions = useStore((s) => s.loadSessions)
@@ -77,6 +81,9 @@ export default function App() {
   const setModel = useStore((s) => s.setModel)
   const loadArchivedSessions = useStore((s) => s.loadArchivedSessions)
   const archiveSession = useStore((s) => s.archiveSession)
+  const toggleSessionPin = useStore((s) => s.toggleSessionPin)
+  const pinnedSessionIds = useStore((s) => s.pinnedSessionIds)
+  const unreadSessionIds = useStore((s) => s.unreadSessionIds)
   const restoreSession = useStore((s) => s.restoreSession)
   const deleteArchivedSession = useStore((s) => s.deleteArchivedSession)
   const locateSessionTab = useStore((s) => s.locateSessionTab)
@@ -308,6 +315,9 @@ export default function App() {
             onSearchClose={() => setSearchOpen(false)}
           />
           <StatusPanel />
+          {/* 会话额度横幅（耗尽/并发/服务商边界/限频/低额提醒）：错误触发 + 60s 额度轮询派生，
+              窗口恢复或用户关闭后消失；只占 chat 列，错误详情仍在底部 lastError 条 */}
+          <QuotaBanner />
           <InputBox
             onSend={(text, _filePaths, attachments) => sendMessage(text, attachments)}
             isStreaming={streaming}
@@ -322,6 +332,7 @@ export default function App() {
               setPendingSettingsSection('models')
               setCurrentView('settings')
             }}
+            currentFileRef={currentFileRef}
           />
         </div>
 
@@ -338,6 +349,9 @@ export default function App() {
             onArchive={archiveSession}
             onRestore={restoreSession}
             onDeleteArchived={deleteArchivedSession}
+            onTogglePin={toggleSessionPin}
+            pinnedSessionIds={pinnedSessionIds}
+            unreadSessionIds={unreadSessionIds}
             onRefresh={loadSessions}
             onLoadArchived={loadArchivedSessions}
           />
@@ -366,6 +380,9 @@ export default function App() {
 
       {/* 轻量 toast */}
       {toast && <div className="app__toast">{toast}</div>}
+
+      {/* 浏览器缩放指示器（Ctrl+滚轮缩放时的百分比胶囊，点击/Ctrl+0 重置） */}
+      <ZoomIndicator />
 
       {/* 驻留水位提醒（缺陷BA）：通栏信息条（与 notice-bar 同构）——悬浮 toast 在窄
           面板下被挤成窄卡多行且关闭钮悬空（六轮用户反馈），通栏能用满面板宽度；
@@ -455,6 +472,8 @@ export default function App() {
       <MarkdownPreviewDialog />
       {/* AskUserQuestion 回看弹窗（消息流「询问用户」工具卡点击，只读回看问题与已选答案）*/}
       <AskUserReviewDialog />
+      {/* 逐轮文件更改弹窗（B2 回合产物：更改条点击打开，含撤销该轮文件改动）*/}
+      <TurnFileChangesDialog />
       {/* 手机远程配对弹窗（Header 手机图标打开，store 自管理开关）*/}
       <PairingDialog />
       {/* 版本更新弹窗（条件渲染：每次打开从最新版页开始；关闭即记已读当前版本）*/}

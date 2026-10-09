@@ -288,6 +288,56 @@ export interface SessionInfo {
   goalTarget?: boolean
 }
 
+/**
+ * 后台工作投影条目（v4 snapshot backgroundWorks 原样形状，服务端权威状态机）。
+ * resultPending = 已完成、结果等待前台空闲投递（投递后条目消失）；workId 是取消/
+ * 输出查询的主键；childSessionId 仅 subagent 条目携带。
+ * status 'ended' 是**本地转录重建合成值**（协议无此值）：IDE 重启后运行时投影消失，
+ * 从转录后台化确认行重建的历史任务已随进程死亡，以 ended 呈现（不可取消、无投影）。
+ */
+export interface BackgroundWorkSummary {
+  workId: string
+  kind: 'bash' | 'subagent' | 'workflow'
+  title: string
+  status: 'running' | 'resultPending' | 'failed' | 'cancelled' | 'ended'
+  startedAt: number
+  endedAt?: number
+  cancellable?: boolean
+  blocked?: boolean
+  anchorRowId?: number | null
+  childSessionId?: string
+}
+
+/** 后台 bash 输出快照（v4/conversation/backgroundBashOutput 响应两形态原样）*/
+export type BackgroundBashOutputResult =
+  | {
+      kind: 'output'
+      workId: string
+      status: 'running' | 'completed' | 'failed' | 'timed_out' | 'cancelled' | 'spawn_error'
+      output: string
+      truncated: boolean
+      outputPath: string
+    }
+  | { kind: 'unavailable' | 'unsupported' | 'read_failed'; workId: string; code?: string }
+
+/**
+ * sessions-index v4 topic 的会话摘要（官方 SessionSummary 原样字段，Java 侧已过滤
+ * 子代理会话与软删）。列表活性订阅（op=sessionIndexUpdate）的行数据。
+ */
+export interface SessionIndexEntry {
+  sessionId: string
+  workspaceId?: string
+  title?: string
+  /** custom=用户显式重命名；default/generated 均非手动标题（官方 titleSource 语义） */
+  titleSource?: string
+  /** draft/prewarming/running/completedSuccess/completedInterrupted/error */
+  phase?: string
+  sessionEnded?: boolean
+  hasBackgroundWork?: boolean
+  lastActivityAt?: number
+  createdAt?: number
+}
+
 // ============ IPC 请求 / 响应（JS ↔ Java）============
 
 /** 外观配置（IDE 侧 PropertiesComponent 权威源；'' = 恢复主题默认/跟随 IDE）*/
@@ -337,6 +387,26 @@ export interface ImageAttachmentInput {
 }
 
 /**
+ * 当前文件上下文附件描述（webview→Java op 层自有形态，不是 zcode.cjs 协议字段）。
+ * InputBox doSend 按 chip 显示值（enabled && currentFileRef 同一取值表达式）派生，
+ * 放 attachments 数组首位；Java 按 path+行号读文件切片内容，转成 zcode.cjs
+ * session/send 的 kind:'file' + textContent 附件发出（ZCode 源码坐实的隐式内容
+ * 通道：模型收到 Read 工具结果形态的 system-reminder，user bubble 不显示）。
+ */
+export interface CurrentFileAttachmentInput {
+  kind: 'currentFile'
+  /** 绝对路径（ref 去 @ 前缀、去 #L 行号后缀）*/
+  path: string
+  /** 选区起始行（1 起，含）；与 lineEnd 成对出现，缺省 = 整文件 */
+  lineStart?: number
+  /** 选区结束行（1 起，含）*/
+  lineEnd?: number
+}
+
+/** session/send 可携带的附件（图片内联 base64 / 当前文件上下文描述）*/
+export type SendAttachmentInput = ImageAttachmentInput | CurrentFileAttachmentInput
+
+/**
  * 编辑附件条目（op:editUserQuery 的 attachments 元素，Java 侧解析为 v4 ref 引用
  * 形态 {ref,fileName,mime,bytes}）。cache=保留的原消息图片（url 为 /zcode-image/
  * 映射或 zcode-artifact://，背后是 zcode.cjs image-cache 落盘文件，直接引用磁盘
@@ -360,6 +430,18 @@ export type JavaRequest =  | { op: 'askUserPendingState' }
   | { op: 'restoreSession'; sessionId: string }
   /** 删除归档会话（软删对齐 ZCode 客户端：tasks.deleted=1，数据保留可复活）*/
   | { op: 'deleteArchivedSession'; sessionId: string }
+  /** 置顶/取消置顶会话（tasks-index pinned 位，写库后 Java 全标签广播 sessionPinsChanged）*/
+  | { op: 'setSessionPinned'; sessionId: string; pinned: boolean }
+  /** 拉取当前置顶会话全量集（历史列表加载对账，顺带吸收官方桌面端库内 pin 变化）*/
+  | { op: 'listPinnedSessions' }
+  /** 拉取当前未读会话全量集（历史列表加载对账；tasks-index unread_at 位）*/
+  | { op: 'listUnreadSessions' }
+  /** 后台 bash 任务输出快照（v4/conversation/backgroundBashOutput；running 态前端 1s 轮询）*/
+  | { op: 'backgroundBashOutput'; sessionId: string; workId: string }
+  /** 取消后台工作（v4/command cancelBackgroundWork；子代理另有 stop 连带/取消链路）*/
+  | { op: 'cancelBackgroundWork'; sessionId: string; workId: string }
+  /** 后台工作投影缓存查询（打开会话对账；重复订阅不重推快照的兜底）*/
+  | { op: 'backgroundWorksList'; sessionId: string }
   /** 自动归档：读共享配置（~/.zcode/v2/setting.json，与 ZCode 客户端同源）*/
   | { op: 'getAutoArchiveConfig' }
   /** 自动归档：写共享配置（客户端下次读取同样生效）*/
@@ -374,7 +456,7 @@ export type JavaRequest =  | { op: 'askUserPendingState' }
   | { op: 'messages'; sessionId: string; workspacePath?: string; reconcile?: boolean; goalRefresh?: boolean }
   | { op: 'subagents'; sessionId: string }
   | { op: 'subagentMessages'; sessionId: string; workspacePath?: string }
-  | { op: 'send'; sessionId: string; text: string; workspacePath?: string; providerId?: string; modelId?: string; thoughtLevel?: string; attachments?: ImageAttachmentInput[] }
+  | { op: 'send'; sessionId: string; text: string; workspacePath?: string; providerId?: string; modelId?: string; thoughtLevel?: string; attachments?: SendAttachmentInput[] }
   /** 剪贴板兜底：JCEF 偶发不把图片暴露给 clipboardData（CC-GUI 用 IDE action 兜底，
    *  我们用按需桥更轻）——Java 读 AWT 剪贴板 DataFlavor.imageFlavor → PNG base64 返回 */
   | { op: 'getClipboardImage' }
@@ -427,6 +509,10 @@ export type JavaRequest =  | { op: 'askUserPendingState' }
   | { op: 'getToolUsage'; startTime: string; endTime: string }
   /** 打开文件；findText 可选——在编辑器 Find 栏填充该关键词并高亮全部命中 */
   | { op: 'openFile'; filePath: string; line?: number; findText?: string }
+  /** 产物预览卡批量文件存在性检查（渲染前过滤已删除路径，防闪卡）*/
+  | { op: 'checkFilesExist'; requestId: string; paths: string[] }
+  /** 产物预览卡：用系统默认程序打开文件（Office/PDF/音视频等 IDE 无编辑器的类型；Java 侧白名单扩展名）*/
+  | { op: 'openFileSystem'; filePath: string }
   | { op: 'showDiff'; filePath: string; oldContent: string; newContent: string; title?: string }
   | { op: 'refreshFile'; filePath: string }
   | { op: 'listMemoryFiles' }
@@ -480,10 +566,17 @@ export type JavaRequest =  | { op: 'askUserPendingState' }
   | { op: 'kvSave'; entries: Record<string, string>; deletes?: string[] }
   /** 拉取权威 kv（注入未达时的兜底通道：executeJavaScript 时序不稳 → 走消息通道必然可达）*/
   | { op: 'kvLoad' }
+  // ============ 浏览器级缩放（Ctrl+滚轮 = Chromium 原生行为，平台无变化通知）============
+  /** 查询当前缩放百分比（前端 devicePixelRatio 变化时触发；percent 权威值在 Java 侧）*/
+  | { op: 'zoomQuery' }
+  /** 重置缩放为 100%（Ctrl+0 / 点击 toast；Java 侧 setZoomLevel(0)）*/
+  | { op: 'zoomReset' }
   /** 环境三件套检测（node/zcode.cjs/凭证），启动时与主界面「重新检测」触发 */
   | { op: 'checkEnv' }
   /** 保存环境路径配置：字段缺席=不改该项，空串=清除（回退自动探测）；后端验证通过才落盘 */
   | { op: 'envSave'; nodePath?: string; cliPath?: string }
+  /** 拉取当前打开文件 ref（webview mount/重连时用；Kotlin 同步回包，对应 EditorContextTracker.snapshot）*/
+  | { op: 'getCurrentFile' }
   /** 拉取网络代理配置（与 ZCode 客户端共享的 setting.json 三键） */
   | { op: 'getProxyConfig' }
   /** 保存网络代理三字段（空串=清除该项；写共享 setting.json，客户端重启后同样生效） */
@@ -527,6 +620,21 @@ export type JavaRequest =  | { op: 'askUserPendingState' }
       newText: string
       attachments?: JavaEditAttachment[]
     }
+  /**
+   * 查询某轮改动的文件清单（B2 回合产物：v4/conversation/fileChanges）。
+   * messageId = 该轮 assistant 消息 id（= turnHeader entityId）；应答 turnFileChangesResult
+   */
+  | { op: 'turnFileChanges'; sessionId: string; messageId: string }
+  /** 预览撤销某轮的文件改动（v4/conversation/fileRewindPreview，hash 预检全有或全无） */
+  | { op: 'turnFileRewindPreview'; sessionId: string; messageId: string }
+  /** 执行撤销某轮的文件改动（v4/command applyFileRewind：恢复/删除文件，不截断聊天） */
+  | { op: 'turnFileRewindApply'; sessionId: string; messageId: string }
+  /** 会话重开后触发逐轮更改条重扫（标题订阅快照只在首订时有；Java 临时订阅重扫，异步） */
+  | { op: 'turnFileChangesSync'; sessionId: string }
+  /** 逐轮审查 → IDEA 侧内嵌（unified）对比弹窗：Java 把本轮 hunk 着色渲染成 Swing 弹窗
+   *  （+/-行底色、无左右分栏；数据即服务端直出 hunk，不读磁盘）。path=相对路径（error
+   *  应答回显，降级内置弹窗定位用）；缺参回 turnFileDiffError */
+  | { op: 'turnFileDiff'; filePath: string; path: string; patches: TurnFileDiffHunk[]; title?: string }
   /** 历史列表打开前定位：查所有标签是否已绑定该会话（有则 Java 直接激活宿主标签跳转，无副作用）*/
   | { op: 'locateSession'; sessionId: string }
   /** mermaid 复制图片：PNG 纯 base64 → Java 系统剪贴板（JCEF 的 clipboard.write 图片不可靠的降级通道）*/
@@ -696,6 +804,8 @@ export interface SlashCommand {
   source?: string
   /** 专属图标（codicon 类名，如 codicon-target）；缺省按 kind 取 wand/terminal */
   icon?: string
+  /** 技能目录绝对路径（仅 skill 条目；$ 技能提及 chip 序列化 [$name](path) 用）*/
+  path?: string
 }
 
 /**
@@ -977,11 +1087,46 @@ export type JavaResponse =
    *  reason=机器可读错误码（missingParams/attachmentResolveFailed/notLatestUserMessage/
    *  commandFailed/internalError）→ 前端映射 i18n 五语言文案；message 原文仅回退兜底 */
   | { op: 'editRejected'; message?: string; reason?: string }
+  /** turnFileChanges 应答：某轮改动文件清单（B2 回合产物）。reason 错误码见 turnFileOpError */
+  | { op: 'turnFileChangesResult'; sessionId: string; messageId: string; data: TurnFileChangesDetail }
+  | { op: 'turnFileChangesError'; reason: string; message?: string }
+  /** turnFileDiff 应答：missingParams=缺 filePath/patches（正常链路不会出现，兜底降级）；
+   *  path 回显请求里的相对路径（前端降级内置弹窗定位） */
+  | { op: 'turnFileDiffError'; reason: string; message?: string; path?: string }
+  /** turnFileDiff 受理 ack（Swing 弹窗 EDT 异步弹出，Java 侧失败只落日志不回 error） */
+  | { op: 'turnFileDiffShown' }
+  /** turnFileRewindPreview 应答：safe/unsafe/ignored 三桶预览 */
+  | { op: 'turnFileRewindPreviewResult'; sessionId: string; messageId: string; data: TurnFileRewindPreview }
+  | { op: 'turnFileRewindPreviewError'; reason: string; message?: string }
+  /** turnFileRewindApply 应答：applied=服务端确认已执行（本地以随后到达的 turn.fileChanges
+   *  state=reverted 事件为准做乐观更新） */
+  | { op: 'turnFileRewindApplied'; sessionId: string; messageId: string }
+  | { op: 'turnFileRewindApplyError'; reason: string; message?: string }
+  /** turnFileChangesSync 回执（重扫异步执行，事件经流式通道后续到达） */
+  | { op: 'turnFileChangesSynced'; sessionId: string }
+  /** checkFilesExist 应答：按请求回显 requestId（产物预览卡渲染前批量校验）*/
+  | { op: 'checkFilesExistResult'; requestId?: string; results: { path: string; exists: boolean }[] }
   /** 会话待交互计数推送（审批/提问挂起数；协议客户端反向请求计数，全量快照）。
    *  会话列表红点角标数据源——本地方案（官方 pendingInteractionSummary 在 v4
    *  sessions-index topic 订阅里，需常驻占 v4 订阅槽） */
   | { op: 'pendingInteractions'; counts: Record<string, number> }
+  /** 置顶会话全量集（listPinnedSessions 应答 / setSessionPinned 写库后全标签广播，同形覆盖）*/
+  | { op: 'pinnedSessions'; pinned: string[] }
+  | { op: 'sessionPinsChanged'; pinned: string[] }
+  /** 未读会话全量集（listUnreadSessions 应答 / 相位迁移标未读与打开清除后广播，同形覆盖）*/
+  | { op: 'sessionUnreads'; unread: string[] }
+  | { op: 'sessionUnreadsChanged'; unread: string[] }
+  /** 后台工作投影（v4 帧合成的 SessionEvent type='backgroundWorks'，经 streamBatch 到达；
+   *  payload.works 为服务端权威全量数组，全量替换语义）*/
+  /** 后台 bash 输出快照应答（原样透传协议两形态；组件按 workId 匹配消费）*/
+  | { op: 'backgroundBashOutputResult'; sessionId: string; workId: string; result: BackgroundBashOutputResult }
+  /** 后台工作取消应答（ACK status=accepted|rejected...；投影由 backgroundWorks 事件收敛）*/
+  | { op: 'backgroundWorkCancelled'; sessionId: string; workId: string; status: string; reasonCode?: string }
+  /** 后台工作投影缓存应答（打开会话对账；值=本进程最后已知投影）*/
+  | { op: 'backgroundWorksList'; sessionId: string; works: BackgroundWorkSummary[] }
   | { op: 'sessionTurnPhase'; sessionId: string; phase: 'running' | 'ended' }
+  /** 会话索引推送（sessions-index v4 订阅）：full=initial 快照全量；sessions 为官方 SessionSummary 过滤后的原样字段 */
+  | { op: 'sessionIndexUpdate'; full: boolean; sessions: SessionIndexEntry[]; removed: string[] }
   /** steerMessage 应答：accepted=true 时 UI 由 turn.steerQueued/steerDrained 事件驱动；error=受理失败（清 chip + 横幅）。queueItemId=queue_<commandId>（前端已预置，ack 仅核对）*/
   | { op: 'steerMessage'; sessionId: string; accepted?: boolean; delivery?: string; queueItemId?: string; error?: string }
   /** cancelSteer 应答：removed=true 已撤销（清 chip + 队列条目回插）；false=已注入落位（queue.itemMissing），提示不可撤 */
@@ -1054,6 +1199,8 @@ export type JavaResponse =
   | { op: 'kvSave' }
   /** 权威 kv 下发（kvLoad 的响应；注入兜底通道）*/
   | { op: 'kvLoaded'; kv: Record<string, string> }
+  /** 浏览器缩放百分比（zoomQuery/zoomReset 的响应；percent 由 Java getZoomLevel 换算）*/
+  | { op: 'zoomLevel'; percent: number }
   /** 环境状态（checkEnv 查询 / envSave 保存成功后的重检结果 / IDE 广播同构体）*/
   | { op: 'envStatus'; status: EnvStatus }
   /** 网络代理回显（getProxyConfig 响应；restartPending=app-server 在跑需重启生效）*/
@@ -1164,6 +1311,10 @@ export type JavaResponse =
   /** app-server stderr 解析出的后端模型 API 错误（APICallError 兜底通道）：
    *  429 配额超限等被服务端按可重试分类退避重试，turn 终止帧迟迟不发时的第一现场 */
   | { op: 'backendError'; statusCode?: number; code?: string; message: string }
+  /** 当前打开文件 ref（@path / @path#L10 / @path#L10-20 / null = 无打开编辑器）。
+   *  Kotlin→webview 推送：getCurrentFile 响应 / EditorContextTracker 200ms 防抖推送。
+   *  当前只驱动 CurrentFileChip 显示（topbar 当前文件 chip），不参与发送。 */
+  | { op: 'currentFile'; ref: string | null }
 
 // ============ 流式事件（session/event 透传）============
 // 基于抓包确认（scripts/capture-tool-use.json 的事件汇总）
@@ -1359,14 +1510,100 @@ export interface FileEditContent {
   newContent: string
 }
 
+// ============ 逐轮文件更改与回退（B2 回合产物，v4 fileChanges 族）============
+
+/** 单轮文件更改摘要（turnHeader.fileChanges 订阅直出，+/−行数服务端算好）*/
+export interface TurnFileChangeSummary {
+  /** 回合头行 rowId（撤销/详情查询的 CAS target = turnHeader 行）*/
+  rowId: number
+  additions: number
+  deletions: number
+  files: number
+  /** reverted = 该轮已被回退（服务端在 applyFileRewind 后回推）*/
+  state?: 'active' | 'reverted'
+  canRewind: boolean
+  /** 原始锚（payload.messageId 原值：productTurnId 或 assistant 消息 id）——
+   *  流式壳 id→重拉真身 id 漂移时，快照落地按它重锚定（内部字段，渲染不用）*/
+  _anchor?: string
+}
+
+/** store 逐轮更改条数据（key = turnHeader entityId = 该轮 assistant 消息 id）*/
+export type TurnFileChangesMap = Record<string, TurnFileChangeSummary>
+
+/** unified diff hunk（服务端 readonlyDiffHunk 原样直出）*/
+export interface TurnFileDiffHunk {
+  oldStart: number
+  oldLines: number
+  newStart: number
+  newLines: number
+  /** unified 格式行：前缀 ' '/'+'/'-' */
+  lines: string[]
+}
+
+/** 单文件改动明细（v4/conversation/fileChanges 应答 items 元素）*/
+export interface TurnFileChangeItem {
+  path: string
+  additions: number
+  deletions: number
+  writeCount: number
+  toolNames: string[]
+  patches: TurnFileDiffHunk[]
+}
+
+/** fileChanges 查询应答 */
+export interface TurnFileChangesDetail {
+  files: number
+  additions: number
+  deletions: number
+  state?: 'active' | 'reverted'
+  items: TurnFileChangeItem[]
+}
+
+/** 回退预览单文件（safe 桶：action=restore 恢复 / delete 删除新建文件）*/
+export interface TurnFileRewindSafeFile {
+  action: 'restore' | 'delete'
+  operationCount: number
+  path: string
+  toolNames: string[]
+}
+
+/** 回退预览 unsafe 桶（hash 预检不过：外部修改过/读不到等，不可整批撤销）*/
+export interface TurnFileRewindUnsafeFile {
+  reason: 'checkpoint_missing' | 'checkpoint_unreadable' | 'external_modified' | 'file_read_failed' | 'unsupported_checkpoint'
+  message?: string
+  currentHash?: string
+  expectedHash?: string
+  operationCount: number
+  path: string
+  toolNames: string[]
+}
+
+/** 回退预览 ignored 桶（shell 工具产生的变更不在回退范围）*/
+export interface TurnFileRewindIgnoredFile {
+  operationCount: number
+  path: string
+  toolNames: string[]
+}
+
+/** fileRewindPreview 应答（全有或全无：unsafeFiles 非空时 canApply=false）*/
+export interface TurnFileRewindPreview {
+  canApply: boolean
+  safeFiles: TurnFileRewindSafeFile[]
+  unsafeFiles: TurnFileRewindUnsafeFile[]
+  ignoredFiles: TurnFileRewindIgnoredFile[]
+}
+
 // ============ 额度数据（glm plan usage API）============
 // 来源：{baseDomain}/api/monitor/usage/quota/limit → data.limits[]
-// type: TOKENS_LIMIT(token额度) | TIME_LIMIT(次数额度)
-// unit: 3=每5小时, 6=每周, 5=MCP每月
+// type: TOKENS_LIMIT(token额度，zai 团队后端等价为 CREDIT_LIMIT) | TIME_LIMIT(次数额度)
+// unit: 3=每5小时, 6=每周, 5=每月工具调用（官方 findCodingPlanQuotaLimit 口径；
+//       MCP 额度是独立接口，不在 quota/limit 返回内）
+// number: 窗口序号（5h 池=5、工具调用=1），部分套餐响应缺省
 
 export interface QuotaLimit {
   type?: string
   unit?: number
+  number?: number
   percentage?: number
   currentValue?: number
   usage?: number

@@ -73,6 +73,10 @@
     "lines": "（{{lines}}行目）",
     "remove": "参照を削除"
   },
+  "currentFile": {
+    "label": "ファイルコンテキスト",
+    "tooltip": "有効化すると、次の1件のメッセージにのみ現在のファイルパスを添付します（送信後に自動解除）"
+  },
   "slash": {
     "groupCommands": "コマンド",
     "groupSkills": "スキル",
@@ -80,6 +84,11 @@
   },
   "sessRef": {
     "messages": "件"
+  },
+  "skillRef": {
+    "source_user": "ユーザー",
+    "source_workspace": "ワークスペース",
+    "source_plugin": "プラグイン"
   },
   "agent": {
     "select": "エージェント",

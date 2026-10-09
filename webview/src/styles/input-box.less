@@ -77,29 +77,40 @@
   position: relative; // 定时任务弹窗的定位父级（弹窗底部锚在本栏顶部之上）
   display: flex;
   align-items: center;
-  gap: 6px;
-  padding: 6px 10px;
+  gap: 4px; // 工具组→智能体的间隔（真机反馈 8px 偏大收半；组内 2px 见 __tools）
+  padding: 4px 8px; // 0.3.9 收薄（原 6px 10px）：用户反馈顶栏占位太多
   background: var(--bg-tertiary);
   border-radius: 7px 7px 0 0;
 }
 
-/* 状态栏收起/展开按钮（cc-gui status-panel-toggle）：推到工具条最右；
+/* 顶栏左侧工具组（附件/远程/定时/用量环）：组内紧凑聚拢，cc-gui ContextBar
+   的 context-tools 分组手法。曾按 cc-gui 加 .context-tool-divider 发丝线表边界，
+   chip 钉最右后左侧只剩工具组+智能体两个元素，分隔线失去表达对象，随用户反馈撤除 */
+.input-box-topbar__tools {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+
+/* 状态栏收起/展开按钮（cc-gui status-panel-toggle）：贴工具条最右角；
    弱化风格对齐询问弹窗折叠按钮（小一号 + tertiary 灰，hover 恢复由 context-tool-btn 管）。
    必须双类选择器：单类与 .context-tool-btn 同特异性且源码顺序在前，font-size/color
-   会被后者原样压掉（实踩：11px/灰色从未生效，用户两轮反馈"还是太大不够灰"） */
+   会被后者原样压掉（实踩：11px/灰色从未生效，用户两轮反馈"还是太大不够灰"）。
+   右钉不再用 margin-left:auto（由最右的文件上下文 chip 承担，见 current-file-chip.less）：
+   chip 变宽时本按钮仍被推到贴角不动 */
 .context-tool-btn.input-box-topbar__status-toggle {
-  margin-left: auto;
   font-size: 12px;
   color: var(--text-tertiary);
 }
 
-/* 图标按钮（cc-gui .context-tool-btn：22×22 圆角，hover 变色）*/
+/* 图标按钮（cc-gui .context-tool-btn 同名同规格：20×20 圆角，hover 变色；
+   0.3.9 从 22×22 收到 cc-gui 原版 20×20，配合顶栏收薄）*/
 .context-tool-btn {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 22px;
-  height: 22px;
+  width: 20px;
+  height: 20px;
   padding: 0;
   font-size: 14px;
   color: var(--text-secondary);
@@ -256,17 +267,25 @@
   .image-preview-content {
     display: flex;
     flex-direction: column;
+    align-items: center;
     gap: 8px;
     max-width: 90vw;
     max-height: 85vh;
 
+    /* 缩放盒：布局尺寸由 JS 设为 fit×scale，img 填满 100%。缩放必须落在布局上
+       ——若走 transform: scale 只会拉伸按 fit 尺寸光栅化的纹理（合成层几何变换
+       不重新采样源图），窗口越窄 fit 被 max-width 压得越小，放大越模糊；
+       放大后超出 content 盒属预期（overflow 可见），flex 不许收缩 */
+    .image-preview-zoom {
+      flex-shrink: 0;
+      will-change: transform; /* 平移走合成层 */
+    }
+
     img {
-      max-width: 90vw;
-      max-height: 80vh;
-      object-fit: contain;
+      width: 100%;
+      height: 100%;
+      display: block;
       border-radius: 4px;
-      /* 缩放/平移走 transform：不参与布局，overflow 出 content 盒属预期 */
-      will-change: transform;
       touch-action: none;
       user-select: none;
 
@@ -279,14 +298,20 @@
         cursor: grabbing;
       }
     }
+  }
 
-    .image-preview-meta {
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      gap: 10px;
-      min-height: 18px;
-    }
+  /* 序号/标题：overlay 顶部固定位（图片放大溢出 content 盒时不随布局滚出视口） */
+  .image-preview-meta {
+    position: absolute;
+    top: 16px;
+    left: 0;
+    right: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 10px;
+    min-height: 18px;
+    pointer-events: none;
 
     .image-preview-counter {
       color: #fff;
@@ -454,7 +479,7 @@
 .button-area-left {
   display: flex;
   align-items: center;
-  gap: 5px;
+  gap: 0; // 0.3.9 两轮收窄（5px→2px→0）：选择器自带水平内边距负责分隔，flex 间隔归零后文字视觉间隔 ≈8px；顶栏工具组同款紧凑节奏
   flex: 1;
   min-width: 0;
 }
@@ -465,8 +490,8 @@
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 22px;
-  height: 24px;
+  width: 20px;
+  height: 22px;
   flex-shrink: 0;
   cursor: pointer;
   user-select: none; /* 双击触发压缩，禁选防止选区蔓延到相邻按钮文字 */
@@ -538,6 +563,78 @@
     color: var(--text-muted);
     font-size: 11px;
     font-variant-numeric: tabular-nums;
+  }
+
+  /* 额度窗口区（对齐官方客户端：三列并排，每列 窗口名 / 百分比·重置时间 / 彩色进度条）*/
+  &__quota-grid {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 10px 8px;
+  }
+
+  &__quota {
+    min-width: 0; /* grid 子项防长文案撑破列 */
+  }
+
+  &__quota-label {
+    font-size: 12px;
+    color: var(--text-secondary);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    margin-bottom: 2px;
+  }
+
+  &__quota-meta {
+    display: flex;
+    align-items: baseline;
+    gap: 3px;
+    margin-bottom: 4px;
+    white-space: nowrap;
+  }
+
+  &__quota-pct {
+    color: var(--text-primary);
+    font-size: 12px;
+    font-variant-numeric: tabular-nums;
+  }
+
+  &__quota-reset {
+    color: var(--text-muted);
+    font-size: 10px;
+    font-variant-numeric: tabular-nums;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  &__quota-bar {
+    height: 5px;
+    background: var(--bg-tertiary);
+    border-radius: 3px;
+    overflow: hidden;
+  }
+
+  &__quota-bar-fill {
+    height: 100%;
+    border-radius: 3px;
+    transition: width 0.3s ease;
+  }
+
+  /* 套餐档位徽标（MAX 等）：标题右侧蓝色小 chip（复位标题的 uppercase/字距）*/
+  &__quota-badge {
+    display: inline-block;
+    margin-left: 6px;
+    padding: 0 6px;
+    border-radius: 4px;
+    font-size: 10px;
+    font-weight: 700;
+    line-height: 14px;
+    text-transform: uppercase;
+    letter-spacing: 0.4px;
+    color: #7db8ff;
+    background: rgba(74, 158, 255, 0.14);
+    border: 1px solid rgba(74, 158, 255, 0.35);
+    vertical-align: 1px;
   }
 
   &__refresh {
@@ -621,7 +718,7 @@
   display: flex;
   align-items: center;
   gap: 2px;
-  padding: 2px 5px;
+  padding: 2px 4px; /* 0.3.9 由 5px 收窄：底栏三键相邻排布时视觉更聚拢（顶栏智能体同步生效）*/
   /* 行高统一压成 1（继承到文字/chevron；图标自带）：codicon 简写 16px/1 与各元素
      font-size 覆盖叠加后，normal 行盒基线落点不一致（实测 icon/chev 基线比文字低
      2~3px），flex 只居中盒不居中墨迹——图标视觉偏上、箭头偏下 */
@@ -651,35 +748,25 @@
   text-overflow: ellipsis;
   white-space: nowrap;
   /* ≈1.2em（10px 字配 12px）让 CJK 墨迹在行盒内居中：line-height:1 时 10px 汉字
-     墨迹中心高出盒心 ~1.5px（字形整体偏上），12px 时与 codicon 图标基本重合
-     （11px 字配 13px 同理，缩放档位换算自 16px/13px 实测基准） */
+     墨迹中心高出盒心 ~1.5px（字形整体偏上），12px 时与 codicon 图标基本重合 */
   line-height: 12px;
+
+  /* 字号平档 10px（0.3.9 用户反馈底栏选项偏大，撤 --cjk/--xheight 的 11px 补偿档）：
+     对齐 cc-gui 选择器比例（文字 11px @ 编辑器 14px = 0.79，我们 13px 编辑器 → 10px），
+     顶栏（智能体/文件上下文）与底栏（模式/模型/思考）统一同档；
+     TSX 里的 --cjk/--xheight 类名保留作钩子，样式已中性化 */
 
   /* 无模型时的占位文案（请选择模型）：仅弱化色，不用斜体（中文斜体观感差）*/
   &--placeholder {
     color: var(--text-muted);
   }
-
-  /* 中文标签档（思考级别/权限模式按钮）：同 10px 下 CJK 墨迹比 ASCII 模型名显小，
-     单独提一档到 11px（line-height 按上注换算 13px）；模型按钮的拉丁 modelId 保持 10px */
-  &--cjk {
-    font-size: 11px;
-    line-height: 13px;
-  }
-
-  /* 小写拉丁档（模型按钮常态文字）：全小写 modelId（deepseek-v4-flash 等）墨迹主体
-     是 x-height 小写体，高度≈大写 cap 的 72%——同 10px 比 11px 中文标签显小一档，
-     与 --cjk 同档 11px 补偿；含大写的（GLM-5.3，cap 高≈汉字）维持 10px 基准档 */
-  &--xheight {
-    font-size: 11px;
-    line-height: 13px;
-  }
 }
 
 /* 提特异性压 codicon.css 的 .codicon[class*='codicon-'] 简写（0,2,0）——单类
-   (0,1,0) 的 font-size:10px 从未生效，箭头一直按 16px 渲染 */
+   (0,1,0) 的 font-size:10px 从未生效，箭头一直按 16px 渲染。
+   12px：选择器内图标统一档（见下），cc-gui「图标略大于文字」风格按比例适配 */
 .selector-button .selector-button-chevron {
-  font-size: 9px;
+  font-size: 12px;
   line-height: 1;
   flex-shrink: 0;
 }
@@ -701,17 +788,19 @@
 }
 
 /* 思考级别图标（按钮与下拉同款）：codicon 简写默认 16px 在小字号文案旁偏大——
-   火箭（最高）满框绘制尤其明显，压到 11px（嵌套提特异性压 codicon 0,2,0 简写）*/
+   火箭（最高）满框绘制尤其明显，压到 12px（嵌套提特异性压 codicon 0,2,0 简写）；
+   12px = 选择器内图标统一档：cc-gui 14px@11px 文字的「图标略大于文字」比例
+   按 0.79 换算 ≈ 12px@10px */
 .selector-button .thought-level-icon,
 .selector-dropdown-item .thought-level-icon {
-  font-size: 11px;
+  font-size: 12px;
   line-height: 1;
   flex-shrink: 0;
 }
 
-/* 模式图标（ModeSelect 按钮首位裸 codicon）：同样压 codicon 简写 16px 到文字档 */
+/* 模式图标（ModeSelect 按钮首位裸 codicon）：同样压 codicon 简写 16px 到统一档 */
 .selector-button .mode-icon {
-  font-size: 11px;
+  font-size: 12px;
   line-height: 1;
   flex-shrink: 0;
 }
@@ -1224,4 +1313,13 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+// ===== $ 技能提及补全下拉（复用 .input-box__mention 定位与 .input-box__sess-main 布局，
+// 图标紫对齐内联 cmd-ref--skill / 斜杠下拉技能 wand）=====
+.input-box__skill-item {
+  .input-box__skill-icon {
+    color: #b39ddb;
+    flex-shrink: 0;
+  }
 }

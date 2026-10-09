@@ -52,6 +52,8 @@ function setupArchivedTab() {
     onArchive: vi.fn(),
     onRestore: vi.fn(),
     onDeleteArchived: vi.fn(),
+    onTogglePin: vi.fn(),
+    pinnedSessionIds: [],
     onRefresh: vi.fn(),
     onLoadArchived: vi.fn(),
   }

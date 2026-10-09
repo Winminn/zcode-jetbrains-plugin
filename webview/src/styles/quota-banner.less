@@ -1,0 +1,77 @@
+// 会话额度横幅（输入框上方）：与 app__notice-bar / app__error-bar 同构的通栏条，
+// 但挂在 chat 列内（StatusPanel 与 InputBox 之间），只在会话视图出现。
+
+.quota-banner {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 16px;
+  font-size: 12px;
+  border-top: 1px solid transparent;
+  flex-shrink: 0;
+
+  &--error {
+    background: color-mix(in srgb, var(--status-error) 26%, var(--bg-primary));
+    color: var(--status-error);
+    border-top-color: color-mix(in srgb, var(--status-error) 38%, transparent);
+  }
+
+  &--warning {
+    background: color-mix(in srgb, var(--status-warning) 20%, var(--bg-primary));
+    color: var(--status-warning);
+    border-top-color: color-mix(in srgb, var(--status-warning) 32%, transparent);
+  }
+
+  &__text {
+    flex: 1;
+    min-width: 0;
+    word-break: break-word;
+  }
+
+  // 服务商边界的原始信息做弱化第二行（长文本换行，不截断）
+  &__detail {
+    opacity: 0.85;
+    word-break: break-word;
+  }
+
+  &__action {
+    flex-shrink: 0;
+    border: 1px solid currentColor;
+    border-radius: 4px;
+    background: transparent;
+    color: inherit;
+    font-size: 11px;
+    padding: 2px 8px;
+    cursor: pointer;
+    opacity: 0.85;
+
+    &:hover {
+      opacity: 1;
+      background: color-mix(in srgb, currentColor 12%, transparent);
+    }
+  }
+
+  &__close {
+    flex-shrink: 0;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 20px;
+    height: 20px;
+    border: none;
+    border-radius: 4px;
+    background: transparent;
+    color: inherit;
+    cursor: pointer;
+    opacity: 0.7;
+
+    &:hover {
+      opacity: 1;
+      background: color-mix(in srgb, currentColor 15%, transparent);
+    }
+
+    .codicon {
+      font-size: 12px;
+    }
+  }
+}

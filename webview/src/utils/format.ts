@@ -48,7 +48,8 @@ export function compact(n: number): string {
 /** unit/type → 标题（挖自智谱官方页源码，glm-plan-usage-idea 同款；文案经 i18n）*/
 export function limitTitle(limit: QuotaLimit): string {
   if (limit.type === 'TIME_LIMIT') {
-    return limit.unit === 5 ? i18n.t('utils.format.mcpMonthlyLimit') : i18n.t('utils.format.cycleLimit')
+    // 官方语义：TIME_LIMIT unit=5 是「月度工具调用」额度（MCP 额度是独立接口，不在 quota/limit 返回内）
+    return limit.unit === 5 ? i18n.t('utils.format.toolCallsMonthlyLimit') : i18n.t('utils.format.cycleLimit')
   }
   if (limit.unit === 3) return i18n.t('utils.format.per5HoursLimit')
   if (limit.unit === 6) return i18n.t('utils.format.weeklyLimit')
@@ -79,6 +80,36 @@ export function fmtTime(ts?: number): string {
   const mm = String(d.getMinutes()).padStart(2, '0')
   const ss = String(d.getSeconds()).padStart(2, '0')
   return `${hh}:${mm}:${ss}`
+}
+
+/** 窗口重置时间·当日紧凑（官方 compactToday 口径：当日只显 HH:mm，跨日 MM-dd HH:mm）*/
+export function fmtResetTimeCompact(ts?: number): string {
+  if (!ts) return ''
+  const d = new Date(ts)
+  const now = new Date()
+  if (d.getFullYear() === now.getFullYear() && d.getMonth() === now.getMonth() && d.getDate() === now.getDate()) {
+    return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`
+  }
+  return fmtResetTime(ts)
+}
+
+/** 窗口重置日期（官方周/工具口径：日期无信息量时不显时分 → MM-dd）*/
+export function fmtResetDate(ts?: number): string {
+  if (!ts) return ''
+  const d = new Date(ts)
+  const mm = String(d.getMonth() + 1).padStart(2, '0')
+  const dd = String(d.getDate()).padStart(2, '0')
+  return `${mm}-${dd}`
+}
+
+/**
+ * 会话标题是否为占位值（空 / 会话 id / sess_ 前缀）：标题合并防回退守卫共用判据
+ * （listSessions 快照合并与 sessionIndexUpdate 活性合并同源，防双份漂移）
+ */
+export function isDefaultSessionTitle(title: string | undefined, sessionId: string): boolean {
+  const t = title?.trim()
+  if (!t) return true
+  return t === sessionId || t.startsWith('sess_')
 }
 
 /** X 轴标签格式化（对齐 glm parseXTime）：daily → MM-DD，hourly → HH:mm */

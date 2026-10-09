@@ -23,6 +23,66 @@ export interface ChangelogEntry {
 
 export const CHANGELOG_DATA: ChangelogEntry[] = [
   {
+    "version": "0.3.9",
+    "date": "2026-10-09",
+    "zh": {
+      "sections": [
+        {
+          "title": "新增",
+          "items": [
+            "**AI 提交信息**：版本控制提交框新增 AI 生成按钮，参照仓库近期提交风格生成本次改动的提交信息；设置页可自定义附加要求。",
+            "**会话列表活性同步**：官方桌面端 / 手机端新建或更新的会话实时同步到列表，不再需要重启客户端才能看到。",
+            "**逐轮文件更改与一键撤销**：每轮 AI 改动的文件以更改条汇总，可打开双栏 diff 查看，并支持一键撤销本轮全部改动；AI 产出的文档 / 网页等产物自动出预览卡，点击即打开。",
+            "**额度展示升级**：上下文弹窗按套餐展示额度三列进度与重置时间；额度偏低时会话顶部显示横幅提醒。",
+            "**输入增强**：输入框支持 `$` 唤起技能提及；会话列表新增未读蓝点（其他端有新消息时标记）；输入草稿按会话自动保存、重启后恢复。",
+            "**消息内文件路径可点击**（#30，@Winminn）：AI 回复中提到的文件路径渲染为链接，点击在编辑器打开并跳到对应行；压缩包（zip 等）则在系统资源管理器中定位所在目录。",
+            "**当前文件上下文 chip**（#28，@Winminn）：输入框顶栏可勾选携带当前编辑器文件（含选中代码）随消息发送，消息气泡只显示手打文字；发送后自动取消勾选，可设置为新建会话时自动启用。",
+            "**会话置顶**：会话列表支持置顶常用会话，与官方桌面客户端互通。",
+            "**后台工作汇总**：状态面板新增「后台工作」入口，集中查看后台任务与子代理任务。",
+            "**浏览器缩放指示器**：Ctrl+滚轮缩放界面时显示百分比胶囊，Ctrl+0 恢复基准档。",
+            "**其他**：模型 / 技能 / 命令等配置目录变化后自动刷新，无需重启；输入框顶栏、底栏密度与配色打磨。",
+            "**支持 IDEA 2023.3**（issue #29）：兼容范围从 2024.1 下探到 2023.3 ~ 2026.3，老版本 IDEA 可直接安装官方包，无需再本地打包。"
+          ]
+        },
+        {
+          "title": "修复",
+          "items": [
+            "修复图片预览在窄窗口下放大后模糊的问题。",
+            "修复非中文界面下部分错误提示仍显示中文的问题。"
+          ]
+        }
+      ]
+    },
+    "en": {
+      "sections": [
+        {
+          "title": "Added",
+          "items": [
+            "**AI commit message**: a new button in the VCS commit box generates a commit message for your changes, following your repository's recent commit style; extra requirements can be customized in settings.",
+            "**Live session list**: sessions created or updated by the official desktop / mobile apps now sync to the list in real time, no client restart needed.",
+            "**Per-turn file changes & one-click undo**: files changed in each turn are summarized as a change bar with a side-by-side diff viewer, and the whole turn can be undone with one click; documents / web pages produced by the AI automatically get preview cards that open on click.",
+            "**Quota display**: the context popup shows plan quota as three progress bars with reset time; a banner appears in-session when quota runs low.",
+            "**Input enhancements**: `$` in the input box opens the skill mention picker; the session list shows unread dots (when new messages arrive from other ends); input drafts are saved per session and restored after restart.",
+            "**Clickable file paths in messages** (#30, @Winminn): file paths mentioned in AI replies render as links that open in the editor at the referenced line; archives (zip etc.) reveal their containing folder in the system file manager.",
+            "**Current-file context chip** (#28, @Winminn): a toggle in the input box topbar attaches the current editor file (including the selection) to your message; message bubbles show only what you typed. The toggle auto-clears after sending and can auto-enable for new sessions.",
+            "**Session pinning**: pin frequently used sessions to the top; interops with the official desktop client.",
+            "**Background work summary**: the status panel gains a \"Background work\" entry listing background tasks and subagent tasks in one place.",
+            "**Browser zoom indicator**: a percentage pill shows while zooming the UI with Ctrl+wheel; Ctrl+0 restores the baseline zoom.",
+            "**Others**: model / skill / command config directories now refresh automatically, no restart needed; the input box topbar and bottom bar got density and color polish.",
+            "**IDEA 2023.3 support** (issue #29): the compatibility range now extends down to 2023.3 ~ 2026.3 (from 2024.1), so older IDEs can install the official package directly — no more local builds needed."
+          ]
+        },
+        {
+          "title": "Fixed",
+          "items": [
+            "Fixed image preview becoming blurry when zoomed in a narrow window.",
+            "Fixed some error messages still showing in Chinese on non-Chinese UI languages."
+          ]
+        }
+      ]
+    }
+  },
+  {
     "version": "0.3.8",
     "date": "2026-09-30",
     "zh": {
@@ -56,7 +116,11 @@ export const CHANGELOG_DATA: ChangelogEntry[] = [
           "items": [
             "设置页不再展示凭证状态：加密凭证无法准确判定状态，纯展示容易误导。"
           ]
-        },
+        }
+      ]
+    },
+    "en": {
+      "sections": [
         {
           "title": "Added",
           "items": [
@@ -115,7 +179,11 @@ export const CHANGELOG_DATA: ChangelogEntry[] = [
             "会话标题生成后不实时更新、或稍后被顶回初始标题的问题：修复订阅建立首帧标题事件被多标签隔离门禁拦截的竞态，并增加列表快照防回退守卫与回合结束后的延迟重拉兜底。",
             "Linux 下客户端更新后「ZCode CLI 未找到」（issue #19）：探测路径覆盖新版客户端运行时布局；模型列表/刷新尊重手动配置的 CLI 路径；CLI 缺少内置渠道配置文件时启动前自动补齐；无法自动补齐时报错直接给出原因与修复方法，不再需要翻日志找第一现场。"
           ]
-        },
+        }
+      ]
+    },
+    "en": {
+      "sections": [
         {
           "title": "Compatibility",
           "items": [
@@ -170,7 +238,11 @@ export const CHANGELOG_DATA: ChangelogEntry[] = [
             "子会话首批内容偶发丢失（快照/首条内容被静默丢弃）。",
             "「发送选中代码」无选区时右键菜单仍显示、点击无反馈。"
           ]
-        },
+        }
+      ]
+    },
+    "en": {
+      "sections": [
         {
           "title": "Compatibility",
           "items": [
@@ -224,7 +296,11 @@ export const CHANGELOG_DATA: ChangelogEntry[] = [
             "**取消引导假成功致消息重复发送**：AI 回复生成中点「取消引导」，消息看似已撤回、实际仍会注入当前回合（删除排队消息同理）；现在撤销以服务端确认为准，注入完成后取消会明确提示，不再出现同一句话发两条。",
             "**其他**：消息气泡内文件 chip 尾部多出一个路径字符；大会话冷启动恢复更顺（打开历史会话不再长时间无响应）；模型请求 UA 版本号对齐官方客户端。"
           ]
-        },
+        }
+      ]
+    },
+    "en": {
+      "sections": [
         {
           "title": "Added",
           "items": [

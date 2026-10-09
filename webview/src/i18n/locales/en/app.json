@@ -1,7 +1,8 @@
 {
   "errorClose": "Close",
   "errorCloseAria": "Close error",
-  "backendQuotaError": "Model quota exceeded (monthly token limit): the server keeps retrying but will never succeed — stop this turn and switch model/plan, or wait for the quota to reset",
+  "zoomResetTitle": "Click to reset zoom to 100%",
+  "backendQuotaError": "Model quota exceeded (quota window exhausted): the server keeps retrying but will never succeed — stop this turn and switch model/plan, or wait for the quota to reset",
   "backendApiError": "Model API error (HTTP {{statusCode}}): {{message}}",
   "turnFailed": "Turn failed: {{message}}",
   "turnFailedNoDetail": "Turn failed (no error detail returned)",
@@ -71,16 +72,36 @@
     "viewResult": "Click to view result"
   },
   "status": {
-    "todoTab": "Tasks",
-    "agentTab": "Subagents",
+    "todoTab": "Processes",
+    "workTab": "Tasks",
     "fileTab": "Files",
-    "noTodos": "No tasks",
-    "noAgents": "No subtasks",
+    "noTodos": "No processes",
+    "noAgents": "No agent tasks",
     "noFiles": "No file changes",
     "viewSubagentDetail": "Click to view subagent execution details",
     "openInEditor": "Open in editor: {{path}}",
     "viewDiff": "View diff before and after edits",
-    "diffTitle": "Edit diff: {{name}}"
+    "diffTitle": "Edit diff: {{name}}",
+    "bgTab": "Tasks",
+    "subTab": "Agent tasks",
+    "bgWorks": {
+      "empty": "No background tasks",
+      "statusRunning": "Running",
+      "statusBlocked": "Blocked",
+      "statusPending": "Awaiting delivery",
+      "statusFailed": "Failed",
+      "statusCancelled": "Cancelled",
+      "statusEnded": "Ended",
+      "viewOutput": "Output",
+      "hideOutput": "Hide output",
+      "cancel": "Cancel",
+      "outputLoading": "Loading output…",
+      "outputEmpty": "(no output yet)",
+      "outputTruncated": "Output truncated to the last 8 KB",
+      "output_unavailable": "Task output unavailable (task ended or was recycled)",
+      "output_unsupported": "Current CLI version does not support output queries",
+      "output_read_failed": "Failed to read task output"
+    }
   },
   "envBanner": {
     "title": "Runtime environment issue — plugin unavailable",

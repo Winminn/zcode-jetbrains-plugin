@@ -9,7 +9,7 @@ ZCode（Z.ai/GLM）编码助手的 JetBrains 插件：以子进程方式启动 `
 ## 模块与分层
 
 - `protocol-client/`：纯 Kotlin JSON-RPC 客户端，无 IntelliJ 依赖，可独立测试；协议结构在 `protocol/model/`。
-- `intellij-plugin/`：插件本体（`ZCodeService` 生命周期、`ui/` 下 ToolWindow / JCEF 桥 / browser-use 宿主 / 技能·MCP·记忆扫描器、`env/` 环境自检）。JDK 17，Kotlin 1.9.24，IntelliJ Platform 2024.1（IC），sinceBuild 241 / untilBuild 261.*。
+- `intellij-plugin/`：插件本体（`ZCodeService` 生命周期、`ui/` 下 ToolWindow / JCEF 桥 / browser-use 宿主 / 技能·MCP·记忆扫描器、`env/` 环境自检）。JDK 17，Kotlin 1.9.24，IntelliJ Platform 2023.3（IC），sinceBuild 233 / untilBuild 263.*。编译下限=2023.3，新功能不得直接使用 2024.1+ 独有 API（要用须反射或按版本门控，如 `RdEnvironment` 的 AppMode 反射）。
 - `webview/`：React 19 + TS + Vite + zustand + less。`src/ipc/bridge.ts` 为 JS 桥、`src/store/useStore.ts` 全局状态、`src/utils/streamReducer.ts` 事件归约。事件流按会话分发、16ms 节流批量推入 JCEF。
 - `docs/`：`internal/`（design-research / bugs-regressions / plans-milestones）为过程文档，**自身是独立 git 仓库**（私有 remote `csuftt/zcode-plugin-internal`，主仓库 .gitignore 排除——含 zcode.cjs 逆向细节，绝不并入公开主仓库；`probe/` 下凭证与抓包帧在该仓库内亦 gitignore）；`screenshots/` 为 README 配图。
 - `scripts/`：Python 直连 app-server 的协议诊断脚本（diag-*.py），排查协议问题优先复用。

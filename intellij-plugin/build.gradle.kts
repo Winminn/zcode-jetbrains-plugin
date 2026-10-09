@@ -6,7 +6,7 @@ plugins {
 }
 
 group = "com.zcode.ideaplugin"
-version = "0.3.8"
+version = "0.3.9"
 
 // 从仓库根 CHANGELOG.md 提取「最新一个版本块」（## 标题到下一个 ## 之前），
 // 输出中英双语并列的 HTML：中文段在前（主用户群），<h3>English</h3> 分隔后接英文段
@@ -22,13 +22,15 @@ fun latestChangelogSection(): String {
     val end = if (headings.size > 1) headings[1].range.first else changelog.length
     val section = changelog.substring(start, end).trim()
 
-    // 按语言标记拆段：标记行本身移除；English: 之前（含 ## 版本头）为中文段，之后为英文段
+    // 按语言标记拆段：标记行本身移除；English: / <h3>English</h3>（0.3.5 起的块用 h3
+    // 标记）之前（含 ## 版本头）为中文段，之后为英文段。只认一种标记会把另一语言的
+    // 整段并进当前段（0.3.8 实踩：change-notes 出现转义的 h3 残渣）
     val zhLines = mutableListOf<String>()
     val enLines = mutableListOf<String>()
     var inEnglish = false
     for (line in section.lines()) {
         when (line.trim()) {
-            "English:" -> inEnglish = true
+            "English:", "<h3>English</h3>" -> inEnglish = true
             "中文:" -> Unit // 标记行本身移除
             else -> (if (inEnglish) enLines else zhLines).add(line)
         }
@@ -94,13 +96,16 @@ repositories {
 
 // IntelliJ Platform 配置
 intellij {
-    // 用 Idea Community Edition 2024.1 作为 SDK
+    // 用 Idea Community Edition 2023.3 作为 SDK（编译下限 = sinceBuild 下限，
+    // 源码零改动即可对 2023.3 编译通过；后续新功能不得使用 2024.1+ 独有 API，
+    // verifier 以 2023.3 为下限版本卡住）
     // （会自动下载，约 1.5GB；首次较慢，之后缓存）
-    version.set("2024.1")
+    version.set("2023.3")
     type.set("IC")  // IC = Idea Community
 
-    // 用到的插件（Bundled）
-    plugins.set(listOf())
+    // 用到的插件（Bundled）：Git4Idea = AI Commit Message 的真 diff 源（各家 IDE 均内置；
+    // plugin.xml 以 optional depends 声明，运行期缺失不致命、仅提交框按钮缺席）
+    plugins.set(listOf("Git4Idea"))
 
     // 不每次都更新 plugin
     updateSinceUntilBuild.set(false)
@@ -122,7 +127,7 @@ tasks {
     }
 
     patchPluginXml {
-        sinceBuild.set("241")  // 2024.1
+        sinceBuild.set("233")  // 2023.3
         untilBuild.set("263.*")  // 兼容到 2026.3
         changeNotes.set(latestChangelogSection())
     }
