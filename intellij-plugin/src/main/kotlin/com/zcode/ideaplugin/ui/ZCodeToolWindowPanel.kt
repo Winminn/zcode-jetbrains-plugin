@@ -4343,6 +4343,29 @@ if (!window.__ZCODE_LOG_HOOK__) {
         val line = msg["line"]?.jsonPrimitive?.content?.toIntOrNull()
         val findText = msg["findText"]?.jsonPrimitive?.content
         com.intellij.openapi.application.invokeLater {
+            // 归档扩展名路由（真机反馈：zip 链接点击"没反应"——IDEA 对归档容器没有
+            // 编辑器形态，FileEditorManager.openFile 静默落空）：zip/7z/rar/tar/gz/tgz
+            // 在系统文件管理器中定位（打开所在目录并选中：Windows explorer /select、
+            // macOS open -R、Linux 打开父目录）。jar/war 刻意不路由：
+            // .jar 的文件关联可能是 javaw 直接运行，系统打开等于执行它
+            val ext = filePath.substringAfterLast('.', "").lowercase()
+            if (ext in setOf("zip", "7z", "rar", "tar", "gz", "tgz")) {
+                val f = java.io.File(filePath)
+                if (!f.exists()) {
+                    log.warn("Reveal archive in file manager failed: not found $filePath")
+                    return@invokeLater
+                }
+                runCatching {
+                    when {
+                        com.intellij.openapi.util.SystemInfo.isWindows ->
+                            ProcessBuilder("explorer", "/select,${f.absolutePath}").start()
+                        com.intellij.openapi.util.SystemInfo.isMac ->
+                            ProcessBuilder("open", "-R", f.absolutePath).start()
+                        else -> java.awt.Desktop.getDesktop().open(f.parentFile)
+                    }
+                }.onFailure { log.warn("Reveal archive in file manager failed: ${it.message}") }
+                return@invokeLater
+            }
             // VFS 刷新兜底（AI 刚创建的文件可能尚未进 LocalFileSystem VFS——"打开初始
             // 打不开，IDEA 没刷新"实锤）：找不到时同步刷新该文件后重取
             val ioFile = java.io.File(filePath)
