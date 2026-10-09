@@ -177,6 +177,7 @@
   },
   "behavior": {
     "notifyTitle": "对话结束提醒",
+    "popupTitle": "悬浮提醒弹窗",
     "notifyEnabled": {
       "title": "任务完成系统通知",
       "desc": "AI 完成一轮对话时始终弹出 IDE 系统通知（含回复预览，点击直达对话）",
@@ -184,12 +185,19 @@
       "onHint": "点击开启系统通知",
       "offHint": "点击关闭系统通知"
     },
-    "osNotifyEnabled": {
-      "title": "Windows 系统级通知",
-      "desc": "切走 IDE 窗口时，AI 提问/审批等待与任务完成会弹出 Windows 系统通知（点击回到对话）",
-      "hint": "默认关闭；仅 Windows 生效，且只在 IDE 窗口非激活时发（正在 IDE 内操作时不打扰）；受 Windows 通知/专注助手设置约束",
-      "onHint": "点击开启系统级通知",
-      "offHint": "点击关闭系统级通知"
+    "popupNotifyEnabled": {
+      "title": "悬浮提醒弹窗",
+      "desc": "AI 提问、审批等待与任务完成时，在屏幕角落弹出置顶悬浮卡片（含预览，点击直达对话；位置可选，默认右上角）",
+      "hint": "默认关闭；全平台可用（Windows/macOS/Linux），仅在 IDE 窗口非激活时弹",
+      "onHint": "点击开启悬浮弹窗",
+      "offHint": "点击关闭悬浮弹窗",
+      "durationLabel": "弹窗时长（秒）",
+      "durationHint": "时长 0 = 常驻直到点击或手动关闭",
+      "positionLabel": "弹窗位置",
+      "positionTopRight": "右上角",
+      "positionBottomRight": "右下角",
+      "testButtonNow": "立即试弹",
+      "testButton": "试弹（5 秒后弹出）"
     },
     "enhanceTitle": "提示词润色",
     "enhanceEnabled": {

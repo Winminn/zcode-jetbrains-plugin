@@ -177,6 +177,7 @@
   },
   "behavior": {
     "notifyTitle": "Conversation reminders",
+    "popupTitle": "Floating reminder popup",
     "notifyEnabled": {
       "title": "Task completion notification",
       "desc": "Always shows an IDE notification (with reply preview, click to open) when the AI finishes a turn",
@@ -184,12 +185,19 @@
       "onHint": "Click to enable notifications",
       "offHint": "Click to disable notifications"
     },
-    "osNotifyEnabled": {
-      "title": "Windows system notification",
-      "desc": "When the IDE window is not focused, AI questions/approvals and task completion pop a Windows system notification (click to jump back)",
-      "hint": "Off by default; Windows only, and only fires while the IDE window is inactive (no interruption while you are working in the IDE); subject to Windows notification/Focus Assist settings",
-      "onHint": "Click to enable system notifications",
-      "offHint": "Click to disable system notifications"
+    "popupNotifyEnabled": {
+      "title": "Floating reminder popup",
+      "desc": "Shows an always-on-top floating card in a corner of the screen when the AI waits for input/approval or finishes a turn (with preview, click to jump back; position configurable, top-right by default)",
+      "hint": "Off by default; works on Windows/macOS/Linux; only pops while the IDE window is inactive",
+      "onHint": "Click to enable the popup",
+      "offHint": "Click to disable the popup",
+      "durationLabel": "Popup duration (seconds)",
+      "durationHint": "Duration 0 = stays until clicked or closed",
+      "positionLabel": "Popup position",
+      "positionTopRight": "Top-right",
+      "positionBottomRight": "Bottom-right",
+      "testButtonNow": "Test now",
+      "testButton": "Test (pops in 5s)"
     },
     "enhanceTitle": "Prompt Enhancer",
     "enhanceEnabled": {

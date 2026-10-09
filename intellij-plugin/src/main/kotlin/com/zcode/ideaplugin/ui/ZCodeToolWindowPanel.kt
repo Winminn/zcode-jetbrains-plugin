@@ -1003,6 +1003,7 @@ if (!window.__ZCODE_LOG_HOOK__) {
                         "remoteUnpair" -> handleRemote { it.unpair() }
                         "checkEnv" -> handleCheckEnv()
                         "envSave" -> handleEnvSave(msg)
+                        "testNotifyPopup" -> handleTestNotifyPopup(msg)
                         else -> errorResponse("未知 op: $op")
                     }
                     log.info("op=$op handled, sending back to JS")
@@ -1028,6 +1029,39 @@ if (!window.__ZCODE_LOG_HOOK__) {
         } catch (e: Exception) {
             log.error("JS message parse failed: ${request.take(100)}", e)
             sendToJs(errorResponse("解析失败: ${e.message}"))
+        }
+    }
+
+    /**
+     * 悬浮弹窗试弹（设置页临时按钮）：delaySec（默认 5，0=立即）后按当前配置
+     * （时长/位置）弹出，5 秒档留出切窗时间验证「压在别的软件上 + 点击回 IDE」；
+     * 手动预览绕过 IDE 非激活门。
+     * 文案与「对话完成」真实通知单源（同 bundle 标题/兜底正文 + 同组装函数）——
+     * 此前由 webview i18n 另写一份，与真实通知漂移（"ZCode 测试弹窗" vs "任务完成"）。
+     * 真实通知的「会话标题」前缀是动态数据，试弹走无前缀兜底形态。
+     */
+    private fun handleTestNotifyPopup(msg: JsonObject): JsonObject {
+        val delaySec = msg["delaySec"]?.jsonPrimitive?.intOrNull?.coerceIn(0, 60) ?: 5
+        val config = ZCodeNotifyService.readConfig()
+        val title = ZCodeBundle.message("notify.turn.completed.title")
+        val body = ZCodeNotifyService.turnEndNotificationContent(
+            sessionTitle = null,
+            body = null,
+            fallbackBody = ZCodeBundle.message("notify.turn.completed.body"),
+        )
+        java.util.Timer(true).schedule(object : java.util.TimerTask() {
+            override fun run() {
+                ZCodePopupNotifier.showPopup(
+                    project, title, body, config.popupDurationSec, config.popupPosition,
+                ) {
+                    com.intellij.openapi.wm.ToolWindowManager.getInstance(project)
+                        .getToolWindow("ZCode")?.show()
+                }
+            }
+        }, delaySec * 1000L)
+        return buildJsonObject {
+            put("op", "testNotifyPopupAck")
+            put("delaySec", delaySec)
         }
     }
 

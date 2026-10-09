@@ -54,26 +54,52 @@ class ZCodeNotifyServiceTest {
         assertTrue(c.notifyEnabled)
     }
 
-    // ============ 系统级 toast 开关（osNotifyEnabled，与 IDE 气泡独立）============
+    // ============ 悬浮弹窗开关与时长（popupNotifyEnabled / popupDurationSec）============
 
     @Test
-    fun `osNotifyEnabled 正常解析且与 notifyEnabled 互不连带`() {
-        val onlyOs = kv("""{\"osNotifyEnabled\":true}""")
-        val c1 = ZCodeNotifyService.parseConfig(onlyOs)
-        assertTrue(c1.osNotifyEnabled)
-        assertFalse(c1.notifyEnabled)
-
-        val both = kv("""{\"notifyEnabled\":true,\"osNotifyEnabled\":true}""")
-        val c2 = ZCodeNotifyService.parseConfig(both)
-        assertTrue(c2.notifyEnabled)
-        assertTrue(c2.osNotifyEnabled)
+    fun `popup 开关与时长正常解析（0=常驻合法值）`() {
+        val c = ZCodeNotifyService.parseConfig(kv("""{\"popupNotifyEnabled\":true,\"popupDurationSec\":0}"""))
+        assertTrue(c.popupNotifyEnabled)
+        assertEquals(0, c.popupDurationSec)
     }
 
     @Test
-    fun `osNotifyEnabled 缺席与类型不对回默认 false（对齐前端语义）`() {
-        assertFalse(ZCodeNotifyService.parseConfig(kv("""{\"notifyEnabled\":true}""")).osNotifyEnabled)
-        assertFalse(ZCodeNotifyService.parseConfig(kv("""{\"osNotifyEnabled\":\"true\"}""")).osNotifyEnabled)
-        assertFalse(ZCodeNotifyService.NotifyConfig().osNotifyEnabled)
+    fun `popup 字段缺席与类型不对回默认（关、10 秒）`() {
+        val missing = ZCodeNotifyService.parseConfig(kv("""{\"notifyEnabled\":true}"""))
+        assertFalse(missing.popupNotifyEnabled)
+        assertEquals(10, missing.popupDurationSec)
+
+        val badTypes = ZCodeNotifyService.parseConfig(
+            kv("""{\"popupNotifyEnabled\":\"true\",\"popupDurationSec\":\"30\"}""")
+        )
+        assertFalse(badTypes.popupNotifyEnabled)
+        assertEquals(10, badTypes.popupDurationSec)
+
+        assertEquals(10, ZCodeNotifyService.NotifyConfig().popupDurationSec)
+    }
+
+    // ============ 悬浮弹窗位置（popupPosition，默认右上角）============
+
+    @Test
+    fun `popup 位置正常解析（BOTTOM_RIGHT）`() {
+        val c = ZCodeNotifyService.parseConfig(
+            kv("""{\"popupNotifyEnabled\":true,\"popupPosition\":\"BOTTOM_RIGHT\"}""")
+        )
+        assertEquals(ZCodePopupNotifier.PopupPosition.BOTTOM_RIGHT, c.popupPosition)
+    }
+
+    @Test
+    fun `popup 位置缺席与非法值回默认 TOP_RIGHT`() {
+        val missing = ZCodeNotifyService.parseConfig(kv("""{\"popupNotifyEnabled\":true}"""))
+        assertEquals(ZCodePopupNotifier.PopupPosition.TOP_RIGHT, missing.popupPosition)
+
+        val unknown = ZCodeNotifyService.parseConfig(kv("""{\"popupPosition\":\"LEFT\"}"""))
+        assertEquals(ZCodePopupNotifier.PopupPosition.TOP_RIGHT, unknown.popupPosition)
+
+        val badType = ZCodeNotifyService.parseConfig(kv("""{\"popupPosition\":1}"""))
+        assertEquals(ZCodePopupNotifier.PopupPosition.TOP_RIGHT, badType.popupPosition)
+
+        assertEquals(ZCodePopupNotifier.PopupPosition.TOP_RIGHT, ZCodeNotifyService.NotifyConfig().popupPosition)
     }
 
     // ============ 轮末通知正文组装（缺陷DZ：会话名前缀）============

@@ -484,6 +484,8 @@ export type JavaRequest =  | { op: 'askUserPendingState' }
   | { op: 'checkEnv' }
   /** 保存环境路径配置：字段缺席=不改该项，空串=清除（回退自动探测）；后端验证通过才落盘 */
   | { op: 'envSave'; nodePath?: string; cliPath?: string }
+  /** 悬浮提醒弹窗试弹（设置页临时按钮）：Java 侧延时 delaySec（默认 5，0=立即）按当前配置弹一次，便于切走窗口验证；文案 Java 侧与真实通知单源拼装 */
+  | { op: 'testNotifyPopup'; delaySec?: number }
   /** 拉取网络代理配置（与 ZCode 客户端共享的 setting.json 三键） */
   | { op: 'getProxyConfig' }
   /** 保存网络代理三字段（空串=清除该项；写共享 setting.json，客户端重启后同样生效） */

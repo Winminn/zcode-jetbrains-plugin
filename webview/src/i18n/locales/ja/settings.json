@@ -177,6 +177,7 @@
   },
   "behavior": {
     "notifyTitle": "会話終了リマインダー",
+    "popupTitle": "フローティング通知ポップアップ",
     "notifyEnabled": {
       "title": "タスク完了のシステム通知",
       "desc": "AI が 1 ターンを完了したとき常に IDE のシステム通知を表示します（返信プレビュー付き、クリックで会話へ）",
@@ -184,12 +185,19 @@
       "onHint": "クリックで通知を有効化",
       "offHint": "クリックで通知を無効化"
     },
-    "osNotifyEnabled": {
-      "title": "Windows システム通知",
-      "desc": "IDE ウィンドウを離れているとき、AI の質問/承認待ちとタスク完了を Windows のシステム通知で表示します（クリックで会話へ戻る）",
-      "hint": "デフォルトはオフ。Windows のみ有効で、IDE ウィンドウが非アクティブなときだけ送信します（IDE 操作中は妨げません）。Windows の通知/集中モード設定に従います",
-      "onHint": "クリックでシステム通知を有効化",
-      "offHint": "クリックでシステム通知を無効化"
+    "popupNotifyEnabled": {
+      "title": "フローティング通知ポップアップ",
+      "desc": "AI が入力・承認を待っているときやターン完了時に、画面の隅に最前面のフローティングカードを表示します（プレビュー付き、クリックで会話へ。位置は選択可能、デフォルトは右上）",
+      "hint": "デフォルトはオフ。Windows/macOS/Linux で動作し、IDE ウィンドウが非アクティブなときだけ表示します",
+      "onHint": "クリックでポップアップを有効化",
+      "offHint": "クリックでポップアップを無効化",
+      "durationLabel": "表示時間（秒）",
+      "durationHint": "0 = クリックまたは閉じるまで常駐",
+      "positionLabel": "表示位置",
+      "positionTopRight": "右上",
+      "positionBottomRight": "右下",
+      "testButtonNow": "今すぐテスト",
+      "testButton": "テスト（5 秒後に表示）"
     },
     "enhanceTitle": "プロンプト改善",
     "enhanceEnabled": {

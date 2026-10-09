@@ -28,6 +28,7 @@ import { readNotifyConfig, writeNotifyConfig } from '@/utils/notifyConfig'
 import { readEnhanceConfig, writeEnhanceConfig, type EnhanceModel } from '@/utils/enhanceConfig'
 import { readTurnCollapseConfig, writeTurnCollapseConfig, type TurnCollapseConfig } from '@/utils/turnCollapseConfig'
 import { readAskUserAutoConfig, writeAskUserAutoConfig } from '@/utils/askUserConfig'
+import { sendToJava } from '@/ipc/bridge'
 import { useStore } from '@/store/useStore'
 import '../styles/basic-settings.less'
 import '../styles/agent-select.less'
@@ -48,12 +49,22 @@ export function BehaviorSettings() {
     writeAskUserAutoConfig(next)
   }
 
+  // 悬浮弹窗时长输入（秒）本地态：允许编辑中间态（空串），合法整数才落配置，失焦回显
+  const [popupDurationInput, setPopupDurationInput] = useState(() => String(readNotifyConfig().popupDurationSec))
+
 
   const update = (patch: Partial<typeof config>) => {
     const next = { ...config, ...patch }
     setConfig(next)
     writeNotifyConfig(next)
   }
+
+  /** 悬浮弹窗试弹（临时调试入口）：delaySec=0 立即弹，5 秒档留切窗时间；文案由 Java 侧按「对话完成」真实通知拼装 */
+  const sendTestPopup = (delaySec: number) =>
+    sendToJava({
+      op: 'testNotifyPopup',
+      delaySec,
+    })
 
   const updateEnhance = (patch: Partial<typeof enhance>) => {
     const next = { ...enhance, ...patch }
@@ -99,19 +110,94 @@ export function BehaviorSettings() {
           onHint={t('settings.behavior.notifyEnabled.offHint')}
           offHint={t('settings.behavior.notifyEnabled.onHint')}
         />
-        <SettingToggle
-          icon="codicon-bell-dot"
-          title={t('settings.behavior.osNotifyEnabled.title')}
-          desc={t('settings.behavior.osNotifyEnabled.desc')}
-          on={config.osNotifyEnabled}
-          onToggle={() => update({ osNotifyEnabled: !config.osNotifyEnabled })}
-          onHint={t('settings.behavior.osNotifyEnabled.offHint')}
-          offHint={t('settings.behavior.osNotifyEnabled.onHint')}
-        />
         <small className="basic-settings__hint">
           <span className="codicon codicon-info" />
           <span>{t('settings.behavior.notifyEnabled.hint')}</span>
         </small>
+      </section>
+      <section className="basic-settings__section">
+        <div className="basic-settings__field-header">
+          <span className="codicon codicon-browser" />
+          <span className="basic-settings__field-label">{t('settings.behavior.popupTitle')}</span>
+        </div>
+        <div className="behavior-popup-card">
+          <SettingToggle
+            icon="codicon-browser"
+            title={t('settings.behavior.popupNotifyEnabled.title')}
+            desc={t('settings.behavior.popupNotifyEnabled.desc')}
+            on={config.popupNotifyEnabled}
+            onToggle={() => update({ popupNotifyEnabled: !config.popupNotifyEnabled })}
+            onHint={t('settings.behavior.popupNotifyEnabled.offHint')}
+            offHint={t('settings.behavior.popupNotifyEnabled.onHint')}
+          />
+          {config.popupNotifyEnabled && (
+            <div className="basic-settings__path-row">
+              <span className="basic-settings__field-label">
+                {t('settings.behavior.popupNotifyEnabled.durationLabel')}
+              </span>
+              <input
+                type="number"
+                className="basic-settings__path-input"
+                min={0}
+                max={3600}
+                value={popupDurationInput}
+                onChange={(e) => {
+                  setPopupDurationInput(e.target.value)
+                  const v = Number(e.target.value)
+                  if (e.target.value !== '' && Number.isInteger(v) && v >= 0) {
+                    update({ popupDurationSec: Math.min(v, 3600) })
+                  }
+                }}
+                onBlur={() => setPopupDurationInput(String(config.popupDurationSec))}
+              />
+            </div>
+          )}
+          {config.popupNotifyEnabled && (
+            <small className="basic-settings__hint">
+              <span className="codicon codicon-info" />
+              <span>{t('settings.behavior.popupNotifyEnabled.durationHint')}</span>
+            </small>
+          )}
+          {config.popupNotifyEnabled && (
+            <div className="basic-settings__path-row behavior-popup-position-row">
+              <span className="basic-settings__field-label">
+                {t('settings.behavior.popupNotifyEnabled.positionLabel')}
+              </span>
+              <div className="behavior-popup-position">
+                <button
+                  type="button"
+                  className={config.popupPosition === 'TOP_RIGHT' ? 'is-active' : ''}
+                  onClick={() => update({ popupPosition: 'TOP_RIGHT' })}
+                >
+                  {t('settings.behavior.popupNotifyEnabled.positionTopRight')}
+                </button>
+                <button
+                  type="button"
+                  className={config.popupPosition === 'BOTTOM_RIGHT' ? 'is-active' : ''}
+                  onClick={() => update({ popupPosition: 'BOTTOM_RIGHT' })}
+                >
+                  {t('settings.behavior.popupNotifyEnabled.positionBottomRight')}
+                </button>
+              </div>
+            </div>
+          )}
+          <div className="behavior-popup-test-row">
+            <button
+              type="button"
+              className="behavior-popup-test"
+              onClick={() => sendTestPopup(0)}
+            >
+              {t('settings.behavior.popupNotifyEnabled.testButtonNow')}
+            </button>
+            <button
+              type="button"
+              className="behavior-popup-test"
+              onClick={() => sendTestPopup(5)}
+            >
+              {t('settings.behavior.popupNotifyEnabled.testButton')}
+            </button>
+          </div>
+        </div>
       </section>
       <section className="basic-settings__section">
         <div className="basic-settings__field-header">

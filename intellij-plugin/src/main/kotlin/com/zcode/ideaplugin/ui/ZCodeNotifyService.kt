@@ -9,14 +9,15 @@ import com.zcode.ideaplugin.ZCodeBundle
 import com.zcode.ideaplugin.zCodeService
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.booleanOrNull
+import kotlinx.serialization.json.intOrNull
 
 /**
  * 对话结束系统通知（仅系统消息，无提示音、无焦点门控——开启即始终弹，默认关闭）：
  *
  * 触发：ZCodeServiceImpl 全局事件监听器收到 turn.completed / turn.failed（非手动 stop）。
  * 形式：两条独立通道，可各自开关——IDE 原生气泡（NotificationGroup "ZCode"，
- * 点击/按钮聚焦 ZCode 工具窗，切走窗口不可见）+ Windows 系统级 toast
- * （ZCodeTrayNotifier，仅 IDE 主窗口非激活时发，切走窗口可见）。
+ * 点击/按钮聚焦 ZCode 工具窗，切走窗口不可见）+ 自绘悬浮提醒弹窗
+ * （ZCodePopupNotifier，仅 IDE 主窗口非激活时发，切走窗口可见，全平台）。
  * turn.completed 走 payload.response 预览正文，turn.failed 走 error.message。
  *
  * 配置存储：复用 webview kv 通道（PropertiesComponent KEY_WEBVIEW_KV）的
@@ -26,6 +27,8 @@ object ZCodeNotifyService {
 
     /** kv 通道里的通知配置键（前端 utils/notifyConfig.ts 同源）*/
     const val KV_KEY = "zcode.notify.config"
+
+    private val LOG = com.intellij.openapi.diagnostic.Logger.getInstance("ZCodePlugin")
 
     /**
      * 子代理会话判据（sess_subagent_* 前缀，与 remote 推送/会话列表过滤同款）：
@@ -49,8 +52,12 @@ object ZCodeNotifyService {
     data class NotifyConfig(
         /** IDE 内气泡通知（切走窗口不可见）*/
         val notifyEnabled: Boolean = false,
-        /** Windows 系统级 toast（切走窗口也可见，仅 IDE 非激活时发）*/
-        val osNotifyEnabled: Boolean = false,
+        /** 自绘悬浮提醒弹窗（全局置顶，全平台；时长 popupDurationSec 秒，0=常驻）*/
+        val popupNotifyEnabled: Boolean = false,
+        /** 悬浮弹窗时长（秒；0=常驻直到点击/关闭；缺省 10）*/
+        val popupDurationSec: Int = 10,
+        /** 悬浮弹窗位置（缺省右上角，距顶 50px）*/
+        val popupPosition: ZCodePopupNotifier.PopupPosition = ZCodePopupNotifier.PopupPosition.TOP_RIGHT,
     )
 
     /** 从 kv store 解析配置（缺失/损坏回默认值，绝不因配置问题抛异常）*/
@@ -84,8 +91,27 @@ object ZCodeNotifyService {
         }
         return NotifyConfig(
             notifyEnabled = obj.boolOr("notifyEnabled", false),
-            osNotifyEnabled = obj.boolOr("osNotifyEnabled", false),
+            popupNotifyEnabled = obj.boolOr("popupNotifyEnabled", false),
+            popupDurationSec = obj.intOr("popupDurationSec", 10),
+            popupPosition = obj.popupPositionOr("popupPosition", ZCodePopupNotifier.PopupPosition.TOP_RIGHT),
         )
+    }
+
+    /** 弹窗位置字段解析（只认枚举名字符串，其余回默认）*/
+    private fun kotlinx.serialization.json.JsonObject.popupPositionOr(
+        key: String,
+        def: ZCodePopupNotifier.PopupPosition,
+    ): ZCodePopupNotifier.PopupPosition {
+        val p = this[key] as? JsonPrimitive ?: return def
+        if (!p.isString) return def
+        return runCatching { ZCodePopupNotifier.PopupPosition.valueOf(p.content) }.getOrDefault(def)
+    }
+
+    /** 整数字段解析（同 boolOr 纪律：只认 JSON 数字字面量，其余回默认）*/
+    private fun kotlinx.serialization.json.JsonObject.intOr(key: String, def: Int): Int {
+        val p = this[key] as? JsonPrimitive ?: return def
+        if (p.isString) return def
+        return p.intOrNull ?: def
     }
 
     /** 布尔字段解析（对齐前端 TS 语义：只认 JSON 布尔字面量；字符串 "false" 等回默认）*/
@@ -102,7 +128,8 @@ object ZCodeNotifyService {
      */
     fun notifyTurnEnd(project: Project, sessionId: String?, body: String?, failed: Boolean) {
         val config = readConfig()
-        if (!config.notifyEnabled && !config.osNotifyEnabled) return
+        LOG.info("[DIAG-Notify] turnEnd entry: notifyEnabled=${config.notifyEnabled} popupEnabled=${config.popupNotifyEnabled} dur=${config.popupDurationSec} pos=${config.popupPosition} failed=$failed sid=$sessionId")
+        if (!config.notifyEnabled && !config.popupNotifyEnabled) return
         ApplicationManager.getApplication().executeOnPooledThread {
             try {
                 val title = ZCodeBundle.message(
@@ -117,9 +144,11 @@ object ZCodeNotifyService {
                     project.zCodeService().sessionTitleCache[sessionId]
                 }.getOrNull()
                 val content = turnEndNotificationContent(sessionTitle, body, fallbackBody)
-                if (config.osNotifyEnabled) {
-                    ZCodeTrayNotifier.notifyOsToastIfUnfocused(project, title, content, failed) {
-                        ZCodeTrayNotifier.bringIdeToFront(project)
+                val frame = com.intellij.openapi.wm.WindowManager.getInstance().getFrame(project)
+                val inactive = ZCodePopupNotifier.isIdeFrameInactive(project)
+                LOG.info("[DIAG-Notify] turnEnd gate: frameNull=${frame == null} frameActive=${frame?.isActive} iconified=${frame?.let { (it.extendedState and java.awt.Frame.ICONIFIED) != 0 }} inactive=$inactive -> popup=${config.popupNotifyEnabled && inactive}")
+                if (config.popupNotifyEnabled && inactive) {
+                    ZCodePopupNotifier.showPopup(project, title, content, config.popupDurationSec, config.popupPosition) {
                         openConversationTab(project, sessionId)
                     }
                 }
@@ -172,7 +201,8 @@ object ZCodeNotifyService {
      */
     fun notifyPendingInput(project: Project, sessionId: String?, kind: PendingInputKind, body: String?) {
         val config = readConfig()
-        if (!config.notifyEnabled && !config.osNotifyEnabled) return
+        LOG.info("[DIAG-Notify] pendingInput entry: kind=$kind notifyEnabled=${config.notifyEnabled} popupEnabled=${config.popupNotifyEnabled} dur=${config.popupDurationSec} pos=${config.popupPosition} sid=$sessionId")
+        if (!config.notifyEnabled && !config.popupNotifyEnabled) return
         ApplicationManager.getApplication().executeOnPooledThread {
             try {
                 val (titleKey, bodyKey) = when (kind) {
@@ -183,9 +213,11 @@ object ZCodeNotifyService {
                 val title = ZCodeBundle.message(titleKey)
                 val content = body?.trim()?.take(120)?.ifEmpty { null }
                     ?: ZCodeBundle.message(bodyKey)
-                if (config.osNotifyEnabled) {
-                    ZCodeTrayNotifier.notifyOsToastIfUnfocused(project, title, content, false) {
-                        ZCodeTrayNotifier.bringIdeToFront(project)
+                val frame = com.intellij.openapi.wm.WindowManager.getInstance().getFrame(project)
+                val inactive = ZCodePopupNotifier.isIdeFrameInactive(project)
+                LOG.info("[DIAG-Notify] pendingInput gate: frameNull=${frame == null} frameActive=${frame?.isActive} iconified=${frame?.let { (it.extendedState and java.awt.Frame.ICONIFIED) != 0 }} inactive=$inactive -> popup=${config.popupNotifyEnabled && inactive}")
+                if (config.popupNotifyEnabled && inactive) {
+                    ZCodePopupNotifier.showPopup(project, title, content, config.popupDurationSec, config.popupPosition) {
                         openConversationTab(project, sessionId)
                     }
                 }
