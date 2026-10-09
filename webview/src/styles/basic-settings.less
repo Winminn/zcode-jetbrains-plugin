@@ -515,7 +515,7 @@
   }
 }
 
-/* 悬浮提醒弹窗卡片：开关与其关联配置（时长/位置/试弹）收进同一容器。
+/* 悬浮提醒弹窗卡片：开关与其关联配置（时长/位置）收进同一容器。
    容器复刻 setting-toggle 卡片外观；内层开关卡片去壳（边框/背景/内外边距交由外层） */
 .behavior-popup-card {
   display: flex;
@@ -536,29 +536,5 @@
 
   .behavior-popup-position-row {
     margin-top: 0;
-  }
-}
-
-/* 悬浮弹窗试弹按钮行（立即 / 5 秒后两枚并排）*/
-.behavior-popup-test-row {
-  display: flex;
-  gap: 8px;
-  align-self: flex-start;
-}
-
-/* 悬浮弹窗试弹按钮（设置页临时调试入口）：与位置两段选择器同款按钮形态 */
-.behavior-popup-test {
-  align-self: flex-start;
-  padding: 6px 14px;
-  border: 1px solid var(--border-secondary);
-  border-radius: 4px;
-  background: var(--bg-tertiary);
-  color: var(--text-primary);
-  font-size: var(--fs-body);
-  cursor: pointer;
-  transition: background 0.15s;
-
-  &:hover {
-    background: var(--bg-hover);
   }
 }

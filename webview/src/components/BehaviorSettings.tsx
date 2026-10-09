@@ -1,7 +1,9 @@
 /**
  * 基础设置「行为」子页签（BasicSettingsView 第三个子页签）
  *
- * 对话结束系统通知（仅系统消息，无提示音、无焦点门控——开启即始终弹，默认关闭）：
+ * 任务系统通知（IDE 内气泡通知 + 系统通知悬浮弹窗，两通道收进同一张卡片，均默认关闭）：
+ * 气泡通知无提示音、无焦点门控——开启即始终弹；悬浮弹窗为纯 Swing
+ * 置顶卡片（全平台），仅在 IDE 窗口非激活时弹，时长/位置可配（开关打开才显示）。
  * 配置走 persist kv 通道（utils/notifyConfig.ts），Kotlin ZCodeNotifyService
  * 触发通知时即时读同一 key——前端无请求往返，改动即时生效。
  * 手动 stop 的回合不通知（Kotlin 侧 markManualStop 语义，无需前端配置）。
@@ -28,7 +30,6 @@ import { readNotifyConfig, writeNotifyConfig } from '@/utils/notifyConfig'
 import { readEnhanceConfig, writeEnhanceConfig, type EnhanceModel } from '@/utils/enhanceConfig'
 import { readTurnCollapseConfig, writeTurnCollapseConfig, type TurnCollapseConfig } from '@/utils/turnCollapseConfig'
 import { readAskUserAutoConfig, writeAskUserAutoConfig } from '@/utils/askUserConfig'
-import { sendToJava } from '@/ipc/bridge'
 import { useStore } from '@/store/useStore'
 import '../styles/basic-settings.less'
 import '../styles/agent-select.less'
@@ -58,13 +59,6 @@ export function BehaviorSettings() {
     setConfig(next)
     writeNotifyConfig(next)
   }
-
-  /** 悬浮弹窗试弹（临时调试入口）：delaySec=0 立即弹，5 秒档留切窗时间；文案由 Java 侧按「对话完成」真实通知拼装 */
-  const sendTestPopup = (delaySec: number) =>
-    sendToJava({
-      op: 'testNotifyPopup',
-      delaySec,
-    })
 
   const updateEnhance = (patch: Partial<typeof enhance>) => {
     const next = { ...enhance, ...patch }
@@ -101,26 +95,20 @@ export function BehaviorSettings() {
           <span className="codicon codicon-bell" />
           <span className="basic-settings__field-label">{t('settings.behavior.notifyTitle')}</span>
         </div>
-        <SettingToggle
-          icon="codicon-bell"
-          title={t('settings.behavior.notifyEnabled.title')}
-          desc={t('settings.behavior.notifyEnabled.desc')}
-          on={config.notifyEnabled}
-          onToggle={() => update({ notifyEnabled: !config.notifyEnabled })}
-          onHint={t('settings.behavior.notifyEnabled.offHint')}
-          offHint={t('settings.behavior.notifyEnabled.onHint')}
-        />
-        <small className="basic-settings__hint">
-          <span className="codicon codicon-info" />
-          <span>{t('settings.behavior.notifyEnabled.hint')}</span>
-        </small>
-      </section>
-      <section className="basic-settings__section">
-        <div className="basic-settings__field-header">
-          <span className="codicon codicon-browser" />
-          <span className="basic-settings__field-label">{t('settings.behavior.popupTitle')}</span>
-        </div>
         <div className="behavior-popup-card">
+          <SettingToggle
+            icon="codicon-bell"
+            title={t('settings.behavior.notifyEnabled.title')}
+            desc={t('settings.behavior.notifyEnabled.desc')}
+            on={config.notifyEnabled}
+            onToggle={() => update({ notifyEnabled: !config.notifyEnabled })}
+            onHint={t('settings.behavior.notifyEnabled.offHint')}
+            offHint={t('settings.behavior.notifyEnabled.onHint')}
+          />
+          <small className="basic-settings__hint">
+            <span className="codicon codicon-info" />
+            <span>{t('settings.behavior.notifyEnabled.hint')}</span>
+          </small>
           <SettingToggle
             icon="codicon-browser"
             title={t('settings.behavior.popupNotifyEnabled.title')}
@@ -181,22 +169,6 @@ export function BehaviorSettings() {
               </div>
             </div>
           )}
-          <div className="behavior-popup-test-row">
-            <button
-              type="button"
-              className="behavior-popup-test"
-              onClick={() => sendTestPopup(0)}
-            >
-              {t('settings.behavior.popupNotifyEnabled.testButtonNow')}
-            </button>
-            <button
-              type="button"
-              className="behavior-popup-test"
-              onClick={() => sendTestPopup(5)}
-            >
-              {t('settings.behavior.popupNotifyEnabled.testButton')}
-            </button>
-          </div>
         </div>
       </section>
       <section className="basic-settings__section">

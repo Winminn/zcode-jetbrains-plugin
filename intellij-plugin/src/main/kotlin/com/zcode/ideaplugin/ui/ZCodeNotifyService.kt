@@ -18,7 +18,9 @@ import kotlinx.serialization.json.intOrNull
  * 形式：两条独立通道，可各自开关——IDE 原生气泡（NotificationGroup "ZCode"，
  * 点击/按钮聚焦 ZCode 工具窗，切走窗口不可见）+ 自绘悬浮提醒弹窗
  * （ZCodePopupNotifier，仅 IDE 主窗口非激活时发，切走窗口可见，全平台）。
- * turn.completed 走 payload.response 预览正文，turn.failed 走 error.message。
+ * 气泡通道正文：turn.completed 走 payload.response 预览，turn.failed 走 error.message；
+ * 弹窗通道正文（2026-10-09 拍板）：统一 = 「会话标题」一行，弹窗职责是路由不是阅读，
+ * 标题缺失回退气泡同款正文（见 popupNotificationContent）。
  *
  * 配置存储：复用 webview kv 通道（PropertiesComponent KEY_WEBVIEW_KV）的
  * `zcode.notify.config` 键——前端设置页经 persist.ts 写入，本服务在触发时即时解析。
@@ -140,15 +142,13 @@ object ZCodeNotifyService {
                 )
                 // 会话名前缀（缺陷DZ）：多会话先后完成时两条气泡可分辨；
                 // 缓存未命中（会话从未出现在历史列表/标题事件）回退纯正文
-                val sessionTitle = runCatching {
-                    project.zCodeService().sessionTitleCache[sessionId]
-                }.getOrNull()
+                val sessionTitle = lookupSessionTitle(project, sessionId)
                 val content = turnEndNotificationContent(sessionTitle, body, fallbackBody)
                 val frame = com.intellij.openapi.wm.WindowManager.getInstance().getFrame(project)
                 val inactive = ZCodePopupNotifier.isIdeFrameInactive(project)
                 LOG.info("[DIAG-Notify] turnEnd gate: frameNull=${frame == null} frameActive=${frame?.isActive} iconified=${frame?.let { (it.extendedState and java.awt.Frame.ICONIFIED) != 0 }} inactive=$inactive -> popup=${config.popupNotifyEnabled && inactive}")
                 if (config.popupNotifyEnabled && inactive) {
-                    ZCodePopupNotifier.showPopup(project, title, content, config.popupDurationSec, config.popupPosition) {
+                    ZCodePopupNotifier.showPopup(project, title, popupNotificationContent(sessionTitle, content), config.popupDurationSec, config.popupPosition) {
                         openConversationTab(project, sessionId)
                     }
                 }
@@ -184,6 +184,20 @@ object ZCodeNotifyService {
         return prefix + bodyPart
     }
 
+    /** 会话标题查询（缓存未命中/异常一律回 null——标题是锦上添花，绝不因它阻断通知）*/
+    private fun lookupSessionTitle(project: Project, sessionId: String?): String? = runCatching {
+        project.zCodeService().sessionTitleCache[sessionId]
+    }.getOrNull()
+
+    /**
+     * 悬浮弹窗通道正文组装（纯函数，单测覆盖，2026-10-09 拍板）：弹窗职责是路由不是
+     * 阅读——完成/失败/提问/审批正文统一 = 「会话标题」一行（截 30 字），详情点回会话
+     * 再看；标题缺失/空白回退 [fallback]（各场景现状预览/兜底文案，行为不退化）。
+     * IDE 气泡通道不走本函数，文案保持原样。
+     */
+    internal fun popupNotificationContent(sessionTitle: String?, fallback: String): String =
+        sessionTitle?.trim()?.takeIf { it.isNotEmpty() }?.let { "「${it.take(30)}」" } ?: fallback
+
     /** 显示工具窗并激活会话所在标签（多标签下精准定位；标签已关时仅显示工具窗）*/
     private fun openConversationTab(project: Project, sessionId: String?) {
         val tw = ToolWindowManager.getInstance(project).getToolWindow("ZCode") ?: return
@@ -213,11 +227,13 @@ object ZCodeNotifyService {
                 val title = ZCodeBundle.message(titleKey)
                 val content = body?.trim()?.take(120)?.ifEmpty { null }
                     ?: ZCodeBundle.message(bodyKey)
+                // 弹窗通道统一只带会话标题（2026-10-09 拍板，同时补上多会话挂起可分辨）；气泡通道保持摘要正文
+                val sessionTitle = lookupSessionTitle(project, sessionId)
                 val frame = com.intellij.openapi.wm.WindowManager.getInstance().getFrame(project)
                 val inactive = ZCodePopupNotifier.isIdeFrameInactive(project)
                 LOG.info("[DIAG-Notify] pendingInput gate: frameNull=${frame == null} frameActive=${frame?.isActive} iconified=${frame?.let { (it.extendedState and java.awt.Frame.ICONIFIED) != 0 }} inactive=$inactive -> popup=${config.popupNotifyEnabled && inactive}")
                 if (config.popupNotifyEnabled && inactive) {
-                    ZCodePopupNotifier.showPopup(project, title, content, config.popupDurationSec, config.popupPosition) {
+                    ZCodePopupNotifier.showPopup(project, title, popupNotificationContent(sessionTitle, content), config.popupDurationSec, config.popupPosition) {
                         openConversationTab(project, sessionId)
                     }
                 }

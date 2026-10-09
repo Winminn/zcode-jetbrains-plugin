@@ -130,6 +130,26 @@ class ZCodeNotifyServiceTest {
         assertEquals("「${"标".repeat(30)}」${"正".repeat(120)}", out)
     }
 
+    // ============ 悬浮弹窗通道正文（2026-10-09 拍板：仅「会话标题」，气泡通道文案不变）============
+
+    @Test
+    fun `弹窗正文带标题时仅「会话名」，不含预览与兜底`() {
+        assertEquals("「修复登录 bug」", ZCodeNotifyService.popupNotificationContent("修复登录 bug", "任意预览"))
+    }
+
+    @Test
+    fun `弹窗正文标题缺失或空白回退现状内容`() {
+        assertEquals("任意预览", ZCodeNotifyService.popupNotificationContent(null, "任意预览"))
+        assertEquals("任意预览", ZCodeNotifyService.popupNotificationContent("", "任意预览"))
+        assertEquals("任意预览", ZCodeNotifyService.popupNotificationContent("   ", "任意预览"))
+    }
+
+    @Test
+    fun `弹窗正文标题先 trim 再截30字`() {
+        val longTitle = "标".repeat(40)
+        assertEquals("「${"标".repeat(30)}」", ZCodeNotifyService.popupNotificationContent("  $longTitle  ", "兜底"))
+    }
+
     // ============ 子代理会话判据（缺陷DZ：子代理完成不通知）============
 
     @Test
