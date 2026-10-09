@@ -67,6 +67,21 @@
     &:hover { text-decoration: underline; }
   }
 
+  /* 文件路径链接（linkifyFilePaths 注入，点击在 IDE 打开并跳行）。
+     颜色继承上下文——行内 code 里保留原本的橙色；常态无装饰，
+     hover 叠半透明底色 + 下划线表达可点（2026-10-09 真机拍板；
+     data-tip 悬浮气泡同轮拍板关闭，代码在 linkifyFilePaths 里注释保留）*/
+  .md-file-link {
+    cursor: pointer;
+    border-radius: 3px;
+    transition: background 0.15s ease;
+    &:hover {
+      background: var(--code-copy-hover-bg);
+      text-decoration: underline;
+      text-underline-offset: 2px;
+    }
+  }
+
   /* 列表 */
   ul, ol {
     margin: 8px 0;

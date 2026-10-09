@@ -15,8 +15,10 @@ import { useEffect, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import type { ReasoningPart } from '@/types/messages'
 import { renderMarkdown } from '@/utils/markdown'
+import { openFileLinkFromEvent } from '@/utils/fileLink'
 import { formatDuration } from '@/utils/time'
 import { useTick } from '@/hooks/useTick'
+import { useStore } from '@/store/useStore'
 import { NEAR_BOTTOM_PX, UP_GHOST_MS } from './ScrollJumpButton'
 import '../styles/thinking-block.less'
 
@@ -31,6 +33,8 @@ interface Props {
 export function ThinkingBlock({ part, autoExpand = false, streaming = false }: Props) {
   const { t } = useTranslation()
   const [expanded, setExpanded] = useState(autoExpand)
+  // 工作区根：文件路径链接化解析相对路径用（与 MarkdownBlock 同源）
+  const workspaceRoot = useStore((s) => s.currentWorkspacePath || s.projectPath)
   // 用户是否手动操作过（操作过后不再受 autoExpand 影响）
   const manuallyToggled = useRef(false)
   const bodyRef = useRef<HTMLDivElement>(null)
@@ -117,7 +121,8 @@ export function ThinkingBlock({ part, autoExpand = false, streaming = false }: P
           className="thinking-block__body markdown-body"
           onScroll={handleBodyScroll}
           onWheel={handleBodyWheel}
-          dangerouslySetInnerHTML={{ __html: renderMarkdown(part.text, false) }}
+          onClick={openFileLinkFromEvent}
+          dangerouslySetInnerHTML={{ __html: renderMarkdown(part.text, false, workspaceRoot) }}
         />
       )}
     </div>

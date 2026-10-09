@@ -14,6 +14,8 @@ import { useTranslation } from 'react-i18next'
 import { BlockSection, splitMarkdownBlocks } from './BlockSection'
 import { copyText } from '@/utils/clipboard'
 import { openExternalUrl } from '@/ipc/bridge'
+import { openFileLinkFromEvent } from '@/utils/fileLink'
+import { useStore } from '@/store/useStore'
 import '../styles/markdown.less'
 
 interface Props {
@@ -28,6 +30,9 @@ const COPY_DONE_MS = 1500
 export function MarkdownBlock({ markdown, streaming = false }: Props) {
   const { t } = useTranslation()
   const blocks = useMemo(() => splitMarkdownBlocks(markdown), [markdown])
+  // 工作区根：文件路径链接化解析相对路径用（currentWorkspacePath 优先——
+  // worktree 场景以当前会话工作区为准）
+  const workspaceRoot = useStore((s) => s.currentWorkspacePath || s.projectPath)
 
   // 代码块复制按钮活在 dangerouslySetInnerHTML 里，React 管不到，
   // 统一在容器上事件委托；成功反馈直接改 classList（memo 块不受影响）
@@ -49,8 +54,10 @@ export function MarkdownBlock({ markdown, streaming = false }: Props) {
 
   // 外链点击接管：renderMarkdown 产出 <a target=_blank>，但 JCEF 没挂
   // onBeforePopup 拦截层，原生点击要么无反应要么把 webview 导航走——
-  // 事件委托 preventDefault 后走 openExternalUrl（协议白名单 + Java 侧二次校验）
+  // 事件委托 preventDefault 后走 openExternalUrl（协议白名单 + Java 侧二次校验）。
+  // 同委托还管 .md-file-link 文件路径链接（openFile op 在 IDE 打开并跳行）
   const handleLink = useCallback((e: React.MouseEvent<HTMLDivElement>) => {
+    if (openFileLinkFromEvent(e)) return
     const anchor = (e.target as HTMLElement).closest<HTMLAnchorElement>('a[href]')
     if (!anchor) return
     e.preventDefault()
@@ -68,6 +75,7 @@ export function MarkdownBlock({ markdown, streaming = false }: Props) {
           markdown={block}
           // 只有最后一个块可能是流式中（在增长），前面的块都是完整的
           isStreaming={streaming && i === blocks.length - 1}
+          workspaceRoot={workspaceRoot}
         />
       ))}
       {streaming && <span className="markdown-body__cursor">▋</span>}
