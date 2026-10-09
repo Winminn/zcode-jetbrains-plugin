@@ -1066,6 +1066,9 @@ if (!window.__ZCODE_LOG_HOOK__) {
                         "revealInFileManager" -> handleRevealInFileManager(msg)
                         "createMemoryFile" -> handleCreateMemoryFile(msg)
                         "setMemoryEnabled" -> handleSetMemoryEnabled(msg)
+                        "getCuaEnabled" -> handleGetCuaEnabled()
+                        "setCuaEnabled" -> handleSetCuaEnabled(msg)
+                        "getCuaIcon" -> handleGetCuaIcon(msg)
                         "getProxyConfig" -> handleGetProxyConfig()
                         "setProxyConfig" -> handleSetProxyConfig(msg)
                         "restartAppServer" -> handleRestartAppServer()
@@ -2100,14 +2103,68 @@ if (!window.__ZCODE_LOG_HOOK__) {
         // 实证 create 带档合法即生效/非法静默落默认）：否则 create 后的例行 loadSettings
         // 读到服务端初始默认档 max，赶在首条消息写回之前，UI 闪「最高」再回预选档
         val thoughtLevel = msg["thoughtLevel"]?.jsonPrimitive?.content
+        // 电脑控制注入：开关开且环境满足时挂 zcgui-computer-use MCP server
+        // （定时任务/远程会话不注入——后台无人监督的桌面控制不做）
+        val cuaSpec = com.zcode.ideaplugin.cua.CuaFeature.specIfEnabled()?.let { listOf(it) }
+        if (cuaSpec != null) {
+            log.info("Computer Use: injecting ${com.zcode.ideaplugin.cua.CuaFeature.SERVER_NAME} into new session")
+        }
         val sid = client.createSession(
             com.zcode.ideaplugin.protocol.model.Workspace(workspacePath),
+            // 权限模式恒 YOLO（跟随用户在会话底栏自行切换；CUA 审批自动切换已按用户
+            // 决策撤出——官方 ZCode 客户端也无此机制）
             com.zcode.ideaplugin.protocol.model.PermissionMode.YOLO,
-            thoughtLevel = thoughtLevel
+            thoughtLevel = thoughtLevel,
+            mcpServers = cuaSpec
         )
         return buildJsonObject {
             put("op", "createSession")
             put("sessionId", sid)
+        }
+    }
+
+    /**
+     * op=getCuaEnabled / op=setCuaEnabled — 电脑控制开关（设置页「电脑控制」条目）。
+     * 切换同步装/卸 skill（~/.zcode/skills/zcgui-computer-use）；注入在新建会话时读取，
+     * 已在跑的会话不受影响（与工作区记忆开关同语义）。
+     */
+    private fun handleGetCuaEnabled(): JsonObject = buildJsonObject {
+        put("op", "cuaEnabled")
+        put("enabled", com.zcode.ideaplugin.cua.CuaFeature.isEnabled())
+    }
+
+    private fun handleSetCuaEnabled(msg: JsonObject): JsonObject {
+        val enabled = msg["enabled"]?.jsonPrimitive?.boolean
+            ?: return errorResponse("缺少 enabled")
+        com.zcode.ideaplugin.cua.CuaFeature.setEnabled(enabled)
+        return buildJsonObject {
+            put("op", "cuaEnabledChanged")
+            put("enabled", enabled)
+        }
+    }
+
+    /**
+     * op=getCuaIcon — 按 key 读 server 落盘的应用图标 PNG（base64 回传 webview 渲染）。
+     * key 是 CuaIcons 内容寻址 12 位 hex，先白名单校验再拼路径（防路径穿越）；
+     * 文件缺失回 data=null，前端保持占位不重试。
+     */
+    private fun handleGetCuaIcon(msg: JsonObject): JsonObject {
+        val key = msg["key"]?.jsonPrimitive?.content
+            ?: return errorResponse("缺少 key")
+        if (!com.zcode.ideaplugin.cua.CuaIcons.validKey(key)) {
+            return errorResponse("非法 icon key")
+        }
+        val data = try {
+            val f = java.io.File(com.zcode.ideaplugin.cua.CuaIcons.dir(), "$key.png")
+            if (f.isFile) java.util.Base64.getEncoder().encodeToString(f.readBytes()) else null
+        } catch (e: Exception) {
+            log.warn("Computer Use: read icon $key failed: ${e.message}")
+            null
+        }
+        return buildJsonObject {
+            put("op", "cuaIcon")
+            put("key", key)
+            if (data != null) put("data", data)
         }
     }
 
@@ -5314,6 +5371,11 @@ if (!window.__ZCODE_LOG_HOOK__) {
                 File(ZCodeWebviewServer.editAttachmentsRoot, fileName).isFile
             if (!inCache && !inTemp) return@mapMessages null
             ZCodeWebviewServer.imageUrl(sid, fileName)
+        }.let { mapped ->
+            // 电脑控制截图回填：历史投影把 display.media 剥成 "[Attached image/...]"
+            // 占位文本（实时流经 CuaMediaStore.persist 落盘），按 callID 命中即注回
+            // state.media——会话重开/轮末重拉后工具卡仍可渲染截图
+            com.zcode.ideaplugin.cua.CuaMediaStore.injectIntoMessages(sessionId, mapped)
         }
     }
 
@@ -5789,6 +5851,20 @@ if (!window.__ZCODE_LOG_HOOK__) {
 
         // 每个流式事件一行，高频：debug 级防 log 风暴
         log.debug("[stream] event type=${event.type} seq=${event.seq} (forwarded to frontend)")
+        // 电脑控制截图落盘（会话重载回填数据源）：tool.updated(kind=result) 带
+        // display.media 时按 (sessionId, toolCallId) 持久化——session/messages 历史装配
+        // 的服务端投影把图剥成占位文本，重载后只有这里落过盘的才能回填（CuaMediaStore）
+        if (event.type == "tool.updated") {
+            val payload = event.payload
+            if (payload["kind"]?.jsonPrimitive?.contentOrNull == "result") {
+                val media = payload["result"]?.jsonObject
+                    ?.get("display")?.jsonObject?.get("media") as? JsonArray
+                val callId = payload["toolCallId"]?.jsonPrimitive?.contentOrNull
+                if (media != null && media.isNotEmpty() && callId != null) {
+                    com.zcode.ideaplugin.cua.CuaMediaStore.persist(sessionId, callId, media)
+                }
+            }
+        }
         val eventJson = buildJsonObject {
             put("type", event.type)
             put("seq", event.seq)

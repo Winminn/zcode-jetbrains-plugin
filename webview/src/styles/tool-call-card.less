@@ -1144,3 +1144,114 @@
     color: var(--text-tertiary);
   }
 }
+
+/* 电脑控制截图（CUA media）：展开区缩略图，点击放大 */
+.tool-card__cua-shot {
+  display: block;
+  max-width: 100%;
+  max-height: 320px;
+  border-radius: 4px;
+  border: 1px solid var(--border-color, rgba(255, 255, 255, 0.12));
+  cursor: zoom-in;
+}
+
+/* 电脑控制截图缩略图（header 右侧常驻，钉最右、点击全屏预览） */
+.tool-card__cua-thumb {
+  height: 22px;
+  max-width: 64px;
+  margin-left: auto;
+  border-radius: 3px;
+  border: 1px solid var(--border-color, rgba(255, 255, 255, 0.12));
+  object-fit: cover;
+  cursor: zoom-in;
+  flex: none;
+
+  &:hover {
+    border-color: var(--accent-color, #2bb3a3);
+    filter: brightness(1.15);
+  }
+}
+
+/* 应用图标（CUA 工具卡 header 图标位）：img 不吃全局 codicon 字号，显式钉尺寸
+   （对齐 14px 图标档），圆角小贴边更接近应用图标观感 */
+.tool-card__app-icon {
+  width: 14px;
+  height: 14px;
+  border-radius: 3px;
+  object-fit: contain;
+  flex: none;
+  display: block;
+}
+
+/* CUA list_apps/list_windows 友好列表（行式：真实图标+名称+pid+窗口标题+前台徽标，
+   替代裸 JSON；title 悬浮看全文，长标题截断） */
+.cua-app-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+
+  .cua-app-item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 3px 2px;
+    font-size: 12px;
+    border-radius: 4px;
+    min-width: 0;
+  }
+
+  .cua-app-item__icon {
+    width: 14px;
+    height: 14px;
+    border-radius: 3px;
+    object-fit: contain;
+    flex: none;
+    display: block;
+  }
+
+  .cua-app-item__fallback {
+    font-size: 12px;
+    line-height: 1;
+    color: var(--text-tertiary);
+    flex: none;
+  }
+
+  .cua-app-item__name {
+    color: var(--text-primary);
+    flex: none;
+    max-width: 160px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .cua-app-item__pid {
+    font-family: var(--font-mono);
+    font-size: 11px;
+    color: var(--text-tertiary);
+    flex: none;
+  }
+
+  .cua-app-item__title {
+    color: var(--text-muted);
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .cua-app-item__active {
+    flex: none;
+    font-size: 10px;
+    line-height: 14px;
+    padding: 0 4px;
+    color: var(--accent-color, #2bb3a3);
+    border: 1px solid var(--accent-color, #2bb3a3);
+    border-radius: 3px;
+    opacity: 0.9;
+  }
+}

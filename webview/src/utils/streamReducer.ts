@@ -356,7 +356,7 @@ function handleToolUpdated(
     toolCallId?: string
     toolCallIds?: string[]
     toolName?: string
-    result?: { success?: boolean; content?: string; error?: string }
+    result?: { success?: boolean; content?: string; error?: string; display?: { media?: { mimeType: string; data: string }[] } }
     startedAt?: number
     endedAt?: number
     successCount?: number
@@ -473,6 +473,7 @@ function handleToolUpdated(
       const tool = parts[existingToolIdx] as ToolPart
       const output = p.result?.content || ''
       const isError = p.result?.success === false
+      const media = p.result?.display?.media
       const prevTime = tool.state.time
       parts[existingToolIdx] = {
         ...tool,
@@ -480,6 +481,7 @@ function handleToolUpdated(
           ...tool.state,
           status: isError ? 'error' : 'completed',
           output,
+          ...(media && media.length > 0 ? { media } : {}),
           ...(p.result?.error ? { error: { message: p.result.error } } : {}),
           // 服务端时间戳权威（v4 行自带 startedAt/endedAt，毫秒）：实时流里 prevTime
           // 可能只是 input_start 的本地兜底，?? 链会把它错当真值短路掉 startedAt；

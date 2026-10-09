@@ -121,5 +121,9 @@
     "taskTitle": "任務標題",
     "listTitle": "定時任務（{{count}}）",
     "completed": "已完成"
+  },
+  "cua": {
+    "screenshot": "螢幕截圖",
+    "viewFull": "點擊放大查看截圖"
   }
 }

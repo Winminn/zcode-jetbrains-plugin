@@ -50,11 +50,13 @@ import { parseGoalCommand } from '@/utils/goalCommand'
 import { KV_HYDRATED_EVENT, KV_DISABLED_EVENT } from '@/utils/persist'
 import { draftScope, isDraftStoreReady, readComposerDraft, persistComposerDraft, clearComposerDraft, sanitizeDraftHtml } from '@/utils/composerDraft'
 import { readEnhanceConfig, ENHANCE_CONFIG_CHANGED_EVENT } from '@/utils/enhanceConfig'
+import { CUA_SKILL_NAME, sessionReferencesCua } from '@/utils/cuaTools'
 import { PastedTextPreview, type PastedTextItem } from './PastedTextRef'
 import { readImageFile, decodeBase64Size, type ImageAttachmentResult } from '@/utils/imageAttachment'
 import { ImagePreview } from './ImagePreview'
 import '../styles/input-box.less'
 import '../styles/agent-select.less'
+import '../styles/cua-entry.less'
 
 /** 内联 chip hover tooltip 的 DOM 节点 id（挂 document.body）*/
 const INLINE_CHIP_TIP_ID = 'zcode-inline-chip-tip'
@@ -104,6 +106,9 @@ function parseCurrentFileAttachment(ref: string): CurrentFileAttachmentInput {
     ...(m ? { lineStart: Number(m[1]), lineEnd: Number(m[2] ?? m[1]) } : {}),
   }
 }
+
+/** 电脑操作入口 chip 对应的技能名（权威定义在 utils/cuaTools，此处转发导出便于 spec 断言）*/
+export { CUA_SKILL_NAME }
 
 interface Props {
   /** 发送回调（文本 + 引用文件路径列表 + 附件：图片内联 / 当前文件上下文描述）*/
@@ -186,6 +191,32 @@ export function InputBox({ onSend, isStreaming = false, onStop, disabled = false
   const [slashIndex, setSlashIndex] = useState(0)
   /** 首次加载缓存（会话切换不重复请求磁盘）*/
   const slashCacheRef = useRef<SlashCommand[] | null>(null)
+
+  // 电脑操作入口 chip（当前文件 chip 左侧，设置页双开关都开才显示）：点击把
+  // zcgui-computer-use 技能提及内联插进输入框，省一次 $ 触发+候选选择
+  const cuaEnabled = useStore((s) => s.cuaEnabled)
+  const cuaInputButton = useStore((s) => s.cuaInputButton)
+  /** listCommands 在途补插标记：点击时技能清单可能还没拉过（懒加载），响应到达后补插*/
+  const pendingCuaInsertRef = useRef(false)
+  // 入口常亮（会话已进电脑控制上下文的状态反馈）：输入框装了 CUA 技能 chip，
+  // 或本会话引用过（用户发过技能 chip / AI 调过 Skill 或 CUA 工具）。selector
+  // 返回原语布尔——流式期间 messages 引用虽每批变化，布尔不变不触发重渲染；
+  // 回扫函数自带 ref 缓存，同一 messages 引用不重扫
+  const [cuaChipLoaded, setCuaChipLoaded] = useState(false)
+  const sessionCuaActive = useStore((s) => sessionReferencesCua(s.messages))
+  const cuaActive = cuaChipLoaded || sessionCuaActive
+  useEffect(() => {
+    // 编辑器 DOM 不是 React 状态（chip 走 DOM 插入/删除/草稿回填多处变更），
+    // 挂 MutationObserver 统一跟踪，免去逐插入点同步（漏点即状态漂移）
+    const el = editorRef.current
+    if (!el) return
+    const sync = () =>
+      setCuaChipLoaded(!!el.querySelector(`[data-skill="1"][data-cmd="${CUA_SKILL_NAME}"]`))
+    sync()
+    const mo = new MutationObserver(sync)
+    mo.observe(el, { childList: true, subtree: true })
+    return () => mo.disconnect()
+  }, [])
 
   /** 历史前缀幽灵补全后缀（cc-gui data-completion-suffix 同款，Tab 采纳）*/
   const [ghostSuffix, setGhostSuffix] = useState('')
@@ -1087,6 +1118,16 @@ export function InputBox({ onSend, isStreaming = false, onStop, disabled = false
         slashCacheRef.current = msg.commands
         setSlashItems(msg.commands)
         setSlashIndex(0)
+        // 电脑操作入口的补插路径：点击时清单未加载而现拉的，到达后兑现
+        if (pendingCuaInsertRef.current) {
+          pendingCuaInsertRef.current = false
+          const skill = msg.commands.find((c) => c.kind === 'skill' && c.name === CUA_SKILL_NAME)
+          const el = editorRef.current
+          if (skill && el) {
+            insertSkillChipAtCursor(el, skill.name, skill.path, skill.description)
+            setHasText(true)
+          }
+        }
       }
     })
     return unsub
@@ -1428,6 +1469,26 @@ export function InputBox({ onSend, isStreaming = false, onStop, disabled = false
       insertSkillChipAtCursor(el, c.name, c.path, c.description)
       setHasText(true)
     }
+  }
+
+  /** 电脑操作入口 chip 点击：把 CUA 技能提及插进输入框（行为同 $ 面板选中该技能）*/
+  function insertCuaSkillRef() {
+    const el = editorRef.current
+    if (!el) return
+    el.focus()
+    // 编辑器里已有该技能 chip 不重复插（连点无害）
+    if (el.querySelector(`[data-skill="1"][data-cmd="${CUA_SKILL_NAME}"]`)) return
+    const skill = slashItems.find((c) => c.kind === 'skill' && c.name === CUA_SKILL_NAME)
+    if (skill) {
+      insertSkillChipAtCursor(el, skill.name, skill.path, skill.description)
+      setHasText(true)
+      return
+    }
+    // 技能清单还没拉过（$ / 斜杠面板都是懒加载）：直发 listCommands 拿实时清单，
+    // 响应到达后在 commands 分支补插。不走 requestCommands——它有 150ms 防抖 +
+    // 首载缓存短路，开关刚开时缓存可能是装技能前的旧列表，补插会落空
+    pendingCuaInsertRef.current = true
+    sendToJava({ op: 'listCommands' })
   }
 
   // ============ 草稿持久化（per-session scope，候选池 O8）============
@@ -1935,6 +1996,21 @@ export function InputBox({ onSend, isStreaming = false, onStop, disabled = false
             <ContextRing />
           </div>
           <AgentSelect onManage={onOpenAgentSettings} disabled={disabled} />
+          {/* 电脑操作入口（设置页「在输入框显示电脑操作按钮」开且电脑控制已启用）：
+              点击把 zcgui-computer-use 技能提及插进输入框。位置在当前文件 chip 左侧
+              （用户定稿），tooltip 贴右对齐防溢出。常亮=会话已进电脑控制上下文
+              （输入框装了技能 chip 或本会话引用过），视觉对齐 current-file-chip--active */}
+          {cuaEnabled === true && cuaInputButton && (
+            <button
+              type="button"
+              className={`cua-entry tip-align-right${cuaActive ? ' cua-entry--active' : ''}`}
+              data-tip={t('input.cuaEntry.tip')}
+              onClick={insertCuaSkillRef}
+            >
+              <span className="codicon codicon-device-desktop cua-entry__icon" />
+              <span className="cua-entry__label">{t('input.cuaEntry.label')}</span>
+            </button>
+          )}
           {/* 当前打开文件上下文（chip 显示 + 勾选持久化；勾选且 ref 非空时
               doSend 派生附件描述随消息隐式携带，同一取值表达式，见 doSend 末尾）。
               位置在最右（margin-left:auto 吸收富余空间，见 current-file-chip.less）：

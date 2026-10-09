@@ -157,5 +157,9 @@
   "billing": {
     "teamNoOverride": "Team plan selected but no team key configured — billed to your personal key",
     "goConfig": "Configure"
+  },
+  "cuaEntry": {
+    "label": "Computer Control",
+    "tip": "Click to insert the computer control skill (zcgui-computer-use) and let AI operate this desktop"
   }
 }

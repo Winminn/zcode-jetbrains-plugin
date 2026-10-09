@@ -271,6 +271,8 @@ class V4FrameMapper {
                                     put("success", status == "success")
                                     put("content", row["output"]?.jsonObject?.get("text")
                                         ?.jsonPrimitive?.jsonStringOrNull ?: "")
+                                    // 工具结果展示投影（如 CUA 截图）：同 mapOp 实时路径
+                                    row["output"]?.jsonObject?.get("display")?.jsonObject?.let { put("display", it) }
                                 })
                                 row["startedAt"]?.jsonPrimitive?.longOrNull?.let { put("startedAt", it) }
                                 row["endedAt"]?.jsonPrimitive?.longOrNull?.let { put("endedAt", it) }
@@ -415,6 +417,9 @@ class V4FrameMapper {
                     put("result", buildJsonObject {
                         put("success", isSuccess)
                         put("content", row["output"]?.jsonObject?.get("text")?.jsonPrimitive?.jsonStringOrNull ?: "")
+                        // 工具结果展示投影（如 CUA 工具的 display.media 截图）：
+                        // v4 行 output 原生字段，工具卡渲染图的数据源（快照/实时同构）
+                        row["output"]?.jsonObject?.get("display")?.jsonObject?.let { put("display", it) }
                     })
                     row["startedAt"]?.jsonPrimitive?.longOrNull?.let { put("startedAt", it) }
                     row["endedAt"]?.jsonPrimitive?.longOrNull?.let { put("endedAt", it) }

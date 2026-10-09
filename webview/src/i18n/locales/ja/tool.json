@@ -121,5 +121,9 @@
     "taskTitle": "タスクタイトル",
     "listTitle": "定期タスク（{{count}}）",
     "completed": "完了"
+  },
+  "cua": {
+    "screenshot": "スクリーンショット",
+    "viewFull": "クリックでスクリーンショットを拡大"
   }
 }

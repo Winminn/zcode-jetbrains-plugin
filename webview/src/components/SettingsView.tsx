@@ -23,12 +23,13 @@ import { SkillListView } from './SkillListView'
 import { McpListView } from './McpListView'
 import { ModelListView } from './ModelListView'
 import { BrowserSettingsView } from './BrowserSettingsView'
+import { ComputerSettingsView } from './ComputerSettingsView'
 import { AgentListView } from './AgentListView'
 import { ProcessSettingsView } from './ProcessSettingsView'
 import { isInJcef } from '@/ipc/bridge'
 import '../styles/settings.less'
 
-type SettingsTab = 'basic' | 'models' | 'usage' | 'memory' | 'skills' | 'agents' | 'mcp' | 'browser' | 'processes' | 'other'
+type SettingsTab = 'basic' | 'models' | 'usage' | 'memory' | 'skills' | 'agents' | 'mcp' | 'browser' | 'computer' | 'processes' | 'other'
 
 const cx = (...c: (string | false | null | undefined)[]) => c.filter(Boolean).join(' ')
 
@@ -42,7 +43,7 @@ export function SettingsView({ onBack }: Props) {
   // JCEF 内 hash 恒空不影响生产
   const hashTab = window.location.hash.replace('#', '').split('/')[0] as SettingsTab
   const initialTab: SettingsTab =
-    !isInJcef() && ['basic', 'models', 'usage', 'memory', 'skills', 'agents', 'mcp', 'browser', 'processes', 'other'].includes(hashTab)
+    !isInJcef() && ['basic', 'models', 'usage', 'memory', 'skills', 'agents', 'mcp', 'browser', 'computer', 'processes', 'other'].includes(hashTab)
       ? hashTab
       : 'basic'
   const [tab, setTab] = useState<SettingsTab>(initialTab)
@@ -67,7 +68,8 @@ export function SettingsView({ onBack }: Props) {
     { key: 'agents', icon: 'codicon-robot' },
     { key: 'mcp', icon: 'codicon-plug' },
     { key: 'browser', icon: 'codicon-globe' },
-    { key: 'processes', icon: 'codicon-vm' },
+    { key: 'computer', icon: 'codicon-device-desktop' },
+    { key: 'processes', icon: 'codicon-pulse' },
     { key: 'other', icon: 'codicon-ellipsis' },
   ]
 
@@ -108,6 +110,7 @@ export function SettingsView({ onBack }: Props) {
           {tab === 'agents' && <AgentListView />}
           {tab === 'mcp' && <McpListView />}
           {tab === 'browser' && <BrowserSettingsView />}
+          {tab === 'computer' && <ComputerSettingsView />}
           {tab === 'processes' && <ProcessSettingsView />}
           {tab === 'other' && <OtherSettingsView />}
         </main>

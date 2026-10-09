@@ -121,5 +121,9 @@
     "taskTitle": "작업 제목",
     "listTitle": "예약 작업 ({{count}})",
     "completed": "완료"
+  },
+  "cua": {
+    "screenshot": "스크린샷",
+    "viewFull": "클릭하여 스크린샷 확대"
   }
 }

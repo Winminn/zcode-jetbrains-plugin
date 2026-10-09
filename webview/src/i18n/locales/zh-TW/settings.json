@@ -11,7 +11,8 @@
     "mcp": "MCP",
     "browser": "瀏覽器",
     "other": "其他設定",
-    "processes": "處理程序"
+    "processes": "處理程序",
+    "computer": "電腦控制"
   },
   "processesView": {
     "desc": "常駐 app-server 每個專案視窗一個、多分頁共享；結束處理程序會中斷進行中的回合，下次使用時自動重新拉起。",

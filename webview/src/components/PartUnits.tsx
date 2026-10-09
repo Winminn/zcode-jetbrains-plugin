@@ -19,8 +19,10 @@ import { ThinkingBlock } from './ThinkingBlock'
 import { ToolCallCard } from './ToolCallCard'
 import { BashCommandGroupCard } from './BashCommandGroupCard'
 import { FileToolGroupCard } from './FileToolGroupCard'
+import { CuaActionGroupCard } from './CuaActionGroupCard'
 import { ImagePreview } from './ImagePreview'
 import type { PartRenderUnit } from '@/utils/groupParts'
+import { isCuaTool, cuaIconKeyFromOutput } from '@/utils/cuaTools'
 
 /**
  * user 消息的图片 part 收集：乐观消息（type:'image'）与服务端读回
@@ -82,10 +84,13 @@ export function PartRenderer({
   part,
   autoExpandReasoning,
   streaming,
+  cuaIconKey,
 }: {
   part: MessagePart
   autoExpandReasoning: boolean
   streaming: boolean
+  /** 会话内最近一次解析到的 CUA 应用图标 key（动作类工具卡自身无 app 信号时兜底）*/
+  cuaIconKey?: string | null
 }) {
   switch (part.type) {
     case 'text':
@@ -106,7 +111,7 @@ export function PartRenderer({
       return <ThinkingBlock part={part} autoExpand={autoExpandReasoning} streaming={streaming} />
 
     case 'tool':
-      return <ToolCallCard part={part} />
+      return <ToolCallCard part={part} cuaIconKey={cuaIconKey} />
 
     case 'step-start':
     case 'step-finish':
@@ -117,9 +122,11 @@ export function PartRenderer({
   }
 }
 
-/** 渲染分组单元列表（组卡与单卡全覆盖）。units 通常来自 groupParts(parts)。
- *  softenError：子代理弹窗活动 running 期间传 true——组卡 error 工具降级为
- *  「↻ 重试中」中性样式（中间失败重试是常态，红色 ✗ 误导）；主聊天不传保持 ✗。 */
+/**
+ * 渲染分组单元列表（组卡与单卡全覆盖）。units 通常来自 groupParts(parts)。
+ * softenError：子代理弹窗活动 running 期间传 true——组卡 error 工具降级为
+ * 「↻ 重试中」中性样式（中间失败重试是常态，红色 ✗ 误导）；主聊天不传保持 ✗。
+ */
 export function renderPartUnits(
   units: PartRenderUnit[],
   parts: MessagePart[],
@@ -136,10 +143,31 @@ export function renderPartUnits(
     : false
   const lastPartIdx = parts.length - 1
 
+  // CUA 应用图标顺扫：icon key 只在 list_apps/get_app_state/list_windows 的结果里
+  // 出现，动作类工具（click/type/...）卡自身无 app 信号——同消息内「最近一次解析
+  // 到的 key」兜底（text/reasoning 不打断继承；每 part 记录的是它之前的继承值，
+  // 自带 key 的卡由 ToolCallCard 自行优先取 own）
+  const cuaIconByIndex = new Map<number, string | null>()
+  let curCuaIcon: string | null = null
+  parts.forEach((p, idx) => {
+    cuaIconByIndex.set(idx, curCuaIcon)
+    if (p.type === 'tool' && isCuaTool(p.tool)) {
+      const own = cuaIconKeyFromOutput(p.state.output)
+      if (own) curCuaIcon = own
+    }
+  })
+
   return units.map((unit) =>
     unit.kind === 'toolGroup' ? (
       unit.group === 'bash' ? (
         <BashCommandGroupCard key={`bash-${unit.startIndex}`} parts={unit.parts} softenError={softenError} />
+      ) : unit.group === 'cua' ? (
+        <CuaActionGroupCard
+          key={`cua-${unit.startIndex}`}
+          parts={unit.parts}
+          softenError={softenError}
+          cuaIconKey={cuaIconByIndex.get(unit.startIndex) ?? null}
+        />
       ) : (
         <FileToolGroupCard key={`${unit.group}-${unit.startIndex}`} kind={unit.group} parts={unit.parts} softenError={softenError} />
       )
@@ -149,6 +177,7 @@ export function renderPartUnits(
         part={unit.part}
         autoExpandReasoning={unit.index === lastReasoningIdx && !hasTextAfterLastReasoning}
         streaming={!!streaming && unit.index === lastPartIdx}
+        cuaIconKey={unit.part.type === 'tool' && isCuaTool(unit.part.tool) ? cuaIconByIndex.get(unit.index) ?? null : null}
       />
     ),
   )

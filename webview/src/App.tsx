@@ -174,6 +174,11 @@ export default function App() {
 
   useEffect(() => {
     init()
+    // 电脑控制主开关启动加载：入口 chip（InputBox）显示条件含 cuaEnabled===true，
+    // 但此前只有进设置页（ComputerSettingsView mount）才拉——启动后 store 停在 null，
+    // 开关明明开着入口却不出现，直到用户逛过一次设置页（2026-10-10 真机反馈）。
+    // 幂等轻请求（Java 读 PropertiesComponent 同步回包），随 init 一起全局跑一次
+    useStore.getState().loadCuaEnabled()
   }, [init])
 
   // 定时任务镜像自愈：Java→JS 广播无端到端确认，后台唤起窗口丢一条 remove 快照，

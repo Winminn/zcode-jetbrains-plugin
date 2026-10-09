@@ -4,7 +4,10 @@
  * 规则：
  *   - 相邻的同类别工具 part 聚成一组（组内 ≥2 个才合并，单个仍走原单卡渲染）
  *   - 类别：bash（Bash）/ read（Read）/ edit（Edit+Write）/ search（Grep+Glob），
- *     对齐 cc-gui toolConstants 的 READ/EDIT/BASH/SEARCH_TOOL_NAMES 分组
+ *     对齐 cc-gui toolConstants 的 READ/EDIT/BASH/SEARCH_TOOL_NAMES 分组；
+ *     cua（mcp__zcgui-computer-use__*）：桌面操作高频连发（连点/连截），
+ *     同名相邻聚一组压缩消息区（与其他类别不同，须同名才成组——不同 CUA 动作
+ *     语义差异大，混并不可读）
  *   - step-start / step-finish 是服务端的步骤边界标记（不渲染），
  *     跳过而不打断连续性——一轮 turn 里每个工具调用都被 step 标记包围，
  *     若不跳过则永远无法成组
@@ -14,11 +17,13 @@
  */
 
 import type { MessagePart, ToolPart } from '@/types/messages'
+import { CUA_TOOL_PREFIX } from './cuaTools'
 
-export type ToolGroupKind = 'bash' | 'read' | 'edit' | 'search'
+export type ToolGroupKind = 'bash' | 'read' | 'edit' | 'search' | 'cua'
 
-/** 工具名 → 分组类别；null = 不参与聚组（TodoWrite/Agent/mcp__* 等走单卡）*/
+/** 工具名 → 分组类别；null = 不参与聚组（TodoWrite/Agent/其余 mcp__* 等走单卡）*/
 export function toolGroupKind(tool: string): ToolGroupKind | null {
+  if (tool.startsWith(CUA_TOOL_PREFIX)) return 'cua'
   switch (tool) {
     case 'Bash': return 'bash'
     case 'Read': return 'read'
@@ -69,8 +74,10 @@ export function groupParts(parts: MessagePart[]): PartRenderUnit[] {
     if (part.type === 'tool') {
       const kind = toolGroupKind(part.tool)
       if (kind) {
-        // 同类别追加；不同类别 → 收掉旧组再开新组
-        if (kind === group) {
+        // 同类别追加；不同类别 → 收掉旧组再开新组。
+        // cua 类别额外要求同名（连点成组，click→type 不并——不同动作不可读）
+        const merge = kind === group && (kind !== 'cua' || bucket[0].tool === part.tool)
+        if (merge) {
           bucket.push(part)
           return
         }

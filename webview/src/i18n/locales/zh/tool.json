@@ -134,5 +134,14 @@
     "taskTitle": "任务标题",
     "listTitle": "定时任务（{{count}}）",
     "completed": "已完成"
+  },
+  "cua": {
+    "screenshot": "屏幕截图",
+    "viewFull": "点击放大查看截图",
+    "appCount": "{{count}} 个窗口应用",
+    "windowCount": "{{count}} 个窗口",
+    "appList": "窗口应用",
+    "windowList": "应用窗口",
+    "foreground": "前台"
   }
 }

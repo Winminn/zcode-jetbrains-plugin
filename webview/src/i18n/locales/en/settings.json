@@ -11,7 +11,8 @@
     "mcp": "MCP",
     "browser": "Browser",
     "other": "Other",
-    "processes": "Processes"
+    "processes": "Processes",
+    "computer": "Computer Control"
   },
   "processesView": {
     "desc": "One resident app-server per project window, shared across tabs. Killing a process interrupts any running turn; it respawns automatically on next use.",

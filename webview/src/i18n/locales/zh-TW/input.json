@@ -153,5 +153,9 @@
   "billing": {
     "teamNoOverride": "已選取團隊方案，但未設定團隊 key，目前按個人方案 key 計費",
     "goConfig": "前往設定"
+  },
+  "cuaEntry": {
+    "label": "電腦操作",
+    "tip": "點擊插入電腦控制技能（zcgui-computer-use），讓 AI 操作本機桌面"
   }
 }

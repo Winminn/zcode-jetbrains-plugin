@@ -631,6 +631,56 @@ function mockRespond(req: JavaRequest): void {
     return
   }
 
+  // send 文本 "#cua"：模拟电脑控制工具序列（list_apps 带 icon key → get_app_state
+  // 带 display.media 截图与 app 行 → left_click×3 同名聚组 → 复查），验收应用图标、
+  // CUA 组卡与组卡缩略图（1×1 像素图充当截图，渲染链路同真图）
+  if (req.op === 'send' && req.text.trim() === '#cua') {
+    const turnId = `turn_cua_${Date.now()}`
+    const m1 = `msg_cua_m1_${Date.now()}`
+    let seq = 0
+    const push = (type: string, payload: Record<string, unknown>) => {
+      streamListeners.forEach((fn) =>
+        fn(req.sessionId, { type, seq: seq++, sessionId: req.sessionId, turnId, timestamp: Date.now(), payload } as unknown as StreamEvent))
+    }
+    // 1×1 PNG（红色像素）：display.media 形状与真截图同构
+    const png1x1 = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=='
+    const runCuaTool = (
+      callId: string, toolName: string, input: Record<string, unknown>,
+      resultText: string, media?: { mimeType: string; data: string }[], t0 = 500,
+    ) => {
+      const fullJson = JSON.stringify(input)
+      setTimeout(() => push('model.streaming', { kind: 'tool_input_start', toolCallId: callId, toolName, assistantMessageId: m1 }), t0)
+      setTimeout(() => push('model.streaming', { kind: 'tool_input_delta', toolCallId: callId, delta: fullJson, assistantMessageId: m1 }), t0 + 300)
+      setTimeout(() => push('model.streaming', { kind: 'tool_call', toolCallId: callId, toolName, assistantMessageId: m1, input }), t0 + 400)
+      setTimeout(() => push('tool.updated', { kind: 'started', toolCallId: callId, toolName }), t0 + 450)
+      setTimeout(() => push('tool.updated', {
+        kind: 'result', toolCallId: callId,
+        result: { success: true, content: resultText, ...(media && media.length ? { display: { media } } : {}) },
+      }), t0 + 800)
+      return t0 + 850
+    }
+    const P = 'mcp__zcgui-computer-use__'
+    let t = 400
+    t = runCuaTool(`call_cua_list_${Date.now()}`, `${P}list_apps`, {},
+      `{"apps":[{"pid":1001,"name":"idea64","bundle_id":null,"active":true,"title":"IntelliJ IDEA - zcode-idea-plugin","icon":"a1b2c3d4e5f6"},{"pid":1002,"name":"chrome","bundle_id":null,"active":false,"title":"Google Chrome","icon":"b2c3d4e5f6a1"}]}`, undefined, t)
+    t = runCuaTool(`call_cua_shot1_${Date.now()}`, `${P}get_app_state`,
+      { app_ref: { pid: 1001 }, display: 0 },
+      `{\n  "state_id": "s1",\n  "screen": {"display": 0, "x": 0, "y": 0, "width": 2048, "height": 1152, "image_size": "1600x900"}\n}\napp: pid=1001 name=idea64 title=IntelliJ IDEA - zcode-idea-plugin active=true icon=a1b2c3d4e5f6`,
+      [{ mimeType: 'image/png', data: png1x1 }], t)
+    for (let i = 0; i < 3; i++) {
+      t = runCuaTool(`call_cua_click${i}_${Date.now()}`, `${P}left_click`,
+        { target: [512 + i * 40, 384], mouse_button: 'left' }, '{}', undefined, t)
+    }
+    t = runCuaTool(`call_cua_key_${Date.now()}`, `${P}key`, { text: 'Control_L+s' }, '{}', undefined, t)
+    t = runCuaTool(`call_cua_shot2_${Date.now()}`, `${P}get_app_state`,
+      { display: 0 },
+      `{\n  "state_id": "s2",\n  "screen": {"display": 0, "x": 0, "y": 0, "width": 2048, "height": 1152, "image_size": "1600x900"}\n}\napp: pid=1001 name=idea64 title=IntelliJ IDEA - zcode-idea-plugin active=true icon=a1b2c3d4e5f6`,
+      [{ mimeType: 'image/png', data: png1x1 }], t)
+    setTimeout(() => push('model.streaming', { kind: 'text_delta', delta: '已保存（mock #cua 演示）。', assistantMessageId: m1 }), t + 200)
+    setTimeout(() => push('turn.completed', { response: 'ok' }), t + 500)
+    return
+  }
+
   // send 文本 "#compactdemo"：模拟 /compact 压缩完成场景——回合结束后重拉历史时
   // 注入时间线分隔卡 + 压缩摘要消息，验收摘要卡书本图标 + 弹窗全文形态
   if (req.op === 'send' && req.text.trim() === '#compactdemo') {
@@ -2027,6 +2077,13 @@ flowchart LR
       return { op: 'revealedInFileManager' }
     case 'setMemoryEnabled':
       return { op: 'memoryEnabledChanged', enabled: req.enabled }
+    case 'getCuaEnabled':
+      return { op: 'cuaEnabled', enabled: false }
+    case 'setCuaEnabled':
+      return { op: 'cuaEnabledChanged', enabled: req.enabled }
+    case 'getCuaIcon':
+      // mock：无图标文件，回缺省形态（store 保 '' 哨兵不再重发；卡片渲染 codicon 兜底）
+      return { op: 'cuaIcon', key: req.key }
     case 'listSkills':
       // mock：三来源 + 启用/禁用/插件名/whenToUse 各形态（浏览器验收用）
       return {

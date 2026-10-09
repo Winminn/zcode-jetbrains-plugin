@@ -21,6 +21,7 @@ import { parsePartialToolInput, tailLines } from '@/utils/partialToolInput'
 import { lineDiffStats } from '@/utils/lineDiff'
 import { extractWebSources, extractDomain } from '@/utils/webSources'
 import { isCronTool, describeCronSchedule, parseCronToolOutput, describeAutomationTime } from '@/utils/cronTool'
+import { ImagePreview } from './ImagePreview'
 import { isBackgroundTaskOutput } from '@/utils/backgroundTask'
 import { toolErrorText } from '@/utils/parseStatus'
 import { extractAskQuestions, parseAskUserAnswers } from '@/utils/askUserAnswer'
@@ -29,11 +30,15 @@ import { useStore } from '@/store/useStore'
 import { useTick } from '@/hooks/useTick'
 import { extractTodoItems, diffTodos, findPrevTodoWriteTodos } from '@/utils/todoDiff'
 import { isAgentMessageTool, shortAgentId, parseAgentMessageReceipt } from '@/utils/agentMessage'
+import { isCuaTool, cuaToolShortName, cuaIconKeyFromOutput, parseCuaAppList, parseCuaWindows } from '@/utils/cuaTools'
 import { FileIcon } from './FileIcon'
+import { CuaAppIcon } from './CuaAppIcon'
 import '../styles/tool-call-card.less'
 
 interface Props {
   part: ToolPart
+  /** 会话内最近一次解析到的 CUA 应用图标 key（动作类工具自身无 app 信号时兜底）*/
+  cuaIconKey?: string | null
 }
 
 /** 工具 → codicon 图标 class（对齐 cc-gui GenericToolBlock CODICON_MAP）*/
@@ -74,6 +79,8 @@ function toolIcon(tool: string): string {
 /** 工具 → 显示名（对齐 cc-gui zh.json tools.*；文案经 i18n，未收录工具回退原名）*/
 function toolDisplayName(tool: string, t: TFunction): string {
   if (tool.startsWith('mcp__')) {
+    // CUA 族用短名（list_apps 比 MCP·zcgui-computer-use__list_apps 可读，与组卡一致）
+    if (isCuaTool(tool)) return cuaToolShortName(tool)
     // mcp__server__tool → MCP·server__tool
     return t('tool.mcpToolName', { name: tool.slice(4) })
   }
@@ -188,10 +195,29 @@ function todoStatusLabel(status: string, t: TFunction): string {
   }
 }
 
-export function ToolCallCard({ part }: Props) {
+export function ToolCallCard({ part, cuaIconKey }: Props) {
   const { t, i18n } = useTranslation()
   const [expanded, setExpanded] = useState(false)
   const { tool, state } = part
+  // CUA 工具结果截图（v4 行 output.display.media）：卡片内缩略图，点击全屏预览
+  const cuaMedia = state.media
+  const [cuaPreviewOpen, setCuaPreviewOpen] = useState(false)
+  // 应用图标（仅 CUA 工具扫描，避免大输出文本的无效正则开销）：
+  // 自带 app 行的 key 优先（get_app_state/list_windows/list_apps），动作类工具退
+  // 调用方顺扫的会话级最近 key；非 CUA 工具恒 null（渲染 codicon 兜底）
+  const isCuaToolCard = isCuaTool(tool)
+  const appIconKey = !isCuaToolCard
+    ? null
+    : cuaIconKeyFromOutput(state.output) ?? cuaIconKey ?? null
+  // CUA 列表类工具（list_apps/list_windows）友好渲染：解析失败回退裸 JSON
+  const cuaApps = useMemo(
+    () => (isCuaToolCard && cuaToolShortName(tool) === 'list_apps' ? parseCuaAppList(state.output) : null),
+    [isCuaToolCard, tool, state.output],
+  )
+  const cuaWins = useMemo(
+    () => (isCuaToolCard && cuaToolShortName(tool) === 'list_windows' ? parseCuaWindows(state.output) : null),
+    [isCuaToolCard, tool, state.output],
+  )
   // 后台任务（缺陷Y 体验增强）：Bash run_in_background 的 result 解析出的任务，
   // 按 toolCallId 索引（同一回合并发多个后台任务各自独立记账）。
   // 匹配本卡片 callID → 头部打后台标识：运行中「后台运行中」+ 真实运行时间（秒级
@@ -282,6 +308,12 @@ export function ToolCallCard({ part }: Props) {
     (isWriteEdit && filePath ? fileName(filePath) : '') ||
     streamTitle ||
     (rawInput ? rawInput.replace(/\s+/g, ' ').slice(0, 80) : '')
+  // CUA 列表类工具摘要让位给数量（{{count}} 个窗口应用），替代空/无意义摘要
+  const headerSummary = (cuaApps
+    ? t('tool.cua.appCount', { count: cuaApps.length, defaultValue: '{{count}} 个窗口应用' })
+    : cuaWins
+      ? t('tool.cua.windowCount', { count: cuaWins.length, defaultValue: '{{count}} 个窗口' })
+      : null) ?? summary
   const badge = statusBadge(state.status)
   const hasOutput = !!state.output
 
@@ -426,9 +458,17 @@ export function ToolCallCard({ part }: Props) {
         onClick={handleHeaderClick}
         title={askReviewable ? t('tool.askUserReview.viewDetail') : undefined}
       >
-        <span className="tool-card__icon"><span className={`codicon ${toolIcon(tool)}`} /></span>
+        {/* 应用图标（CUA 工具，对齐官方客户端「行前显示目标应用图标」）：
+            有 key 走懒取图，取不到/非 CUA 回落 codicon 工具图标（CUA 族用桌面图标）*/}
+        <span className="tool-card__icon">
+          <CuaAppIcon
+            iconKey={appIconKey}
+            className="tool-card__app-icon"
+            fallback={<span className={`codicon ${isCuaToolCard ? 'codicon-device-desktop' : toolIcon(tool)}`} />}
+          />
+        </span>
         <span className="tool-card__name">{toolDisplayName(tool, t)}</span>
-        {summary && (
+        {headerSummary && (
           isFileTool ? (
             <span
               className="tool-card__summary tool-card__file-link"
@@ -436,10 +476,10 @@ export function ToolCallCard({ part }: Props) {
               onClick={input ? handleOpenFile : undefined}
             >
               <FileIcon path={filePath} className="file-type-icon tool-card__file-ic" />
-              <span className="tool-card__file-name">{summary}</span>
+              <span className="tool-card__file-name">{headerSummary}</span>
             </span>
           ) : (
-            <span className="tool-card__summary" title={summary}>{summary}</span>
+            <span className="tool-card__summary" title={headerSummary}>{headerSummary}</span>
           )
         )}
         {/* 行数徽标（Write/Edit）：流式期间累计跳动（"已写入 N 行"进度），完成态定格 */}
@@ -581,6 +621,20 @@ export function ToolCallCard({ part }: Props) {
             <span className={`tool-card__badge tool-card__badge--${badge.cls}`}>{badge.text}</span>
             {durMs != null && <span className="tool-card__dur">{formatToolDuration(durMs)}</span>}
           </>
+        )}
+        {/* 电脑控制截图缩略图（常驻 header 右侧，收起即可见）：点击全屏预览（缩放/拖拽）。
+            数据源 v4 行 output.display.media，base64 无前缀 */}
+        {cuaMedia && cuaMedia.length > 0 && (
+          <img
+            src={`data:${cuaMedia[0].mimeType};base64,${cuaMedia[0].data}`}
+            alt={t('tool.cua.screenshot', '屏幕截图')}
+            className="tool-card__cua-thumb"
+            title={t('tool.cua.viewFull', '点击放大查看截图')}
+            onClick={(e) => {
+              e.stopPropagation()
+              setCuaPreviewOpen(true)
+            }}
+          />
         )}
         {expandable && <span className="tool-card__toggle">{expanded ? '▼' : '▶'}</span>}
       </div>
@@ -894,14 +948,46 @@ export function ToolCallCard({ part }: Props) {
               )}
             </>
           )}
+          {/* CUA 列表类工具（list_apps/list_windows）：行式应用列表（真实图标+名称
+              +pid+窗口标题+前台徽标）替代裸 JSON；解析失败不进此分支，走下方原文 */}
+          {(cuaApps || cuaWins) && (
+            <div className="tool-card__section">
+              <div className="tool-card__label">
+                {cuaApps ? t('tool.cua.appList', '窗口应用') : t('tool.cua.windowList', '应用窗口')}
+              </div>
+              <ul className="cua-app-list">
+                {cuaApps?.map((a) => (
+                  <li key={a.pid} className="cua-app-item" title={a.title}>
+                    <CuaAppIcon
+                      iconKey={a.icon ?? null}
+                      className="cua-app-item__icon"
+                      fallback={<span className="codicon codicon-device-desktop cua-app-item__fallback" />}
+                    />
+                    <span className="cua-app-item__name">{a.name}</span>
+                    <span className="cua-app-item__pid">pid {a.pid}</span>
+                    <span className="cua-app-item__title">{a.title}</span>
+                    {a.active && <span className="cua-app-item__active">{t('tool.cua.foreground', '前台')}</span>}
+                  </li>
+                ))}
+                {cuaWins?.map((w) => (
+                  <li key={w.windowId} className="cua-app-item">
+                    <span className="cua-app-item__fallback">#</span>
+                    <span className="cua-app-item__pid">{w.windowId}</span>
+                    <span className="cua-app-item__title">{w.title}</span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
           {/* 其他工具：JSON 输入/输出。Skill 无展开区内容（技能名在头部摘要、
               技能文档走 📖 弹窗）；Agent 类输出（最终报告）同样只走头部弹窗按钮；
               ExitPlanMode 的 plan 全文走 📖 弹窗，展开区不渲染 input JSON；
               web 双工具走上方专用分支（input 友好展示 + 来源列表/短预览）；
               定时任务家族走上方 cron 分支（触发时刻/标题/提示词 + message/任务列表）；
               代理间消息族走上方消息分支（收件人/正文/回执）；
-              TodoWrite 走上方任务列表分支（diff 标注），仅流式未解析时落到 rawInput 原文 */}
-          {tool !== 'Bash' && tool !== 'Write' && tool !== 'Edit' && tool !== 'Skill' && tool !== 'ExitPlanMode' && !isWebTool && !isCron && !isTodoTool && !isMsgTool && (
+              TodoWrite 走上方任务列表分支（diff 标注），仅流式未解析时落到 rawInput 原文；
+              CUA 列表类已解析走上方应用列表分支，未解析（流式半截/形状变更）仍回这里 */}
+          {tool !== 'Bash' && tool !== 'Write' && tool !== 'Edit' && tool !== 'Skill' && tool !== 'ExitPlanMode' && !isWebTool && !isCron && !isTodoTool && !isMsgTool && !cuaApps && !cuaWins && (
             <>
               {state.input && Object.keys(state.input).length > 0 && (
                 <div className="tool-card__section">
@@ -933,6 +1019,14 @@ export function ToolCallCard({ part }: Props) {
         <div className="tool-card__time">{relativeTime(state.time.start)}</div>
       )}
         </div>
+      )}
+      {/* 截图全屏预览（portal，卡片根部挂载——header 缩略图收起状态也可点开） */}
+      {cuaPreviewOpen && cuaMedia && cuaMedia.length > 0 && (
+        <ImagePreview
+          images={cuaMedia.map((m) => ({ src: `data:${m.mimeType};base64,${m.data}`, title: t('tool.cua.screenshot', '屏幕截图') }))}
+          initialIndex={0}
+          onClose={() => setCuaPreviewOpen(false)}
+        />
       )}
     </div>
   )

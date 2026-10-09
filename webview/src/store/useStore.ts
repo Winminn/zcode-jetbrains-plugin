@@ -40,11 +40,12 @@ import { parseTodos, parseAgents, parseFileChanges, mergeAgentItems } from '@/ut
 import { parseBackgroundTaskWorks, parseDeliveredWorkStatuses } from '@/utils/backgroundTask'
 import { isHiddenSyntheticMessage, isAgentNotification } from '@/utils/parseNotification'
 import { mergeTurnMessages } from '@/utils/mergeTurnMessages'
-import { getPersisted, setPersisted, removePersisted, entriesWithPrefix, KV_HYDRATED_EVENT } from '@/utils/persist'
+import { getPersisted, setPersisted, removePersisted, entriesWithPrefix, isKvHydrated, KV_HYDRATED_EVENT } from '@/utils/persist'
 import { readStatusPanelConfig, writeStatusPanelConfig } from '@/utils/statusPanelConfig'
 import { addSteerMarkers, readSteerMarkers } from '@/utils/steerMarkers'
 import { readEnhanceConfig } from '@/utils/enhanceConfig'
 import { readCurrentFileConfig } from '@/utils/currentFileConfig'
+import { readCuaInputButtonConfig, writeCuaInputButtonConfig } from '@/utils/cuaInputButtonConfig'
 import { sameModel } from '@/utils/modelChoice'
 import { extractBackgroundTaskIdFromContent } from '@/utils/backgroundTask'
 import { fileContextPartFromAttachment } from '@/utils/fileContextParts'
@@ -1051,6 +1052,12 @@ interface StoreState {
   memoryError: string | null
   /** 「工作区记忆」开关（null=未加载；与 ZCode 客户端共用 ~/.zcode/v2/setting.json）*/
   memoryEnabled: boolean | null
+  cuaEnabled: boolean | null
+  cuaToggling: boolean
+  /** CUA 应用图标缓存：icon key → data URL（''=已请求但缺失，防重复拉取）*/
+  cuaIcons: Record<string, string>
+  /** 输入框「电脑操作」入口 chip 显隐（persist kv；上游还受 cuaEnabled 门控）*/
+  cuaInputButton: boolean
   /** 开关切换请求在途（防重复点击）*/
   memoryToggling: boolean
 
@@ -1350,6 +1357,12 @@ interface StoreState {
   createMemoryFile: (path: string) => void
   /** 切换「工作区记忆」开关（新会话生效）*/
   setMemoryEnabled: (enabled: boolean) => void
+  loadCuaEnabled: () => void
+  setCuaEnabled: (enabled: boolean) => void
+  /** 按需拉取应用图标（key 已缓存/已判缺失时跳过；''哨兵防缺失重复请求）*/
+  loadCuaIcon: (key: string) => void
+  /** 切换输入框「电脑操作」入口 chip 显隐（persist kv 即时回存）*/
+  setCuaInputButton: (enabled: boolean) => void
   /** 切换底部状态栏折叠态（输入框工具条按钮与状态栏本体共享）*/
   toggleStatusPanel: () => void
   /** 记录 AskUserQuestion 应答时刻（弹窗确认/取消时调用，补工具卡真实耗时）*/
@@ -1684,6 +1697,10 @@ export const useStore = create<StoreState>((set, get) => ({
   memoryCreatingPath: null,
   memoryError: null,
   memoryEnabled: null,
+  cuaEnabled: null,
+  cuaToggling: false,
+  cuaIcons: {},
+  cuaInputButton: readCuaInputButtonConfig().showInInputBox,
   memoryToggling: false,
   statusPanelCollapsed: readStatusPanelConfig().collapsed,
   askAnsweredAt: {},
@@ -1763,14 +1780,24 @@ export const useStore = create<StoreState>((set, get) => ({
     // IDE 广播：envSave 保存成功后多标签同步最新环境状态（Panel broadcastEnvStatus）
     // node 测试环境（vitest）无 window，跳过注册
     if (typeof window !== 'undefined') {
-      // steer 标识的 kv 迟水合兜底：注入写回完成后重读（store 创建时可能读到空值，
-      // 同 enhanceConfig 在 InputBox 的 KV_HYDRATED 重读模式）；
-      // node 测试环境的 window mock 无 addEventListener，一并防护
+      // kv 偏好的迟水合校正（steer 标识 / 状态栏折叠态 / 输入框电脑操作按钮）：
+      // store 模块创建先于 main.tsx 的 initPersist()，初值读到的可能是水合前的空
+      // localStorage。⚠️ initPersist 在桥注入早已就绪（JCEF executeJavaScript 通常
+      // 先于前端脚本）时会在 render 前同步完成水合并派发 KV_HYDRATED——此处补挂的
+      // 事件监听永远等不到（App changelog 弹窗同坑，双信号修法参照）：先查
+      // isKvHydrated() 直接重读，事件只兜异步到达分支。KV_DISABLED（dev/mock，
+      // localStorage 即权威源）时模块初值本就正确，无需校正
       if (typeof window.addEventListener === 'function') {
-        window.addEventListener(KV_HYDRATED_EVENT, () => set({ steeredMessageIds: readSteerMarkers() }))
-        // 状态栏折叠态迟水合兜底：生产 origin 每次重启变化，store 初值读到的
-        // localStorage 为空（默认展开）——注入写回完成后用权威值校正
-        window.addEventListener(KV_HYDRATED_EVENT, () => set({ statusPanelCollapsed: readStatusPanelConfig().collapsed }))
+        const reloadKvPrefs = () => set({
+          steeredMessageIds: readSteerMarkers(),
+          statusPanelCollapsed: readStatusPanelConfig().collapsed,
+          cuaInputButton: readCuaInputButtonConfig().showInInputBox,
+        })
+        if (isKvHydrated()) {
+          reloadKvPrefs()
+        } else {
+          window.addEventListener(KV_HYDRATED_EVENT, reloadKvPrefs, { once: true })
+        }
       }
       window.onEnvStatusChanged = (status: EnvStatus) => set({ envStatus: status })
       // IDE 广播：其他标签切换 provider 启用/禁用后多标签同步（Panel broadcastModelChanges）。
@@ -2917,6 +2944,29 @@ export const useStore = create<StoreState>((set, get) => ({
     if (get().memoryToggling) return
     set({ memoryToggling: true, memoryError: null })
     sendToJava({ op: 'setMemoryEnabled', enabled })
+  },
+
+  loadCuaEnabled: () => {
+    sendToJava({ op: 'getCuaEnabled' })
+  },
+
+  setCuaEnabled: (enabled) => {
+    if (get().cuaToggling) return
+    set({ cuaToggling: true })
+    sendToJava({ op: 'setCuaEnabled', enabled })
+  },
+
+  loadCuaIcon: (key) => {
+    // ''哨兵=已请求但缺失（服务端无此文件），同样不再发
+    if (get().cuaIcons[key] !== undefined) return
+    set((s) => ({ cuaIcons: { ...s.cuaIcons, [key]: '' } }))
+    sendToJava({ op: 'getCuaIcon', key })
+  },
+
+  setCuaInputButton: (enabled) => {
+    set({ cuaInputButton: enabled })
+    // persist kv 通道（同 statusPanelConfig）：localStorage 即时 + 去抖回存
+    writeCuaInputButtonConfig({ showInInputBox: enabled })
   },
 
   toggleStatusPanel: () => {
@@ -5326,6 +5376,21 @@ export function handleResponse(
       // 对齐丢弃乱序应答：只接受与当前发起 query 一致的响应
       if (msg.query === get().memorySearchActiveQuery) {
         set({ memorySearchResults: msg.results, memorySearching: false })
+      }
+      break
+
+    case 'cuaEnabled':
+      set({ cuaEnabled: msg.enabled })
+      break
+
+    case 'cuaEnabledChanged':
+      set({ cuaEnabled: msg.enabled, cuaToggling: false })
+      break
+
+    case 'cuaIcon':
+      // data 缺省=文件缺失：保留 '' 哨兵，后续 loadCuaIcon 不再重复请求
+      if (msg.data) {
+        set({ cuaIcons: { ...get().cuaIcons, [msg.key]: `data:image/png;base64,${msg.data}` } })
       }
       break
 

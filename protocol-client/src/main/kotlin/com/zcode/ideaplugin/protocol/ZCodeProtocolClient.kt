@@ -680,6 +680,17 @@ class ZCodeProtocolClient private constructor(
                 })
             }
         }
+        // 官方 MCP 鉴权头（interaction/requestOfficialMcpAuthHeaders）：官方插件 server
+        // （browser-use 等）的官方市场鉴权取数口。插件无 Coding Plan 官方身份，固定按
+        // 「不可用」拒绝（应答 schema discriminatedUnion("ok")，reason 枚举取
+        // official_auth_unavailable；diag-cua-inject.py 实证 -32601 拒绝也能容错跑通，
+        // 结构化拒绝更干净——server 置 failed 而非协议崩溃）
+        else if (method == "interaction/requestOfficialMcpAuthHeaders") {
+            respondToServer(id, buildJsonObject {
+                put("ok", false)
+                put("reason", "official_auth_unavailable")
+            })
+        }
         // 宿主浏览器反向请求（browser-use）：异步执行——navigate/screenshot 可能秒级耗时，
         // 与 requestUserInput 同理禁止阻塞 reader 线程
         else if (method == "interaction/browserList") {
@@ -1616,6 +1627,7 @@ class ZCodeProtocolClient private constructor(
         mode: PermissionMode = PermissionMode.BUILD,
         timeoutMs: Long = 20000,
         thoughtLevel: String? = null,
+        mcpServers: List<McpServerSpec>? = null,
     ): String {
         val nativePath = workspace.workspacePath.replace('/', File.separatorChar)
         val params = buildJsonObject {
@@ -1632,6 +1644,11 @@ class ZCodeProtocolClient private constructor(
             thoughtLevel?.takeIf { it.isNotBlank() }?.let {
                 put("thoughtLevel", it)
             }
+            // 电脑控制（CUA）注入通道：顶层 mcpServers 数组（diag-cua-inject.py 实测，
+            // stdio 分支 strict 形状见 McpServerSpec 注释）。空/null 不发键
+            mcpServers?.takeIf { it.isNotEmpty() }?.let { servers ->
+                put("mcpServers", mcpServersJson(servers))
+            }
         }
         val r = request("session/create", params, timeoutMs)
         requireOk(r)
@@ -1646,8 +1663,41 @@ class ZCodeProtocolClient private constructor(
         val result = r["result"]?.jsonObject ?: throw ZCodeProtocolException("create 响应缺 result")
         // 规格书 §2：sessionId 在 result.session.sessionId（兼容顶层 result.sessionId）
         val sessionObj = result["session"]?.jsonObject ?: result
-        return sessionObj["sessionId"]?.jsonPrimitive?.content
+        val sessionId = sessionObj["sessionId"]?.jsonPrimitive?.content
             ?: throw ZCodeProtocolException("create 响应缺 sessionId")
+        // 记录注入面：冷恢复 resume 时沿用（源码注释——不沿用会绕过 create 的工具面约束，
+        // 尤其 CUA 会话）；同步落盘档案，进程重启后内存记录清零仍可回灌
+        // （sess_03b9a979 实锤：内存态记录过不了 IDE 重启，resume 丢 CUA 工具面）
+        mcpServers?.takeIf { it.isNotEmpty() }?.let {
+            sessionMcpServers[sessionId] = it
+            SessionMcpServerStore.record(sessionId, it)
+        }
+        return sessionId
+    }
+
+    /** 会话 → create 时注入的 mcpServers（resume 冷恢复沿用；上限保护防泄漏） */
+    private val sessionMcpServers = object : LinkedHashMap<String, List<McpServerSpec>>(64, 0.75f) {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, List<McpServerSpec>>): Boolean {
+            return size > 200
+        }
+    }
+
+    private fun mcpServersJson(servers: List<McpServerSpec>): JsonArray = buildJsonArray {
+        servers.forEach { s ->
+            add(buildJsonObject {
+                put("name", s.name)
+                put("command", s.command)
+                put("args", JsonArray(s.args.map { JsonPrimitive(it) }))
+                put("env", JsonArray(s.env.map { (k, v) ->
+                    buildJsonObject {
+                        put("name", k)
+                        put("value", v)
+                    }
+                }))
+                s.isolation?.let { put("isolation", it) }
+                s.timeoutMs?.let { put("timeoutMs", it) }
+            })
+        }
     }
 
     /**
@@ -3058,6 +3108,15 @@ class ZCodeProtocolClient private constructor(
                 put("workspacePath", nativePath)
                 put("workspaceKey", nativePath)
             })
+            // 冷恢复重建 runtime 时必须沿用 create 的工具面（源码 zcodeSessionResumeParamsSchema
+            // 注释：否则会绕过 create 的 allow/deny 约束，尤其 CUA 会话）；热订阅复挂无影响。
+            // 内存未命中（IDE 重启后新 client 实例）回灌磁盘档案——注入记录不得因重启丢失
+            val resumedSpecs = sessionMcpServers[sessionId]
+                ?: SessionMcpServerStore.load(sessionId)?.also {
+                    println("[ZCodeProtocolClient] session mcpServers restored from disk store (${it.size} servers) for ${sessionId.takeLast(8)}")
+                    sessionMcpServers[sessionId] = it
+                }
+            resumedSpecs?.let { put("mcpServers", mcpServersJson(it)) }
         }
         val r = request("session/resume", params, timeoutMs)
         requireOk(r)
@@ -3471,6 +3530,8 @@ class ZCodeProtocolClient private constructor(
         }
         // 3. 删 db.sqlite 持久化记录（关键步骤，session/list 的数据源，失败则抛异常）
         deleteSessionFromDb(sessionId)
+        // 4. 注入面磁盘档案顺手清（会话没了，resume 沿用记录不再有意义；fail-soft）
+        SessionMcpServerStore.forget(sessionId)
     }
 
     /**

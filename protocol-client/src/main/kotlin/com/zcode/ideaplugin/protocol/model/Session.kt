@@ -43,6 +43,22 @@ data class CreateSessionResult(
     val protocol: ProtocolVersion? = null
 )
 
+/**
+ * session/create、session/resume 的顶层 mcpServers 数组条目（wire 面 stdio 形态，
+ * 源码 zcodeProtocolMcpServerSchema strict：无 type、无 cwd；env 是 {name,value} 数组）。
+ * 用途：电脑控制功能注入 zcgui-computer-use server（diag-cua-inject.py 实测通道）。
+ */
+data class McpServerSpec(
+    val name: String,
+    val command: String,
+    val args: List<String> = emptyList(),
+    /** 环境变量键值对，序列化为 [{name,value}] 数组 */
+    val env: Map<String, String> = emptyMap(),
+    /** "session" = 每会话独立进程（CUA 状态隔离首选）；"workspace" = 每工作区共享 */
+    val isolation: String? = "session",
+    val timeoutMs: Long? = null,
+)
+
 @Serializable
 data class ProtocolVersion(
     val name: String = "ZCode Protocol",

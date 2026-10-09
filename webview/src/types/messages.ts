@@ -114,6 +114,9 @@ export interface ToolState {
   /** 失败详情双形态：历史读回（session/messages）为纯字符串；流式 tool.updated(kind=error) 为 {message, code} */
   error?: string | { message: string; code?: string }
   metadata?: Record<string, unknown>
+  /** 工具结果媒体（如 CUA get_app_state 截图）：来自 v4 行 output.display.media，
+   *  data 为 base64（无前缀），mimeType 形如 image/jpeg */
+  media?: { mimeType: string; data: string }[]
   time?: { start: number; end?: number }
 }
 
@@ -523,6 +526,12 @@ export type JavaRequest =  | { op: 'askUserPendingState' }
   | { op: 'revealInFileManager'; path: string }
   /** 切换「工作区记忆」开关（写 ~/.zcode/v2/setting.json，与 ZCode 客户端共用）*/
   | { op: 'setMemoryEnabled'; enabled: boolean }
+  /** 电脑控制开关快照（设置页「电脑控制」）*/
+  | { op: 'getCuaEnabled' }
+  /** 切换电脑控制开关（PropertiesComponent 全局；注入在新建会话时读取）*/
+  | { op: 'setCuaEnabled'; enabled: boolean }
+  /** 按 key 取 server 落盘的应用图标 PNG（base64；CUA 工具卡 header 渲染用）*/
+  | { op: 'getCuaIcon'; key: string }
   /** 浏览器设置快照（控制开关/插件安装态）*/
   | { op: 'browserConfig' }
   /** 清除内置浏览器数据（mode=cache 保留 Cookie 与本地站点数据；all 全清）*/
@@ -1278,6 +1287,10 @@ export type JavaResponse =
   | { op: 'fileRefreshed' }
   | { op: 'memoryFiles'; files: MemoryFileInfo[]; memoryEnabled: boolean; memorySettingPath: string; memoryDir?: MemoryDirInfo | null }
   | { op: 'memoryEnabledChanged'; enabled: boolean }
+  | { op: 'cuaEnabled'; enabled: boolean }
+  | { op: 'cuaEnabledChanged'; enabled: boolean }
+  /** op=getCuaIcon 的响应：data 缺省=图标文件缺失（前端保持占位不重试）*/
+  | { op: 'cuaIcon'; key: string; data?: string }
   | { op: 'memoryFileCreated'; path: string }
   | { op: 'revealedInFileManager' }
   /** op=searchMemoryFiles 的响应（query 回带：前端对齐丢弃乱序应答）*/

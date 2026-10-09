@@ -134,5 +134,14 @@
     "taskTitle": "Task title",
     "listTitle": "Scheduled tasks ({{count}})",
     "completed": "completed"
+  },
+  "cua": {
+    "screenshot": "Screenshot",
+    "viewFull": "Click to enlarge screenshot",
+    "appCount": "{{count}} windowed apps",
+    "windowCount": "{{count}} windows",
+    "appList": "Windowed apps",
+    "windowList": "App windows",
+    "foreground": "Foreground"
   }
 }

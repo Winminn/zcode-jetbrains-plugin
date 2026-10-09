@@ -13,6 +13,7 @@ import i18n from 'i18next'
 import { initReactI18next } from 'react-i18next'
 
 import zhCommon from './locales/zh/common.json'
+import zhComputer from './locales/zh/computer.json'
 import zhApp from './locales/zh/app.json'
 import zhSettings from './locales/zh/settings.json'
 import zhInput from './locales/zh/input.json'
@@ -31,6 +32,7 @@ import zhAgents from './locales/zh/agents.json'
 import zhRemote from './locales/zh/remote.json'
 
 import zhTwCommon from './locales/zh-TW/common.json'
+import zhTwComputer from './locales/zh-TW/computer.json'
 import zhTwApp from './locales/zh-TW/app.json'
 import zhTwSettings from './locales/zh-TW/settings.json'
 import zhTwInput from './locales/zh-TW/input.json'
@@ -49,6 +51,7 @@ import zhTwAgents from './locales/zh-TW/agents.json'
 import zhTwRemote from './locales/zh-TW/remote.json'
 
 import enCommon from './locales/en/common.json'
+import enComputer from './locales/en/computer.json'
 import enApp from './locales/en/app.json'
 import enSettings from './locales/en/settings.json'
 import enInput from './locales/en/input.json'
@@ -67,6 +70,7 @@ import enAgents from './locales/en/agents.json'
 import enRemote from './locales/en/remote.json'
 
 import jaCommon from './locales/ja/common.json'
+import jaComputer from './locales/ja/computer.json'
 import jaApp from './locales/ja/app.json'
 import jaSettings from './locales/ja/settings.json'
 import jaInput from './locales/ja/input.json'
@@ -85,6 +89,7 @@ import jaAgents from './locales/ja/agents.json'
 import jaRemote from './locales/ja/remote.json'
 
 import koCommon from './locales/ko/common.json'
+import koComputer from './locales/ko/computer.json'
 import koApp from './locales/ko/app.json'
 import koSettings from './locales/ko/settings.json'
 import koInput from './locales/ko/input.json'
@@ -125,11 +130,12 @@ function merge(
   utils: object,
   models: object,
   browser: object,
+  computer: object,
   enhance: object,
   agents: object,
   remote: object,
 ) {
-  return { common, app, settings, input, chat, tool, history, mcp, usage, memory, skills, utils, models, browser, enhance, agents, remote }
+  return { common, app, settings, input, chat, tool, history, mcp, usage, memory, skills, utils, models, browser, computer, enhance, agents, remote }
 }
 
 /** IDE 注入的权威语言（buildBridgeJs 生成；无注入为 undefined）*/
@@ -162,11 +168,11 @@ export function getInitialLanguage(): SupportedLanguage {
 
 void i18n.use(initReactI18next).init({
   resources: {
-    zh: { translation: merge(zhCommon, zhApp, zhSettings, zhInput, zhChat, zhTool, zhHistory, zhMcp, zhUsage, zhMemory, zhSkills, zhUtils, zhModels, zhBrowser, zhEnhance, zhAgents, zhRemote) },
-    'zh-TW': { translation: merge(zhTwCommon, zhTwApp, zhTwSettings, zhTwInput, zhTwChat, zhTwTool, zhTwHistory, zhTwMcp, zhTwUsage, zhTwMemory, zhTwSkills, zhTwUtils, zhTwModels, zhTwBrowser, zhTwEnhance, zhTwAgents, zhTwRemote) },
-    en: { translation: merge(enCommon, enApp, enSettings, enInput, enChat, enTool, enHistory, enMcp, enUsage, enMemory, enSkills, enUtils, enModels, enBrowser, enEnhance, enAgents, enRemote) },
-    ja: { translation: merge(jaCommon, jaApp, jaSettings, jaInput, jaChat, jaTool, jaHistory, jaMcp, jaUsage, jaMemory, jaSkills, jaUtils, jaModels, jaBrowser, jaEnhance, jaAgents, jaRemote) },
-    ko: { translation: merge(koCommon, koApp, koSettings, koInput, koChat, koTool, koHistory, koMcp, koUsage, koMemory, koSkills, koUtils, koModels, koBrowser, koEnhance, koAgents, koRemote) },
+    zh: { translation: merge(zhCommon, zhApp, zhSettings, zhInput, zhChat, zhTool, zhHistory, zhMcp, zhUsage, zhMemory, zhSkills, zhUtils, zhModels, zhBrowser, zhComputer, zhEnhance, zhAgents, zhRemote) },
+    'zh-TW': { translation: merge(zhTwCommon, zhTwApp, zhTwSettings, zhTwInput, zhTwChat, zhTwTool, zhTwHistory, zhTwMcp, zhTwUsage, zhTwMemory, zhTwSkills, zhTwUtils, zhTwModels, zhTwBrowser, zhTwComputer, zhTwEnhance, zhTwAgents, zhTwRemote) },
+    en: { translation: merge(enCommon, enApp, enSettings, enInput, enChat, enTool, enHistory, enMcp, enUsage, enMemory, enSkills, enUtils, enModels, enBrowser, enComputer, enEnhance, enAgents, enRemote) },
+    ja: { translation: merge(jaCommon, jaApp, jaSettings, jaInput, jaChat, jaTool, jaHistory, jaMcp, jaUsage, jaMemory, jaSkills, jaUtils, jaModels, jaBrowser, jaComputer, jaEnhance, jaAgents, jaRemote) },
+    ko: { translation: merge(koCommon, koApp, koSettings, koInput, koChat, koTool, koHistory, koMcp, koUsage, koMemory, koSkills, koUtils, koModels, koBrowser, koComputer, koEnhance, koAgents, koRemote) },
   },
   lng: getInitialLanguage(),
   fallbackLng: DEFAULT_LANGUAGE,
