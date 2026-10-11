@@ -44,6 +44,8 @@ This project has exactly one goal: **use ZCode's core capabilities where you wri
 
 **Embedded browser** — the Header globe button expands a browser column to the right of the chat area: multiple tabs (globally shared, persist across sessions), back / forward / refresh / address bar / free-size viewport (DevTools device-toolbar style virtual screen) / DevTools / open externally, native Ctrl+wheel zoom with a percentage indicator, plus a browser console (CDP) for clearing site data and site overview; the plugin hosts the browser-use reverse protocol, so the AI can drive this browser — navigate, screenshot, execute JS, run playwright locators and CUA mouse/keyboard actions — with zero configuration
 
+**Computer use** — flip the switch in settings and sessions get a built-in Computer Use toolset: the AI can list apps / windows (with app icons and foreground marks), take screenshots (with sub-region zoom), click / drag / scroll / press key combos at coordinates, manage windows (move / resize / minimize / restore with read-back verification), and fire multi-step batch macros; every action ships with a post-action screenshot, rendered live as tool cards with click-to-fullscreen thumbnails, and a "Computer" button in the input box inserts the skill in one click
+
 **Runtime control** — model dropdown (builtin channels follow the active channel in the ZCode client; manual refresh inside the dropdown; a Z.ai subscription account channel connects via OAuth with no API key, and the quota page shows the plan usage), permission mode (build / edit / plan / yolo) and thinking level (per model), adjustable; preselectable in the standby state (before a session exists), applied when the session is created; context-capacity ring (usage breakdown + cache hits, double-click to compact the context), 5-hour / weekly quota queries, and a quota banner that warns when the 5-hour pool runs low and shows the reset time
 
 **Settings center** — ten tabs: General (Appearance: theme / font / language / custom colors; Environment: manual paths or auto-detection; Behavior: input-history completion and more), Models (builtin channels follow the ZCode client config — only the active one is shown, annotated with how it was resolved: client-selected or fallback; a Z.ai account channel connects via OAuth; builtin channels support a custom API Key — team-plan users can fill in a team project key from the BigModel open platform to bill the team quota, with the card showing the key actually used for billing (masked by default, revealable) and its source, plus a billing reminder when unset; third-party providers can be toggled, with preset cards for common providers where you only fill in the key; paths follow data-directory migration; add/remove guides you to ZCode config with one-click open), Usage (App usage: local session stats covering third-party models, 7-day / 30-day / all ranges; GLM plan usage: quota cards + model/tool usage curves and detail tables, with the queried credential source and key (masked) labeled), Memory (AGENTS.md instruction memory + auto memory, creatable when missing, full-text search), Skills (global / project / plugin three-source scan, inline enable/disable), Subagents (custom agent definitions), MCP (server list / tool list / connection logs), Browser (embedded browser controls and site-data cleanup), Processes (resident / child / suspected-orphan groups with precise kill), Other (input-history completion toggle and history management)
@@ -95,13 +97,15 @@ It is more than a built-in browser — the plugin implements the ZCode app-serve
 | :---: | :---: |
 | ![Goal mode in progress](docs/screenshots/goal-processing.png) | ![Goal mode complete](docs/screenshots/goal-done.png) |
 
-**Scheduled tasks · mobile remote · runtime control**
+**Scheduled tasks · mobile remote · runtime control · computer use**
 
 | Manually creating a scheduled send (preset time or quick presets,<br>target model / new session) | An AI-created scheduled task (execution card + queued preview<br>before it fires; send now / edit / cancel) |
 | :---: | :---: |
 | ![Scheduled send creation](docs/screenshots/scheduled-send.png) | ![AI-created scheduled task](docs/screenshots/scheduled-task.png) |
 | **Mobile remote pairing: scan to connect and control desktop<br>sessions from the phone (pairing credential masked)** | **Model switcher dropdown: grouped by channel,<br>marked selected / default, with a manage entry** |
 | ![Mobile remote pairing](docs/screenshots/remote-pairing.png) | ![Model switcher](docs/screenshots/model-switcher.png) |
+| **Computer use: the AI lists windows → opens Notepad from the<br>Start menu → types text; action cards carry post-action<br>screenshot thumbnails, one-click entry in the input box** | **Click a thumbnail: fullscreen screenshot preview<br>(wheel zoom / drag pan)** |
+| ![Computer use](docs/screenshots/computer-use.png) | ![Computer use screenshot preview](docs/screenshots/computer-use-preview.png) |
 
 **Input enhancements & multi-tasking**
 
