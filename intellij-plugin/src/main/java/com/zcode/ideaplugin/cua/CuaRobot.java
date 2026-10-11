@@ -115,30 +115,44 @@ final class CuaRobot {
     }
 
     /**
-     * 最近一次缩放截图的换算台账：AI 的坐标语义是「最新返回图像的像素」，真实派发
+     * 最近一次截图的换算台账：AI 的坐标语义是「最新返回图像的像素」，真实派发
      * 需要乘回屏幕坐标（对齐官方 SKILL："CUA owns every transform from the returned
-     * raster to native dispatch"）。null = 本会话尚未截图，坐标按屏幕原生像素直用。
+     * raster to native dispatch"）。screenRect 是截图覆盖的屏幕区域（AWT 逻辑空间
+     * 绝对坐标：全屏=屏 bounds，crop=子区域），点击换算与坐标系语义统一为
+     * 「rect 原点 + 图像素 × rect 尺寸 / 图尺寸」；null = 本会话尚未截图，坐标按
+     * 屏幕原生像素直用。
      */
     static final class CaptureLedger {
         final int displayIndex;
         final int imgWidth;
         final int imgHeight;
-        final Rectangle screenBounds;
+        final Rectangle screenRect;
         final String stateId;
 
-        CaptureLedger(int displayIndex, int imgWidth, int imgHeight, Rectangle screenBounds, String stateId) {
+        CaptureLedger(int displayIndex, int imgWidth, int imgHeight, Rectangle screenRect, String stateId) {
             this.displayIndex = displayIndex;
             this.imgWidth = imgWidth;
             this.imgHeight = imgHeight;
-            this.screenBounds = screenBounds;
+            this.screenRect = screenRect;
             this.stateId = stateId;
         }
 
-        /** 图像像素 → 屏幕坐标。 */
+        /** 图像像素点 → 屏幕坐标。 */
         int[] toScreen(int x, int y) {
-            int sx = screenBounds.x + (int) Math.round(x * screenBounds.width / (double) imgWidth);
-            int sy = screenBounds.y + (int) Math.round(y * screenBounds.height / (double) imgHeight);
+            int sx = screenRect.x + (int) Math.round(x * screenRect.width / (double) imgWidth);
+            int sy = screenRect.y + (int) Math.round(y * screenRect.height / (double) imgHeight);
             return new int[]{sx, sy};
+        }
+
+        /** 图像像素矩形 {x,y,w,h} → 逻辑空间矩形（crop 参数换算用）。 */
+        int[] toScreenRect(int[] img) {
+            double kx = screenRect.width / (double) imgWidth;
+            double ky = screenRect.height / (double) imgHeight;
+            int sx = screenRect.x + (int) Math.round(img[0] * kx);
+            int sy = screenRect.y + (int) Math.round(img[1] * ky);
+            int sw = Math.max(1, (int) Math.round(img[2] * kx));
+            int sh = Math.max(1, (int) Math.round(img[3] * ky));
+            return new int[]{sx, sy, sw, sh};
         }
     }
 
@@ -152,12 +166,20 @@ final class CuaRobot {
         lastCapture = ledger;
     }
 
+    static Object[] captureScreenScaled(int displayIndex) {
+        return captureScreenScaled(displayIndex, null);
+    }
+
     /**
      * 截取指定屏并压缩为 JPEG，base64 预算内（app-server 通用 MCP 图片 inline 上限
      * 200KiB，超限落 artifact 模型就看不到图——e2e 实测）。缩放上限 1600px（Provider
-     * 模型图片上限 2000px 内）；质量 0.8 起步逐级降。返回 {jpeg, 图宽, 图高}。
+     * 模型图片上限 2000px 内）；质量 0.8 起步逐级降。
+     *
+     * cropImg 非空时按「最近一张截图的像素矩形」语义（无台账则按目标屏原生像素）
+     * 换算成逻辑矩形，只截子区域并放大到长边 ≤1600（认托盘图标/小控件；放大倍数
+     * 封顶 8，避免把噪点放大成马赛克）。返回 {jpeg, 图宽, 图高, 截取区域逻辑矩形}。
      */
-    static Object[] captureScreenScaled(int displayIndex) {
+    static Object[] captureScreenScaled(int displayIndex, int[] cropImg) {
         if (displayIndex < 0 || displayIndex >= DEVICES.length) {
             StringBuilder names = new StringBuilder();
             for (int i = 0; i < DEVICES.length; i++) {
@@ -172,15 +194,30 @@ final class CuaRobot {
         }
         Rectangle bounds = DEVICES[displayIndex].getDefaultConfiguration().getBounds();
         BufferedImage raw = ROBOT.createScreenCapture(bounds);
+        Rectangle area = bounds;
+        BufferedImage src = raw;
+        if (cropImg != null) {
+            int[] r = cropRectToDisplay(displayIndex, cropImg);
+            if (r == null) {
+                throw new CuaException("ELEMENT_UNAVAILABLE",
+                    "crop rectangle falls outside display " + displayIndex + " [" + bounds.x + ","
+                        + bounds.y + " " + bounds.width + "x" + bounds.height + "]");
+            }
+            area = new Rectangle(r[0], r[1], r[2], r[3]);
+            src = raw.getSubimage(area.x - bounds.x, area.y - bounds.y, area.width, area.height);
+        }
+        boolean cropped = src != raw;
         int maxDim = 1600;
-        double scale = Math.min(1.0, maxDim / (double) Math.max(raw.getWidth(), raw.getHeight()));
-        int w = Math.max(1, (int) Math.round(raw.getWidth() * scale));
-        int h = Math.max(1, (int) Math.round(raw.getHeight() * scale));
+        double scale = cropped
+            ? Math.min(maxDim / (double) Math.max(area.width, area.height), 8.0)
+            : Math.min(1.0, maxDim / (double) Math.max(src.getWidth(), src.getHeight()));
+        int w = Math.max(1, (int) Math.round(src.getWidth() * scale));
+        int h = Math.max(1, (int) Math.round(src.getHeight() * scale));
         BufferedImage scaled = new BufferedImage(w, h, BufferedImage.TYPE_INT_RGB);
         java.awt.Graphics2D g = scaled.createGraphics();
         g.setRenderingHint(java.awt.RenderingHints.KEY_INTERPOLATION,
             java.awt.RenderingHints.VALUE_INTERPOLATION_BILINEAR);
-        g.drawImage(raw, 0, 0, w, h, null);
+        g.drawImage(src, 0, 0, w, h, null);
         g.dispose();
         byte[] best = null;
         for (float q : new float[]{0.8f, 0.6f, 0.45f, 0.3f}) {
@@ -191,7 +228,34 @@ final class CuaRobot {
                 break;
             }
         }
-        return new Object[]{best, w, h};
+        return new Object[]{best, w, h, area};
+    }
+
+    /**
+     * crop 参数（上一张截图像素矩形）→ 本屏逻辑矩形并 clamp 进屏；完全在屏外返回
+     * null（fail-closed：AI 用错屏/陈旧栅格）。跨屏引用时按台账的全局换算走，
+     * 台账不存在则按目标屏原生像素直用。
+     */
+    private static int[] cropRectToDisplay(int displayIndex, int[] cropImg) {
+        if (cropImg.length < 4) {
+            throw new CuaException("INTERNAL", "crop must be [x, y, w, h]");
+        }
+        Rectangle bounds = DEVICES[displayIndex].getDefaultConfiguration().getBounds();
+        int[] r;
+        CaptureLedger led = lastCapture();
+        if (led != null) {
+            r = led.toScreenRect(cropImg);
+        } else {
+            r = new int[]{bounds.x + cropImg[0], bounds.y + cropImg[1], cropImg[2], cropImg[3]};
+        }
+        int x1 = Math.max(bounds.x, r[0]);
+        int y1 = Math.max(bounds.y, r[1]);
+        int x2 = Math.min(bounds.x + bounds.width, r[0] + r[2]);
+        int y2 = Math.min(bounds.y + bounds.height, r[1] + r[3]);
+        if (x2 - x1 < 2 || y2 - y1 < 2) {
+            return null;
+        }
+        return new int[]{x1, y1, x2 - x1, y2 - y1};
     }
 
     private static byte[] encodeJpeg(BufferedImage img, float quality) {
@@ -340,6 +404,55 @@ final class CuaRobot {
     static int[] pointer() {
         java.awt.Point p = MouseInfo.getPointerInfo().getLocation();
         return new int[]{p.x, p.y};
+    }
+
+    /** 点所在的 display 索引；虚拟桌面外返回 -1。 */
+    static int displayIndexAt(int x, int y) {
+        for (int i = 0; i < DEVICES.length; i++) {
+            Rectangle b = DEVICES[i].getDefaultConfiguration().getBounds();
+            if (x >= b.x && x < b.x + b.width && y >= b.y && y < b.y + b.height) {
+                return i;
+            }
+        }
+        return -1;
+    }
+
+    /**
+     * 逻辑点所在屏的「逻辑 → 物理」缩放（getDefaultTransform；探测失败按 1.0）。
+     */
+    static double[] screenScaleAt(int x, int y) {
+        int idx = displayIndexAt(x, y);
+        if (idx < 0) {
+            return new double[]{1.0, 1.0};
+        }
+        try {
+            var t = DEVICES[idx].getDefaultConfiguration().getDefaultTransform();
+            double sx = t.getScaleX();
+            double sy = t.getScaleY();
+            if (sx > 0 && sy > 0) {
+                return new double[]{sx, sy};
+            }
+        } catch (Exception ignore) {
+            // 老实现无 transform：走 1.0
+        }
+        return new double[]{1.0, 1.0};
+    }
+
+    /**
+     * 主屏（含原点的屏）AWT 逻辑宽——PowerShell 虚拟化空间的标定基准。
+     * powershell.exe 实测为 DPI-unaware（GetSystemMetrics 返回物理÷主屏scale，
+     * 真机 125% 主屏报 2048=物理 2560÷1.25），该空间在主屏上与 AWT per-monitor
+     * 逻辑空间数值相等；按 smW/awtW 比例闭环换算后两种 awareness 都正确
+     * （见 CuaApps#windowManage）。
+     */
+    static int mainScreenLogicalWidth() {
+        for (GraphicsDevice gd : DEVICES) {
+            Rectangle b = gd.getDefaultConfiguration().getBounds();
+            if (b.x == 0 && b.y == 0) {
+                return b.width;
+            }
+        }
+        return DEVICES[0].getDefaultConfiguration().getBounds().width;
     }
 
     private static void sleep(long ms) {

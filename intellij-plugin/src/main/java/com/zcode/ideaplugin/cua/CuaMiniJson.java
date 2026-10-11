@@ -212,9 +212,14 @@ final class CuaMiniJson {
 
     /** 带截图的 result 信封（base64 纯 ASCII 直接内嵌）。 */
     static String imageResult(String text, String base64, String mimeType) {
+        return imageResult(text, base64, mimeType, false);
+    }
+
+    /** 带截图且可标记失败的 result 信封（batch 失败回执用：错误文本 + 现场截图）。 */
+    static String imageResult(String text, String base64, String mimeType, boolean isError) {
         return "{\"content\":["
             + "{\"type\":\"text\",\"text\":" + str(text) + "},"
             + "{\"type\":\"image\",\"data\":\"" + base64 + "\",\"mimeType\":\"" + mimeType + "\"}"
-            + "],\"isError\":false}";
+            + "],\"isError\":" + isError + "}";
     }
 }
