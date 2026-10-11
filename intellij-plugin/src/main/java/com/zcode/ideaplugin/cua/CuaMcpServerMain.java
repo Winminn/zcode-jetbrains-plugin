@@ -1,6 +1,7 @@
 package com.zcode.ideaplugin.cua;
 
 import java.io.BufferedReader;
+import java.io.File;
 import java.io.FileDescriptor;
 import java.io.FileOutputStream;
 import java.io.InputStreamReader;
@@ -74,6 +75,18 @@ public final class CuaMcpServerMain {
         ERR.println("[zcgui-cua] " + msg);
     }
 
+    /**
+     * 执行闸门：skill 目录不在即拒。~/.zcode/skills/zcgui-computer-use（与插件侧
+     * CuaFeature.skillDir 同一路径）是 IDE 开关的跨进程投影——开时落盘、关时整目录
+     * 删除。注入面随会话存续无法中途撤销（resume 沿用 create 工具面，server 进程可
+     * 存活于旧会话），「开关关闭后已注入会话立即断供」只能在这里 fail-closed；
+     * 每次调用现查目录不缓存，关闭即刻生效，目录缺失（含用户手动删除）同视为关闭。
+     */
+    private static boolean gateClosed() {
+        return !new File(System.getProperty("user.home"),
+                ".zcode/skills/zcgui-computer-use").isDirectory();
+    }
+
     private static String msg(Throwable e) {
         return e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName();
     }
@@ -119,6 +132,16 @@ public final class CuaMcpServerMain {
             case "tools/call": {
                 Map<?, ?> params = asMap(msg.get("params"));
                 String name = params.get("name") instanceof String ? (String) params.get("name") : "";
+                if (gateClosed()) {
+                    // isError 文本结果（非 -32602 协议错误）：模型能读到原因转告用户，
+                    // 也避免服务端把协议错误当工具故障重试
+                    err("tool " + name + " rejected: feature disabled");
+                    return "{\"jsonrpc\":\"2.0\",\"id\":" + idJson(id) + ",\"result\":"
+                        + CuaMiniJson.textResult(cuaErrorJson("DISABLED",
+                            "Computer Use is disabled in the IDE plugin settings; "
+                                + "no desktop action was performed. Ask the user to re-enable "
+                                + "it there if desktop control is needed."), true) + "}";
+                }
                 Map<?, ?> toolArgs = asMap(params.get("arguments"));
                 long started = System.currentTimeMillis();
                 String result;
