@@ -72,50 +72,96 @@ class ZCodeBrowserExecutor(private val project: Project) {
          * 文件存在但端口连不通 = server 已死文件残留（cef_server 被强杀后常见），
          * 调用方（ToolWindowFactory 的旧 cef_server 清理）据此决定是否需要清理重启。
          */
-        fun hasReachableCdpEndpoint(): Boolean {
-            for (f in findDevToolsActivePortFiles()) {
-                val port = parseDevToolsPort(f) ?: continue
-                for (host in listOf("127.0.0.1", "[::1]")) {
-                    val h = host.removePrefix("[").removeSuffix("]")
-                    try {
-                        java.net.Socket().use { s ->
-                            s.connect(java.net.InetSocketAddress(h, port), 800)
-                        }
-                        return true
-                    } catch (e: Exception) {
-                        // 换下一个 host / 文件
+        fun hasReachableCdpEndpoint(): Boolean =
+            findDevToolsActivePortFiles().any { probePortFile(it) != null }
+
+        /**
+         * 校验单个 DevToolsActivePort 文件：首行可解析为端口且 TCP 可达（IPv4/IPv6
+         * 双栈，各 800ms），返回真实端口；文件损坏/端口无监听返回 null。
+         * envSave 保存用户配置前用同一标准严格校验（无效不落盘）。
+         */
+        fun probePortFile(f: java.io.File): Int? {
+            val port = parseDevToolsPort(f) ?: return null
+            for (host in listOf("127.0.0.1", "::1")) {
+                try {
+                    java.net.Socket().use { s ->
+                        s.connect(java.net.InetSocketAddress(host, port), 800)
                     }
+                    return port
+                } catch (e: Exception) {
+                    // 换下一个栈
                 }
             }
-            return false
+            return null
         }
 
         /**
-         * jcef_cache 定位：系统缓存根下所有产品的 DevToolsActivePort 候选，
-         * 按修改时间降序（多 IDE 并存时最近的优先，但不"一棵树吊死"——
-         * 最新那份不可达时继续试次新的，Mac 实测出现过最新文件属于别的产品）。
-         * 目录含 jcef_cache 本体与 jcef_cache 数字后缀变体（远程开发/沙箱场景）。
+         * DevToolsActivePort 候选定位，优先级：
+         * 1. 用户在 设置→环境 显式配置的文件（isFile 才纳入）：钉在首位，不参与 mtime 排序；
+         * 2. PathManager.getSystemDir()（IDE 实际 system 路径，自定义 idea.system.path
+         *    场景的零配置兜底）直属的 jcef_cache / jcef_cache-*；
+         * 3. 操作系统默认根（~/AppData、~/Library、~/.cache）下各产品目录的同名缓存，
+         *    多产品并存/历史布局兜底。
+         * 2+3 合并为 auto 池按 lastModified 降序（最新那份不可达仍会试次新的），
+         * 全表按 canonical path 去重——配置值恰好等于自动发现路径（含 junction 绕行）
+         * 时不出现两份；配置项去重后恒居列表头。
          */
         fun findDevToolsActivePortFiles(): List<java.io.File> {
+            val ordered = LinkedHashMap<String, java.io.File>()
+
+            // 1) 显式配置：钉首位
+            com.zcode.ideaplugin.env.ZCodeEnvChecker.configuredCdpPortFile()
+                ?.let { java.io.File(it) }
+                ?.takeIf { it.isFile }
+                ?.let { ordered[it.dedupKey()] = it }
+
+            // 2) IDE 实际 system 目录（零配置兜底；PathManager 在非常规启动下可能抛错，按缺席处理）
+            val systemDir = try {
+                com.intellij.openapi.application.PathManager.getSystemDir().toFile()
+            } catch (e: Exception) {
+                null
+            }
+
+            // 3) 操作系统默认根（保留历史扫描，不删）
             val osName = System.getProperty("os.name", "").lowercase()
-            val base = when {
+            val homeBase = when {
                 osName.startsWith("win") ->
                     java.io.File(System.getProperty("user.home"), "AppData/Local/JetBrains")
                 osName.contains("mac") ->
                     java.io.File(System.getProperty("user.home"), "Library/Caches/JetBrains")
                 else -> java.io.File(System.getProperty("user.home"), ".cache/JetBrains")
             }
+
+            val auto = buildList {
+                if (systemDir != null) addAll(devToolsPortFilesUnderSystem(systemDir))
+                addAll(devToolsPortFilesUnderHomeBase(homeBase))
+            }.sortedByDescending { it.lastModified() }
+
+            for (f in auto) ordered.putIfAbsent(f.dedupKey(), f)
+            return ordered.values.toList()
+        }
+
+        /** 去重键：优先 canonical（解析 junction/符号链接，绕行方案与真实路径视为同一份） */
+        private fun java.io.File.dedupKey(): String = runCatching { canonicalPath }.getOrDefault(absolutePath)
+
+        /** system 目录直属 jcef_cache[-后缀] 变体里的 DevToolsActivePort（system 目录本身即产品级） */
+        private fun devToolsPortFilesUnderSystem(systemDir: java.io.File): List<java.io.File> =
+            jcefCacheDirs(systemDir).map { java.io.File(it, "DevToolsActivePort") }.filter { it.isFile }
+
+        /** home 默认根：两级遍历 <base>/<产品>/jcef_cache[-后缀]/DevToolsActivePort */
+        private fun devToolsPortFilesUnderHomeBase(base: java.io.File): List<java.io.File> {
             if (!base.isDirectory) return emptyList()
             return base.listFiles { f: java.io.File -> f.isDirectory }
-                ?.flatMap { product ->
-                    product.listFiles { f: java.io.File -> f.isDirectory }
-                        ?.filter { it.name == "jcef_cache" || it.name.startsWith("jcef_cache-") }
-                        ?.map { java.io.File(it, "DevToolsActivePort") }
-                        ?.filter { it.isFile } ?: emptyList()
-                }
-                ?.sortedByDescending { it.lastModified() }
+                ?.flatMap { product -> jcefCacheDirs(product).map { java.io.File(it, "DevToolsActivePort") } }
+                ?.filter { it.isFile }
                 ?: emptyList()
         }
+
+        /** 父目录下 jcef_cache 本体与 jcef_cache- 数字后缀变体（远程开发/沙箱场景） */
+        private fun jcefCacheDirs(parent: java.io.File): List<java.io.File> =
+            parent.listFiles { f: java.io.File -> f.isDirectory }
+                ?.filter { it.name == "jcef_cache" || it.name.startsWith("jcef_cache-") }
+                ?: emptyList()
 
         /** DevToolsActivePort 首行端口号（CEF 写出格式）；缺失/损坏/不可读为 null */
         private fun parseDevToolsPort(f: java.io.File): Int? = try {

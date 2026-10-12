@@ -120,6 +120,8 @@ object ZCodeEnvChecker {
 
     const val KEY_NODE_PATH = "zcode.env.nodePath"
     const val KEY_CLI_PATH = "zcode.env.cliPath"
+    /** JCEF DevToolsActivePort 文件覆盖路径（CDP 端点发现；未配置走 PathManager/home 自动扫描） */
+    const val KEY_CDP_PORT_FILE = "zcode.env.cdpPortFile"
     const val MIN_NODE_MAJOR_VERSION = 18
 
     // 15s：代理/TUN 环境（用户常态）下 zcode.cjs --version 冷启动实测 7s+（node 启动期
@@ -187,6 +189,7 @@ object ZCodeEnvChecker {
 
     fun configuredNodePath(): String? = store.get(KEY_NODE_PATH)?.trim()?.ifEmpty { null }
     fun configuredCliPath(): String? = store.get(KEY_CLI_PATH)?.trim()?.ifEmpty { null }
+    fun configuredCdpPortFile(): String? = store.get(KEY_CDP_PORT_FILE)?.trim()?.ifEmpty { null }
 
     /**
      * 模型管理/迁移等运维链路的 CLI 解析：手动配置路径优先 → 自动探测兜底 → 全落空返回 null
@@ -210,8 +213,10 @@ object ZCodeEnvChecker {
 
     fun saveNodePath(path: String) = store.set(KEY_NODE_PATH, path.trim())
     fun saveCliPath(path: String) = store.set(KEY_CLI_PATH, path.trim())
+    fun saveCdpPortFile(path: String) = store.set(KEY_CDP_PORT_FILE, path.trim())
     fun clearNodePath() = store.set(KEY_NODE_PATH, null)
     fun clearCliPath() = store.set(KEY_CLI_PATH, null)
+    fun clearCdpPortFile() = store.set(KEY_CDP_PORT_FILE, null)
 
     // ============ 检测 ============
 
@@ -605,6 +610,9 @@ object ZCodeEnvChecker {
             putStringOrNull("code", s.cli.code)
             putStringOrNull("arg", s.cli.arg)
         })
+        // CDP 端口文件覆盖值（配置项回显走顶层常驻：browserHost 在 node/cli 未就绪、
+        // app-server 未起、RD 等场景整体缺席，设置输入框在这些时候仍需显示已保存值）
+        putStringOrNull("cdpPortFile", configuredCdpPortFile())
         // 非阻断项（null = 未探测/未初始化，省略节点）
         s.browserHost?.let { bh ->
             put("browserHost", buildJsonObject {
