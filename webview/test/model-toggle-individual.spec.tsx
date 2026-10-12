@@ -95,11 +95,19 @@ describe('单模型开关渲染', () => {
     expect(screen.getAllByTitle('启用该模型（写回 provider_config.json，聊天模型下拉立即可选）')).toHaveLength(1)
   })
 
-  it('停用模型不渲染连通性测试按钮（停用模型 registry 不可达，测必失败）', () => {
+  it('停用模型的测试按钮隐藏但保留占位（disabled+透明，删除按钮不横跳）；停用渠道不渲染', () => {
     render(<ModelListView />)
-    // 启用模型 2 个（账号 GLM-5.3 + DeepSeek v4-pro）；停用模型 2 个与停用渠道 1 个都不渲染
-    const tests = screen.getAllByTitle('测试该模型连通性（真发一次最小请求）')
-    expect(tests).toHaveLength(2)
+    // 启用模型 2 个（账号 GLM-5.3 + DeepSeek v4-pro）可点
+    const enabledTests = screen.getAllByTitle('测试该模型连通性（真发一次最小请求）')
+    expect(enabledTests).toHaveLength(2)
+    enabledTests.forEach((b) => expect((b as HTMLButtonElement).disabled).toBe(false))
+    // 停用模型 2 个（账号 flash + DeepSeek flash）：按钮 DOM 保留（占位）但禁用+透明 class
+    const placeholders = document.querySelectorAll('.model-list-view__model-test.is-hidden-placeholder')
+    expect(placeholders).toHaveLength(2)
+    placeholders.forEach((b) => {
+      expect((b as HTMLButtonElement).disabled).toBe(true)
+    })
+    // 停用渠道整卡不可测：无测试按钮（该卡唯一模型不出现在上面两组里，总数=4 已覆盖）
   })
 
   it('OLD 代（modelManageNewCli=false）不渲染模型开关', () => {
