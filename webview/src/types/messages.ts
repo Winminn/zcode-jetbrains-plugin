@@ -373,6 +373,8 @@ export interface WorkspaceHookReview extends WorkspaceHookReviewIdentity {
 }
 
 /** zcode CLI `hooks trust status --json` 的单条钩子 */
+export type HookScope = 'workspace' | 'user'
+
 export interface WorkspaceHooksStatusItem {
   reviewItemId: string
   event: string
@@ -381,14 +383,18 @@ export interface WorkspaceHooksStatusItem {
   sourcePath: string
   configuredEnabled: boolean
   hookDeclarationDigest: string
-  trustState: HookTrustState
+  /** user_scope=用户级钩子（~/.zcode/cli/config.json，无信任准入，enabled 即生效） */
+  trustState: HookTrustState | 'user_scope'
 }
 
-/** zcode CLI `hooks trust status --json` 结果（钩子管理页权威数据源） */
+/** zcode CLI `hooks trust status --json` 结果（工作区钩子权威数据源）；
+ *  scope=user 时为 Kotlin 直读用户配置构造的同构形态（无 bundleDigest/reasonCode） */
 export interface WorkspaceHooksStatus {
-  workspacePath: string
-  workspaceIdentity: string
-  bundleDigest: string
+  scope?: HookScope
+  workspacePath?: string
+  workspaceIdentity?: string
+  userConfigPath?: string
+  bundleDigest?: string
   reasonCode?: string
   items: WorkspaceHooksStatusItem[]
 }
@@ -520,14 +526,18 @@ export type JavaRequest =  | { op: 'askUserPendingState' }
   | { op: 'workspaceHookReviewRespond'; sessionId: string; reviewItemIds: string[]; identity: WorkspaceHookReviewIdentity }
   /** 钩子管理页：拉取/授予/撤销/启停（Kotlin 经 zcode CLI hooks trust 子命令；
    *  grant all=true=授予当前全部，否则按 hookDigests；revoke 空 hookDigests=全撤；
+   *  scope=user 走用户级配置（~/.zcode/cli/config.json，直读直写无 CLI、无信任）；
    *  所有操作回统一形态 {op:'workspaceHooksList', status} */
-  | { op: 'workspaceHooksList'; workspace: string }
+  | { op: 'workspaceHooksList'; workspace?: string; scope?: HookScope }
   | { op: 'workspaceHooksGrant'; workspace: string; hookDigests?: string[]; all?: boolean; bundleDigest?: string }
   | { op: 'workspaceHooksRevoke'; workspace: string; hookDigests?: string[] }
-  | { op: 'workspaceHooksToggle'; workspace: string; reviewItemId: string; sourcePath: string; enabled: boolean }
+  | { op: 'workspaceHooksToggle'; workspace?: string; reviewItemId: string; sourcePath: string; enabled: boolean; scope?: HookScope }
+  /** 删除单条钩子登记项（Kotlin 从 config 移除并逐级剪枝；脚本文件保留在磁盘；
+   *  回统一形态 {op:'workspaceHooksList', status}）*/
+  | { op: 'workspaceHooksDelete'; workspace?: string; reviewItemId: string; sourcePath: string; scope?: HookScope }
   /** 命令行点击：在 IDE 打开钩子脚本文件（Kotlin 从 displayCommand 解析脚本路径，
-   *  解析不到/文件不存在时回退打开来源配置 sourcePath）。未来钩子编辑页在此入口分流 */
-  | { op: 'workspaceHooksOpenScript'; workspace: string; displayCommand: string; sourcePath: string }
+   *  解析不到/文件不存在时回退打开来源配置 sourcePath；scope=user 相对路径基准 home）*/
+  | { op: 'workspaceHooksOpenScript'; workspace?: string; displayCommand: string; sourcePath: string; scope?: HookScope }
   /** 自动归档：读共享配置（~/.zcode/v2/setting.json，与 ZCode 客户端同源）*/
   | { op: 'getAutoArchiveConfig' }
   /** 自动归档：写共享配置（客户端下次读取同样生效）*/

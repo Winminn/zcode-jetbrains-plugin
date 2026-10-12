@@ -1,23 +1,34 @@
 /**
  * 钩子管理页（设置页「钩子」tab，形态对齐官方 ZCode 客户端）
  *
- * 数据：op=workspaceHooksList（Kotlin 起一次性 `zcode hooks trust status`
- *   子进程，单次约 1s：node 冷启动 + 加载 zcode.cjs bundle，无热加速）。
- * 动作：
- *   - 信任：grant 单条 digest（Kotlin grant+status 两次调用约 2s）
- *   - 启停：toggle（Kotlin 写 .zcode/config.json + status 约 1s）
- *   未通过信任审核（trustState !== trusted_persistent）的钩子开关强制关闭并禁用，
- *   必须先信任（与官方客户端同一判定）。
- * 体验：CLI 子进程约 1~2s 是结构性延迟（官方是进程内服务才瞬发），
- *   故采用乐观更新——点击瞬间翻转，列表响应到达后按权威 status 对账，
- *   error 响应回退到上一份权威数据并报错（busy 全局串行，防 config 读-改-写竞争）。
+ * 作用域：
+ *   - workspace（默认）：当前 IDE 项目 <ws>/.zcode/config.json 的工作区钩子，
+ *     有信任准入——未信任禁止启用，信任/状态走一次性 `zcode hooks trust` CLI
+ *     （node 冷启动单次约 1s 的结构性延迟）。
+ *   - user：用户级 ~/.zcode/cli/config.json 的钩子，Kotlin 直读直写（无 CLI
+ *     延迟），**无信任评审**（官方机制：用户级 enabled 即生效），对所有项目生效。
+ * 缓存策略：挂载时并行预取两域并各自缓存，**切换作用域零请求**（工作区 CLI
+ *   ~1s 的成本只付一次）；迟到响应按自身 scope 落账（不丢弃，切回去即新鲜）；
+ *   仅手动刷新、工作区路径变化（重取工作区域）、写操作对账时更新缓存。
+ * 动作（两域同构）：
+ *   - 信任（仅工作区）：grant 单条 digest
+ *   - 启停：toggle（Kotlin 写对应 config + 回读列表）
+ *   - 删除：delete（Kotlin 从 config 移除登记项并逐级剪枝；脚本文件保留在磁盘；
+ *     二次确认弹窗）
+ * 写操作乐观更新按作用域隔离——点击瞬间翻转/消行，权威列表到达后清该域覆盖，
+ * error 响应回退到上一份权威数据并报错。
+ *
+ * 2026-10-12 拍板：不做内置新建/编辑页——钩子的新建与登记项修改由 AI/用户
+ * 在 IDE 直接操作 config.json（工作区钩子经评审卡完成信任准入）。
  */
 
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { onMessage, sendToJava } from '@/ipc/bridge'
 import { useStore } from '@/store/useStore'
+import { ConfirmDialog } from './ConfirmDialog'
 import type {
+  HookScope,
   JavaResponse,
   WorkspaceHooksStatus,
   WorkspaceHooksStatusItem,
@@ -26,14 +37,22 @@ import '../styles/hook-list-view.less'
 
 const TRUSTED_STATE = 'trusted_persistent'
 
-/** 权威行 + 本地乐观覆盖（信任/启停）合成的视图模型 */
+type StatusCache = Record<HookScope, WorkspaceHooksStatus | null>
+type EnabledOverrides = Record<HookScope, Record<string, boolean>>
+type IdOverrides = Record<HookScope, Set<string>>
+
+const EMPTY_STATUS_CACHE: StatusCache = { workspace: null, user: null }
+const EMPTY_ENABLED: EnabledOverrides = { workspace: {}, user: {} }
+const EMPTY_IDS: IdOverrides = { workspace: new Set(), user: new Set() }
+
+/** 权威行 + 本地乐观覆盖（信任/启停/删除）合成的视图模型 */
 interface RowView {
   item: WorkspaceHooksStatusItem
   trusted: boolean
   enabled: boolean
 }
 
-/** 需要信任审核：非 trusted_persistent 一律算（pending/blocked/revoked/stale） */
+/** 需要信任审核：非 trusted_persistent 一律算（pending/blocked/revoked/stale；仅工作区） */
 function requiresTrust(state: string): boolean {
   return state !== TRUSTED_STATE
 }
@@ -46,49 +65,94 @@ function workspaceBasename(p: string): string {
 
 export function HookListView() {
   const { t } = useTranslation()
-  const workspace = useStore((s) => s.currentWorkspacePath)
-  const [status, setStatus] = useState<WorkspaceHooksStatus | null>(null)
-  const [query, setQuery] = useState('')
-  const [busy, setBusy] = useState(false)
-  const [error, setError] = useState('')
-  /** 乐观覆盖：reviewItemId → enabled；权威 status 到达后清空 */
-  const [enabledOverride, setEnabledOverride] = useState<Record<string, boolean>>({})
-  /** 乐观信任：点击信任后到权威响应前按已信任渲染 */
-  const [trustOverride, setTrustOverride] = useState<Set<string>>(new Set())
+  // 工作区取会话工作区，待命态（未选/新建会话，currentWorkspacePath 为空）
+  // 回退 IDE 项目根 projectPath（init 时由桥注入，可靠有值）。
+  const currentWorkspace = useStore((s) => s.currentWorkspacePath)
+  const projectPath = useStore((s) => s.projectPath)
+  const workspace = currentWorkspace || projectPath
 
-  const refresh = useCallback(() => {
-    if (!workspace) return
-    setBusy(true)
-    setError('')
-    sendToJava({ op: 'workspaceHooksList', workspace })
+  const [scope, setScope] = useState<HookScope>('workspace')
+  const [statusCache, setStatusCache] = useState<StatusCache>(EMPTY_STATUS_CACHE)
+  const [loadingScopes, setLoadingScopes] = useState<Set<HookScope>>(new Set())
+  const [query, setQuery] = useState('')
+  const [error, setError] = useState('')
+  /** 乐观覆盖（按作用域隔离）：reviewItemId → enabled；权威列表到达后清该域 */
+  const [enabledOverride, setEnabledOverride] = useState<EnabledOverrides>(EMPTY_ENABLED)
+  /** 乐观信任（仅工作区）：点击信任后到权威响应前按已信任渲染 */
+  const [trustOverride, setTrustOverride] = useState<IdOverrides>(EMPTY_IDS)
+  /** 乐观删除：确认后到权威响应前隐藏该行；权威列表到达清该域，error 回退重现 */
+  const [removedOverride, setRemovedOverride] = useState<IdOverrides>(EMPTY_IDS)
+  /** 待确认删除的钩子（ConfirmDialog）；null=弹窗关闭 */
+  const [pendingDelete, setPendingDelete] = useState<WorkspaceHooksStatusItem | null>(null)
+
+  const isUser = scope === 'user'
+
+  const requestScope = useCallback((target: HookScope) => {
+    if (target === 'workspace' && !workspace) return
+    setLoadingScopes((prev) => new Set(prev).add(target))
+    sendToJava(
+      target === 'user'
+        ? { op: 'workspaceHooksList', scope: 'user' }
+        : { op: 'workspaceHooksList', workspace, scope: 'workspace' },
+    )
   }, [workspace])
 
+  // 订阅只建一次：响应按自带 scope 落各自缓存（迟到也不丢，切换零请求的关键）
   useEffect(() => {
     const off = onMessage((msg: JavaResponse) => {
       if (msg.op === 'workspaceHooksList') {
-        setStatus(msg.status)
-        setBusy(false)
-        // 权威数据到达：乐观覆盖全部清账
-        setEnabledOverride({})
-        setTrustOverride(new Set())
+        const respondedScope: HookScope = msg.status.scope ?? 'workspace'
+        setStatusCache((prev) => ({ ...prev, [respondedScope]: msg.status }))
+        setLoadingScopes((prev) => {
+          const next = new Set(prev)
+          next.delete(respondedScope)
+          return next
+        })
+        // 权威数据到达：只清该作用域的乐观覆盖
+        setEnabledOverride((prev) => ({ ...prev, [respondedScope]: {} }))
+        setTrustOverride((prev) => ({ ...prev, [respondedScope]: new Set() }))
+        setRemovedOverride((prev) => ({ ...prev, [respondedScope]: new Set() }))
       } else if (msg.op === 'error') {
-        // 失败回退：丢弃乐观覆盖，界面回到上一份权威 status（busy 仅属于列表加载）
-        setEnabledOverride({})
-        setTrustOverride(new Set())
+        // 失败回退：丢弃乐观覆盖，界面回到上一份权威数据（操作必发自当前域，清两域无损正确性）
+        setLoadingScopes(new Set())
+        setEnabledOverride(EMPTY_ENABLED)
+        setTrustOverride(EMPTY_IDS)
+        setRemovedOverride(EMPTY_IDS)
         setError(msg.message)
       }
     })
-    refresh()
     return off
-  }, [refresh])
+  }, [])
 
-  /** 权威行叠加乐观覆盖；搜索过滤在合成视图上做 */
+  // 首次挂载并行预取两域；之后 workspace 变化只重取工作区域（用户域与项目无关）
+  const seenWorkspace = useRef<string | null>(null)
+  useEffect(() => {
+    if (seenWorkspace.current === workspace) return
+    const firstMount = seenWorkspace.current === null
+    seenWorkspace.current = workspace
+    if (firstMount) {
+      requestScope('user')
+      requestScope('workspace')
+    } else {
+      setStatusCache((prev) => ({ ...prev, workspace: null }))
+      setEnabledOverride((prev) => ({ ...prev, workspace: {} }))
+      setTrustOverride((prev) => ({ ...prev, workspace: new Set() }))
+      setRemovedOverride((prev) => ({ ...prev, workspace: new Set() }))
+      requestScope('workspace')
+    }
+  }, [workspace, requestScope])
+
+  const status = statusCache[scope]
+  const busy = loadingScopes.has(scope)
+
+  /** 权威行叠加该域乐观覆盖；用户级无信任概念恒为 trusted；搜索过滤在合成视图上做 */
   const rows = useMemo<RowView[]>(() => {
     const q = query.trim().toLowerCase()
     return (status?.items ?? [])
+      .filter((item) => !removedOverride[scope].has(item.reviewItemId))
       .map((item) => {
-        const trusted = trustOverride.has(item.reviewItemId) || item.trustState === TRUSTED_STATE
-        const enabled = enabledOverride[item.reviewItemId] ?? item.configuredEnabled
+        const trusted = isUser || trustOverride[scope].has(item.reviewItemId) || item.trustState === TRUSTED_STATE
+        const enabled = enabledOverride[scope][item.reviewItemId] ?? item.configuredEnabled
         return { item, trusted, enabled }
       })
       .filter((v) => {
@@ -99,13 +163,12 @@ export function HookListView() {
           (v.item.matcher ?? '').toLowerCase().includes(q)
         )
       })
-  }, [status, query, trustOverride, enabledOverride])
+  }, [status, query, trustOverride, enabledOverride, removedOverride, isUser, scope])
 
-  /** 信任：乐观置信任态（按钮消失、开关立即可用并呈当前配置态），响应对账；
-   *  并发安全由 Kotlin WorkspaceHooksCli 锁保证，行控件不做 busy 禁用 */
+  /** 信任（仅工作区）：乐观置信任态，响应对账；并发安全由 Kotlin 锁保证 */
   const grant = (it: WorkspaceHooksStatusItem) => {
     setError('')
-    setTrustOverride((prev) => new Set(prev).add(it.reviewItemId))
+    setTrustOverride((prev) => ({ ...prev, workspace: new Set(prev.workspace).add(it.reviewItemId) }))
     sendToJava({
       op: 'workspaceHooksGrant',
       workspace,
@@ -115,32 +178,81 @@ export function HookListView() {
 
   /** 启停：乐观翻转；未信任行不允许（UI 已禁用，双保险） */
   const toggleEnabled = (v: RowView) => {
-    if (!v.trusted) return
+    if (!isUser && !v.trusted) return
     setError('')
-    setEnabledOverride((prev) => ({ ...prev, [v.item.reviewItemId]: !v.enabled }))
+    setEnabledOverride((prev) => ({
+      ...prev,
+      [scope]: { ...prev[scope], [v.item.reviewItemId]: !v.enabled },
+    }))
     sendToJava({
       op: 'workspaceHooksToggle',
-      workspace,
+      ...(isUser ? { scope: 'user' as const } : { workspace, scope: 'workspace' as const }),
       reviewItemId: v.item.reviewItemId,
       sourcePath: v.item.sourcePath,
       enabled: !v.enabled,
     })
   }
 
-  if (!workspace) {
-    return <div className="hook-list-empty">{t('hooks.noWorkspace')}</div>
+  /** 确认删除：乐观消行后发 op；脚本文件保留在磁盘，失败由 error 响应清覆盖重现 */
+  const confirmDelete = () => {
+    const it = pendingDelete
+    setPendingDelete(null)
+    if (!it) return
+    setError('')
+    setRemovedOverride((prev) => ({ ...prev, [scope]: new Set(prev[scope]).add(it.reviewItemId) }))
+    sendToJava({
+      op: 'workspaceHooksDelete',
+      ...(isUser ? { scope: 'user' as const } : { workspace, scope: 'workspace' as const }),
+      reviewItemId: it.reviewItemId,
+      sourcePath: it.sourcePath,
+    })
   }
 
-  const hasUntrusted = (status?.items ?? []).some((it) => requiresTrust(it.trustState))
+  /** 切换作用域只换本地视图：数据已在挂载时预取缓存，不发请求 */
+  const switchScope = (next: HookScope) => {
+    if (next === scope) return
+    setScope(next)
+    setError('')
+  }
+
+  /** 在 IDE 打开对应配置文件（工作区=.zcode/config.json；用户级=~/.zcode/cli/config.json） */
+  const openConfig = () => {
+    const path = isUser ? statusCache.user?.userConfigPath : `${workspace}/.zcode/config.json`
+    if (path) sendToJava({ op: 'openFile', filePath: path })
+  }
+
+  const hasUntrusted = !isUser && (status?.items ?? []).some((it) => requiresTrust(it.trustState))
+  const configOpenable = isUser ? Boolean(statusCache.user?.userConfigPath) : Boolean(workspace)
+  // 工作区作用域但当前无项目：列表区给提示（不发请求），工具栏仍允许切到用户级
+  const showNoWorkspace = !isUser && !workspace
 
   return (
     <div className="hook-list">
-      {/* 工具栏：工作区标识 + 搜索 + 刷新 */}
+      {/* 工具栏：作用域切换 + 搜索 + 打开配置 + 刷新 */}
       <div className="hook-list__toolbar">
-        <span className="hook-list__workspace">
-          <span className="codicon codicon-folder" />
-          {workspaceBasename(workspace)}
-        </span>
+        <div className="hook-list__scope" role="tablist" aria-label={t('hooks.scopeLabel')}>
+          <button
+            type="button"
+            role="tab"
+            aria-selected={!isUser}
+            className={!isUser ? 'hook-list__scope-btn is-active' : 'hook-list__scope-btn'}
+            onClick={() => switchScope('workspace')}
+            title={workspace}
+          >
+            <span className="codicon codicon-folder" />
+            {workspace ? workspaceBasename(workspace) : t('hooks.scopeWorkspace')}
+          </button>
+          <button
+            type="button"
+            role="tab"
+            aria-selected={isUser}
+            className={isUser ? 'hook-list__scope-btn is-active' : 'hook-list__scope-btn'}
+            onClick={() => switchScope('user')}
+          >
+            <span className="codicon codicon-person" />
+            {t('hooks.scopeUser')}
+          </button>
+        </div>
         <span className="hook-list__divider" />
         <span className="hook-list__count">
           {t('hooks.titleCount', { count: status?.items.length ?? 0 })}
@@ -156,8 +268,17 @@ export function HookListView() {
         </div>
         <button
           type="button"
+          className="hook-list__icon-btn"
+          onClick={openConfig}
+          disabled={!configOpenable}
+          title={t('hooks.openConfig')}
+        >
+          <span className="codicon codicon-json" />
+        </button>
+        <button
+          type="button"
           className="hook-list__refresh"
-          onClick={refresh}
+          onClick={() => requestScope(scope)}
           disabled={busy}
           title={t('hooks.refresh')}
         >
@@ -165,13 +286,18 @@ export function HookListView() {
         </button>
       </div>
 
-      {/* 安全提示：存在任意未通过信任审核的工作区钩子时显示（与官方同一判定；乐观信任不影响它） */}
-      {hasUntrusted && (
+      {/* 横幅：工作区=未信任安全警告（与官方同一判定）；用户级=全局生效说明（中性） */}
+      {isUser ? (
+        <div className="hook-list__notice hook-list__notice--info" role="note">
+          <span className="codicon codicon-info" />
+          <span>{t('hooks.userNotice')}</span>
+        </div>
+      ) : hasUntrusted ? (
         <div className="hook-list__notice" role="note">
           <span className="codicon codicon-warning" />
           <span>{t('hooks.sandboxNotice')}</span>
         </div>
-      )}
+      ) : null}
 
       {error && (
         <div className="hook-list__error">
@@ -180,15 +306,21 @@ export function HookListView() {
       )}
 
       {/* 标题行 */}
-      <div className="hook-list__header-row">
-        <span className="hook-list__installed">
-          {t('hooks.installed', { count: rows.length })}
-        </span>
-      </div>
+      {!showNoWorkspace && (
+        <div className="hook-list__header-row">
+          <span className="hook-list__installed">
+            {t('hooks.installed', { count: rows.length })}
+          </span>
+        </div>
+      )}
 
-      {/* 钩子列表 */}
-      {rows.length === 0 ? (
-        <div className="hook-list-empty">{busy ? t('hooks.loading') : t('hooks.empty')}</div>
+      {/* 列表区：无工作区提示 / 空态 / 钩子行 */}
+      {showNoWorkspace ? (
+        <div className="hook-list-empty">{t('hooks.noWorkspace')}</div>
+      ) : rows.length === 0 ? (
+        <div className="hook-list-empty">
+          {busy ? t('hooks.loading') : isUser ? t('hooks.emptyUser') : t('hooks.empty')}
+        </div>
       ) : (
         <div className="hook-list__cards">
           {rows.map((v) => {
@@ -201,18 +333,17 @@ export function HookListView() {
                       {it.event}
                       {it.matcher ? <span className="hook-row__matcher"> · {it.matcher}</span> : null}
                     </span>
-                    <HookTrustBadge trusted={trusted} state={it.trustState} />
+                    {!isUser && <HookTrustBadge trusted={trusted} state={it.trustState} />}
                   </div>
-                  {/* 钩子条目的入口：当前版本=在 IDE 打开命令对应的钩子脚本文件
-                      （Kotlin 从 displayCommand 解析，失败回退来源配置）；
-                      后续新建/编辑页版本在此分流：打开脚本 vs 内置编辑页 */}
+                  {/* 钩子条目唯一入口：在 IDE 打开命令对应的钩子脚本文件
+                      （Kotlin 从 displayCommand 解析，失败回退来源配置；用户级相对路径基准 home） */}
                   <button
                     type="button"
                     className="hook-row__command"
                     title={t('hooks.openScript')}
                     onClick={() => sendToJava({
                       op: 'workspaceHooksOpenScript',
-                      workspace,
+                      ...(isUser ? { scope: 'user' as const } : { workspace, scope: 'workspace' as const }),
                       displayCommand: it.displayCommand,
                       sourcePath: it.sourcePath,
                     })}
@@ -220,8 +351,8 @@ export function HookListView() {
                     <code>{it.displayCommand}</code>
                   </button>
                 </div>
-                {/* 未信任：显示单条信任按钮，开关强制关闭并禁用 */}
-                {!trusted && (
+                {/* 未信任（仅工作区）：显示单条信任按钮，开关强制关闭并禁用 */}
+                {!isUser && !trusted && (
                   <button
                     type="button"
                     className="hook-row__trust"
@@ -242,10 +373,40 @@ export function HookListView() {
                 >
                   <span className="hook-switch__knob" />
                 </button>
+                <button
+                  type="button"
+                  className="hook-row__delete"
+                  title={t('hooks.delete')}
+                  onClick={() => setPendingDelete(it)}
+                >
+                  <span className="codicon codicon-trash" />
+                </button>
               </div>
             )
           })}
         </div>
+      )}
+
+      {pendingDelete && (
+        <ConfirmDialog
+          danger
+          title={t('hooks.deleteTitle')}
+          confirmText={t('hooks.delete')}
+          onConfirm={confirmDelete}
+          onCancel={() => setPendingDelete(null)}
+          message={
+            // ConfirmDialog 用 <p> 包裹正文，只能放 phrasing 元素（span/code），块级效果靠 class
+            <>
+              <span className="hook-delete-dialog__name">
+                {pendingDelete.event}
+                {pendingDelete.matcher ? <span> · {pendingDelete.matcher}</span> : null}
+                {isUser ? <span> · {t('hooks.scopeUser')}</span> : null}
+              </span>
+              <code>{pendingDelete.displayCommand}</code>
+              <span className="hook-delete-dialog__note">{t('hooks.deleteKeepScript')}</span>
+            </>
+          }
+        />
       )}
     </div>
   )

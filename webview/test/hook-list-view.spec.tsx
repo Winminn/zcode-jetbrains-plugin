@@ -10,6 +10,10 @@
  *   5. 乐观更新：点信任/开关瞬间翻转，权威响应到达后对账
  *   6. error 响应：丢弃乐观覆盖回退到上一份权威状态并报错
  *   7. 点命令块 → openFile 拼工作区根；无工作区；无「全部信任」批量按钮
+ *   8. 删除：垃圾桶按钮 → 二次确认弹窗（只删登记项、脚本保留）；确认乐观消行发 delete；
+ *      取消不发；error 回退重现；来源门禁由 Kotlin 写操作兜底
+ *   9. 作用域缓存：挂载并行预取工作区+用户级，切换零请求、缓存即时呈现；
+ *      迟到响应按自身 scope 落账不影响当前视图；刷新按钮才重拉当前域
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
@@ -102,9 +106,10 @@ beforeEach(() => {
 afterEach(cleanup)
 
 describe('拉取与渲染', () => {
-  it('挂载即发 workspaceHooksList，响应前显示加载中', () => {
+  it('挂载即并行预取工作区与用户级两个作用域，响应前显示加载中', () => {
     const { container } = render(<HookListView />)
-    expect(sendToJavaMock).toHaveBeenCalledWith({ op: 'workspaceHooksList', workspace: 'G:\\mock' })
+    expect(sendToJavaMock).toHaveBeenCalledWith({ op: 'workspaceHooksList', workspace: 'G:\\mock', scope: 'workspace' })
+    expect(sendToJavaMock).toHaveBeenCalledWith({ op: 'workspaceHooksList', scope: 'user' })
     expect(container.textContent).toContain('加载中')
   })
 
@@ -232,6 +237,7 @@ describe('乐观更新', () => {
     expect(sendToJavaMock).toHaveBeenCalledWith({
       op: 'workspaceHooksToggle',
       workspace: 'G:\\mock',
+      scope: 'workspace',
       reviewItemId: 'workspace-hook-0-PreToolUse-0-0',
       sourcePath: '.zcode/config.json',
       enabled: false,
@@ -258,6 +264,96 @@ describe('乐观更新', () => {
   })
 })
 
+describe('删除钩子（只删登记项，脚本保留）', () => {
+  it('每行显示删除按钮；点击弹确认弹窗（事件/命令摘要 + 脚本保留提示），未确认不发 op', () => {
+    const { container } = render(<HookListView />)
+    pushStatus(makeStatus())
+
+    expect(rows()[0].querySelector('.hook-row__delete')).toBeTruthy()
+    expect(rows()[1].querySelector('.hook-row__delete')).toBeTruthy()
+
+    fireEvent.click(rows()[1].querySelector('.hook-row__delete') as HTMLButtonElement)
+
+    const dialog = document.querySelector('.modal-content')!
+    expect(dialog.textContent).toContain('删除该钩子？')
+    expect(dialog.textContent).toContain('PreToolUse')
+    expect(dialog.textContent).toContain('Bash')
+    expect(dialog.textContent).toContain('node block.js')
+    expect(dialog.textContent).toContain('脚本文件保留')
+    expect(sendToJavaMock).not.toHaveBeenCalledWith(expect.objectContaining({ op: 'workspaceHooksDelete' }))
+    expect(container.textContent).toContain('删除该钩子？')
+  })
+
+  it('确认删除：乐观消行并发 workspaceHooksDelete；权威 status 到达后保持', () => {
+    render(<HookListView />)
+    pushStatus(makeStatus())
+
+    fireEvent.click(rows()[1].querySelector('.hook-row__delete') as HTMLButtonElement)
+    fireEvent.click(document.querySelector('.modal-btn-danger')!)
+
+    expect(sendToJavaMock).toHaveBeenCalledWith({
+      op: 'workspaceHooksDelete',
+      workspace: 'G:\\mock',
+      scope: 'workspace',
+      reviewItemId: 'workspace-hook-0-PreToolUse-0-0',
+      sourcePath: '.zcode/config.json',
+    })
+    // 乐观消行（权威 status 未到）
+    expect(rows()).toHaveLength(1)
+    expect(document.querySelector('.modal-content')).toBeNull()
+    expect(rows()[0].textContent).toContain('UserPromptSubmit')
+
+    // 权威对账：只剩一条
+    const updated = makeStatus({ items: [makeItem()] })
+    pushStatus(updated)
+    expect(rows()).toHaveLength(1)
+    expect(rows()[0].textContent).toContain('UserPromptSubmit')
+  })
+
+  it('取消：弹窗关闭、不发 op、行保留', () => {
+    render(<HookListView />)
+    pushStatus(makeStatus())
+
+    fireEvent.click(rows()[0].querySelector('.hook-row__delete') as HTMLButtonElement)
+    fireEvent.click(document.querySelector('.modal-btn-cancel')!)
+
+    expect(document.querySelector('.modal-content')).toBeNull()
+    expect(sendToJavaMock).not.toHaveBeenCalledWith(expect.objectContaining({ op: 'workspaceHooksDelete' }))
+    expect(rows()).toHaveLength(2)
+  })
+
+  it('error 响应：删除失败回退重现行并显示错误', () => {
+    const { container } = render(<HookListView />)
+    pushStatus(makeStatus())
+
+    fireEvent.click(rows()[1].querySelector('.hook-row__delete') as HTMLButtonElement)
+    fireEvent.click(document.querySelector('.modal-btn-danger')!)
+    expect(rows()).toHaveLength(1)
+
+    pushError('删除失败')
+    expect(rows()).toHaveLength(2)
+    expect(container.textContent).toContain('删除失败')
+  })
+
+  it('删除按钮对所有列表行显示（来源是否可改由 Kotlin 写操作门禁兜底）', () => {
+    const status = makeStatus({
+      items: [
+        makeItem(),
+        makeItem({
+          reviewItemId: 'workspace-hook-0-PreToolUse-0-0',
+          event: 'PreToolUse',
+          sourcePath: '../.zcode/config.json',
+        }),
+      ],
+    })
+    render(<HookListView />)
+    pushStatus(status)
+
+    expect(rows()[0].querySelector('.hook-row__delete')).toBeTruthy()
+    expect(rows()[1].querySelector('.hook-row__delete')).toBeTruthy()
+  })
+})
+
 describe('钩子脚本入口与无工作区', () => {
   it('点命令块：带 displayCommand/sourcePath 走 workspaceHooksOpenScript（Kotlin 解析脚本路径）', () => {
     render(<HookListView />)
@@ -266,6 +362,7 @@ describe('钩子脚本入口与无工作区', () => {
     expect(sendToJavaMock).toHaveBeenCalledWith({
       op: 'workspaceHooksOpenScript',
       workspace: 'G:\\mock',
+      scope: 'workspace',
       displayCommand: 'bash hook.sh',
       sourcePath: '.zcode/config.json',
     })
@@ -276,13 +373,199 @@ describe('钩子脚本入口与无工作区', () => {
     pushError('CLI 执行失败')
     expect(container.textContent).toContain('CLI 执行失败')
     fireEvent.click(container.querySelector('.hook-list__refresh')!)
-    expect(sendToJavaMock).toHaveBeenCalledWith({ op: 'workspaceHooksList', workspace: 'G:\\mock' })
+    expect(sendToJavaMock).toHaveBeenCalledWith({ op: 'workspaceHooksList', workspace: 'G:\\mock', scope: 'workspace' })
   })
 
-  it('无工作区：显示提示且不发请求', () => {
-    useStore.setState({ currentWorkspacePath: '' })
+  it('待命态（无会话 currentWorkspacePath 空）回退 IDE 项目根 projectPath，正常拉取', () => {
+    useStore.setState({ currentWorkspacePath: '', projectPath: 'G:\\mock' })
+    render(<HookListView />)
+    expect(sendToJavaMock).toHaveBeenCalledWith({ op: 'workspaceHooksList', workspace: 'G:\\mock', scope: 'workspace' })
+    pushStatus(makeStatus())
+    expect(rows()).toHaveLength(2)
+  })
+
+  it('无工作区：工作区 tab 显示提示不发工作区请求，但挂载仍预取用户级且切换零请求', () => {
+    useStore.setState({ currentWorkspacePath: '', projectPath: '' })
     const { container } = render(<HookListView />)
     expect(container.textContent).toContain('未打开工作区')
-    expect(sendToJavaMock).not.toHaveBeenCalled()
+    // 用户级与项目无关，挂载即预取；工作区域请求跳过
+    expect(sendToJavaMock).toHaveBeenCalledWith({ op: 'workspaceHooksList', scope: 'user' })
+    expect(sendToJavaMock).not.toHaveBeenCalledWith(
+      expect.objectContaining({ op: 'workspaceHooksList', scope: 'workspace' }),
+    )
+
+    // 切到用户级不产生新请求（预取缓存）
+    const callsBefore = sendToJavaMock.mock.calls.length
+    fireEvent.click(screen.getByRole('tab', { name: '用户级' }))
+    expect(sendToJavaMock.mock.calls.length).toBe(callsBefore)
+  })
+})
+
+describe('用户级作用域（~/.zcode/cli/config.json，无信任准入）', () => {
+  const USER_CONFIG = 'C:/Users/me/.zcode/cli/config.json'
+
+  function makeUserItem(over: Partial<WorkspaceHooksStatusItem> = {}): WorkspaceHooksStatusItem {
+    return {
+      reviewItemId: 'user-hook-0-Stop-0-0',
+      event: 'Stop',
+      matcher: null,
+      displayCommand: 'node notify.cjs',
+      sourcePath: USER_CONFIG,
+      configuredEnabled: true,
+      hookDeclarationDigest: '',
+      trustState: 'user_scope',
+      ...over,
+    }
+  }
+
+  function makeUserStatus(items: WorkspaceHooksStatusItem[]): WorkspaceHooksStatus {
+    return { scope: 'user', userConfigPath: USER_CONFIG, items }
+  }
+
+  function pushUserStatus(items: WorkspaceHooksStatusItem[]) {
+    act(() => {
+      messageHandler!({ op: 'workspaceHooksList', status: makeUserStatus(items) })
+    })
+  }
+
+  function gotoUserScope() {
+    fireEvent.click(screen.getByRole('tab', { name: '用户级' }))
+  }
+
+  it('挂载已预取用户级；切换过去零请求；渲染无信任徽标/按钮，开关直接可用', () => {
+    const { container } = render(<HookListView />)
+    // 挂载预取即含 scope=user（不带 workspace）
+    expect(sendToJavaMock).toHaveBeenCalledWith({ op: 'workspaceHooksList', scope: 'user' })
+
+    const callsBeforeSwitch = sendToJavaMock.mock.calls.length
+    gotoUserScope()
+    // 切换不重新加载
+    expect(sendToJavaMock.mock.calls.length).toBe(callsBeforeSwitch)
+
+    pushUserStatus([
+      makeUserItem(),
+      makeUserItem({
+        reviewItemId: 'user-hook-0-PreToolUse-0-0',
+        event: 'PreToolUse',
+        matcher: 'Bash',
+        displayCommand: 'bash heal.sh',
+        configuredEnabled: false,
+      }),
+    ])
+
+    expect(rows()).toHaveLength(2)
+    expect(container.querySelector('.hook-badge')).toBeNull()
+    expect(container.querySelector('.hook-row__trust')).toBeNull()
+    // 全局生效的中性提示，无未信任警告横幅
+    expect(container.textContent).toContain('对所有项目生效')
+    expect(container.querySelector('.hook-list__notice--info')).toBeTruthy()
+    expect(container.querySelector('.hook-list__notice:not(.hook-list__notice--info)')).toBeNull()
+    // 第一条启用：开关可用且 on；第二条 off 也可点
+    expect(rowSwitch(0).disabled).toBe(false)
+    expect(rowSwitch(0).getAttribute('aria-checked')).toBe('true')
+    expect(rowSwitch(1).getAttribute('aria-checked')).toBe('false')
+  })
+
+  it('开关/删除/点命令均带 scope=user 且不带 workspace', () => {
+    render(<HookListView />)
+    gotoUserScope()
+    pushUserStatus([makeUserItem()])
+
+    fireEvent.click(rowSwitch(0))
+    expect(sendToJavaMock).toHaveBeenCalledWith({
+      op: 'workspaceHooksToggle',
+      scope: 'user',
+      reviewItemId: 'user-hook-0-Stop-0-0',
+      sourcePath: USER_CONFIG,
+      enabled: false,
+    })
+
+    fireEvent.click(document.querySelector('.hook-row__command')!)
+    expect(sendToJavaMock).toHaveBeenCalledWith({
+      op: 'workspaceHooksOpenScript',
+      scope: 'user',
+      displayCommand: 'node notify.cjs',
+      sourcePath: USER_CONFIG,
+    })
+
+    fireEvent.click(rows()[0].querySelector('.hook-row__delete') as HTMLButtonElement)
+    fireEvent.click(document.querySelector('.modal-btn-danger')!)
+    expect(sendToJavaMock).toHaveBeenCalledWith({
+      op: 'workspaceHooksDelete',
+      scope: 'user',
+      reviewItemId: 'user-hook-0-Stop-0-0',
+      sourcePath: USER_CONFIG,
+    })
+    expect(rows()).toHaveLength(0)
+  })
+
+  it('空列表显示用户级空态', () => {
+    const { container } = render(<HookListView />)
+    gotoUserScope()
+    pushUserStatus([])
+    expect(container.textContent).toContain('用户级暂无钩子')
+  })
+
+  it('两域数据缓存后双向切换零请求且即时呈现', () => {
+    render(<HookListView />)
+    pushStatus(makeStatus())
+    pushUserStatus([makeUserItem()])
+
+    // 工作区 → 用户级：无新请求，立即出用户级行
+    let callsBefore = sendToJavaMock.mock.calls.length
+    gotoUserScope()
+    expect(sendToJavaMock.mock.calls.length).toBe(callsBefore)
+    expect(rows()).toHaveLength(1)
+    expect(rows()[0].textContent).toContain('notify.cjs')
+
+    // 用户级 → 工作区：无新请求，立即出工作区缓存行
+    callsBefore = sendToJavaMock.mock.calls.length
+    fireEvent.click(screen.getByRole('tab', { name: /mock/ }))
+    expect(sendToJavaMock.mock.calls.length).toBe(callsBefore)
+    expect(rows()).toHaveLength(2)
+  })
+
+  it('响应按自身 scope 落账：用户视图下来迟的工作区响应只更新工作区缓存', () => {
+    render(<HookListView />)
+    pushStatus(makeStatus())
+    gotoUserScope()
+    pushUserStatus([makeUserItem()])
+    expect(rows()).toHaveLength(1)
+
+    // 工作区慢响应（CLI ~1s）到达：不进用户视图，但进工作区缓存
+    act(() => {
+      messageHandler!({ op: 'workspaceHooksList', status: { ...makeStatus(), scope: 'workspace' } })
+    })
+    expect(rows()).toHaveLength(1)
+    expect(document.querySelector('.hook-badge')).toBeNull()
+
+    // 切回工作区零请求，直接看到刚落账的数据
+    const callsBefore = sendToJavaMock.mock.calls.length
+    fireEvent.click(screen.getByRole('tab', { name: /mock/ }))
+    expect(sendToJavaMock.mock.calls.length).toBe(callsBefore)
+    expect(rows()).toHaveLength(2)
+  })
+
+  it('刷新按钮只重拉当前作用域', () => {
+    render(<HookListView />)
+    pushUserStatus([makeUserItem()])
+    gotoUserScope()
+    sendToJavaMock.mockClear()
+    fireEvent.click(document.querySelector('.hook-list__refresh')!)
+    expect(sendToJavaMock).toHaveBeenCalledTimes(1)
+    expect(sendToJavaMock).toHaveBeenCalledWith({ op: 'workspaceHooksList', scope: 'user' })
+  })
+
+  it('打开配置按钮：工作区 tab 拼 .zcode/config.json；用户级 tab 用响应里的 userConfigPath', () => {
+    render(<HookListView />)
+    pushStatus(makeStatus())
+    const openBtnTitle = '打开配置文件'
+    fireEvent.click(document.querySelector(`.hook-list__icon-btn[title="${openBtnTitle}"]`)!)
+    expect(sendToJavaMock).toHaveBeenCalledWith({ op: 'openFile', filePath: 'G:\\mock/.zcode/config.json' })
+
+    gotoUserScope()
+    pushUserStatus([makeUserItem()])
+    fireEvent.click(document.querySelector(`.hook-list__icon-btn[title="${openBtnTitle}"]`)!)
+    expect(sendToJavaMock).toHaveBeenCalledWith({ op: 'openFile', filePath: USER_CONFIG })
   })
 })

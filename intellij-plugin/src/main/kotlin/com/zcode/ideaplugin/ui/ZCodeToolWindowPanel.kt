@@ -1058,6 +1058,7 @@ if (!window.__ZCODE_LOG_HOOK__) {
                         "workspaceHooksGrant" -> handleWorkspaceHooksGrant(msg)
                         "workspaceHooksRevoke" -> handleWorkspaceHooksRevoke(msg)
                         "workspaceHooksToggle" -> handleWorkspaceHooksToggle(msg)
+                        "workspaceHooksDelete" -> handleWorkspaceHooksDelete(msg)
                         "workspaceHooksOpenScript" -> handleWorkspaceHooksOpenScript(msg)
                         "subscribe" -> handleSubscribe(msg)
                         "subscribeChild" -> handleSubscribeChild(msg)
@@ -2753,8 +2754,18 @@ if (!window.__ZCODE_LOG_HOOK__) {
             ?: effectiveWorkspacePath(msg)?.takeIf { it.isNotBlank() }
             ?: throw IllegalStateException("缺少工作区路径")
 
+    /** scope=user（用户级钩子，~/.zcode/cli/config.json，无信任准入）；缺省 workspace */
+    private fun hookScope(msg: JsonObject): String =
+        msg["scope"]?.jsonPrimitive?.contentOrNull?.takeIf { it == "user" } ?: "workspace"
+
     private fun handleWorkspaceHooksList(msg: JsonObject): JsonObject = try {
-        hooksListResponse(WorkspaceHooksCli.status(requireWorkspace(msg)))
+        if (hookScope(msg) == "user") {
+            hooksListResponse(WorkspaceHooksCli.userHooksList())
+        } else {
+            // 补 scope 字段：前端切 scope 时慢响应不得覆盖另一作用域的视图
+            val status = WorkspaceHooksCli.status(requireWorkspace(msg))
+            hooksListResponse(JsonObject(status + ("scope" to JsonPrimitive("workspace"))))
+        }
     } catch (e: Exception) {
         log.warn("workspaceHooksList failed: ${e.message}")
         errorResponse("读取钩子列表失败：${e.message ?: ""}")
@@ -2790,31 +2801,64 @@ if (!window.__ZCODE_LOG_HOOK__) {
     }
 
     private fun handleWorkspaceHooksToggle(msg: JsonObject): JsonObject = try {
-        val ws = requireWorkspace(msg)
         val reviewItemId = msg["reviewItemId"]?.jsonPrimitive?.contentOrNull
             ?: throw IllegalStateException("缺少 reviewItemId")
         val sourcePath = msg["sourcePath"]?.jsonPrimitive?.contentOrNull
             ?: throw IllegalStateException("缺少 sourcePath")
         val enabled = msg["enabled"]?.jsonPrimitive?.contentOrNull != "false"
-        hooksListResponse(WorkspaceHooksCli.setEnabled(ws, reviewItemId, sourcePath, enabled))
+        val status = if (hookScope(msg) == "user") {
+            WorkspaceHooksCli.userSetEnabled(reviewItemId, sourcePath, enabled)
+        } else {
+            WorkspaceHooksCli.setEnabled(requireWorkspace(msg), reviewItemId, sourcePath, enabled)
+        }
+        hooksListResponse(status)
     } catch (e: Exception) {
         log.warn("workspaceHooksToggle failed: ${e.message}")
         errorResponse("钩子启停失败：${e.message ?: ""}")
     }
 
     /**
+     * op=workspaceHooksDelete — 删除单条钩子登记项（只移除 config 条目，
+     * 脚本文件保留在磁盘；工作区条目不连带 revoke 信任 digest）。
+     * scope=user 走用户配置（~/.zcode/cli/config.json）。
+     */
+    private fun handleWorkspaceHooksDelete(msg: JsonObject): JsonObject = try {
+        val reviewItemId = msg["reviewItemId"]?.jsonPrimitive?.contentOrNull
+            ?: throw IllegalStateException("缺少 reviewItemId")
+        val sourcePath = msg["sourcePath"]?.jsonPrimitive?.contentOrNull
+            ?: throw IllegalStateException("缺少 sourcePath")
+        val status = if (hookScope(msg) == "user") {
+            WorkspaceHooksCli.userDelete(reviewItemId, sourcePath)
+        } else {
+            WorkspaceHooksCli.delete(requireWorkspace(msg), reviewItemId, sourcePath)
+        }
+        hooksListResponse(status)
+    } catch (e: Exception) {
+        log.warn("workspaceHooksDelete failed: ${e.message}")
+        errorResponse("删除钩子失败：${e.message ?: ""}")
+    }
+
+    /**
      * op=workspaceHooksOpenScript — 命令行点击：打开钩子脚本文件。
      *
-     * 钩子条目的「入口」：当前版本解析 displayCommand 里的脚本路径在 IDE 打开；
-     * 后续钩子新建/编辑页落地后在此处分流（脚本文件 vs 内置编辑页）。
+     * 钩子条目唯一入口（2026-10-12 拍板：不做内置新建/编辑页，钩子的新建与
+     * 登记项修改由 AI/用户在 IDE 直接操作 config.json；删除走管理页按钮）。
      * 解析不出（bash -c 内联命令等）或文件已删除时回退打开来源配置文件。
      */
     private fun handleWorkspaceHooksOpenScript(msg: JsonObject): JsonObject = try {
-        val ws = requireWorkspace(msg)
+        val isUser = hookScope(msg) == "user"
         val displayCommand = msg["displayCommand"]?.jsonPrimitive?.contentOrNull.orEmpty()
-        val sourcePath = msg["sourcePath"]?.jsonPrimitive?.contentOrNull ?: ".zcode/config.json"
-        val target = WorkspaceHooksCli.resolveScriptPath(ws, displayCommand)
-            ?: java.nio.file.Path.of(ws, sourcePath)
+        // 用户级：相对路径基准 home，回退打开用户配置（sourcePath 即其绝对路径）
+        val target = if (isUser) {
+            val fallback = msg["sourcePath"]?.jsonPrimitive?.contentOrNull
+                ?: WorkspaceHooksCli.userConfigPath().toString()
+            WorkspaceHooksCli.resolveUserScriptPath(displayCommand) ?: java.nio.file.Path.of(fallback)
+        } else {
+            val ws = requireWorkspace(msg)
+            val sourcePath = msg["sourcePath"]?.jsonPrimitive?.contentOrNull ?: ".zcode/config.json"
+            WorkspaceHooksCli.resolveScriptPath(ws, displayCommand)
+                ?: java.nio.file.Path.of(ws, sourcePath)
+        }
         // 复用 openFile 全链路（VFS 刷新兜底、归档扩展名路由等）
         handleOpenFile(buildJsonObject {
             put("op", "openFile")
