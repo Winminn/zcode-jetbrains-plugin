@@ -124,6 +124,11 @@
   },
   "cua": {
     "screenshot": "螢幕截圖",
-    "viewFull": "點擊放大查看截圖"
+    "viewFull": "點擊放大查看截圖",
+    "appCount": "{{count}} 個視窗應用",
+    "windowCount": "{{count}} 個視窗",
+    "appList": "視窗應用",
+    "windowList": "應用視窗",
+    "foreground": "前景"
   }
 }

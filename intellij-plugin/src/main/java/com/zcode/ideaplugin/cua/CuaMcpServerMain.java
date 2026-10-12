@@ -23,9 +23,11 @@ import java.util.concurrent.atomic.AtomicLong;
  * kotlin-stdlib jar，fork JVM 不可用 Kotlin 产物，server 主体整体 Java）。
  * stderr 是唯一日志出口（stdout 是协议通道）。
  *
- * 工具面与官方 CUA（computer-use 插件 0.6.3）同名同参：11 个坐标族 + window_manage /
- * computer_batch。动作类工具默认在渲染稳定延迟后附回执截图（observe/observe_delay_ms）。
- * UIA 元素树族（get_app_state 元素索引/set_value/select_text/perform_action）二期。
+ * 工具面与官方 CUA（computer-use 插件 0.6.3）同名同参：坐标族 + window_manage /
+ * computer_batch / launch_app。动作类工具默认在渲染稳定延迟后附回执截图
+ * （observe/observe_delay_ms），回执帧与上一帧逐字节相同时标注 effect_evidence
+ * unchanged；错误信封带 actionSent/retry 防重放。UIA 元素树族
+ * （元素索引/set_value/select_text/perform_action）为后续战略项。
  */
 public final class CuaMcpServerMain {
 
@@ -76,15 +78,17 @@ public final class CuaMcpServerMain {
     }
 
     /**
-     * 执行闸门：skill 目录不在即拒。~/.zcode/skills/zcgui-computer-use（与插件侧
-     * CuaFeature.skillDir 同一路径）是 IDE 开关的跨进程投影——开时落盘、关时整目录
-     * 删除。注入面随会话存续无法中途撤销（resume 沿用 create 工具面，server 进程可
-     * 存活于旧会话），「开关关闭后已注入会话立即断供」只能在这里 fail-closed；
-     * 每次调用现查目录不缓存，关闭即刻生效，目录缺失（含用户手动删除）同视为关闭。
+     * 执行闸门：SKILL.md 不在即拒。~/.zcode/skills/zcgui-computer-use/SKILL.md
+     * （与插件侧 CuaFeature.skillDir 同一目录）是 IDE 开关的跨进程投影——开时
+     * 落盘、关时删除；插件侧卸载只删 SKILL.md（目录可能因用户自建文件仍在），
+     * 故判据是文件不是目录。注入面随会话存续无法中途撤销（resume 沿用 create
+     * 工具面，server 进程可存活于旧会话），「开关关闭后已注入会话立即断供」只能
+     * 在这里 fail-closed；每次调用现查不缓存，关闭即刻生效，文件缺失（含用户
+     * 手动删除）同视为关闭。
      */
     private static boolean gateClosed() {
         return !new File(System.getProperty("user.home"),
-                ".zcode/skills/zcgui-computer-use").isDirectory();
+                ".zcode/skills/zcgui-computer-use/SKILL.md").isFile();
     }
 
     private static String msg(Throwable e) {
@@ -149,7 +153,7 @@ public final class CuaMcpServerMain {
                     result = callTool(name, toolArgs);
                 } catch (CuaRobot.CuaException e) {
                     err("tool " + name + " failed: " + e.code + " " + e.getMessage());
-                    result = CuaMiniJson.textResult(cuaErrorJson(e.code, msg(e)), true);
+                    result = CuaMiniJson.textResult(cuaErrorJson(e.code, msg(e), e.actionSent), true);
                 } catch (Exception e) {
                     err("tool " + name + " crashed: " + e.getClass().getSimpleName() + ": " + e.getMessage());
                     result = CuaMiniJson.textResult(cuaErrorJson("INTERNAL", msg(e)), true);
@@ -185,7 +189,38 @@ public final class CuaMcpServerMain {
     }
 
     private static String cuaErrorJson(String code, String message) {
-        return "{\"code\":" + CuaMiniJson.str(code) + ",\"message\":" + CuaMiniJson.str(message) + "}";
+        return cuaErrorJson(code, message, false);
+    }
+
+    /**
+     * 错误信封统一带 retry 指引（对齐官方分级）：
+     * reobserve=先重新观察再决定（帧/索引可能过期）；retry=安全重试（护栏拒发类，
+     * 动作未派发）；never=同参数重试无意义（应用不匹配/开关断供/另一会话持锁）。
+     * actionSent 只在明确可能已派发时置 true（官方保守方向：反着默认会让模型对
+     * 从未下发的动作放弃重试）。
+     */
+    private static String cuaErrorJson(String code, String message, boolean actionSent) {
+        StringBuilder sb = new StringBuilder("{\"code\":").append(CuaMiniJson.str(code))
+            .append(",\"message\":").append(CuaMiniJson.str(message));
+        if (actionSent) {
+            sb.append(",\"actionSent\":true");
+        }
+        return sb.append(",\"retry\":").append(CuaMiniJson.str(retryOf(code))).append("}").toString();
+    }
+
+    private static String retryOf(String code) {
+        switch (code) {
+            case "ELEMENT_UNAVAILABLE":
+                return "reobserve";
+            case "TIMEOUT":
+                return "reobserve"; // actionSent 可能 true：先观察现场再决定，别盲重放
+            case "GUARD_MISMATCH":
+                return "retry";     // 护栏在派发前拒绝（actionSent=false），换坐标即可
+            case "INTERNAL":
+                return "retry";
+            default:
+                return "never";     // DISABLED/INVALID_APP/APP_NOT_FOUND/ACTION_UNAVAILABLE
+        }
     }
 
     // ───────────────────────── 工具分发 ─────────────────────────
@@ -201,6 +236,7 @@ public final class CuaMcpServerMain {
             case "type": return toolType(args);
             case "key": return toolKey(args);
             case "paste": return toolPaste(args);
+            case "launch_app": return toolLaunchApp(args);
             case "window_manage": return toolWindowManage(args);
             case "computer_batch": return toolBatch(args);
             case "request_access":
@@ -268,7 +304,8 @@ public final class CuaMcpServerMain {
         sleep(settle);
         Object[] obs = captureObserved(display,
             "Fresh screenshot AFTER the action (render settle " + settle
-                + "ms). This is now the LATEST screenshot: next action coordinates are pixels of THIS image.");
+                + "ms). This is now the LATEST screenshot: next action coordinates are pixels of THIS image.",
+            true);
         String head = "{\n  \"result\": " + resultJson + ",\n  \"observed\": {\n"
             + obs[0] + "  }\n}";
         return CuaMiniJson.imageResult(head + appLineSuffix(fgProbe), (String) obs[1], "image/jpeg");
@@ -278,8 +315,16 @@ public final class CuaMcpServerMain {
         return finishAction(args, screenPoint, resultJson, false);
     }
 
-    /** 截图 + 坐标台账更新，返回 {observed 内部行, jpeg base64}；note 由调用方按语境给。 */
-    private static Object[] captureObserved(int display, String note) {
+    /**
+     * 截图 + 坐标台账更新，返回 {observed 内部行, jpeg base64, unchanged(Boolean)}；
+     * note 由调用方按语境给。
+     *
+     * <p>annotateUnchanged：动作回执帧与基线（上一张全屏 JPEG）逐字节相同时，在 note
+     * 里追加 [effect_evidence unchanged] 证据位（对齐官方「AX 受理了但界面逐字节未变」
+     * 信号）——真机会话教训：坐标点击被应用静默吞掉时模型只会对同一坐标死磕。观察类
+     * 截图（无前置动作）只移动基线不标注。
+     */
+    private static Object[] captureObserved(int display, String note, boolean annotateUnchanged) {
         Object[] cap = CuaRobot.captureScreenScaled(display);
         byte[] jpeg = (byte[]) cap[0];
         int imgW = (Integer) cap[1];
@@ -287,13 +332,19 @@ public final class CuaMcpServerMain {
         java.awt.Rectangle area = (java.awt.Rectangle) cap[3];
         String sid = "s" + STATE_SEQ.incrementAndGet();
         CuaRobot.setLastCapture(new CuaRobot.CaptureLedger(display, imgW, imgH, area, sid));
+        boolean unchanged = CuaRobot.compareAndSetFrameBaseline(jpeg);
+        if (unchanged && annotateUnchanged) {
+            note = note + " [effect_evidence unchanged] this frame is byte-identical to the previous"
+                + " one - the action had NO visible effect; do not repeat it blindly, try another"
+                + " approach (keyboard, another target, or check the app state).";
+        }
         String inner = "    \"state_id\": \"" + sid + "\",\n"
             + "    \"screen\": {\"display\": " + display
             + ", \"x\": " + area.x + ", \"y\": " + area.y
             + ", \"width\": " + area.width + ", \"height\": " + area.height
             + ", \"image_size\": \"" + imgW + "x" + imgH + "\"},\n"
             + "    \"note\": " + CuaMiniJson.str(note) + "\n";
-        return new Object[]{inner, Base64.getEncoder().encodeToString(jpeg)};
+        return new Object[]{inner, Base64.getEncoder().encodeToString(jpeg), unchanged};
     }
 
     /**
@@ -434,7 +485,12 @@ public final class CuaMcpServerMain {
                 .append(",\"width\":").append(w.rect[2]).append(",\"height\":").append(w.rect[3]).append('}')
                 .append(",\"visible\":").append(w.visible)
                 .append(",\"iconic\":").append(w.iconic)
-                .append('}');
+                .append(",\"main\":").append(w.main);
+            // 无标题窗的挑窗提示（对齐官方 text_preview：内容采样仅供参考，绝非标识符）
+            if (w.title.isEmpty() && !w.preview.isEmpty()) {
+                items.append(",\"text_preview\":").append(CuaMiniJson.str(w.preview));
+            }
+            items.append('}');
         }
         return CuaMiniJson.textResult("{\"windows\":[" + items + "]}\n" + appLineOf(app), false);
     }
@@ -489,6 +545,11 @@ public final class CuaMcpServerMain {
         String base64 = Base64.getEncoder().encodeToString(jpeg);
         String sid = "s" + STATE_SEQ.incrementAndGet();
         CuaRobot.setLastCapture(new CuaRobot.CaptureLedger(display, imgW, imgH, area, sid));
+        // 全屏观察移动 effect_evidence 基线（下一动作回执与本帧比对）；crop 尺寸
+        // 不同必不等，不参与比对也不动基线
+        if (crop == null) {
+            CuaRobot.compareAndSetFrameBaseline(jpeg);
+        }
         StringBuilder head = new StringBuilder();
         head.append("{\n");
         head.append("  \"state_id\": \"").append(sid).append("\",\n");
@@ -551,6 +612,33 @@ public final class CuaMcpServerMain {
         }
     }
 
+    /**
+     * modifiers 参数（"+" 分隔修饰键 chord）→ VK 码数组；严格只收修饰键（ctrl/alt/
+     * shift/super 及别名），混入普通键报 ACTION_UNAVAILABLE（按住普通键不是修饰语义）。
+     */
+    private static int[] modifiersOf(Map<?, ?> args) {
+        Object v = args.get("modifiers");
+        if (!(v instanceof String) || ((String) v).isBlank()) {
+            return null;
+        }
+        List<Integer> codes = CuaKeymap.resolveChord((String) v);
+        if (codes == null || codes.isEmpty()) {
+            throw new CuaRobot.CuaException("ACTION_UNAVAILABLE",
+                "unknown key in modifiers \"" + v + "\"; use ctrl/alt/shift/super joined by +");
+        }
+        for (int vk : codes) {
+            if (!CuaKeymap.isModifier(vk)) {
+                throw new CuaRobot.CuaException("ACTION_UNAVAILABLE",
+                    "modifiers must be modifier keys only (got \"" + v + "\")");
+            }
+        }
+        int[] arr = new int[codes.size()];
+        for (int i = 0; i < arr.length; i++) {
+            arr[i] = codes.get(i);
+        }
+        return arr;
+    }
+
     private static String toolClick(Map<?, ?> args) {
         int[] img = requireCoord(args, "target");
         int[] t = toScreen(img);
@@ -560,7 +648,7 @@ public final class CuaMcpServerMain {
             count = 1;
         }
         Object mb = args.get("mouse_button");
-        CuaRobot.click(t[0], t[1], mb instanceof String ? (String) mb : null, count);
+        CuaRobot.click(t[0], t[1], mb instanceof String ? (String) mb : null, count, modifiersOf(args));
         return finishAction(args, t, "{\"clicked\":[" + t[0] + "," + t[1] + "]}");
     }
 
@@ -571,7 +659,8 @@ public final class CuaMcpServerMain {
         // 护栏：按下点必须命中预期窗口（真机两连穿到后面 IDE 的直接解）
         requireHitPid(args, from[0], from[1]);
         Object mb = args.get("mouse_button");
-        CuaRobot.drag(from[0], from[1], to[0], to[1], mb instanceof String ? (String) mb : null);
+        CuaRobot.drag(from[0], from[1], to[0], to[1], mb instanceof String ? (String) mb : null,
+            modifiersOf(args));
         return finishAction(args, to, "{\"dragged\":[[" + from[0] + "," + from[1] + "],[" + to[0] + "," + to[1] + "]]}");
     }
 
@@ -585,7 +674,7 @@ public final class CuaMcpServerMain {
         if (amount <= 0) {
             amount = 1;
         }
-        CuaRobot.scroll(t[0], t[1], (String) dir, Math.min(30, amount));
+        CuaRobot.scroll(t[0], t[1], (String) dir, Math.min(30, amount), modifiersOf(args));
         return finishAction(args, t, "{\"scrolled\":[\""
             + CuaMiniJson.escape(String.valueOf(dir)) + "\"," + Math.min(30, amount) + "]}");
     }
@@ -605,7 +694,8 @@ public final class CuaMcpServerMain {
         if (!(text instanceof String)) {
             throw new CuaRobot.CuaException("INTERNAL", "text is required");
         }
-        CuaRobot.paste((String) text);
+        Object formatV = args.get("format");
+        CuaRobot.paste((String) text, formatV instanceof String ? (String) formatV : null);
         int[] at = CuaRobot.pointer();
         return finishAction(args, at, "{\"pasted\":" + CuaMiniJson.str((String) text) + "}");
     }
@@ -622,9 +712,56 @@ public final class CuaMcpServerMain {
         }
         Object holdV = args.get("hold_seconds");
         long hold = holdV instanceof Double ? (long) ((Double) holdV * 1000) : 0L;
-        CuaRobot.pressChord(codes, hold);
+        // repeat=连击（如翻页 Page_Down x N），与 hold=长按互斥：repeat>1 忽略 hold
+        int repeat = intArg(args, "repeat");
+        if (repeat <= 0) {
+            repeat = 1;
+        }
+        repeat = Math.min(repeat, 50);
+        for (int i = 0; i < repeat; i++) {
+            CuaRobot.pressChord(codes, repeat > 1 ? 0 : hold);
+            if (i < repeat - 1) {
+                sleep(40);
+            }
+        }
         int[] at = CuaRobot.pointer();
-        return finishAction(args, at, "{\"keyed\":" + CuaMiniJson.str((String) text) + "}");
+        return finishAction(args, at, "{\"keyed\":" + CuaMiniJson.str((String) text)
+            + (repeat > 1 ? ",\"repeat\":" + repeat : "") + "}");
+    }
+
+    // ───────────────────────── launch_app ─────────────────────────
+
+    private static String toolLaunchApp(Map<?, ?> args) {
+        Object nameV = args.get("name");
+        if (!(nameV instanceof String) || ((String) nameV).isBlank()) {
+            throw new CuaRobot.CuaException("INTERNAL",
+                "name is required - as the Start menu lists it, character-for-character");
+        }
+        String name = (String) nameV;
+        Object argsV = args.get("args");
+        CuaApps.LaunchResult r = CuaApps.launchApp(name, argsV instanceof String ? (String) argsV : null);
+        if (!r.ok) {
+            if ("not_found".equals(r.note)) {
+                int upto = Math.min(20, r.sample.size());
+                throw new CuaRobot.CuaException("APP_NOT_FOUND",
+                    "no Start-menu shortcut matches \"" + name + "\". Sample of installed names: "
+                        + String.join(", ", r.sample.subList(0, upto))
+                        + ". Copy the name character-for-character from this list, or ask the user.");
+            }
+            throw new CuaRobot.CuaException("LAUNCH_FAILED", "start failed: " + r.note);
+        }
+        StringBuilder json = new StringBuilder("{\"launched\":true,\"name\":")
+            .append(CuaMiniJson.str(name))
+            .append(",\"shortcut\":").append(CuaMiniJson.str(r.shortcut))
+            .append(",\"match\":").append(CuaMiniJson.str(r.match));
+        if (r.pid > 0) {
+            json.append(",\"pid\":").append(r.pid);
+        }
+        if (!r.process.isEmpty()) {
+            json.append(",\"process\":").append(CuaMiniJson.str(r.process));
+        }
+        json.append(",\"note\":").append(CuaMiniJson.str(r.note)).append('}');
+        return finishAction(args, null, json.toString());
     }
 
     // ───────────────────────── window_manage ─────────────────────────
@@ -769,13 +906,15 @@ public final class CuaMcpServerMain {
                     case "click": {
                         int[] t = toScreen(requireCoord(step, "target"));
                         int count = intArg(step, "click_count");
-                        CuaRobot.click(t[0], t[1], strOrNull(step.get("mouse_button")), count > 0 ? count : 1);
+                        CuaRobot.click(t[0], t[1], strOrNull(step.get("mouse_button")),
+                            count > 0 ? count : 1, modifiersOf(step));
                         break;
                     }
                     case "drag": {
                         int[] from = toScreen(requireCoord(step, "from_target"));
                         int[] to = toScreen(requireCoord(step, "to"));
-                        CuaRobot.drag(from[0], from[1], to[0], to[1], strOrNull(step.get("mouse_button")));
+                        CuaRobot.drag(from[0], from[1], to[0], to[1], strOrNull(step.get("mouse_button")),
+                            modifiersOf(step));
                         break;
                     }
                     case "scroll": {
@@ -785,7 +924,8 @@ public final class CuaMcpServerMain {
                             throw new CuaRobot.CuaException("INTERNAL", "scroll step needs scroll_direction");
                         }
                         int amount = intArg(step, "scroll_amount");
-                        CuaRobot.scroll(t[0], t[1], (String) dir, amount > 0 ? Math.min(30, amount) : 1);
+                        CuaRobot.scroll(t[0], t[1], (String) dir, amount > 0 ? Math.min(30, amount) : 1,
+                            modifiersOf(step));
                         break;
                     }
                     case "type": {
@@ -806,7 +946,14 @@ public final class CuaMcpServerMain {
                             throw new CuaRobot.CuaException("ACTION_UNAVAILABLE",
                                 "unknown key name in \"" + text + "\"");
                         }
-                        CuaRobot.pressChord(codes, 0);
+                        int repeat = intArg(step, "repeat");
+                        repeat = repeat <= 0 ? 1 : Math.min(repeat, 50);
+                        for (int i = 0; i < repeat; i++) {
+                            CuaRobot.pressChord(codes, 0);
+                            if (i < repeat - 1) {
+                                sleep(40);
+                            }
+                        }
                         break;
                     }
                     default:
@@ -836,7 +983,7 @@ public final class CuaMcpServerMain {
                 int display = led != null ? led.displayIndex : 0;
                 Object[] obs = captureObserved(display,
                     "Screenshot AFTER the batch stopped on failure at step " + executed
-                        + " (render settle " + settle2 + "ms); screen state is unverified territory.");
+                        + " (render settle " + settle2 + "ms); screen state is unverified territory.", true);
                 return CuaMiniJson.imageResult(
                     body + ",\n  \"observed\": {\n" + obs[0] + "  }\n}",
                     (String) obs[1], "image/jpeg", true);
@@ -860,7 +1007,7 @@ public final class CuaMcpServerMain {
             int display = led != null ? led.displayIndex : 0;
             Object[] obs = captureObserved(display,
                 "Fresh screenshot AFTER all steps (render settle " + settle2
-                    + "ms); next action coordinates are pixels of THIS image.");
+                    + "ms); next action coordinates are pixels of THIS image.", true);
             return CuaMiniJson.imageResult(head + ",\n  \"observed\": {\n" + obs[0] + "  }\n}"
                 + appLineSuffix(fgProbe), (String) obs[1], "image/jpeg");
         }
@@ -898,7 +1045,7 @@ public final class CuaMcpServerMain {
             "List windowed desktop apps (pid, name, title, active). Call this first to find the app to control.",
             ""),
         tool("list_windows",
-            "List ALL top-level windows of one app, including hidden ones (window_id for window_manage targeting; class + rect + visible/iconic flags).",
+            "List ALL top-level windows of one app, including hidden ones (window_id for window_manage targeting; class + rect + visible/iconic flags). main marks the app's topmost visible window (preferred target). Untitled windows carry text_preview - a sample of child-window text, a hint for choosing a window, never an identifier.",
             prop("app_ref", APP_REF)),
         tool("get_app_state",
             "Screenshot a display and return it with screen bounds. Coordinates you read on the image are the click coordinates. display: screen index (default 0). crop: [x,y,w,h] pixels of the LATEST screenshot to capture only a sub-region, zoomed to 1600px long edge (identify tray icons / small controls). include_screenshot=false skips the image and returns process identity only (cheap probe; coordinates still refer to the LATEST screenshot you hold).",
@@ -906,25 +1053,28 @@ public final class CuaMcpServerMain {
                 + ",\"display\":{\"type\":\"integer\"},\"include_screenshot\":{\"type\":\"boolean\"}"
                 + ",\"crop\":" + COORD4),
         tool("left_click",
-            "Click at [x, y] pixels of the LATEST screenshot. mouse_button: left/right/middle; click_count 2 = double click. expect_window_pid: guard - verify the point hits this pid's window first, refuse otherwise (prevents acting inside the wrong app, e.g. two look-alike tray icons). observe (default true): attach a fresh screenshot of the result in the same response, after a render-settle wait (default 400ms so menus/animations land in frame; observe_delay_ms overrides, 0..5000).",
+            "Click at [x, y] pixels of the LATEST screenshot. mouse_button: left/right/middle; click_count 2 = double click. modifiers: '+'-separated modifier chord held during the click (e.g. \"ctrl\" for multi-select, \"shift\" for range-select). expect_window_pid: guard - verify the point hits this pid's window first, refuse otherwise (prevents acting inside the wrong app, e.g. two look-alike tray icons). observe (default true): attach a fresh screenshot of the result in the same response, after a render-settle wait (default 400ms so menus/animations land in frame; observe_delay_ms overrides, 0..5000).",
             prop("target", COORD)
                 + ",\"mouse_button\":{\"type\":\"string\",\"enum\":[\"left\",\"right\",\"middle\"]}"
                 + ",\"click_count\":{\"type\":\"integer\"}"
+                + ",\"modifiers\":{\"type\":\"string\"}"
                 + ",\"expect_window_pid\":{\"type\":\"integer\"}"
                 + ",\"observe\":{\"type\":\"boolean\"}"
                 + ",\"observe_delay_ms\":{\"type\":\"integer\"}"),
         tool("left_click_drag",
-            "Press at from_target [x,y], interpolate to to [x,y], release. expect_window_pid: guard - verify the press point hits this pid's window first, refuse otherwise (prevents dragging inside the wrong app when resizing window edges). observe (default true) attaches a result screenshot after a render settle (observe_delay_ms, default 400ms).",
+            "Press at from_target [x,y], interpolate to to [x,y], release. modifiers: '+'-separated chord held during the drag. expect_window_pid: guard - verify the press point hits this pid's window first, refuse otherwise (prevents dragging inside the wrong app when resizing window edges). observe (default true) attaches a result screenshot after a render settle (observe_delay_ms, default 400ms).",
             prop("from_target", COORD) + ",\"to\":" + COORD
                 + ",\"mouse_button\":{\"type\":\"string\",\"enum\":[\"left\",\"right\",\"middle\"]}"
+                + ",\"modifiers\":{\"type\":\"string\"}"
                 + ",\"expect_window_pid\":{\"type\":\"integer\"}"
                 + ",\"observe\":{\"type\":\"boolean\"}"
                 + ",\"observe_delay_ms\":{\"type\":\"integer\"}"),
         tool("scroll",
-            "Move pointer to target [x,y] and scroll. scroll_direction: up|down|left|right; scroll_amount: wheel notches. observe (default true) attaches a result screenshot after a render settle (observe_delay_ms, default 400ms).",
+            "Move pointer to target [x,y] and scroll. scroll_direction: up|down|left|right; scroll_amount: wheel notches; modifiers: '+'-separated chord held while scrolling (e.g. \"ctrl\" for zoom-scroll). observe (default true) attaches a result screenshot after a render settle (observe_delay_ms, default 400ms).",
             prop("target", COORD)
                 + ",\"scroll_direction\":{\"type\":\"string\",\"enum\":[\"up\",\"down\",\"left\",\"right\"]}"
                 + ",\"scroll_amount\":{\"type\":\"integer\"}"
+                + ",\"modifiers\":{\"type\":\"string\"}"
                 + ",\"observe\":{\"type\":\"boolean\"}"
                 + ",\"observe_delay_ms\":{\"type\":\"integer\"}"),
         tool("type",
@@ -933,14 +1083,21 @@ public final class CuaMcpServerMain {
                 + ",\"observe\":{\"type\":\"boolean\"}"
                 + ",\"observe_delay_ms\":{\"type\":\"integer\"}"),
         tool("key",
-            "Press a key or '+'-separated chord, e.g. \"Return\", \"Control_L+a\", \"super+c\", \"Up\". hold_seconds holds the chord down. observe (default true) attaches a result screenshot after a render settle (observe_delay_ms, default 400ms - raise it when the key opens a slow menu or window).",
+            "Press a key or '+'-separated chord, e.g. \"Return\", \"Control_L+a\", \"super+c\", \"Up\". hold_seconds holds the chord down (long-press). repeat re-sends the chord N times (1..50, e.g. paging; ignores hold_seconds). observe (default true) attaches a result screenshot after a render settle (observe_delay_ms, default 400ms - raise it when the key opens a slow menu or window).",
             prop("text", "{\"type\":\"string\"}") + ",\"hold_seconds\":{\"type\":\"number\"}"
+                + ",\"repeat\":{\"type\":\"integer\"}"
                 + ",\"observe\":{\"type\":\"boolean\"}"
                 + ",\"observe_delay_ms\":{\"type\":\"integer\"}"),
         tool("paste",
-            "Put text on the clipboard and press Ctrl+V. observe (default true) attaches a result screenshot after a render settle (observe_delay_ms, default 400ms).",
+            "Put text on the clipboard and press Ctrl+V (the user's clipboard is backed up and restored). format: \"text\" (default) plain text; \"md\" converts markdown (headings/bold/italic/code/links/lists) to rich text; \"html\" pastes the text as an HTML fragment (for apps that take rich paste, e.g. mail/docs). observe (default true) attaches a result screenshot after a render settle (observe_delay_ms, default 400ms).",
             prop("text", "{\"type\":\"string\"}")
                 + ",\"format\":{\"type\":\"string\",\"enum\":[\"text\",\"md\",\"html\"]}"
+                + ",\"observe\":{\"type\":\"boolean\"}"
+                + ",\"observe_delay_ms\":{\"type\":\"integer\"}"),
+        tool("launch_app",
+            "Launch a desktop app by its Start-menu name, character-for-character (e.g. \"记事本\" or \"Notepad\") - no need to drive the Start menu yourself. Matching is exact > prefix > contains over Start-menu shortcuts (user + all users). args: optional launch arguments. Waits up to 8s for a new process and reports its pid/process name; no new process is not an error (app may join an existing process). observe (default true) attaches a screenshot - raise observe_delay_ms for cold starts.",
+            prop("name", "{\"type\":\"string\"}")
+                + ",\"args\":{\"type\":\"string\"}"
                 + ",\"observe\":{\"type\":\"boolean\"}"
                 + ",\"observe_delay_ms\":{\"type\":\"integer\"}"),
         tool("window_manage",
@@ -959,8 +1116,10 @@ public final class CuaMcpServerMain {
                 + "\"target\":" + COORD + ",\"from_target\":" + COORD + ",\"to\":" + COORD
                 + ",\"mouse_button\":{\"type\":\"string\",\"enum\":[\"left\",\"right\",\"middle\"]}"
                 + ",\"click_count\":{\"type\":\"integer\"}"
+                + ",\"modifiers\":{\"type\":\"string\"}"
                 + ",\"scroll_direction\":{\"type\":\"string\",\"enum\":[\"up\",\"down\",\"left\",\"right\"]}"
                 + ",\"scroll_amount\":{\"type\":\"integer\"}"
+                + ",\"repeat\":{\"type\":\"integer\"}"
                 + ",\"text\":{\"type\":\"string\"},\"ms\":{\"type\":\"integer\"}"
                 + "},\"required\":[\"action\"],\"additionalProperties\":false}}")
                 + ",\"settle_ms\":{\"type\":\"integer\"}"

@@ -1,11 +1,13 @@
 /**
- * 「在输入框显示电脑操作按钮」配置（纯前端消费，2026-10-10）
+ * 「在输入框显示电脑操作按钮」配置（纯前端消费，2026-10-10；默认值改开 2026-10-11）
  *
- * showInInputBox（默认关闭）：电脑控制启用后，输入框顶栏（当前文件 chip 左侧）
- * 显示「电脑操作」入口 chip，点击把 zcgui-computer-use 技能提及内联插进输入框。
- * 上游还有一道电脑控制主开关（Kotlin PropertiesComponent，store.cuaEnabled）——
- * 主开关关闭时技能未安装，此开关即使为 true 也不渲染入口（两道条件与官方客户端
- * 「需先开启电脑控制，才能在输入框显示该按钮」语义一致）。
+ * showInInputBox（默认开启）：电脑控制启用后，输入框顶栏（当前文件 chip 左侧）
+ * 显示「电脑操作」入口 chip，点击把 zcgui-computer-use 技能提及内联插进输入框——
+ * 用户勾选主开关即可见可点，零摸索成本。上游还有一道电脑控制主开关（Kotlin
+ * PropertiesComponent，store.cuaEnabled）——主开关关闭时技能未安装，此开关即使为
+ * true 也不渲染入口（两道条件与官方客户端「需先开启电脑控制，才能在输入框显示
+ * 该按钮」语义一致）。显式关过（存储值为 false）保持关闭，默认值只影响从未动过
+ * 这项的用户。
  *
  * 存储走 persist kv 通道（key=zcode.cua.inputButton.config）：localStorage 即时
  * 生效 + 去抖回存 IDE PropertiesComponent，跨重启保留。读取方均在调用时取值；
@@ -20,7 +22,7 @@ export interface CuaInputButtonConfig {
 const KEY = 'zcode.cua.inputButton.config'
 
 export const DEFAULT_CUA_INPUT_BUTTON_CONFIG: CuaInputButtonConfig = {
-  showInInputBox: false,
+  showInInputBox: true,
 }
 
 export function readCuaInputButtonConfig(): CuaInputButtonConfig {

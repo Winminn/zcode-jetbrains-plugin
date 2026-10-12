@@ -366,14 +366,19 @@ final class CuaApps {
         final int[] rect;      // 逻辑空间 {x,y,w,h}
         final boolean visible;
         final boolean iconic;
+        final boolean main;        // 该进程 Z 序最顶可见窗（挑窗优先目标）
+        final String preview;      // 无标题窗的子窗内容采样（挑窗提示，绝非标识符）
 
-        WinEntry(long hwnd, String title, String cls, int[] rect, boolean visible, boolean iconic) {
+        WinEntry(long hwnd, String title, String cls, int[] rect, boolean visible, boolean iconic,
+                 boolean main, String preview) {
             this.hwnd = hwnd;
             this.title = title;
             this.cls = cls;
             this.rect = rect;
             this.visible = visible;
             this.iconic = iconic;
+            this.main = main;
+            this.preview = preview;
         }
     }
 
@@ -396,7 +401,9 @@ final class CuaApps {
                 "  $out += [PSCustomObject]@{ window_id = [long]$f[0]; visible = ($f[1] -eq [string][char]49);",
                 "    cls = $f[2]; title = $f[3];",
                 "    x = [int][math]::Round($rc[0] / $ratio); y = [int][math]::Round($rc[1] / $ratio);",
-                "    w = [int][math]::Round(($rc[2] - $rc[0]) / $ratio); h = [int][math]::Round(($rc[3] - $rc[1]) / $ratio) }",
+                "    w = [int][math]::Round(($rc[2] - $rc[0]) / $ratio); h = [int][math]::Round(($rc[3] - $rc[1]) / $ratio);",
+                "    main = ($f.Count -gt 5 -and $f[5] -eq [string][char]49);",
+                "    preview = $(if ($f.Count -gt 6) { $f[6] } else { '' }) }",
                 "}",
                 "if ($out.Count -eq 0) { '[]' } else { @($out) | ConvertTo-Json -Compress -Depth 2 }"), 15000);
         Object parsed;
@@ -427,7 +434,9 @@ final class CuaApps {
             wins.add(new WinEntry(Math.round((Double) idV),
                 String.valueOf(m.get("title")), String.valueOf(m.get("cls")),
                 new int[]{intOf(m.get("x")), intOf(m.get("y")), Math.max(0, w), Math.max(0, h)},
-                Boolean.TRUE.equals(m.get("visible")), Boolean.TRUE.equals(m.get("iconic"))));
+                Boolean.TRUE.equals(m.get("visible")), Boolean.TRUE.equals(m.get("iconic")),
+                Boolean.TRUE.equals(m.get("main")),
+                m.get("preview") instanceof String ? (String) m.get("preview") : ""));
         }
         return wins;
     }
@@ -640,8 +649,10 @@ final class CuaApps {
         "  [StructLayout(LayoutKind.Sequential)] public struct PT { public int X; public int Y; }",
         "  public delegate bool EnumProc(IntPtr h, IntPtr l);",
         "  [DllImport(\"user32.dll\")] public static extern bool EnumWindows(EnumProc cb, IntPtr l);",
+        "  [DllImport(\"user32.dll\")] public static extern bool EnumChildWindows(IntPtr h, EnumProc cb, IntPtr l);",
         "  [DllImport(\"user32.dll\")] public static extern bool IsWindowVisible(IntPtr h);",
         "  [DllImport(\"user32.dll\")] public static extern int GetWindowText(IntPtr h, StringBuilder s, int n);",
+        "  [DllImport(\"user32.dll\")] public static extern int GetWindowTextLength(IntPtr h);",
         "  [DllImport(\"user32.dll\")] public static extern uint GetWindowThreadProcessId(IntPtr h, out uint pid);",
         "  [DllImport(\"user32.dll\")] public static extern bool GetWindowRect(IntPtr h, out RECT r);",
         "  [DllImport(\"user32.dll\")] public static extern bool SetWindowPos(IntPtr h, IntPtr a, int x, int y, int w, int ht, uint f);",
@@ -706,8 +717,29 @@ final class CuaApps {
         "    StringBuilder t = new StringBuilder(512); GetWindowText(h, t, 512);",
         "    return p + \"\\t\" + t;",
         "  }",
+        "  public static string ChildSample(IntPtr h) {",
+        "    StringBuilder sb = new StringBuilder();",
+        "    int got = 0;",
+        "    EnumChildWindows(h, delegate(IntPtr c, IntPtr l) {",
+        "      if (got >= 3) return false;",
+        "      int len = GetWindowTextLength(c);",
+        "      if (len > 0) {",
+        "        StringBuilder t = new StringBuilder(len + 2); GetWindowText(c, t, t.Capacity);",
+        "        string s = t.ToString().Trim();",
+        "        s = s.Replace((char)9, (char)32).Replace((char)10, (char)32).Replace((char)13, (char)32);",
+        "        if (s.Length > 0) {",
+        "          if (sb.Length > 0) sb.Append(\" | \");",
+        "          sb.Append(s); got++;",
+        "        }",
+        "      }",
+        "      return true;",
+        "    }, IntPtr.Zero);",
+        "    if (sb.Length > 100) sb.Length = 100;",
+        "    return sb.ToString();",
+        "  }",
         "  public static string EnumAll(uint pid) {",
         "    StringBuilder sb = new StringBuilder();",
+        "    bool mainMarked = false;",
         "    EnumWindows(delegate(IntPtr h, IntPtr l) {",
         "      uint p; GetWindowThreadProcessId(h, out p);",
         "      if (p != pid) return true;",
@@ -720,9 +752,16 @@ final class CuaApps {
         "      if (sb.Length > 0) sb.Append((char)10);",
         "      StringBuilder t = new StringBuilder(256); GetWindowText(h, t, 256);",
         "      StringBuilder c = new StringBuilder(256); GetClassName(h, c, 256);",
+        "      string title = t.ToString();",
+        // 无标题窗的挑窗提示（对齐官方 text_preview 语义：仅提示、绝非标识符）
+        "      string preview = title.Length == 0 ? ChildSample(h) : \"\";",
+        "      string main = (vis && !mainMarked) ? \"1\" : \"0\";",
+        "      if (vis && !mainMarked) mainMarked = true;",
         "      sb.Append(h.ToInt64()).Append((char)9).Append(vis ? (char)49 : (char)48)",
-        "        .Append((char)9).Append(c).Append((char)9).Append(t)",
-        "        .Append((char)9).Append(r.L).Append((char)44).Append(r.T).Append((char)44).Append(r.R).Append((char)44).Append(r.B);",
+        "        .Append((char)9).Append(c).Append((char)9).Append(title)",
+        "        .Append((char)9).Append(r.L).Append((char)44).Append(r.T).Append((char)44).Append(r.R).Append((char)44).Append(r.B)",
+        "        .Append((char)9).Append(main)",
+        "        .Append((char)9).Append(preview);",
         "      return true;",
         "    }, IntPtr.Zero);",
         "    return sb.ToString();",
@@ -807,5 +846,145 @@ final class CuaApps {
             "$sb = New-Object System.Text.StringBuilder 512",
             "[void][WM]::GetWindowText($h, $sb, 512)",
             "('{\"pid\":' + $pid2 + ',\"title\":\"' + [WM]::Q($sb.ToString()) + '\"}')");
+    }
+
+    // ───────────────────────── launch_app（开始菜单拉起） ─────────────────────────
+
+    /** launch_app 结果：shortcut=命中的 .lnk 路径，pid/process=等待窗口内新出现的进程。 */
+    static final class LaunchResult {
+        final boolean ok;
+        final String shortcut;
+        final String match;      // exact | prefix | contains
+        final int pid;
+        final String process;
+        final String note;
+        /** not_found 时的候选样本（前 40 个开始菜单项名，帮模型/用户对名）。 */
+        final List<String> sample;
+
+        LaunchResult(boolean ok, String shortcut, String match, int pid, String process,
+                     String note, List<String> sample) {
+            this.ok = ok;
+            this.shortcut = shortcut;
+            this.match = match;
+            this.pid = pid;
+            this.process = process;
+            this.note = note;
+            this.sample = sample;
+        }
+    }
+
+    /**
+     * 按开始菜单名拉起应用（对齐官方「绑定即启动」缺口——插件此前只能开始菜单三连）。
+     *
+     * 名字解析主源 = Get-StartApps（开始菜单真显示名，含 UWP——记事本/计算器这类
+     * 应用没有 Start Menu\Programs 下的 .lnk，纯 .lnk 搜索实测漏掉）；.lnk 递归搜索
+     * 兜底（Get-StartApps 覆盖不全的便携安装）。命中后：UWP/商店应用走
+     * explorer.exe shell:AppsFolder\&lt;AppID&gt;，.lnk 直接 Start-Process（两类 AppID
+     * 形态 explorer 都认）。等待=进程快照差集（启动前后 Get-Process 对比，最长 8s）
+     * ——比解析目标 exe 更通用（explorer 转发启动拿不到目标进程，第二实例复用已有
+     * 进程时差集为空也不算失败）。
+     */
+    static LaunchResult launchApp(String name, String launchArgs) {
+        String safeName = name.replace("'", "");
+        String safeArgs = launchArgs == null ? "" : launchArgs.replace("'", "");
+        StringBuilder argsLine = new StringBuilder();
+        if (!safeArgs.isEmpty()) {
+            argsLine.append(" -ArgumentList '").append(safeArgs).append("'");
+        }
+        String out = runPowerShell(String.join("\n", WM_HEAD,
+            "$name = '" + safeName + "'",
+            "$nl = $name.ToLower()",
+            "$before = @(Get-Process | ForEach-Object { $_.Id })",
+            // 主源：Get-StartApps（开始菜单显示名，UWP + 桌面全覆盖）
+            "$apps = @(Get-StartApps -ErrorAction SilentlyContinue | Where-Object { $_.Name })",
+            "$target = $null; $mode = ''; $viaShell = $false",
+            "$exact = @($apps | Where-Object { $_.Name.ToLower() -eq $nl })",
+            "if ($exact.Count -gt 0) { $target = $exact[0]; $mode = 'exact' }",
+            "if (-not $target) {",
+            "  $pre = @($apps | Where-Object { $_.Name.ToLower().StartsWith($nl) })",
+            "  if ($pre.Count -gt 0) { $target = $pre[0]; $mode = 'prefix' }",
+            "}",
+            "if (-not $target) {",
+            "  $inc = @($apps | Where-Object { $_.Name.ToLower().IndexOf($nl) -ge 0 })",
+            "  if ($inc.Count -gt 0) { $target = $inc[0]; $mode = 'contains' }",
+            "}",
+            "if ($target) { $viaShell = $true }",
+            // 兜底：.lnk 递归搜索（Get-StartApps 缺条目时）
+            "if (-not $target) {",
+            "  $roots = @((Join-Path $env:APPDATA 'Microsoft\\Windows\\Start Menu\\Programs'), (Join-Path $env:ProgramData 'Microsoft\\Windows\\Start Menu\\Programs'))",
+            "  $links = @()",
+            "  foreach ($r in $roots) { if (Test-Path -LiteralPath $r) { $links += Get-ChildItem -LiteralPath $r -Recurse -Filter *.lnk -ErrorAction SilentlyContinue } }",
+            "  $lexact = @($links | Where-Object { $_.BaseName.ToLower() -eq $nl })",
+            "  if ($lexact.Count -gt 0) { $target = $lexact[0]; $mode = 'lnk-exact' }",
+            "  if (-not $target) {",
+            "    $lpre = @($links | Where-Object { $_.BaseName.ToLower().StartsWith($nl) })",
+            "    if ($lpre.Count -gt 0) { $target = $lpre[0]; $mode = 'lnk-prefix' }",
+            "  }",
+            "  if (-not $target) {",
+            "    $linc = @($links | Where-Object { $_.BaseName.ToLower().IndexOf($nl) -ge 0 })",
+            "    if ($linc.Count -gt 0) { $target = $linc[0]; $mode = 'lnk-contains' }",
+            "  }",
+            "}",
+            "if (-not $target) {",
+            "  $sample = @($apps | Select-Object -First 40 | ForEach-Object { $_.Name })",
+            "  ('{\"ok\":false,\"sample\":' + (ConvertTo-Json -Compress -InputObject @($sample)) + '}')",
+            "  exit",
+            "}",
+            "$proc = $null",
+            "try {",
+            "  if ($viaShell) {",
+            "    $shell = 'shell:AppsFolder\\' + $target.AppID",
+            "    Start-Process explorer.exe -ArgumentList $shell",
+            "  } else {",
+            "    $proc = Start-Process -FilePath $target.FullName" + argsLine + " -PassThru",
+            "  }",
+            "}",
+            "catch { ('{\"ok\":false,\"error\":\"' + [WM]::Q($_.Exception.Message) + '\"}'); exit }",
+            "$newPid = 0; $newName = ''",
+            "if ($proc) { $newPid = $proc.Id }",
+            "for ($i = 0; $i -lt 16; $i++) {",
+            "  Start-Sleep -Milliseconds 500",
+            "  $after = @(Get-Process | ForEach-Object { $_.Id })",
+            "  $diff = @($after | Where-Object { $before -notcontains $_ })",
+            "  if ($diff.Count -gt 0) {",
+            "    $np = Get-Process -Id $diff[0] -ErrorAction SilentlyContinue",
+            "    if ($np) { $newPid = $np.Id; $newName = $np.ProcessName }",
+            "    break",
+            "  }",
+            "}",
+            "('{\"ok\":true,\"shortcut\":\"' + [WM]::Q($(if ($viaShell) { $target.AppID } else { $target.FullName })) + '\",\"match\":\"' + $mode + '\",\"pid\":' + $newPid + ',\"process\":\"' + [WM]::Q($newName) + '\"}')"),
+            30000);
+        Object parsed;
+        try {
+            parsed = CuaMiniJson.parse(out);
+        } catch (Exception e) {
+            throw new CuaRobot.CuaException("INTERNAL", "launch returned invalid payload: " + e.getMessage());
+        }
+        if (!(parsed instanceof Map)) {
+            throw new CuaRobot.CuaException("INTERNAL", "launch returned unexpected payload");
+        }
+        Map<?, ?> m = (Map<?, ?>) parsed;
+        if (!Boolean.TRUE.equals(m.get("ok"))) {
+            List<String> sample = new ArrayList<>();
+            Object sampleV = m.get("sample");
+            if (sampleV instanceof List) {
+                for (Object s : (List<?>) sampleV) {
+                    if (s instanceof String) {
+                        sample.add((String) s);
+                    }
+                }
+            }
+            String err = m.get("error") instanceof String ? (String) m.get("error") : null;
+            return new LaunchResult(false, "", "", 0, "", err != null ? err : "not_found", sample);
+        }
+        int pid = intOf(m.get("pid"));
+        String process = m.get("process") instanceof String ? (String) m.get("process") : "";
+        String note = pid > 0
+            ? "new process detected while waiting (window may still be rendering; raise observe_delay_ms for cold starts)"
+            : "no new process within 8s - the app may still be starting, joined an existing process, or is a background agent; check with list_apps";
+        return new LaunchResult(true,
+            m.get("shortcut") instanceof String ? (String) m.get("shortcut") : "",
+            m.get("match") instanceof String ? (String) m.get("match") : "",
+            pid, process, note, List.of());
     }
 }

@@ -32,10 +32,21 @@ final class CuaRobot {
 
     static final class CuaException extends RuntimeException {
         final String code;
+        /**
+         * 动作可能已到达应用（对齐官方 possibly_sent 语义）：PS 链路超时被 kill /
+         * 脚本执行一半退出非 0 时，派发状态未知。保守方向=false——只有明确派发过
+         * 才置 true，反过来会让模型对一个从未下发的动作放弃重试。
+         */
+        final boolean actionSent;
 
         CuaException(String code, String message) {
+            this(code, message, false);
+        }
+
+        CuaException(String code, String message, boolean actionSent) {
             super(message);
             this.code = code;
+            this.actionSent = actionSent;
         }
     }
 
@@ -166,6 +177,23 @@ final class CuaRobot {
         lastCapture = ledger;
     }
 
+    /**
+     * 最近一张全屏 JPEG（effect_evidence 比对基线，对齐官方「AX 受理了但界面逐字节
+     * 未变」证据位）：动作回执截图与基线字节相同 = 该动作无可见效果，note 标
+     * unchanged 防模型对同一失效坐标死磕。JPEG 编码确定性（同内容同质量参数同字节），
+     * 两帧间任何像素变化（光标闪烁/时钟跳动）都会令比对失败——这正是期望的真变化。
+     * crop 子图尺寸不同必不等，不更新基线也不参与比对。
+     */
+    private static volatile byte[] lastFrameJpeg;
+
+    /** 与基线比对并移动基线（全屏帧专用）；返回 true = 与上一帧逐字节相同。 */
+    static boolean compareAndSetFrameBaseline(byte[] jpeg) {
+        byte[] old = lastFrameJpeg;
+        boolean unchanged = old != null && old.length == jpeg.length && java.util.Arrays.equals(old, jpeg);
+        lastFrameJpeg = jpeg;
+        return unchanged;
+    }
+
     static Object[] captureScreenScaled(int displayIndex) {
         return captureScreenScaled(displayIndex, null);
     }
@@ -293,36 +321,59 @@ final class CuaRobot {
     }
 
     static void click(int x, int y, String mouseButton, int clickCount) {
+        click(x, y, mouseButton, clickCount, null);
+    }
+
+    /** mods（修饰键 VK 码，按下→动作→逆序释放）：Ctrl+点击多选 / Shift+范围选。 */
+    static void click(int x, int y, String mouseButton, int clickCount, int[] mods) {
         requireOnScreen(x, y);
         int mask = buttonMask(mouseButton);
         ROBOT.mouseMove(x, y);
         int n = Math.max(1, Math.min(3, clickCount));
-        for (int i = 0; i < n; i++) {
-            ROBOT.mousePress(mask);
-            ROBOT.mouseRelease(mask);
-            sleep(60);
+        pressMods(mods);
+        try {
+            for (int i = 0; i < n; i++) {
+                ROBOT.mousePress(mask);
+                ROBOT.mouseRelease(mask);
+                sleep(60);
+            }
+        } finally {
+            releaseMods(mods);
         }
     }
 
     static void drag(int fromX, int fromY, int toX, int toY, String mouseButton) {
+        drag(fromX, fromY, toX, toY, mouseButton, null);
+    }
+
+    static void drag(int fromX, int fromY, int toX, int toY, String mouseButton, int[] mods) {
         requireOnScreen(fromX, fromY);
         requireOnScreen(toX, toY);
         int mask = buttonMask(mouseButton);
         ROBOT.mouseMove(fromX, fromY);
         sleep(120);
-        ROBOT.mousePress(mask);
-        sleep(120);
-        // 10 步插值（browser-use drag 同款）
-        int steps = 10;
-        for (int i = 1; i <= steps; i++) {
-            ROBOT.mouseMove(fromX + (toX - fromX) * i / steps, fromY + (toY - fromY) * i / steps);
-            sleep(30);
+        pressMods(mods);
+        try {
+            ROBOT.mousePress(mask);
+            sleep(120);
+            // 10 步插值（browser-use drag 同款）
+            int steps = 10;
+            for (int i = 1; i <= steps; i++) {
+                ROBOT.mouseMove(fromX + (toX - fromX) * i / steps, fromY + (toY - fromY) * i / steps);
+                sleep(30);
+            }
+            sleep(120);
+            ROBOT.mouseRelease(mask);
+        } finally {
+            releaseMods(mods);
         }
-        sleep(120);
-        ROBOT.mouseRelease(mask);
     }
 
     static void scroll(int x, int y, String direction, int pages) {
+        scroll(x, y, direction, pages, null);
+    }
+
+    static void scroll(int x, int y, String direction, int pages, int[] mods) {
         requireOnScreen(x, y);
         String dir = direction.toLowerCase();
         int amt;
@@ -337,18 +388,84 @@ final class CuaRobot {
         }
         ROBOT.mouseMove(x, y);
         sleep(80);
-        if (horizontal) {
-            // AWT mouseWheel 只有纵向；横向经 shift+纵滚近似（多数应用 shift+滚=横向）
-            ROBOT.keyPress(KeyEvent.VK_SHIFT);
-            ROBOT.mouseWheel(amt);
-            ROBOT.keyRelease(KeyEvent.VK_SHIFT);
-        } else {
-            ROBOT.mouseWheel(amt);
+        // 横向滚内部也按 shift；用户 mods 已含 shift 时不重复按（双 press 会发两个 keydown）
+        boolean shiftInMods = false;
+        if (mods != null) {
+            for (int m : mods) {
+                if (m == KeyEvent.VK_SHIFT) {
+                    shiftInMods = true;
+                    break;
+                }
+            }
+        }
+        pressMods(mods);
+        try {
+            if (horizontal && !shiftInMods) {
+                // AWT mouseWheel 只有纵向；横向经 shift+纵滚近似（多数应用 shift+滚=横向）
+                ROBOT.keyPress(KeyEvent.VK_SHIFT);
+                ROBOT.mouseWheel(amt);
+                ROBOT.keyRelease(KeyEvent.VK_SHIFT);
+            } else {
+                ROBOT.mouseWheel(amt);
+            }
+        } finally {
+            releaseMods(mods);
+        }
+    }
+
+    private static void pressMods(int[] mods) {
+        if (mods == null) {
+            return;
+        }
+        for (int vk : mods) {
+            ROBOT.keyPress(vk);
+        }
+    }
+
+    private static void releaseMods(int[] mods) {
+        if (mods == null) {
+            return;
+        }
+        for (int i = mods.length - 1; i >= 0; i--) {
+            try {
+                ROBOT.keyRelease(mods[i]);
+            } catch (Exception ignore) {
+                // 释放失败不中断（修饰键卡死比跳过更糟）
+            }
         }
     }
 
     /** 键入文本：剪贴板 + Ctrl+V（Unicode 可靠路径），先备份后恢复剪贴板。 */
     static void typeText(String text) {
+        pasteImpl(text, null);
+    }
+
+    static void paste(String text) {
+        typeText(text);
+    }
+
+    /**
+     * 富文本粘贴：md 先转 HTML 片段，与纯文本一起双 flavor 上剪贴板（目标应用自选
+     * 它认的格式——Word/飞书/邮件取 HTML，记事本取纯文本）。Java 的 text/html
+     * flavor 写 Windows 系统剪贴板时由 AWT 包装为 CF_HTML（含 Version/StartHTML 头）。
+     */
+    static void paste(String text, String format) {
+        if (format == null || format.equals("text")) {
+            typeText(text);
+            return;
+        }
+        String html;
+        if (format.equals("md")) {
+            html = CuaMdToHtml.convert(text);
+        } else if (format.equals("html")) {
+            html = text;
+        } else {
+            throw new CuaException("INTERNAL", "format must be text/md/html (got " + format + ")");
+        }
+        pasteImpl(text, html);
+    }
+
+    private static void pasteImpl(String plainText, String html) {
         Clipboard clip = Toolkit.getDefaultToolkit().getSystemClipboard();
         Transferable old = null;
         try {
@@ -356,7 +473,8 @@ final class CuaRobot {
         } catch (Exception ignore) {
             // 剪贴板被别的进程占用：备份失败不致命，继续
         }
-        clip.setContents(new StringSelection(text), null);
+        clip.setContents(html != null ? new HtmlSelection(plainText, html)
+            : new StringSelection(plainText), null);
         try {
             ROBOT.keyPress(KeyEvent.VK_CONTROL);
             ROBOT.keyPress(KeyEvent.VK_V);
@@ -374,8 +492,49 @@ final class CuaRobot {
         }
     }
 
-    static void paste(String text) {
-        typeText(text);
+    /** 纯文本 + HTML 片段双 flavor（Windows 侧 AWT 自动转 CF_HTML）。 */
+    private static final class HtmlSelection implements Transferable {
+        private static final java.awt.datatransfer.DataFlavor HTML_FLAVOR = htmlFlavor();
+        private final String plain;
+        private final String html;
+
+        HtmlSelection(String plain, String html) {
+            this.plain = plain;
+            this.html = html;
+        }
+
+        private static java.awt.datatransfer.DataFlavor htmlFlavor() {
+            try {
+                return new java.awt.datatransfer.DataFlavor(
+                    "text/html; class=java.io.InputStream; charset=UTF-8");
+            } catch (ClassNotFoundException e) {
+                throw new IllegalStateException(e);
+            }
+        }
+
+        @Override
+        public java.awt.datatransfer.DataFlavor[] getTransferDataFlavors() {
+            return new java.awt.datatransfer.DataFlavor[]{
+                java.awt.datatransfer.DataFlavor.stringFlavor, HTML_FLAVOR};
+        }
+
+        @Override
+        public boolean isDataFlavorSupported(java.awt.datatransfer.DataFlavor flavor) {
+            return flavor.equals(java.awt.datatransfer.DataFlavor.stringFlavor)
+                || flavor.equals(HTML_FLAVOR);
+        }
+
+        @Override
+        public Object getTransferData(java.awt.datatransfer.DataFlavor flavor)
+                throws java.awt.datatransfer.UnsupportedFlavorException {
+            if (flavor.equals(java.awt.datatransfer.DataFlavor.stringFlavor)) {
+                return plain;
+            }
+            if (flavor.equals(HTML_FLAVOR)) {
+                return new java.io.ByteArrayInputStream(html.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+            }
+            throw new java.awt.datatransfer.UnsupportedFlavorException(flavor);
+        }
     }
 
     /**

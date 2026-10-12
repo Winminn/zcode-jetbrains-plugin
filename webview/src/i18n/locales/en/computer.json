@@ -2,6 +2,8 @@
   "title": "Computer Control",
   "switchTitle": "Enable Computer Control",
   "switchDesc": "Let the AI operate this machine's desktop via screenshots, clicks and keyboard (applies to new sessions). The companion skill is installed into the ZCode skills directory.",
+  "onHint": "Click to disable (new sessions won't get the tools)",
+  "offHint": "Click to enable (new sessions will get the tools)",
   "notePermission": "The permission mode follows your selection in the session toolbar; switch to \"Ask before changes\" if you want to confirm each action.",
   "noteNewSession": "Computer control injection applies to newly created sessions only; running sessions are unchanged.",
   "inputButtonTitle": "Show computer control button in input box",

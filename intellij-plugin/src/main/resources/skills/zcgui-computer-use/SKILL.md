@@ -19,7 +19,9 @@ click / drag / scroll / type at pixels of that screenshot, press keys.
 
 ## The loop
 
-1. `list_apps` to find the app (exact `name` or `pid`).
+1. `list_apps` to find the app (exact `name` or `pid`). If the app you need is
+   NOT running, `launch_app {name}` it by its Start-menu name instead of
+   driving the Start menu yourself.
 2. `get_app_state` with `app_ref` to get a screenshot of the target screen.
 3. Find the target on the image, then act on its pixel coordinates.
 4. Actions return a fresh screenshot by default (`observe`), so one call does
@@ -31,7 +33,9 @@ click / drag / scroll / type at pixels of that screenshot, press keys.
 
 Success means the tool call was accepted, not that the app acted. Check the
 screenshot in the action's response; if you passed `observe: false`, re-observe
-with `get_app_state` yourself.
+with `get_app_state` yourself. A receipt note of `[effect_evidence unchanged]`
+means the frame is byte-identical to the previous one — the action had NO
+visible effect; do not repeat it, change approach (keyboard, another target).
 
 ## Window management — prefer `window_manage` over pixel dragging
 
@@ -50,7 +54,10 @@ window_manage {app_ref:{pid}, window_id:<from list_windows>, action:"move", ...}
 
 `list_windows` returns ALL top-level windows of the process — visible AND
 hidden, with class, rect and `window_id`; use `window_id` when one window
-matters instead of the process default.
+matters instead of the process default. `main` marks the app's topmost visible
+window (the preferred target when several exist); an untitled window carries
+`text_preview` — a sample of child-window text, a hint for choosing, never an
+identifier.
 
 `rect` is in the same logical space as screenshot pixels. `move`/`resize`
 need full x, y, width, height — query first, then apply. Mutating actions
@@ -94,10 +101,20 @@ the app's own minimum size.
 read from it. `list_apps` reports every app that has a window; pass that
 `name`/`pid` verbatim as `app_ref` — do not translate or shorten it.
 
+## Launching apps
+
+`launch_app {name}` launches a desktop app by its Start-menu name,
+character-for-character (e.g. `{"name":"记事本"}`, not `{"name":"Notepad"}` —
+use whatever `list_apps` would report for the running app, or the Start menu
+shows). It reports the new process when one appears within 8s; "no new
+process" is not an error (the app may join an existing process). Prefer it
+over the Start-menu keyboard dance; keep `expect_window_pid` in mind for the
+first click after a launch (window order may have shifted).
+
 Typical task:
 
 ```
-list_apps -> find 记事本 (pid 1234)
+list_apps -> find 记事本 (pid 1234)      (or launch_app {name:"记事本"} if absent)
 get_app_state {app_ref:{pid:1234}, display:0} -> screenshot
 left_click {target:[x,y]}        (focus the window first)
 type {text:"hello"}
@@ -136,19 +153,24 @@ Each tool takes one arguments object. Undeclared keys are refused.
 
 ```
 list_apps({})
-list_windows({app_ref})   # ALL top-level windows incl. hidden (window_id, class, rect, visible)
+list_windows({app_ref})   # ALL top-level windows incl. hidden (window_id, class, rect, visible, main, text_preview?)
 get_app_state({app_ref, display?, include_screenshot?, crop?})   # default display: 0; include_screenshot=false = identity probe, no image
-left_click({target:[x,y], mouse_button?="left", click_count?=1, expect_window_pid?, observe?=true, observe_delay_ms?=400})
-left_click_drag({from_target:[x,y], to:[x,y], expect_window_pid?, observe?=true, observe_delay_ms?})
-scroll({target:[x,y], scroll_direction:"up|down|left|right", scroll_amount?=1, observe?=true, observe_delay_ms?})
+left_click({target:[x,y], mouse_button?="left", click_count?=1, modifiers?, expect_window_pid?, observe?=true, observe_delay_ms?=400})
+left_click_drag({from_target:[x,y], to:[x,y], modifiers?, expect_window_pid?, observe?=true, observe_delay_ms?})
+scroll({target:[x,y], scroll_direction:"up|down|left|right", scroll_amount?=1, modifiers?, observe?=true, observe_delay_ms?})
 type({text, observe?=true, observe_delay_ms?})     # Unicode-safe: clipboard + Ctrl+V into the focused control
-key({text, hold_seconds?, observe?=true, observe_delay_ms?})   # "Return", "Tab", "Control_L+a", "super+c", "Up", "F5"
-paste({text, format?, observe?=true, observe_delay_ms?})       # same as type; keep for rich content
+key({text, hold_seconds?, repeat?, observe?=true, observe_delay_ms?})   # "Return", "Control_L+a", "super+c", "Up", "F5"; repeat re-sends N times
+paste({text, format?="text", observe?=true, observe_delay_ms?})   # format: text|md|html (rich paste; user clipboard is restored)
+launch_app({name, args?, observe?=true, observe_delay_ms?})       # Start-menu name, character-for-character
 window_manage({app_ref, window_id?, action, x?, y?, width?, height?, observe?=true on mutating actions, observe_delay_ms?})
 computer_batch({steps, settle_ms?, observe_final?=true, observe_delay_ms?})
 request_access({capabilities?})   # always ready on Windows
 stop_computer_control({reason?})
 ```
+
+`modifiers` (click/drag/scroll): a `+`-separated modifier chord held during the
+action — `"ctrl"` for click-to-multi-select, `"shift"` for range-select,
+`"ctrl"` while scrolling to zoom. Modifier keys only.
 
 `expect_window_pid` on `left_click` / `left_click_drag`: pass the pid you
 believe you are pressing on (from `list_apps`). The server verifies the point
@@ -164,12 +186,17 @@ Keyboard: `macOS uses cmd; here (Windows) super/cmd = Win key, ctrl = Ctrl`.
 Failed calls return `isError: true` with a JSON text block:
 
 - `code` — `INVALID_APP` (app not running: re-run `list_apps`),
+  `APP_NOT_FOUND` (`launch_app` name mismatch: the message lists installed
+  Start-menu names — copy one character-for-character),
   `ELEMENT_UNAVAILABLE` (stale/off-screen coordinate: re-observe),
-  `ACTION_UNAVAILABLE` (unknown key name), `GUARD_MISMATCH` (drag guard hit a
-  different window than expected_pid), `TIMEOUT`, `INTERNAL`.
-- A failed action may still have reached the app. Never blindly retry a
-  non-idempotent action (click/drag/key/type) — re-observe first and decide
-  from what you see.
+  `ACTION_UNAVAILABLE` (unknown key name / bad modifiers), `GUARD_MISMATCH`
+  (guard hit a different window than expected_pid), `TIMEOUT`, `INTERNAL`.
+- `actionSent: true` — the action may already have reached the app. Never
+  blindly retry a non-idempotent action (click/drag/key/type) when you see
+  it; re-observe first and decide from what you see.
+- `retry` — `"reobserve"` (frame may be stale: observe first), `"retry"`
+  (safe: the action was never dispatched, e.g. GUARD_MISMATCH),
+  `"never"` (same arguments will fail again: change approach or ask the user).
 
 ## If you cannot see the screenshot
 

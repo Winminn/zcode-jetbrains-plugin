@@ -124,6 +124,11 @@
   },
   "cua": {
     "screenshot": "スクリーンショット",
-    "viewFull": "クリックでスクリーンショットを拡大"
+    "viewFull": "クリックでスクリーンショットを拡大",
+    "appCount": "ウィンドウアプリ {{count}} 件",
+    "windowCount": "ウィンドウ {{count}} 件",
+    "appList": "ウィンドウアプリ",
+    "windowList": "アプリのウィンドウ",
+    "foreground": "フォアグラウンド"
   }
 }

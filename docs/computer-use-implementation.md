@@ -73,7 +73,7 @@ flowchart LR
 ### 环节 1：功能开关与技能分发
 
 - 开关存 `PropertiesComponent`（机器级，非项目级），默认关。
-- **开**：把内置 `SKILL.md` 复制到 `~/.zcode/skills/zcgui-computer-use/`（ZCode CLI 用户级技能目录，与用户自装技能同一扫描面）；**关**：整目录删除。工具面与技能同步装卸，避免「AI 看得到技能调不到工具」的中间态。这个目录同时是执行闸门的信号源（见环节 3）。
+- **开**：把内置 `SKILL.md` 复制到 `~/.zcode/skills/zcgui-computer-use/`（ZCode CLI 用户级技能目录，与用户自装技能同一扫描面）；**关**：删除 `SKILL.md`（目录内用户自建文件保留，目录因此清空时顺带移除——整目录删除会连带清掉用户自建/改写的同名 skill 内容）。工具面与技能同步装卸，避免「AI 看得到技能调不到工具」的中间态。这个文件同时是执行闸门的信号源（见环节 3）。
 - 设置页另有子开关「在输入框显示电脑操作按钮」，主开关未开时禁用。
 
 ### 环节 2：会话注入（wire 配置与生命周期）
@@ -112,7 +112,7 @@ flowchart LR
 
 **进程模型**：单线程读 stdin 逐行解析 JSON-RPC（`initialize` / `tools/list` / `tools/call` / `ping`），应答写 stdout；stdin EOF（app-server 死亡→管道断）即退出，无守护线程无残留。
 
-**执行闸门（fail-closed）**：每次 `tools/call` 前现查 skill 目录（`~/.zcode/skills/zcgui-computer-use`，与插件侧 CuaFeature.skillDir 同路径）是否存在，不存在一律拒绝并返回 `isError` 文本（code=DISABLED，说明功能已在 IDE 设置关闭、未执行任何桌面操作）。背景：注入面随会话存续无法中途撤销（resume 必须沿用 create 的工具面），server 进程也可能存活于开关关闭前的旧会话——「开关关闭=不再新建注入」由插件侧保证，「已注入会话立即断供」只能靠执行侧把关。目录即状态的跨进程投影，零 IPC，每调用现查不缓存，关闭即刻生效；目录被手动删除同视为关闭。
+**执行闸门（fail-closed）**：每次 `tools/call` 前现查 `~/.zcode/skills/zcgui-computer-use/SKILL.md`（插件开关的落盘投影，与插件侧 CuaFeature.skillDir 同一目录）是否存在，不存在一律拒绝并返回 `isError` 文本（code=DISABLED，说明功能已在 IDE 设置关闭、未执行任何桌面操作）。判据是文件不是目录——插件侧关闭只删 `SKILL.md`，目录可能因用户自建文件仍在。背景：注入面随会话存续无法中途撤销（resume 必须沿用 create 的工具面），server 进程也可能存活于开关关闭前的旧会话——「开关关闭=不再新建注入」由插件侧保证，「已注入会话立即断供」只能靠执行侧把关。文件即状态的跨进程投影，零 IPC，每调用现查不缓存，关闭即刻生效；文件被手动删除同视为关闭。
 
 **编码纪律**：`System.out` 按管道默认编码走，中文 Windows 默认 GBK 而对端按 UTF-8 读——server 的 stdout/stderr 在写侧代码里钉死 UTF-8（`new PrintStream(..., UTF_8)`），不依赖启动参数。
 
@@ -195,7 +195,7 @@ flowchart LR
 | 图标磁盘旁路（短 key） | MCP 图片 content 会吃 200KiB inline 预算，图标不该花模型的 token |
 | 有 OS API 的操作走原语不模拟人手 | SetWindowPos 比像素拖边缘可靠一个量级 |
 | 动作默认附回执截图 | 一次调用干两件事，真机实测轮次减半 |
-| 执行闸门 fail-closed（skill 目录即开关投影） | 注入面随会话存续撤不掉，断供只能靠执行侧把关；目录即状态零 IPC |
+| 执行闸门 fail-closed（SKILL.md 即开关投影） | 注入面随会话存续撤不掉，断供只能靠执行侧把关；文件即状态零 IPC |
 | 输入走剪贴板 Ctrl+V | 绕开 IME 干扰，中文英文都稳 |
 
 ## 六、安全边界
@@ -203,7 +203,7 @@ flowchart LR
 **既有防护**：
 
 - 开关默认关，不开则整个能力面不存在（不注入、不 fork、skill 不落盘）；
-- 执行闸门：skill 目录被卸（=开关关闭）后，任何到达 server 的工具调用（含关闭前已注入会话的存量调用）一律 fail-closed 拒绝，不执行任何桌面操作；
+- 执行闸门：SKILL.md 被删（=开关关闭）后，任何到达 server 的工具调用（含关闭前已注入会话的存量调用）一律 fail-closed 拒绝，不执行任何桌面操作；
 - server 无任何网络监听（纯 stdio），外部进程连不上，父进程死即退出；
 - 定时任务、手机远程等无人监督路径不注入；
 - Windows UIPI 天然边界：无法操作 UAC 提权界面，无法自我提权；

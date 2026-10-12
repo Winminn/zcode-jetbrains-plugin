@@ -124,6 +124,11 @@
   },
   "cua": {
     "screenshot": "스크린샷",
-    "viewFull": "클릭하여 스크린샷 확대"
+    "viewFull": "클릭하여 스크린샷 확대",
+    "appCount": "창 앱 {{count}}개",
+    "windowCount": "창 {{count}}개",
+    "appList": "창 앱",
+    "windowList": "앱 창",
+    "foreground": "포그라운드"
   }
 }

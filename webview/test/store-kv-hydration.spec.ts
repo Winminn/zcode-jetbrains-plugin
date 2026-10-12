@@ -59,11 +59,11 @@ describe('store kv 偏好迟水合校正', () => {
     expect(useStore.getState().cuaInputButton).toBe(true)
   })
 
-  it('同步水合竞态（默认值）：已水合但 kv 无该 key → 保持默认 false', async () => {
+  it('同步水合竞态（默认值）：已水合但 kv 无该 key → 保持默认 true（2026-10-11 默认开）', async () => {
     hydrationState.hydrated = true
     const useStore = await loadStore()
     useStore.getState().init()
-    expect(useStore.getState().cuaInputButton).toBe(false)
+    expect(useStore.getState().cuaInputButton).toBe(true)
   })
 
   it('异步水合：init 后 KV_HYDRATED 事件到达 → 重读恢复', async () => {

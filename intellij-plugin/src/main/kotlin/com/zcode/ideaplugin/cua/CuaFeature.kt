@@ -15,8 +15,8 @@ import java.nio.file.StandardCopyOption
  *
  * - 开关全局（PropertiesComponent，机器级功能非项目级），默认关；
  * - 打开时把自带 skill 复制到 ~/.zcode/skills/zcgui-computer-use/（ZCode CLI 用户级
- *   技能目录，SkillScanner 同一扫描面）；关闭时删除（工具面与 skill 同步，避免 AI
- *   看到技能却调不到工具）；
+ *   技能目录，SkillScanner 同一扫描面）；关闭时删除 SKILL.md（目录内用户自建文件
+ *   保留——工具面与 skill 同步，避免 AI 看到技能却调不到工具）；
  * - serverSpec() 构造注入配置：java = IDE 自带 JBR（PathManager.getHomePath()/jbr），
  *   classpath = CuaMcpServerMain 的 codeSource 一个元素（server 主体纯 Java 零依赖，
  *   dev=classes 目录、生产=插件 jar；不带 kotlin-stdlib——2026.1 平台发行已无独立
@@ -126,9 +126,15 @@ object CuaFeature {
         }
     }
 
+    /**
+     * 只删插件部署的 SKILL.md（开关落盘投影 / 执行闸门信号，server 侧 gateClosed
+     * 按此文件判开关），不动用户放进同目录的自建文件；目录因此清空时顺带移除。
+     */
     private fun uninstallSkill() {
         try {
-            skillDir().deleteRecursively()
+            val dir = skillDir()
+            Files.deleteIfExists(dir.resolve("SKILL.md").toPath())
+            if (dir.isDirectory && dir.list().isEmpty()) dir.delete()
         } catch (e: Exception) {
             log.warn("Computer Use: skill uninstall failed: ${e.message}")
         }
