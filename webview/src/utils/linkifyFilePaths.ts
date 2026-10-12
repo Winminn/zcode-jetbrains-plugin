@@ -22,8 +22,8 @@
  *   - 带行号后缀的裸文件名放行（.gitignore:37 / App.kt:1606——:行号是强文件指代
  *     信号，误报面远小于裸文件名本体；无行号裸文件名维持不链），按工作区根解析
  *   - 目录路径（结尾 / 的显式形态，如 /docs/internal/、webview/src/）放行，
- *     无行号；打开方式=系统文件管理器（Kotlin handleOpenFile 目录路由），
- *     前导 / 路径不存在时 Kotlin 侧剥前导拼项目根回退
+ *     无行号；打开方式=IDE Project View 定位选中并聚焦（系统文件管理器通道
+ *     经实测弃用），前导 / 路径不存在时 Kotlin 侧剥前导拼项目根回退
  */
 
 export interface FileLinkTarget {
