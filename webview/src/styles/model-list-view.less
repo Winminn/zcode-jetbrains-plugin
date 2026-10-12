@@ -826,13 +826,34 @@
     }
   }
 
-  /* 单模型启停开关：复用 __toggle 绿/灰语义，尺寸缩到与模型行动作按钮同高；
-     常驻显示（与 delete/test 的 hover 弱化不同——开关本身就是行主要状态）*/
+  /* 单模型启停开关：尺寸缩到与模型行动作按钮同高；常驻显示（与 delete/test 的
+     hover 弱化不同——开关本身就是行主要状态）。
+     停用态（非 on）：红边+淡红底+红色圆圈斜杠，深色主题下状态一眼可辨；
+     启用态（.on）：沿用渠道开关绿色系 */
   &__model-toggle {
     width: 20px;
     height: 20px;
     border-radius: 4px;
     opacity: 1;
+    border-color: rgba(244, 67, 54, 0.55);
+    color: var(--status-error, #f44336);
+    background: rgba(244, 67, 54, 0.1);
+
+    &:hover:not(:disabled) {
+      border-color: rgba(244, 67, 54, 0.85);
+      background: rgba(244, 67, 54, 0.18);
+    }
+
+    &.on {
+      color: #10b981;
+      border-color: rgba(16, 185, 129, 0.4);
+      background: rgba(16, 185, 129, 0.1);
+
+      &:hover:not(:disabled) {
+        border-color: rgba(16, 185, 129, 0.65);
+        background: rgba(16, 185, 129, 0.18);
+      }
+    }
 
     .codicon {
       font-size: 12px;

@@ -436,7 +436,10 @@ function ProviderCard({
                 onDeleteModel && provider.models.length <= 1 ? t('models.lastModelTitle') : undefined
               }
               onTestConnectivity={
-                onTestModel && provider.enabled ? () => onTestModel(provider, m) : undefined
+                // 渠道停用或该模型停用都不展示测试（停用模型 registry 不可达，测必失败）
+                onTestModel && provider.enabled && m.enabled !== false
+                  ? () => onTestModel(provider, m)
+                  : undefined
               }
               testing={testingKey === `${provider.providerId}|${m.modelId}`}
               connResult={connResults?.[`${provider.providerId}|${m.modelId}`]}

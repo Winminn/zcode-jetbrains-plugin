@@ -95,6 +95,13 @@ describe('单模型开关渲染', () => {
     expect(screen.getAllByTitle('启用该模型（写回 provider_config.json，聊天模型下拉立即可选）')).toHaveLength(1)
   })
 
+  it('停用模型不渲染连通性测试按钮（停用模型 registry 不可达，测必失败）', () => {
+    render(<ModelListView />)
+    // 启用模型 2 个（账号 GLM-5.3 + DeepSeek v4-pro）；停用模型 2 个与停用渠道 1 个都不渲染
+    const tests = screen.getAllByTitle('测试该模型连通性（真发一次最小请求）')
+    expect(tests).toHaveLength(2)
+  })
+
   it('OLD 代（modelManageNewCli=false）不渲染模型开关', () => {
     useStore.setState({ modelManageNewCli: false })
     render(<ModelListView />)
