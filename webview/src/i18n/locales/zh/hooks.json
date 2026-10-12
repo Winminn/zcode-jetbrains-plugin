@@ -1,0 +1,19 @@
+{
+  "noWorkspace": "未打开工作区，无法读取钩子",
+  "titleCount": "钩子 {{count}}",
+  "searchPlaceholder": "搜索事件或命令",
+  "refresh": "刷新",
+  "installed": "已安装 {{count}}",
+  "trust": "信任",
+  "trustFirst": "请先信任该钩子再启用",
+  "sandboxNotice": "钩子可在沙盒外运行，因此，请审查最近安装或修改的所有钩子",
+  "loading": "加载中…",
+  "empty": "当前工作区没有钩子",
+  "openScript": "打开钩子脚本文件",
+  "disable": "停用",
+  "enable": "启用",
+  "stateTrusted": "已信任",
+  "stateUntrusted": "未信任",
+  "stateRevoked": "已撤销",
+  "stateStale": "已变更"
+}

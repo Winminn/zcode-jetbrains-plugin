@@ -1,0 +1,19 @@
+{
+  "noWorkspace": "No workspace open; cannot read hooks",
+  "titleCount": "Hooks {{count}}",
+  "searchPlaceholder": "Search events or commands",
+  "refresh": "Refresh",
+  "installed": "Installed {{count}}",
+  "trust": "Trust",
+  "trustFirst": "Trust this hook before enabling it",
+  "sandboxNotice": "Hooks can run outside of the sandbox, so review any recently installed or modified hooks",
+  "loading": "Loading…",
+  "empty": "No hooks in this workspace",
+  "openScript": "Open hook script file",
+  "disable": "Disable",
+  "enable": "Enable",
+  "stateTrusted": "Trusted",
+  "stateUntrusted": "Untrusted",
+  "stateRevoked": "Revoked",
+  "stateStale": "Changed"
+}

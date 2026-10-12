@@ -1,0 +1,19 @@
+{
+  "noWorkspace": "워크스페이스가 열려 있지 않아 훅을 읽을 수 없습니다",
+  "titleCount": "훅 {{count}}",
+  "searchPlaceholder": "이벤트 또는 명령 검색",
+  "refresh": "새로고침",
+  "installed": "설치됨 {{count}}",
+  "trust": "신뢰",
+  "trustFirst": "활성화하기 전에 이 훅을 신뢰하세요",
+  "sandboxNotice": "훅은 샌드박스 외부에서 실행될 수 있으므로 최근 설치하거나 수정한 모든 훅을 검토하세요",
+  "loading": "로딩 중…",
+  "empty": "이 워크스페이스에는 훅이 없습니다",
+  "openScript": "훅 스크립트 파일 열기",
+  "disable": "비활성화",
+  "enable": "활성화",
+  "stateTrusted": "신뢰됨",
+  "stateUntrusted": "불신뢰",
+  "stateRevoked": "취소됨",
+  "stateStale": "변경됨"
+}

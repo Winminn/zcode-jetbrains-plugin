@@ -1,0 +1,19 @@
+{
+  "noWorkspace": "未開啟工作區，無法讀取鉤子",
+  "titleCount": "鉤子 {{count}}",
+  "searchPlaceholder": "搜尋事件或命令",
+  "refresh": "重新整理",
+  "installed": "已安裝 {{count}}",
+  "trust": "信任",
+  "trustFirst": "請先信任此鉤子再啟用",
+  "sandboxNotice": "鉤子可在沙盒外執行，因此，請審查最近安裝或修改的所有鉤子",
+  "loading": "載入中…",
+  "empty": "目前工作區沒有鉤子",
+  "openScript": "開啟鉤子腳本檔案",
+  "disable": "停用",
+  "enable": "啟用",
+  "stateTrusted": "已信任",
+  "stateUntrusted": "未信任",
+  "stateRevoked": "已撤銷",
+  "stateStale": "已變更"
+}
