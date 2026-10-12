@@ -559,6 +559,8 @@ export type JavaRequest =  | { op: 'askUserPendingState' }
   | { op: 'mcpServerTools'; name: string; force?: boolean }
   /** MCP 连接日志（CLI 落盘的 mcp.* 事件，今天+昨天文件尾部）*/
   | { op: 'getMcpLogs' }
+  /** 模型调用轨迹（CLI 落盘的 model-io jsonl，debug+rollout 双目录尾部）*/
+  | { op: 'getModelTrajectory'; sessionId: string }
   /**
    * AskUserQuestion 应答：单问题用 answer（原始值，多选为数组），
    * 多问题用 answers（问题文本 → 值）。zcode.cjs 端按此结构回填工具结果，
@@ -1016,6 +1018,64 @@ export interface McpLogEntry {
   durationMs?: number
 }
 
+// ============ 模型调用轨迹（ModelIoTrajectoryReader 契约，对齐官方 modelTrajectory.ts）============
+
+/** 一次请求里的消息内容片段（text / reasoning / 工具调用 / 工具结果 / 其他原始结构） */
+export interface TrajectoryPart {
+  kind: 'text' | 'reasoning' | 'tool-call' | 'tool-result' | 'image' | 'unknown'
+  text?: string
+  toolCallId?: string
+  toolName?: string
+  input?: unknown
+  output?: unknown
+  mediaType?: string
+  raw?: unknown
+}
+
+/** 单条对话消息（system / user / assistant / tool） */
+export interface TrajectoryMessage {
+  role: string
+  parts?: TrajectoryPart[]
+}
+
+/** main=主会话 subagent=子智能体 compact=上下文压缩 sidecar=辅助请求 */
+export interface TrajectoryCallSource {
+  kind: 'main' | 'sidecar' | 'subagent' | 'compact'
+  querySource?: string
+}
+
+export interface TrajectoryUsage {
+  inputTokens?: number
+  outputTokens?: number
+  totalTokens?: number
+  cacheReadTokens?: number
+  reasoningTokens?: number
+}
+
+/** 一次模型调用（一条 model_io 记录）；request.messages 是该次发送的完整上下文 */
+export interface TrajectoryRecord {
+  requestId: string
+  attempt?: number
+  startedAt: string
+  completedAt?: string
+  durationMs?: number
+  turnId?: string
+  traceId?: string
+  callSource?: TrajectoryCallSource
+  model?: { modelId?: string; providerId?: string; role?: string; source?: string }
+  request?: { messages?: TrajectoryMessage[]; toolNames?: string[] }
+  response?: {
+    finishReason?: string
+    text?: string
+    reasoningText?: string
+    toolCalls?: TrajectoryPart[]
+    usage?: TrajectoryUsage
+    responseId?: string
+    modelId?: string
+  }
+  error?: { name: string; message: string; stack?: string }
+}
+
 // ============ 运行环境状态（Kotlin ZCodeEnvChecker 契约，camelCase 对齐）============
 
 export interface EnvNodeStatus {
@@ -1319,6 +1379,8 @@ export type JavaResponse =
   | { op: 'mcpServerTools'; name: string; tools?: McpToolInfo[]; toolCount?: number; error?: string }
   /** MCP 连接日志条目（McpLogReader 读 CLI jsonl，中文摘要已拼好）*/
   | { op: 'mcpLogs'; logs: McpLogEntry[] }
+  /** 模型调用轨迹（ModelIoTrajectoryReader 读 model-io jsonl；error 存在 = 读取失败）*/
+  | { op: 'modelTrajectoryResult'; sessionId: string; records?: TrajectoryRecord[]; sourceFiles?: string[]; truncated?: boolean; totalCount?: number; error?: string }
   /** envStatus 存在 = 环境前置检查失败（EnvCheckException），前端据此刷新环境提醒条 */
   | { op: 'error'; message: string; envStatus?: EnvStatus }
   /** app-server stderr 解析出的后端模型 API 错误（APICallError 兜底通道）：

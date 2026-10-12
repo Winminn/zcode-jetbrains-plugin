@@ -16,7 +16,7 @@ import { create } from 'zustand'
 import { onMessage, onStreamEvent, onStreamBatch, sendToJava, initBridge, isInJcef, getWorkspacePath, getInitialSessionId } from '@/ipc/bridge'
 import { parseGoalCommand } from '@/utils/goalCommand'
 import { extractTitleExcerpt } from '@/utils/titleExcerpt'
-import type { JavaResponse, SessionInfo, ZCodeMessage, StreamEvent, ModelOption, ModelManageProvider, ProviderSaveDraft, TodoItem, AgentItem, FileChangeItem, QuotaData, ModelUsageData, ToolUsageData, UsageRange, AppUsageData, AppUsageRange, ContextBreakdownItem, ThoughtLevelInfo, SubagentActivity, SubagentInfo, ToolUpdatedPayload, MemoryFileInfo, MemoryDirInfo, MemorySearchHitInfo, SkillInfo, McpServerInfo, McpToolsState, McpLogEntry, EnvStatus, BrowserClearedSite, BrowserDataOverview, AgentDef, AgentDefInput, ImageAttachmentInput, CurrentFileAttachmentInput, SendAttachmentInput, GoalState, AutoArchiveRecord, ToolPart, SlashCommand, MessagePart, TurnFileChangesMap, TurnFileChangeSummary } from '@/types/messages'
+import type { JavaResponse, SessionInfo, ZCodeMessage, StreamEvent, ModelOption, ModelManageProvider, ProviderSaveDraft, TodoItem, AgentItem, FileChangeItem, QuotaData, ModelUsageData, ToolUsageData, UsageRange, AppUsageData, AppUsageRange, ContextBreakdownItem, ThoughtLevelInfo, SubagentActivity, SubagentInfo, ToolUpdatedPayload, MemoryFileInfo, MemoryDirInfo, MemorySearchHitInfo, SkillInfo, McpServerInfo, McpToolsState, McpLogEntry, TrajectoryRecord, EnvStatus, BrowserClearedSite, BrowserDataOverview, AgentDef, AgentDefInput, ImageAttachmentInput, CurrentFileAttachmentInput, SendAttachmentInput, GoalState, AutoArchiveRecord, ToolPart, SlashCommand, MessagePart, TurnFileChangesMap, TurnFileChangeSummary } from '@/types/messages'
 import { applyStreamEvent, isSubagentToolEvent, applySubagentToolEvent, markActivityOutcome, finalizeActivitiesFromNotifications, asSubagentLifecycle, asGoalTargetPayload, looksLikeQuotaError, asSteerDrainedInputs, appendSteerUserMessages } from '@/utils/streamReducer'
 import type { TurnErrorInfo, SubagentLifecyclePayload } from '@/utils/streamReducer'
 import { classifyQuotaError, bannerTriggerKey, providerLimitedMessage } from '@/utils/quotaWindows'
@@ -1128,6 +1128,9 @@ interface StoreState {
   mcpToolsByServer: Record<string, McpToolsState>
   // MCP 连接日志（CLI 落盘 mcp.* 事件，McpLogReader 读）
   mcpLogs: McpLogEntry[] | null
+  // 模型调用轨迹（CLI 落盘 model-io，ModelIoTrajectoryReader 读；null=未加载）
+  trajectory: { sessionId: string; records: TrajectoryRecord[]; sourceFiles: string[]; truncated: boolean; totalCount: number } | null
+  trajectoryError: string | null
 
   // 模型管理清单（设置视图「模型」条目 = config.json provider→models 全量只读结构）
   modelProviders: ModelManageProvider[] | null
@@ -1167,6 +1170,7 @@ interface StoreState {
    * 防列表快照把远程驱动的运行中会话降级回已完成 */
   remoteRunningTurns: Record<string, number>
   mcpLogsLoading: boolean
+  trajectoryLoading: boolean
 
   // 用量明细曲线（model-usage / tool-usage）
   modelUsage: ModelUsageData | null
@@ -1405,6 +1409,8 @@ interface StoreState {
   loadMcpServerTools: (name: string, force?: boolean) => void
   /** 拉取 MCP 连接日志（CLI 落盘 mcp.* 事件）*/
   loadMcpLogs: () => void
+  /** 拉取会话的模型调用轨迹（CLI 落盘 model-io，直读文件非协议 RPC）*/
+  loadTrajectory: (sessionId: string) => void
   /** 拉取模型管理清单（设置视图「模型」条目，config.json 只读结构）*/
   loadModelManage: () => void
   /** 设置/清除内置渠道的自定义 apiKey 覆盖（空串=清除），写 ~/.zcgui/config.json 并触发注册表推送 */
@@ -1732,6 +1738,9 @@ export const useStore = create<StoreState>((set, get) => ({
   mcpToolsByServer: {},
   mcpLogs: null,
   mcpLogsLoading: false,
+  trajectory: null,
+  trajectoryError: null,
+  trajectoryLoading: false,
 
   modelProviders: null,
   modelManageLoading: false,
@@ -3162,6 +3171,11 @@ export const useStore = create<StoreState>((set, get) => ({
   loadMcpLogs: () => {
     set({ mcpLogsLoading: true })
     sendToJava({ op: 'getMcpLogs' })
+  },
+
+  loadTrajectory: (sessionId) => {
+    set({ trajectoryLoading: true, trajectoryError: null, trajectory: null })
+    sendToJava({ op: 'getModelTrajectory', sessionId })
   },
 
   loadModelManage: () => {
@@ -4766,6 +4780,7 @@ export function handleResponse(
         mcpLoading: false,
         mcpChecking: false,
         mcpLogsLoading: false,
+        trajectoryLoading: false,
         modelManageLoading: false,
         modelTogglingId: null,
         forkBusy: false,
@@ -5689,6 +5704,29 @@ export function handleResponse(
 
     case 'mcpLogs':
       set({ mcpLogs: msg.logs, mcpLogsLoading: false })
+      break
+
+    case 'modelTrajectoryResult':
+      // 过期回包丢弃（面板已切会话/重发新请求）：只认最新一次请求的 sessionId
+      if (msg.error) {
+        set({
+          trajectoryError: msg.error,
+          trajectoryLoading: false,
+          trajectory: get().trajectory?.sessionId === msg.sessionId ? get().trajectory : null,
+        })
+      } else {
+        set({
+          trajectory: {
+            sessionId: msg.sessionId,
+            records: msg.records ?? [],
+            sourceFiles: msg.sourceFiles ?? [],
+            truncated: !!msg.truncated,
+            totalCount: msg.totalCount ?? 0,
+          },
+          trajectoryError: null,
+          trajectoryLoading: false,
+        })
+      }
       break
 
     case 'modelUsage':

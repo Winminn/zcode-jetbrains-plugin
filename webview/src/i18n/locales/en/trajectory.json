@@ -1,0 +1,54 @@
+{
+  "title": "Model call trace",
+  "refresh": "Refresh",
+  "close": "Close",
+  "loading": "Loading call trace…",
+  "empty": "No model call records yet",
+  "emptyNoFile": "No model-io log found for this session. The CLI keeps only the logs of the 3 most recent sessions (the oldest is rotated out as new ones start), so older sessions cannot be reviewed here",
+  "emptyNoRecord": "Log file found, but no call records could be parsed from it",
+  "error": "Failed to read call trace",
+  "truncatedNotice": "Large log — only the tail was read; {{hidden}} earlier record(s) omitted ({{total}} in file)",
+  "summaryCalls_one": "{{count}} call",
+  "summaryCalls_other": "{{count}} calls",
+  "summaryTruncated_one": "{{count}} call in file · showing latest {{shown}}",
+  "summaryTruncated_other": "{{count}} calls in file · showing latest {{shown}}",
+  "summaryTokens": "Total token usage",
+  "attempt": "Attempt {{attempt}}",
+  "finish": {
+    "stop": "Completed",
+    "toolCalls": "Tool calls",
+    "length": "Length limit reached",
+    "contentFilter": "Content filtered"
+  },
+  "source": {
+    "main": "Main session",
+    "sessionTitle": "Title generation",
+    "compact": "Compaction",
+    "promptEnhance": "Prompt enhancement",
+    "targetCompletion": "Goal validation",
+    "subagent": "Subagent",
+    "sidecar": "Auxiliary request",
+    "unknown": "Unknown source"
+  },
+  "role": {
+    "system": "System",
+    "user": "User",
+    "assistant": "Assistant",
+    "tool": "Tool"
+  },
+  "inputSection": "Input",
+  "outputSection": "Output",
+  "reasoning": "Reasoning",
+  "message": "Message",
+  "expandAll": "Expand all",
+  "collapseAll": "Collapse all",
+  "usage": {
+    "input": "In {{count}}",
+    "output": "Out {{count}}",
+    "cache": "Cache read {{count}}",
+    "reasoning": "Reasoning {{count}}"
+  },
+  "searchPlaceholder": "Search within this call (space-separated keywords)",
+  "searchPrev": "Previous match",
+  "searchNext": "Next match"
+}

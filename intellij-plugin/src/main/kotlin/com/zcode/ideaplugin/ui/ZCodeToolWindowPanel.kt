@@ -40,6 +40,7 @@ import com.zcode.ideaplugin.zCodeService
 import com.zcode.ideaplugin.protocol.Credentials
 import com.zcode.ideaplugin.protocol.EditTargetGoneException
 import com.zcode.ideaplugin.protocol.ImageArtifactMapper
+import com.zcode.ideaplugin.protocol.ModelIoTrajectoryReader
 import com.zcode.ideaplugin.protocol.ProxyConfig
 import com.zcode.ideaplugin.protocol.ProxyConfigStore
 import com.zcode.ideaplugin.protocol.ZCodeProtocolClient
@@ -57,6 +58,7 @@ import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.contentOrNull
+import kotlinx.serialization.json.encodeToJsonElement
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonPrimitive
@@ -1099,6 +1101,7 @@ if (!window.__ZCODE_LOG_HOOK__) {
                         "listMcpServers" -> handleListMcpServers(msg)
                         "mcpServerTools" -> handleMcpServerTools(msg)
                         "getMcpLogs" -> handleGetMcpLogs(msg)
+                        "getModelTrajectory" -> handleGetModelTrajectory(msg)
                         "askUserResponse" -> handleAskUserResponse(msg)
                         "askUserPendingState" -> handleAskUserPendingState()
                         "deleteSession" -> handleDeleteSession(msg)
@@ -7746,6 +7749,50 @@ if (!window.__ZCODE_LOG_HOOK__) {
                     e.durationMs?.let { put("durationMs", it) }
                 }
             }))
+        }
+    }
+
+    /**
+     * op=getModelTrajectory — 模型调用轨迹（会话「调用轨迹」面板）
+     *
+     * 读 CLI 落盘的 model-io（~/.zcode/cli/{debug,rollout}/model-io-<sessionId>.jsonl
+     * 尾部 16MB），delta 展开还原完整请求上下文后返回最近 200 条。
+     * 协议面无此 RPC，与官方桌面端同路（直读落盘文件）。
+     */
+    private fun handleGetModelTrajectory(msg: JsonObject): JsonObject {
+        val sessionId = msg["sessionId"]?.let { runCatching { it.jsonPrimitive.content }.getOrNull() }.orEmpty()
+        if (sessionId.isBlank()) {
+            return buildJsonObject {
+                put("op", "modelTrajectoryResult")
+                put("error", "sessionId is required")
+            }
+        }
+        return try {
+            val started = System.currentTimeMillis()
+            val trajectory = ModelIoTrajectoryReader.read(sessionId)
+            log.info(
+                "Model trajectory read: session=${sessionId.take(16)}…, " +
+                    "${trajectory.records.size}/${trajectory.totalCount} record(s), ${System.currentTimeMillis() - started}ms"
+            )
+            val payload = Json.encodeToJsonElement(
+                ModelIoTrajectoryReader.ModelTrajectory.serializer(),
+                trajectory,
+            ).jsonObject
+            buildJsonObject {
+                put("op", "modelTrajectoryResult")
+                put("sessionId", sessionId)
+                put("records", payload["records"] ?: JsonArray(emptyList()))
+                put("sourceFiles", payload["sourceFiles"] ?: JsonArray(emptyList()))
+                put("truncated", payload["truncated"] ?: JsonPrimitive(false))
+                put("totalCount", payload["totalCount"] ?: JsonPrimitive(0))
+            }
+        } catch (e: Exception) {
+            log.warn("Model trajectory read failed: ${e.javaClass.simpleName}: ${e.message}")
+            buildJsonObject {
+                put("op", "modelTrajectoryResult")
+                put("sessionId", sessionId)
+                put("error", e.message ?: e.javaClass.simpleName)
+            }
         }
     }
 

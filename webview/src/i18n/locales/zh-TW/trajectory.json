@@ -1,0 +1,52 @@
+{
+  "title": "模型調用軌跡",
+  "refresh": "重新整理",
+  "close": "關閉",
+  "loading": "正在載入調用軌跡…",
+  "empty": "暫無模型調用記錄",
+  "emptyNoFile": "未找到該會話的 model-io 落盤檔案。CLI 僅保留最近 3 個會話的調用日誌（新會話寫入時自動淘汰最舊），較早會話的軌跡無法回看",
+  "emptyNoRecord": "已找到落盤檔案，但未解析出調用記錄",
+  "error": "讀取調用軌跡失敗",
+  "truncatedNotice": "檔案較大僅讀取尾部視窗，已省略更早的 {{hidden}} 條（檔案共 {{total}} 條）",
+  "summaryCalls": "{{count}} 次調用",
+  "summaryTruncated": "共 {{count}} 條調用 · 展示最近 {{shown}} 條",
+  "summaryTokens": "總 token 用量",
+  "attempt": "第 {{attempt}} 次嘗試",
+  "finish": {
+    "stop": "正常結束",
+    "toolCalls": "工具調用",
+    "length": "達到長度限制",
+    "contentFilter": "內容過濾"
+  },
+  "source": {
+    "main": "主會話",
+    "sessionTitle": "標題生成",
+    "compact": "上下文壓縮",
+    "promptEnhance": "提示優化",
+    "targetCompletion": "目標驗證",
+    "subagent": "子智慧體",
+    "sidecar": "輔助請求",
+    "unknown": "未知來源"
+  },
+  "role": {
+    "system": "系統",
+    "user": "使用者",
+    "assistant": "助手",
+    "tool": "工具"
+  },
+  "inputSection": "輸入",
+  "outputSection": "輸出",
+  "reasoning": "思考過程",
+  "message": "訊息",
+  "expandAll": "全部展開",
+  "collapseAll": "全部收起",
+  "usage": {
+    "input": "輸入 {{count}}",
+    "output": "輸出 {{count}}",
+    "cache": "快取讀 {{count}}",
+    "reasoning": "思考 {{count}}"
+  },
+  "searchPlaceholder": "搜尋目前調用的內容（多關鍵詞用空格分隔）",
+  "searchPrev": "上一個符合",
+  "searchNext": "下一個符合"
+}

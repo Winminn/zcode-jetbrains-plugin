@@ -1,0 +1,52 @@
+{
+  "title": "模型调用轨迹",
+  "refresh": "刷新",
+  "close": "关闭",
+  "loading": "正在加载调用轨迹…",
+  "empty": "暂无模型调用记录",
+  "emptyNoFile": "未找到该会话的 model-io 落盘文件。CLI 仅保留最近 3 个会话的调用日志（新会话写入时自动淘汰最旧），较早会话的轨迹无法回看",
+  "emptyNoRecord": "已找到落盘文件，但未解析出调用记录",
+  "error": "读取调用轨迹失败",
+  "truncatedNotice": "文件较大仅读取尾部窗口，已省略更早的 {{hidden}} 条（文件共 {{total}} 条）",
+  "summaryCalls": "{{count}} 次调用",
+  "summaryTruncated": "共 {{count}} 条调用 · 展示最近 {{shown}} 条",
+  "summaryTokens": "总 token 用量",
+  "attempt": "第 {{attempt}} 次尝试",
+  "finish": {
+    "stop": "正常结束",
+    "toolCalls": "工具调用",
+    "length": "达到长度限制",
+    "contentFilter": "内容过滤"
+  },
+  "source": {
+    "main": "主会话",
+    "sessionTitle": "标题生成",
+    "compact": "上下文压缩",
+    "promptEnhance": "提示优化",
+    "targetCompletion": "目标验证",
+    "subagent": "子智能体",
+    "sidecar": "辅助请求",
+    "unknown": "未知来源"
+  },
+  "role": {
+    "system": "系统",
+    "user": "用户",
+    "assistant": "助手",
+    "tool": "工具"
+  },
+  "inputSection": "输入",
+  "outputSection": "输出",
+  "reasoning": "思考过程",
+  "message": "消息",
+  "expandAll": "全部展开",
+  "collapseAll": "全部收起",
+  "usage": {
+    "input": "输入 {{count}}",
+    "output": "输出 {{count}}",
+    "cache": "缓存读 {{count}}",
+    "reasoning": "思考 {{count}}"
+  },
+  "searchPlaceholder": "搜索当前调用的内容（多关键词用空格分隔）",
+  "searchPrev": "上一个匹配",
+  "searchNext": "下一个匹配"
+}

@@ -39,6 +39,10 @@ interface Props {
   onNewTab: () => void
   /** 浏览器开关：展开/收起本会话内嵌浏览器分栏（AI browser-use 也用它）*/
   onOpenBrowser: () => void
+  /** 模型调用轨迹弹窗（读 CLI 落盘 model-io，需已有会话）*/
+  onOpenTrajectory: () => void
+  /** 无会话时置灰调用轨迹按钮 */
+  trajectoryDisabled?: boolean
   onSearch: () => void
   onHistory: () => void
   onSettings: () => void
@@ -59,6 +63,8 @@ export function ChatHeader({
   onNewSession,
   onNewTab,
   onOpenBrowser,
+  onOpenTrajectory,
+  trajectoryDisabled = false,
   onSearch,
   onHistory,
   onSettings,
@@ -104,6 +110,14 @@ export function ChatHeader({
             </button>
             <button className="icon-button" onClick={onOpenBrowser} data-tooltip={t('chat.header.browser')}>
               <span className="codicon codicon-browser" />
+            </button>
+            <button
+              className="icon-button"
+              onClick={onOpenTrajectory}
+              disabled={trajectoryDisabled}
+              data-tooltip={t('trajectory.title')}
+            >
+              <span className="codicon codicon-circuit-board" />
             </button>
             <button className="icon-button" onClick={onSearch} data-tooltip={t('chat.header.searchSession')}>
               <span className="codicon codicon-search" />

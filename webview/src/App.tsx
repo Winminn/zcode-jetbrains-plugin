@@ -14,6 +14,7 @@ import { useTranslation } from 'react-i18next'
 import { useStore } from '@/store/useStore'
 import { useTheme } from '@/hooks/useTheme'
 import { ChatHeader } from '@/components/ChatHeader'
+import { TrajectoryDialog } from '@/components/TrajectoryDialog'
 import { ChatView } from '@/components/ChatView'
 import { StatusPanel } from '@/components/StatusPanel'
 import { QuotaBanner } from '@/components/QuotaBanner'
@@ -110,6 +111,9 @@ export default function App() {
 
   // 会话内搜索面板（仅 chat 视图）
   const [searchOpen, setSearchOpen] = useState(false)
+
+  // 模型调用轨迹弹窗（读 CLI 落盘 model-io，仅 chat 视图顶栏入口）
+  const [trajectoryOpen, setTrajectoryOpen] = useState(false)
 
   // 离开 chat 视图自动关闭搜索（清理由面板卸载 effect 兜底）
   useEffect(() => {
@@ -286,6 +290,8 @@ export default function App() {
         onNewSession={handleNewSession}
         onNewTab={() => sendToJava({ op: 'createTab' })}
         onOpenBrowser={() => sendToJava({ op: 'toggleBrowserPane' })}
+        onOpenTrajectory={() => setTrajectoryOpen(true)}
+        trajectoryDisabled={!currentSessionId}
         onSearch={() => setSearchOpen(true)}
         onHistory={() => setCurrentView('history')}
         onSettings={() => setCurrentView('settings')}
@@ -305,6 +311,7 @@ export default function App() {
           setCurrentView('settings')
         }}
       />
+      {trajectoryOpen && <TrajectoryDialog sessionId={currentSessionId} onClose={() => setTrajectoryOpen(false)} />}
 
       <div className="app__body">
         {/* chat 视图常驻挂载（切历史/设置时 display:none，保留消息滚动位置与输入草稿——

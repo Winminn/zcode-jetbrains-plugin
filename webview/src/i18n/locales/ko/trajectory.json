@@ -1,0 +1,52 @@
+{
+  "title": "モデル呼び出しトレース",
+  "refresh": "更新",
+  "close": "閉じる",
+  "loading": "呼び出しトレースを読み込み中…",
+  "empty": "モデル呼び出しの記録はまだありません",
+  "emptyNoFile": "このセッションの model-io ログが見つかりません。CLI は最近 3 セッション分のログのみを保持し（新セッションの書き込み時に最古を自動削除）、それより前のセッションの軌跡は確認できません",
+  "emptyNoRecord": "ログファイルは見つかりましたが、呼び出し記録を解析できませんでした",
+  "error": "呼び出しトレースの読み取りに失敗しました",
+  "truncatedNotice": "ファイルが大きいため末尾のみ読み込みました。より早い {{hidden}} 件を省略（ファイル合計 {{total}} 件）",
+  "summaryCalls": "{{count}} 回の呼び出し",
+  "summaryTruncated": "合計 {{count}} 件の呼び出し · 最新の {{shown}} 件を表示",
+  "summaryTokens": "合計トークン使用量",
+  "attempt": "{{attempt}} 回目の試行",
+  "finish": {
+    "stop": "正常終了",
+    "toolCalls": "ツール呼び出し",
+    "length": "長制限に到達",
+    "contentFilter": "コンテンツフィルター"
+  },
+  "source": {
+    "main": "メインセッション",
+    "sessionTitle": "タイトル生成",
+    "compact": "コンテキスト圧縮",
+    "promptEnhance": "プロンプト最適化",
+    "targetCompletion": "目標検証",
+    "subagent": "サブエージェント",
+    "sidecar": "補助リクエスト",
+    "unknown": "不明なソース"
+  },
+  "role": {
+    "system": "システム",
+    "user": "ユーザー",
+    "assistant": "アシスタント",
+    "tool": "ツール"
+  },
+  "inputSection": "入力",
+  "outputSection": "出力",
+  "reasoning": "思考プロセス",
+  "message": "メッセージ",
+  "expandAll": "すべて展開",
+  "collapseAll": "すべて折りたたむ",
+  "usage": {
+    "input": "入力 {{count}}",
+    "output": "出力 {{count}}",
+    "cache": "キャッシュ読取 {{count}}",
+    "reasoning": "思考 {{count}}"
+  },
+  "searchPlaceholder": "この呼び出しの内容を検索（半角スペース区切りで複数キーワード）",
+  "searchPrev": "前の一致",
+  "searchNext": "次の一致"
+}

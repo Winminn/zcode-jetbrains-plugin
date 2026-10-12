@@ -1,0 +1,529 @@
+/**
+ * 模型调用轨迹弹窗样式（壳同 mcp-log-dialog：等宽深色列表；
+ * 记录行 = 时间 + 来源徽标 + 模型 + 耗时/token + 折叠体）
+ */
+
+.traj-dialog {
+  width: min(1100px, 96vw);
+  max-width: none; /* 覆盖 modal-content 的 max-width 420px */
+  height: min(640px, 88vh);
+  padding: 14px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+
+  &__header {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-shrink: 0;
+  }
+
+  &__title {
+    font-size: 14px;
+    font-weight: 600;
+    color: var(--text-primary);
+    margin: 0;
+    flex-shrink: 0;
+  }
+
+  &__hint {
+    font-size: 11px;
+    color: var(--text-muted);
+    font-variant-numeric: tabular-nums;
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  &__icon-btn {
+    background: transparent;
+    border: 1px solid var(--border-primary);
+    border-radius: 6px;
+    width: 26px;
+    height: 26px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+    color: var(--text-secondary);
+    flex-shrink: 0;
+
+    &:hover:not(:disabled) {
+      color: var(--text-primary);
+      border-color: var(--text-tertiary);
+    }
+    &:disabled {
+      cursor: default;
+      opacity: 0.6;
+    }
+  }
+
+  &__body {
+    flex: 1;
+    min-height: 0;
+    overflow-y: auto;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+
+  &__empty {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    color: var(--text-muted);
+    font-size: 12px;
+
+    .codicon {
+      font-size: 22px;
+      opacity: 0.6;
+    }
+    pre {
+      max-width: 90%;
+      max-height: 160px;
+      overflow: auto;
+      white-space: pre-wrap;
+      word-break: break-all;
+      color: var(--status-error, #e05561);
+      font-size: 11px;
+    }
+    &--error {
+      color: var(--status-error, #e05561);
+    }
+  }
+
+  // 空态自诊断：原因说明 + 探测路径（路径用 div+mono，不用 pre——&__empty pre 是错误文案的红色样式）
+  &__empty-reason {
+    max-width: 88%;
+    line-height: 1.7;
+    text-align: center;
+  }
+
+  &__empty-paths {
+    max-width: 88%;
+    max-height: 96px;
+    overflow: auto;
+    white-space: pre-wrap;
+    word-break: break-all;
+    text-align: left;
+    font-family: 'JetBrains Mono', Consolas, monospace;
+    font-size: 11px;
+    color: var(--text-muted);
+    opacity: 0.8;
+  }
+
+  &__list {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+  }
+
+  &__truncated {
+    text-align: center;
+    font-size: 11px;
+    color: var(--text-muted);
+    padding: 6px 0 2px;
+  }
+}
+
+.traj-row {
+  border: 1px solid var(--border-primary);
+  border-radius: 6px;
+  background: var(--bg-secondary, transparent);
+
+  &--error {
+    border-color: var(--status-error, #e05561);
+  }
+
+  &__head {
+    width: 100%;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 5px 8px;
+    background: transparent;
+    border: none;
+    cursor: pointer;
+    color: var(--text-secondary);
+    font-size: 11.5px;
+    text-align: left;
+
+    &:hover {
+      background: var(--bg-tertiary, rgba(128, 128, 128, 0.08));
+    }
+
+    .codicon-chevron-right,
+    .codicon-chevron-down {
+      flex-shrink: 0;
+      color: var(--text-muted);
+    }
+  }
+
+  &__time {
+    font-variant-numeric: tabular-nums;
+    color: var(--text-muted);
+    flex-shrink: 0;
+  }
+
+  &__source {
+    flex-shrink: 0;
+    font-size: 10px;
+    padding: 1px 6px;
+    border-radius: 8px;
+    border: 1px solid var(--border-primary);
+    color: var(--text-secondary);
+
+    &--subagent {
+      color: #b180d7;
+      border-color: rgba(177, 128, 215, 0.5);
+    }
+    &--compact {
+      color: #d7a15f;
+      border-color: rgba(215, 161, 95, 0.5);
+    }
+    &--sidecar {
+      color: #5f9fd7;
+      border-color: rgba(95, 159, 215, 0.5);
+    }
+  }
+
+  &__model {
+    color: var(--text-primary);
+    font-family: var(--font-mono, monospace);
+    font-size: 11px;
+    flex-shrink: 0;
+  }
+
+  &__attempt {
+    flex-shrink: 0;
+    color: #d7a15f;
+    font-size: 10.5px;
+  }
+
+  &__badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 3px;
+    flex-shrink: 0;
+    color: var(--text-muted);
+    font-size: 10.5px;
+
+    &--error {
+      color: var(--status-error, #e05561);
+    }
+  }
+
+  &__spacer {
+    flex: 1;
+  }
+
+  &__duration,
+  &__tokens {
+    flex-shrink: 0;
+    font-variant-numeric: tabular-nums;
+    color: var(--text-muted);
+    font-family: var(--font-mono, monospace);
+    font-size: 11px;
+  }
+}
+
+.traj-error {
+  border: 1px solid var(--status-error, #e05561);
+  border-radius: 6px;
+  padding: 6px 8px;
+  font-size: 11px;
+
+  &__name {
+    color: var(--status-error, #e05561);
+    font-weight: 600;
+    margin-bottom: 3px;
+  }
+  pre {
+    margin: 0;
+    white-space: pre-wrap;
+    word-break: break-all;
+    color: var(--text-secondary);
+    font-size: 11px;
+  }
+}
+
+.traj-section {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+
+  &__title {
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--text-secondary);
+    display: flex;
+    align-items: center;
+    gap: 4px;
+  }
+
+  &__hint {
+    font-weight: 400;
+    color: var(--text-muted);
+  }
+}
+
+.traj-msg {
+  display: flex;
+  gap: 6px;
+  align-items: flex-start;
+
+  &__role {
+    flex-shrink: 0;
+    font-size: 10px;
+    padding: 1px 6px;
+    border-radius: 8px;
+    border: 1px solid var(--border-primary);
+    color: var(--text-muted);
+    margin-top: 2px;
+
+    &--system {
+      color: var(--text-muted);
+    }
+    &--user {
+      color: #7bc97b;
+      border-color: rgba(123, 201, 123, 0.5);
+    }
+    &--assistant {
+      color: #5f9fd7;
+      border-color: rgba(95, 159, 215, 0.5);
+    }
+    &--tool {
+      color: #d7a15f;
+      border-color: rgba(215, 161, 95, 0.5);
+    }
+    &--reasoning {
+      color: #b180d7;
+      border-color: rgba(177, 128, 215, 0.5);
+    }
+  }
+
+  &__parts {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+  }
+}
+
+.traj-part {
+  margin: 0;
+  padding: 4px 6px;
+  border-radius: 4px;
+  background: var(--bg-tertiary, rgba(128, 128, 128, 0.08));
+  font-family: var(--font-mono, monospace);
+  font-size: 11px;
+  color: var(--text-primary);
+  white-space: pre-wrap;
+  word-break: break-word;
+
+  &--reasoning {
+    color: var(--text-muted);
+    font-style: italic;
+  }
+
+  &--tool {
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+
+    pre {
+      margin: 0;
+      font-size: 10.5px;
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+  }
+
+  &--tool-error {
+    border: 1px solid var(--status-error, #e05561);
+    color: var(--status-error, #e05561);
+  }
+
+  &__tool-name {
+    font-size: 10.5px;
+    color: var(--text-secondary);
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+
+    .codicon {
+      font-size: 11px;
+    }
+  }
+
+  &--image {
+    color: var(--text-muted);
+    font-size: 11px;
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+  }
+
+  &--raw {
+    color: var(--text-muted);
+  }
+}
+
+.traj-empty-hint {
+  color: var(--text-muted);
+  font-size: 11px;
+}
+
+.traj-usage {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  font-size: 10.5px;
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+  font-family: var(--font-mono, monospace);
+}
+
+/**
+ * 壳类覆盖（双类提升特异性）：产物 CSS 里 .traj-dialog 排在 .modal-content 之前
+ * （import 顺序决定），同特异性下壳的 max-width:420px / padding:20px 会压掉
+ * 弹窗自己的宽度——实测 860/1100 都被钉在 420px。双类选择器与顺序无关必赢。
+ */
+.modal-content.traj-dialog {
+  width: min(1200px, 96vw);
+  max-width: none;
+  padding: 14px 16px;
+}
+
+/* ===== 单条调用详情弹窗（叠加在列表弹窗之上，z-index 更高）===== */
+
+.traj-detail-overlay {
+  z-index: 1010; /* 列表弹窗 .modal-overlay 是 1000，详情层叠其上 */
+}
+
+/* 双类提升特异性：与 .modal-content 的 max-width:420px/padding:20px 竞争，不依赖打包顺序 */
+.modal-content.traj-detail {
+  width: min(920px, 92vw);
+  height: min(720px, 90vh);
+  max-width: none;
+  padding: 14px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  position: relative; /* 锚点轨 absolute 定位基准 */
+}
+
+.traj-detail__header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+  padding-bottom: 8px;
+  border-bottom: 1px solid var(--border-primary);
+}
+
+// 详情内搜索条（sticky 头部下方）：多关键词 AND，命中高亮 + 计数 + 上/下导航
+.traj-detail__search {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+
+  .codicon-search {
+    color: var(--text-muted);
+    font-size: 13px;
+  }
+
+  input {
+    flex: 1;
+    height: 26px;
+    padding: 0 8px;
+    border: 1px solid var(--border-primary);
+    border-radius: 4px;
+    background: var(--bg-secondary, transparent);
+    color: var(--text-primary);
+    font-size: 12px;
+    outline: none;
+
+    &:focus {
+      border-color: var(--accent, #2bb3a3);
+    }
+    &::placeholder {
+      color: var(--text-muted);
+    }
+  }
+}
+
+.traj-detail__search-count {
+  flex-shrink: 0;
+  font-variant-numeric: tabular-nums;
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+// 搜索命中高亮：普通命中淡橙底，当前定位命中实底反色
+mark.traj-hit {
+  background: rgba(215, 161, 95, 0.3);
+  color: inherit;
+  border-radius: 2px;
+  padding: 0 1px;
+
+  &.traj-hit--active {
+    background: #d7a15f;
+    color: #1e1e1e;
+  }
+}
+
+.traj-detail__time {
+  font-variant-numeric: tabular-nums;
+  color: var(--text-muted);
+  font-family: var(--font-mono, monospace);
+  font-size: 12px;
+  flex-shrink: 0;
+}
+
+.traj-detail__body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding-right: 22px; /* 右缘让位锚点轨 */
+}
+
+/* ===== 详情弹窗锚点导航（复用主界面 .messages-anchor-rail 全局样式，仅改停靠侧）=====
+   主界面轨道在左、tooltip 向右弹；详情内容左缘是角色徽标列，轨道停靠右缘空白区，
+   tooltip 翻转向左弹（箭头同步换边）。sticky 头部+搜索条之下的净空用 top 跳过。 */
+.traj-detail .messages-anchor-rail {
+  left: auto;
+  right: 2px;
+  top: 108px;
+  bottom: 14px;
+}
+
+.traj-detail .anchor-tooltip {
+  left: auto;
+  right: calc(100% + 8px);
+
+  &::before {
+    right: auto;
+    left: 100%;
+    border-right-color: transparent;
+    border-left-color: var(--border-secondary);
+  }
+
+  &::after {
+    right: auto;
+    left: 100%;
+    border-right-color: transparent;
+    border-left-color: var(--bg-elevated);
+  }
+}
