@@ -30,6 +30,9 @@ import java.nio.file.StandardCopyOption
  * - 模型级 contextWindow 与输入能力位（inputFormat.supportsImage/Video/Pdf）存
  *   modelConfigRules.providerModelRules（读侧 newCliContextWindows）；插件只托管
  *   这四键，旧条目其余键合并保留。
+ * - 单模型开关存同节点 config.enabled（顶层键，非 properties 内；官方
+ *   setPersonalModelEnabled 同语义）：[toggleModel] 只 patch 该叶子，缺省口径
+ *   「personal 规则显式 false 才算停用」（zcode-builtin 的 .* 通配规则兜底 true）。
  *
  * 写回纪律同 [ProviderConfigWriter]：进程内单锁串行、滚动备份 .bak.1~.bak.5、tmp + 原子
  * 替换、失败回滚；根节点其余键（schemaVersion/providerOrder/manualProviderModelRules…）
@@ -169,6 +172,74 @@ object ProviderConfigWriterV2 {
         }
 
     /**
+     * 单模型启停（对齐官方 setPersonalModelEnabled，config-service.ts:416）：
+     * upsert providerModelRules 中 {providerId, modelId} 精确条目，config 只 patch
+     * 顶层 enabled 叶子（false=停用、true=重开），条目不删，properties/optionSpecs
+     * 等其余键原样保留；条目不存在则新增最小形态 {config:{enabled}}。
+     *
+     * 成员守卫：modelId 必须在该渠道 rule.config 的 modelOrder/personalModelIds 中，
+     * 否则拒绝（对齐官方「Model 不存在: p/m」）。只动 modelConfigRules 一节，
+     * providerRules/providerOrder 不碰。
+     *
+     * 通道：扁平行 JSON-RPC 面无 provider-settings（2026-10-12 实测 -32601），唯一
+     * 通道=直写个人文件，app-server 1s 轮询 sha256 热加载。account:* 文件层放行
+     *（官方账号模型开关也写个人文件），是否对 UI 开放由调用侧门控。
+     */
+    fun toggleModel(path: Path, providerId: String, modelId: String, enabled: Boolean): String? =
+        synchronized(WRITE_LOCK) {
+            updateLocked(path) { root ->
+                val cfg = root["config"]?.jsonObject ?: throw IllegalStateException("缺少 config 节")
+                val providerRule = rulesOf(root)?.firstOrNull { it.str("providerId") == providerId }
+                    ?: throw IllegalStateException("渠道不存在: $providerId")
+                val providerCfg = providerRule["config"]?.jsonObject
+                val memberIds = ((providerCfg?.get("modelOrder") as? JsonArray)
+                    ?: (providerCfg?.get("personalModelIds") as? JsonArray))
+                    ?.filterIsInstance<JsonPrimitive>()?.map { it.content }?.toSet()
+                    ?: emptySet()
+                if (modelId !in memberIds) {
+                    throw IllegalStateException("模型不存在: $providerId/$modelId")
+                }
+                val modelCfgNode = cfg["modelConfigRules"]?.jsonObject
+                    ?: throw IllegalStateException("缺少 modelConfigRules")
+                val oldRules = (modelCfgNode["providerModelRules"] as? JsonArray)
+                    ?.filterIsInstance<JsonObject>() ?: emptyList()
+                var found = false
+                val patched = oldRules.map { r ->
+                    if (r.str("providerId") != providerId || r.str("modelId") != modelId) return@map r
+                    found = true
+                    buildJsonObject {
+                        r.forEach { (k, v) -> if (k != "config") put(k, v) }
+                        put("config", buildJsonObject {
+                            r["config"]?.jsonObject?.forEach { (k, v) -> if (k != "enabled") put(k, v) }
+                            put("enabled", enabled)
+                        })
+                    }
+                }
+                val finalRules = if (found) patched else oldRules + buildJsonObject {
+                    put("providerId", providerId)
+                    put("modelId", modelId)
+                    put("config", buildJsonObject { put("enabled", enabled) })
+                }
+                buildJsonObject {
+                    root.forEach { (k, v) -> if (k != "config") put(k, v) }
+                    put("config", buildJsonObject {
+                        cfg.forEach { (k, v) ->
+                            if (k != "modelConfigRules") {
+                                put(k, v)
+                            } else {
+                                put(k, buildJsonObject {
+                                    v.jsonObject.forEach { (pk, pv) ->
+                                        if (pk == "providerModelRules") put(pk, JsonArray(finalRules)) else put(pk, pv)
+                                    }
+                                })
+                            }
+                        }
+                    })
+                }
+            }
+        }
+
+    /**
      * 渠道排序（客户端展示序语义）：ids = 完整目标顺序。写 providerOrder 单键，rules
      * 本体不动（排序只影响客户端 UI 与插件展示序，registry 解析无关顺序）。未列出的
      * 渠道保持原相对次序排在 ids 之后（拖拽保存时前端应传全集，此处是防御）。
@@ -277,29 +348,35 @@ object ProviderConfigWriterV2 {
      * （如 supportsText/supportsAudio——手写或客户端写入的不被插件编辑洗掉）。
      */
     private fun mergeUnmanaged(newRule: JsonObject, oldRule: JsonObject?): JsonObject {
-        val oldProps = oldRule?.get("config")?.jsonObject?.get("properties")?.jsonObject ?: return newRule
+        if (oldRule == null) return newRule
+        val oldCfg = oldRule["config"]?.jsonObject ?: return newRule
         val newCfg = newRule["config"]?.jsonObject ?: return newRule
-        val newProps = newCfg["properties"]?.jsonObject ?: return newRule
+        val oldProps = oldCfg["properties"]?.jsonObject
+        val newProps = newCfg["properties"]?.jsonObject
         val mergedProps = LinkedHashMap<String, JsonElement>()
-        newProps.forEach { (k, v) -> mergedProps[k] = v }
-        oldProps.forEach { (k, v) -> if (k !in MANAGED_PROPS && k !in mergedProps) mergedProps[k] = v }
-        val oldInput = oldProps["inputFormat"]?.jsonObject
-        val mergedRule: JsonObject
-        if (oldInput != null) {
-            val newInput = mergedProps["inputFormat"]?.jsonObject ?: JsonObject(emptyMap())
-            val mergedInput = LinkedHashMap<String, JsonElement>()
-            newInput.forEach { (k, v) -> mergedInput[k] = v }
-            oldInput.forEach { (k, v) -> if (k !in MANAGED_INPUT && k !in mergedInput) mergedInput[k] = v }
-            mergedProps["inputFormat"] = JsonObject(mergedInput)
+        newProps?.forEach { (k, v) -> mergedProps[k] = v }
+        if (oldProps != null) {
+            oldProps.forEach { (k, v) -> if (k !in MANAGED_PROPS && k !in mergedProps) mergedProps[k] = v }
+            val oldInput = oldProps["inputFormat"]?.jsonObject
+            if (oldInput != null) {
+                val newInput = mergedProps["inputFormat"]?.jsonObject ?: JsonObject(emptyMap())
+                val mergedInput = LinkedHashMap<String, JsonElement>()
+                newInput.forEach { (k, v) -> mergedInput[k] = v }
+                oldInput.forEach { (k, v) -> if (k !in MANAGED_INPUT && k !in mergedInput) mergedInput[k] = v }
+                mergedProps["inputFormat"] = JsonObject(mergedInput)
+            }
         }
-        mergedRule = buildJsonObject {
+        return buildJsonObject {
             newRule.forEach { (k, v) -> if (k != "config") put(k, v) }
             put("config", buildJsonObject {
+                // config 顶层非托管键（enabled 模型开关、optionSpecs 等）从旧条目保留；
+                // 新 config 只产 properties，不声明这些键——此前无 properties 的
+                // {enabled:false} 条目会被整表重建静默洗成启用（2026-10-12 缺口修复）
+                oldCfg.forEach { (k, v) -> if (k != "properties" && k !in newCfg) put(k, v) }
                 newCfg.forEach { (k, v) -> if (k != "properties") put(k, v) }
-                put("properties", JsonObject(mergedProps))
+                if (mergedProps.isNotEmpty()) put("properties", JsonObject(mergedProps))
             })
         }
-        return mergedRule
     }
 
     // ============ 读改写骨架 ============

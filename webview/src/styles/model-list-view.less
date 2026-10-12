@@ -826,6 +826,34 @@
     }
   }
 
+  /* 单模型启停开关：复用 __toggle 绿/灰语义，尺寸缩到与模型行动作按钮同高；
+     常驻显示（与 delete/test 的 hover 弱化不同——开关本身就是行主要状态）*/
+  &__model-toggle {
+    width: 20px;
+    height: 20px;
+    border-radius: 4px;
+    opacity: 1;
+
+    .codicon {
+      font-size: 12px;
+    }
+  }
+
+  /* 停用模型行：名称/id/图标弱化，徽章与开关仍清晰可点（原地重开入口）*/
+  &__model.is-disabled {
+    .model-list-view__model-icon,
+    .model-list-view__model-name,
+    .model-list-view__model-id {
+      color: var(--text-tertiary);
+    }
+  }
+
+  /* 「已停用」徽章：中性灰，区别于蓝色能力徽章与红色失败徽章 */
+  &__model-badge--off {
+    background: rgba(128, 128, 128, 0.14);
+    color: var(--text-tertiary);
+  }
+
   /* 提示对话框正文（ConfirmDialog message 插槽）*/
   &__dialog-body {
     display: flex;

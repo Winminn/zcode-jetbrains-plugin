@@ -353,4 +353,121 @@ class ProviderConfigWriterV2Test {
         // 非账号渠道不受影响
         assertEquals(null, ProviderConfigWriterV2.toggleProvider(p, "deepseek", true))
     }
+
+    // ============ toggleModel（单模型启停，对齐官方 setPersonalModelEnabled）============
+
+    @Test
+    fun `toggleModel 停用新增最小规则 重开写 true 不删条目`() {
+        val p = tmpProviderConfig()
+        assertEquals(null, ProviderConfigWriterV2.toggleModel(p, "deepseek", "deepseek-flash", false))
+
+        val mr = modelRulesOf(p)
+        assertEquals(2, mr.size, "原 GLM-5.3 规则保留 + 新增一条")
+        val added = mr.first {
+            it["providerId"]!!.jsonPrimitive.content == "deepseek" &&
+                it["modelId"]!!.jsonPrimitive.content == "deepseek-flash"
+        }
+        assertEquals(false, added["config"]!!.jsonObject["enabled"]!!.jsonPrimitive.content.toBoolean())
+        assertEquals(setOf("enabled"), added["config"]!!.jsonObject.keys, "新条目最小形态只有 enabled")
+
+        // providerRules / providerOrder / manualProviderModelRules 都不动
+        assertEquals(2, rulesOf(p).size)
+        assertEquals(listOf("bigmodel-api", "deepseek"), orderOf(p))
+        assertEquals(
+            0,
+            readRoot(p)["config"]!!.jsonObject["modelConfigRules"]!!.jsonObject
+                ["manualProviderModelRules"]!!.jsonArray.size,
+        )
+
+        // 重开 = enabled:true（条目保留，官方语义不是删规则）
+        assertEquals(null, ProviderConfigWriterV2.toggleModel(p, "deepseek", "deepseek-flash", true))
+        val reopened = modelRulesOf(p).first {
+            it["providerId"]!!.jsonPrimitive.content == "deepseek" &&
+                it["modelId"]!!.jsonPrimitive.content == "deepseek-flash"
+        }
+        assertEquals(true, reopened["config"]!!.jsonObject["enabled"]!!.jsonPrimitive.content.toBoolean())
+        assertEquals(2, modelRulesOf(p).size, "重开不新增/删除条目")
+    }
+
+    @Test
+    fun `toggleModel 已有条目只改 enabled 保留 properties 与 optionSpecs`() {
+        // bigmodel-api/GLM-5.3 现有条目只有 properties.contextWindow；
+        // 另造一条带 enabled:true+optionSpecs 的条目考验只改叶子
+        val dir = Files.createTempDirectory("provider-writer-v2-test")
+        val p = dir.resolve("provider_config.json")
+        Files.write(p, """
+            {"schemaVersion":1,"config":{"providerOrder":["bigmodel-api","deepseek"],
+              "providerConfigRules":{"providerRules":[
+                {"providerId":"bigmodel-api","providerName":"BigModel",
+                 "config":{"group":"standard-personal","access":{"type":"api-key","apiKey":"k"},
+                           "personalModelIds":["GLM-5.3"],"modelOrder":["GLM-5.3"]}},
+                {"providerId":"deepseek","providerName":"DeepSeek",
+                 "config":{"group":"standard-personal","access":{"type":"api-key","apiKey":"k2"},
+                           "personalModelIds":["deepseek-flash"],"modelOrder":["deepseek-flash"]}}]},
+              "modelConfigRules":{"providerModelRules":[
+                {"modelId":"GLM-5.3","providerId":"bigmodel-api",
+                 "config":{"properties":{"contextWindow":200000}}},
+                {"modelId":"deepseek-flash","providerId":"deepseek",
+                 "config":{"enabled":true,"optionSpecs":{"maxOutputTokens":{"max":128000}},
+                           "properties":{"contextWindow":1000000}}}],
+              "manualProviderModelRules":[]}}}
+        """.trimIndent().toByteArray())
+
+        assertEquals(null, ProviderConfigWriterV2.toggleModel(p, "bigmodel-api", "GLM-5.3", false))
+        val glm = modelRulesOf(p).first { it["modelId"]!!.jsonPrimitive.content == "GLM-5.3" }
+        val glmCfg = glm["config"]!!.jsonObject
+        assertEquals(false, glmCfg["enabled"]!!.jsonPrimitive.content.toBoolean())
+        assertEquals(200000L, glmCfg["properties"]!!.jsonObject["contextWindow"]!!.jsonPrimitive.content.toLong(),
+            "properties 保留")
+
+        assertEquals(null, ProviderConfigWriterV2.toggleModel(p, "deepseek", "deepseek-flash", false))
+        val ds = modelRulesOf(p).first { it["modelId"]!!.jsonPrimitive.content == "deepseek-flash" }
+        val dsCfg = ds["config"]!!.jsonObject
+        assertEquals(false, dsCfg["enabled"]!!.jsonPrimitive.content.toBoolean())
+        assertEquals(128000, dsCfg["optionSpecs"]!!.jsonObject["maxOutputTokens"]!!.jsonObject["max"]!!.jsonPrimitive.content.toInt())
+        assertEquals(1000000L, dsCfg["properties"]!!.jsonObject["contextWindow"]!!.jsonPrimitive.content.toLong())
+        // 其他模型的 enabled 不被连坐
+        assertEquals(false, glmCfg["enabled"]!!.jsonPrimitive.content.toBoolean())
+    }
+
+    @Test
+    fun `toggleModel 成员守卫 未知渠道与非成员模型拒绝`() {
+        val p = tmpProviderConfig()
+        assertTrue(ProviderConfigWriterV2.toggleModel(p, "ghost", "deepseek-flash", false)!!.contains("渠道不存在"))
+        assertTrue(ProviderConfigWriterV2.toggleModel(p, "deepseek", "not-a-member", false)!!.contains("模型不存在"))
+        // bigmodel-api 的 modelOrder 只有 GLM-5.3，关别的模型同样拒绝
+        assertTrue(ProviderConfigWriterV2.toggleModel(p, "bigmodel-api", "deepseek-flash", false)!!.contains("模型不存在"))
+        assertEquals(1, modelRulesOf(p).size, "被拒不落盘")
+    }
+
+    @Test
+    fun `updateProvider 整表重建不洗 enabled 与 optionSpecs`() {
+        // 回归：客户端停用某模型后插件编辑该渠道，旧 mergeUnmanaged 只保 properties 层，
+        // config.enabled/optionSpecs 被静默洗掉
+        val dir = Files.createTempDirectory("provider-writer-v2-test")
+        val p = dir.resolve("provider_config.json")
+        Files.write(p, """
+            {"schemaVersion":1,"config":{"providerOrder":["deepseek"],
+              "providerConfigRules":{"providerRules":[
+                {"providerId":"deepseek","providerName":"DeepSeek",
+                 "config":{"group":"standard-personal","access":{"type":"api-key","apiKey":"k"},
+                           "api":{"type":"anthropic-messages","baseUrl":"https://api.deepseek.com/anthropic"},
+                           "personalModelIds":["deepseek-flash"],"modelOrder":["deepseek-flash"]}}]},
+              "modelConfigRules":{"providerModelRules":[
+                {"modelId":"deepseek-flash","providerId":"deepseek",
+                 "config":{"enabled":false,"optionSpecs":{"maxOutputTokens":{"max":128000}}}}],
+              "manualProviderModelRules":[]}}}
+        """.trimIndent().toByteArray())
+
+        val err = ProviderConfigWriterV2.updateProvider(p, "deepseek", ProviderConfigWriter.UpdateFields(
+            name = null, kind = null, baseURL = null, apiKey = null,
+            models = listOf(ProviderConfigWriter.ModelDraft("deepseek-flash", context = 1000000, supportsImages = true)),
+            enabled = null))
+        assertEquals(null, err)
+        val cfg = modelRulesOf(p)[0]["config"]!!.jsonObject
+        assertEquals(false, cfg["enabled"]!!.jsonPrimitive.content.toBoolean(), "停用态不被编辑洗掉")
+        assertEquals(128000, cfg["optionSpecs"]!!.jsonObject["maxOutputTokens"]!!.jsonObject["max"]!!.jsonPrimitive.content.toInt())
+        assertEquals(1000000L, cfg["properties"]!!.jsonObject["contextWindow"]!!.jsonPrimitive.content.toLong())
+        assertEquals(true, cfg["properties"]!!.jsonObject["inputFormat"]!!.jsonObject["supportsImage"]!!.jsonPrimitive.content.toBoolean())
+    }
 }
