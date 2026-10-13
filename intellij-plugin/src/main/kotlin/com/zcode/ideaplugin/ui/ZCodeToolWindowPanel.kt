@@ -6703,20 +6703,25 @@ if (!window.__ZCODE_LOG_HOOK__) {
      * 深包结构项目大量源码搜不到）。不限深度；不设扩展名白名单，凡非二进制文本皆可引用；
      * 模块 excluded 目录由 FileIndex 自动跳过，忽略目录/隐藏目录手工剪枝兜底
      * （open directory 项目可能没有 excluded 配置）。
+     * 匹配走 FileMentionMatcher（issue #38：分隔符等价 + 子序列模糊，输 abcd 命中
+     * abc_def_gh.py）；模糊命中面比 contains 宽，遍历期多收（scanCap）再全局排序取头部，
+     * 防早停把同档更优候选截在树后段。
      */
     private fun handleListFiles(msg: JsonObject): JsonObject {
-        val query = msg["query"]?.jsonPrimitive?.content?.lowercase() ?: ""
+        val query = msg["query"]?.jsonPrimitive?.content ?: ""
         val basePath = project.basePath
             ?: return buildJsonObject { put("op", "files"); put("files", JsonArray(emptyList())) }
 
-        val files = mutableListOf<String>()
-        val dirs = mutableListOf<String>()
+        val files = mutableListOf<Pair<Int, String>>()
+        val dirs = mutableListOf<Pair<Int, String>>()
         val ignoredDirs = setOf(
             "node_modules", ".git", "build", "dist", "out", ".gradle", ".idea", "target", "__pycache__",
             ".svn", ".hg", ".venv", "venv", "vendor", "Pods", ".terraform"
         )
         val maxFiles = 200
         val maxDirs = 50 // 文件夹独立配额：防止被海量文件挤掉（issue #14：@ 引用文件夹）
+        // 空查询 = @ 展开（高频路径），维持 200 早停；带查询多收后排序截取
+        val scanCap = if (query.isEmpty()) maxFiles else 2000
 
         try {
             val baseVfs = LocalFileSystem.getInstance().findFileByPath(basePath)
@@ -6731,10 +6736,9 @@ if (!window.__ZCODE_LOG_HOOK__) {
                                 // 文件夹也进补全，尾 / 标记（FileRefs/前端 isDirectory 同判据）；
                                 // 目录恒继续遍历（不能因配额中断，否则下面文件全丢）
                                 val dirRel = vf.path.removePrefix(basePath).replace('\\', '/').trimStart('/')
-                                if (dirRel.isNotEmpty() && dirs.size < maxDirs &&
-                                    (query.isEmpty() || dirRel.lowercase().contains(query) || vf.name.lowercase().contains(query))
-                                ) {
-                                    dirs.add("$dirRel/")
+                                if (dirRel.isNotEmpty() && dirs.size < scanCap) {
+                                    val rank = FileMentionMatcher.rank(query, vf.name, dirRel)
+                                    if (rank != null) dirs.add(rank to "$dirRel/")
                                 }
                                 return@iterateContentUnderDirectory true
                             }
@@ -6744,10 +6748,11 @@ if (!window.__ZCODE_LOG_HOOK__) {
                             // 超大文本（lock/生成物类）不进补全，防个别文件淹没配额
                             if (vf.length > 1L shl 20) return@iterateContentUnderDirectory true
                             val relPath = vf.path.removePrefix(basePath).replace('\\', '/').trimStart('/')
-                            if (query.isEmpty() || relPath.lowercase().contains(query) || vf.name.lowercase().contains(query)) {
-                                files.add(relPath)
+                            if (files.size < scanCap) {
+                                val rank = FileMentionMatcher.rank(query, vf.name, relPath)
+                                if (rank != null) files.add(rank to relPath)
                             }
-                            files.size < maxFiles // 到量即停，中断遍历
+                            files.size < scanCap // 到量即停，中断遍历
                         },
                         { vf -> !vf.isDirectory || (vf.name.lowercase() !in ignoredDirs && !vf.name.startsWith(".")) }
                     )
@@ -6759,17 +6764,18 @@ if (!window.__ZCODE_LOG_HOOK__) {
             log.warn("File scan failed: ${e.message}")
         }
 
-        // 文件夹优先（用户诉求），组内短路径优先（通常更相关）
-        dirs.sortBy { it.length }
-        files.sortBy { it.length }
-        val matched = dirs + files
+        // 文件夹优先（用户诉求，同官方 TUI compareWorkspacePathSuggestion），组内按匹配档+短路径
+        val rankOrder = compareBy<Pair<Int, String>>({ it.first }, { it.second })
+        dirs.sortWith(rankOrder)
+        files.sortWith(rankOrder)
+        val matched = dirs.take(maxDirs).map { it.second } + files.take(maxFiles).map { it.second }
         // @ 展开频率低（query 为空）打 info 供远程场景诊断；逐键过滤的请求走 debug
         if (query.isEmpty()) log.info("[listFiles] base=$basePath matched=${matched.size}")
         else log.debug("[listFiles] base=$basePath matched=${matched.size} query='$query'")
 
         return buildJsonObject {
             put("op", "files")
-            put("files", JsonArray(matched.take(maxFiles + maxDirs).map { JsonPrimitive(it) }))
+            put("files", JsonArray(matched.map { JsonPrimitive(it) }))
         }
     }
 
