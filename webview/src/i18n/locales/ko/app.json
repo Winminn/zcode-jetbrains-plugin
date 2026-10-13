@@ -61,6 +61,22 @@
     "viewFull": "전체 계획 보기",
     "tipWithFeedback": "피드백 입력됨: \"계획 계속\"으로 피드백을 전송하고 계획 모드 유지; \"승인 후 실행\"에는 피드백이 포함되지 않습니다"
   },
+  "hookReview": {
+    "badge": "훅 신뢰",
+    "titleFallback": "워크스페이스 훅",
+    "close": "닫기(차단 유지)",
+    "summary": "{{eventCount}}개 이벤트 · {{hookCount}}개 훅 · {{pendingCount}}개 신뢰 대기",
+    "sources": "설정 파일",
+    "selectAll": "모두 선택",
+    "stateTrusted": "신뢰됨",
+    "stateRevoked": "철회됨",
+    "stateStale": "설정 변경됨",
+    "modeBackground": "백그라운드",
+    "modeForeground": "포그라운드",
+    "commandToggle": "명령 펼치기/접기",
+    "trustSelected": "선택 항목 신뢰({{count}})",
+    "sending": "제출 중…"
+  },
   "notification": {
     "subagent": "서브에이전트",
     "bashTask": "백그라운드 명령",

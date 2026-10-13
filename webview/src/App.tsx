@@ -22,6 +22,7 @@ import { HistoryView } from '@/components/HistoryView'
 import { SettingsView } from '@/components/SettingsView'
 import { InputBox } from '@/components/InputBox'
 import { AskUserDialog } from '@/components/AskUserDialog'
+import { WorkspaceHookReviewCard } from '@/components/WorkspaceHookReviewCard'
 import { PlanApprovalDialog } from '@/components/PlanApprovalDialog'
 import { PermissionApprovalDialog } from '@/components/PermissionApprovalDialog'
 import { SubagentDetailDialog } from '@/components/SubagentDetailDialog'
@@ -456,6 +457,9 @@ export default function App() {
           onClose={() => useStore.setState({ askUser: null })}
         />
       )}
+
+      {/* 工作区钩子信任评审卡（底部停靠，v4 pendingInteractions 投影） */}
+      <WorkspaceHookReviewCard />
 
       {/* ExitPlanMode 计划审批面板（底部停靠，无超时等待） */}
       {exitPlanApproval && (

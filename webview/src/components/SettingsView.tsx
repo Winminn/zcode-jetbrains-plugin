@@ -25,11 +25,12 @@ import { ModelListView } from './ModelListView'
 import { BrowserSettingsView } from './BrowserSettingsView'
 import { ComputerSettingsView } from './ComputerSettingsView'
 import { AgentListView } from './AgentListView'
+import { HookListView } from './HookListView'
 import { ProcessSettingsView } from './ProcessSettingsView'
 import { isInJcef } from '@/ipc/bridge'
 import '../styles/settings.less'
 
-type SettingsTab = 'basic' | 'models' | 'usage' | 'memory' | 'skills' | 'agents' | 'mcp' | 'browser' | 'computer' | 'processes' | 'other'
+type SettingsTab = 'basic' | 'models' | 'usage' | 'memory' | 'skills' | 'agents' | 'mcp' | 'hooks' | 'browser' | 'computer' | 'processes' | 'other'
 
 const cx = (...c: (string | false | null | undefined)[]) => c.filter(Boolean).join(' ')
 
@@ -43,7 +44,7 @@ export function SettingsView({ onBack }: Props) {
   // JCEF 内 hash 恒空不影响生产
   const hashTab = window.location.hash.replace('#', '').split('/')[0] as SettingsTab
   const initialTab: SettingsTab =
-    !isInJcef() && ['basic', 'models', 'usage', 'memory', 'skills', 'agents', 'mcp', 'browser', 'computer', 'processes', 'other'].includes(hashTab)
+    !isInJcef() && ['basic', 'models', 'usage', 'memory', 'skills', 'agents', 'mcp', 'hooks', 'browser', 'computer', 'processes', 'other'].includes(hashTab)
       ? hashTab
       : 'basic'
   const [tab, setTab] = useState<SettingsTab>(initialTab)
@@ -59,7 +60,8 @@ export function SettingsView({ onBack }: Props) {
     }
   }, [pendingSection, setPendingSection])
 
-  const navItems: { key: SettingsTab; icon: string }[] = [
+  // glyph = Unicode 字形（codicon 字体无锚形；不用官方图标素材，避免版权问题）
+  const navItems: { key: SettingsTab; icon?: string; glyph?: string }[] = [
     { key: 'basic', icon: 'codicon-paintcan' },
     { key: 'models', icon: 'codicon-server-process' },
     { key: 'usage', icon: 'codicon-graph' },
@@ -67,6 +69,8 @@ export function SettingsView({ onBack }: Props) {
     { key: 'skills', icon: 'codicon-library' },
     { key: 'agents', icon: 'codicon-robot' },
     { key: 'mcp', icon: 'codicon-plug' },
+    // U+2693 + U+FE0E：锚形强制文本呈现（单色，跟随按钮颜色而非彩色 emoji）
+    { key: 'hooks', glyph: '⚓\uFE0E' },
     { key: 'browser', icon: 'codicon-globe' },
     { key: 'computer', icon: 'codicon-device-desktop' },
     { key: 'processes', icon: 'codicon-pulse' },
@@ -95,7 +99,9 @@ export function SettingsView({ onBack }: Props) {
               onClick={() => setTab(it.key)}
               data-tooltip={t(`settings.tabs.${it.key}`)}
             >
-              <span className={cx('codicon', it.icon)} />
+              {it.glyph
+                ? <span className="settings-view__nav-glyph">{it.glyph}</span>
+                : <span className={cx('codicon', it.icon)} />}
             </button>
           ))}
         </aside>
@@ -109,6 +115,7 @@ export function SettingsView({ onBack }: Props) {
           {tab === 'skills' && <SkillListView />}
           {tab === 'agents' && <AgentListView />}
           {tab === 'mcp' && <McpListView />}
+          {tab === 'hooks' && <HookListView />}
           {tab === 'browser' && <BrowserSettingsView />}
           {tab === 'computer' && <ComputerSettingsView />}
           {tab === 'processes' && <ProcessSettingsView />}

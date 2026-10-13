@@ -62,6 +62,22 @@
     "viewFull": "查看完整计划",
     "tipWithFeedback": "已输入意见：点「继续规划」提交意见留在规划模式；点「批准执行」不会附带此意见"
   },
+  "hookReview": {
+    "badge": "钩子信任",
+    "titleFallback": "工作区钩子",
+    "close": "关闭（保持阻止）",
+    "summary": "{{eventCount}} 个事件 · {{hookCount}} 条钩子 · {{pendingCount}} 条待信任",
+    "sources": "来源文件",
+    "selectAll": "全选",
+    "stateTrusted": "已信任",
+    "stateRevoked": "已撤销",
+    "stateStale": "配置已变更",
+    "modeBackground": "后台",
+    "modeForeground": "前台",
+    "commandToggle": "展开/折叠命令",
+    "trustSelected": "信任所选（{{count}}）",
+    "sending": "提交中…"
+  },
   "notification": {
     "subagent": "子代理",
     "bashTask": "后台命令",

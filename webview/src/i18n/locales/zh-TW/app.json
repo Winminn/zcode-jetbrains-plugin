@@ -61,6 +61,22 @@
     "viewFull": "檢視完整計畫",
     "tipWithFeedback": "已輸入意見：點「繼續規劃」提交意見留在規劃模式；點「批准執行」不會附帶此意見"
   },
+  "hookReview": {
+    "badge": "鉤子信任",
+    "titleFallback": "工作區鉤子",
+    "close": "關閉（保持封鎖）",
+    "summary": "{{eventCount}} 個事件 · {{hookCount}} 條鉤子 · {{pendingCount}} 條待信任",
+    "sources": "來源檔案",
+    "selectAll": "全選",
+    "stateTrusted": "已信任",
+    "stateRevoked": "已撤銷",
+    "stateStale": "設定已變更",
+    "modeBackground": "背景",
+    "modeForeground": "前景",
+    "commandToggle": "展開/摺疊命令",
+    "trustSelected": "信任所選（{{count}}）",
+    "sending": "提交中…"
+  },
   "notification": {
     "subagent": "子代理",
     "bashTask": "後臺命令",

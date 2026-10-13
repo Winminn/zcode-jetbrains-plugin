@@ -1,0 +1,294 @@
+/**
+ * 工作区钩子信任评审卡样式（底部停靠 dock 形态）
+ * 结构对齐 plan-approval-dialog.less（dock 变体 + 可折叠 header），复用全局 CSS 变量。
+ */
+
+.hook-review-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 10000;
+}
+
+/* dock 变体：底部停靠非模态——透明遮罩 + pointer-events 放行消息区交互 */
+.hook-review-overlay--dock {
+  pointer-events: none;
+
+  .hook-review-dialog {
+    position: absolute;
+    left: 50%;
+    bottom: 12px;
+    transform: translateX(-50%);
+    pointer-events: auto;
+    animation: hook-review-slide-up 0.18s ease-out;
+    box-shadow: 0 -4px 20px rgba(0, 0, 0, 0.4);
+  }
+}
+
+@keyframes hook-review-slide-up {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+.hook-review-dialog {
+  width: 560px;
+  max-width: calc(100vw - 24px);
+  max-height: 70vh;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-primary);
+  border-radius: 8px;
+  display: flex;
+  flex-direction: column;
+
+  &__header {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 7px 12px;
+    border-bottom: 1px solid var(--border-primary);
+    flex-shrink: 0;
+  }
+
+  &__badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 1px 8px;
+    border-radius: 999px;
+    font-size: 11px;
+    line-height: 16px;
+    color: var(--accent-primary);
+    background: rgba(0, 127, 212, 0.12);
+    border: 1px solid rgba(0, 127, 212, 0.35);
+    flex-shrink: 0;
+
+    .codicon { font-size: 11px; }
+  }
+
+  &__title {
+    font-weight: 600;
+    font-size: 13px;
+    color: var(--text-primary);
+    flex: 1;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  &__icon-btn {
+    padding: 2px 6px;
+    border: none;
+    background: transparent;
+    color: var(--text-tertiary);
+    cursor: pointer;
+    border-radius: 4px;
+    display: flex;
+    align-items: center;
+    flex-shrink: 0;
+
+    &:hover {
+      color: var(--text-primary);
+      background: var(--bg-hover);
+    }
+  }
+
+  &__body {
+    padding: 10px 12px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    overflow-y: auto;
+  }
+
+  &__summary {
+    font-size: 12px;
+    color: var(--text-secondary);
+    line-height: 1.5;
+  }
+
+  &__sources {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 6px;
+  }
+
+  &__sources-label {
+    font-size: 11px;
+    color: var(--text-tertiary);
+  }
+
+  &__source-file {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 2px 8px;
+    font-size: 11px;
+    color: var(--text-secondary);
+    background: var(--bg-primary);
+    border: 1px solid var(--border-primary);
+    border-radius: 999px;
+    cursor: pointer;
+    max-width: 240px;
+
+    .codicon { font-size: 11px; color: var(--accent-primary); }
+
+    span:last-child {
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    &:hover {
+      border-color: var(--accent-primary);
+      color: var(--text-primary);
+    }
+  }
+
+  &__select-all {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 12px;
+    color: var(--text-secondary);
+    cursor: pointer;
+    user-select: none;
+  }
+
+  &__items {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+
+  &__footer {
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    padding: 7px 12px;
+    border-top: 1px solid var(--border-primary);
+    flex-shrink: 0;
+  }
+
+  &__trust-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 4px 14px;
+    border: none;
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 12px;
+    background: var(--accent-primary);
+    color: #fff;
+
+    .codicon { font-size: 13px; }
+
+    &:hover:not(:disabled) { background: var(--accent-hover); }
+    &:disabled {
+      background: var(--bg-active);
+      color: var(--text-muted);
+      cursor: not-allowed;
+    }
+  }
+}
+
+/* ============ 单条钩子条目 ============ */
+
+.hook-review-item {
+  padding: 8px 10px;
+  background: var(--bg-primary);
+  border: 1px solid var(--border-primary);
+  border-radius: 6px;
+
+  &__top {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+
+  &__checkbox {
+    flex-shrink: 0;
+    cursor: pointer;
+
+    &:disabled { cursor: not-allowed; }
+  }
+
+  &__name {
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--text-primary);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  &__badge {
+    flex-shrink: 0;
+    padding: 0 7px;
+    border-radius: 999px;
+    font-size: 10px;
+    line-height: 15px;
+
+    &--muted {
+      color: var(--text-tertiary);
+      background: var(--bg-active);
+    }
+
+    &--danger {
+      color: #f48771;
+      background: rgba(244, 135, 113, 0.12);
+    }
+
+    &--warning {
+      color: #cca700;
+      background: rgba(204, 167, 0, 0.12);
+    }
+  }
+
+  &__meta {
+    margin-left: auto;
+    flex-shrink: 0;
+    font-size: 10px;
+    color: var(--text-tertiary);
+  }
+
+  &__command {
+    display: block;
+    width: 100%;
+    margin-top: 6px;
+    padding: 0;
+    border: none;
+    background: transparent;
+    text-align: left;
+    cursor: pointer;
+
+    code {
+      display: block;
+      font-family: var(--font-mono, 'Menlo', 'Consolas', monospace);
+      font-size: 11px;
+      line-height: 1.5;
+      color: var(--text-secondary);
+      white-space: pre-wrap;
+      word-break: break-all;
+      /* 默认折叠两行 */
+      max-height: 33px;
+      overflow: hidden;
+    }
+
+    &--expanded code { max-height: none; }
+    &:hover code { color: var(--text-primary); }
+  }
+}
+
+/* 收起态：只留 header 一行 */
+.hook-review-dialog--collapsed .hook-review-dialog__header {
+  border-bottom: none;
+  cursor: pointer;
+}

@@ -879,6 +879,11 @@ class ZCodeProtocolClient private constructor(
             // delta 的 patch.backgroundWorks 全量替换（服务端投影语义）。合成
             // backgroundWorks 事件推前端，payload 原样透传不裁字段。低频（启停时各一帧）
             extractBackgroundWorks(sid, effectiveParams["frame"]?.jsonObject?.get("payload") as? JsonObject)?.let { dispatchSessionEvent(it) }
+            // 工作区钩子信任评审投影（pendingInteractions）：与 backgroundWorks 同款，
+            // 在两类订阅分流前提取——主会话标题轻订阅、子会话完整订阅都要收评审。
+            WorkspaceHookReviewExtraction.extract(
+                sid, effectiveParams["frame"]?.jsonObject?.get("payload") as? JsonObject
+            )?.let { dispatchSessionEvent(it) }
             // 仅标题订阅的主会话：只抽 state.updated delta 的 meta.title 合成
             // session.titleUpdated（v2 标题广播唯一通道，见 v4TitleSessions），行数据
             // 不映射——主会话已有 legacy 流，映射会造成双写
@@ -1160,6 +1165,32 @@ class ZCodeProtocolClient private constructor(
             put("sessionId", sessionId)
             put("type", "cancelBackgroundWork")
             put("payload", buildJsonObject { put("workId", workId) })
+            put("issuedAt", System.currentTimeMillis())
+        }
+        val r = request("v4/command", envelope, timeoutMs)
+        requireOk(r)
+        return r["result"]?.jsonObject ?: JsonObject(emptyMap())
+    }
+
+    /**
+     * v4/command respondWorkspaceHookReview — 信任所选工作区钩子条目。
+     * 评审标识（bundleDigest/reviewFlowId/generation/interactionId 等）由评审
+     * payload 全字段自带，经 [WorkspaceHookReviewExtraction.buildRespondPayload]
+     * 原样回传，叠加 trust_selected 决策。信任写入磁盘共享存储，活动会话即时生效。
+     * ACK fault 形态（条目失效等）由 requireOk 抛协议错误，面板以通用错误通道提示。
+     */
+    fun respondWorkspaceHookReview(
+        sessionId: String,
+        identity: JsonObject,
+        reviewItemIds: List<String>,
+        timeoutMs: Long = 15_000,
+    ): JsonObject {
+        val envelope = buildJsonObject {
+            put("commandId", "hooktrust-${java.util.UUID.randomUUID()}")
+            put("clientId", "zcode-idea-plugin")
+            put("sessionId", sessionId)
+            put("type", "respondWorkspaceHookReview")
+            put("payload", WorkspaceHookReviewExtraction.buildRespondPayload(sessionId, identity, reviewItemIds))
             put("issuedAt", System.currentTimeMillis())
         }
         val r = request("v4/command", envelope, timeoutMs)

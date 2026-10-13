@@ -323,6 +323,85 @@ export type BackgroundBashOutputResult =
     }
   | { kind: 'unavailable' | 'unsupported' | 'read_failed'; workId: string; code?: string }
 
+// ============ 工作区钩子信任评审（v4 pendingInteractions 投影） ============
+
+/** 单条钩子声明的信任状态（设计 §2.2；字符串兜底防版本漂移） */
+export type HookTrustState =
+  | 'trusted_persistent'
+  | 'pending_trust'
+  | 'blocked_untrusted'
+  | 'revoked'
+  | 'stale_digest'
+  | (string & {})
+
+/** 评审应答需回传的标识（评审 payload 全字段自带，应答原样回传） */
+export interface WorkspaceHookReviewIdentity {
+  interactionId: string
+  taskId?: string
+  runId?: string
+  remoteSessionId?: string | null
+  workspaceIdentity?: string
+  bundleDigest: string
+  reviewFlowId: string
+  generation: number
+}
+
+/** 评审条目（单条钩子声明） */
+export interface WorkspaceHookReviewItem {
+  reviewItemId: string
+  event: string
+  matcher?: string
+  type: 'command' | 'process' | string
+  displayName: string
+  displayCommand: string
+  sourcePath: string
+  resolvedTimeoutMs: number
+  resolvedMaxOutputBytes: number
+  /** command+async → background */
+  executionMode: 'background' | 'foreground' | string
+  configuredEnabled: boolean
+  editable: boolean
+  trustState: HookTrustState
+}
+
+/** 一次工作区钩子信任评审 */
+export interface WorkspaceHookReview extends WorkspaceHookReviewIdentity {
+  sessionId: string
+  workspaceLabel?: string
+  createdAt: number
+  deadlineAt: number
+  sourceFiles: { path: string; displayPath: string; editable: boolean }[]
+  summary: { eventCount: number; hookCount: number; pendingCount: number }
+  items: WorkspaceHookReviewItem[]
+}
+
+/** zcode CLI `hooks trust status --json` 的单条钩子 */
+export type HookScope = 'workspace' | 'user'
+
+export interface WorkspaceHooksStatusItem {
+  reviewItemId: string
+  event: string
+  matcher: string | null
+  displayCommand: string
+  sourcePath: string
+  configuredEnabled: boolean
+  hookDeclarationDigest: string
+  /** user_scope=用户级钩子（~/.zcode/cli/config.json，无信任准入，enabled 即生效） */
+  trustState: HookTrustState | 'user_scope'
+}
+
+/** zcode CLI `hooks trust status --json` 结果（工作区钩子权威数据源）；
+ *  scope=user 时为 Kotlin 直读用户配置构造的同构形态（无 bundleDigest/reasonCode） */
+export interface WorkspaceHooksStatus {
+  scope?: HookScope
+  workspacePath?: string
+  workspaceIdentity?: string
+  userConfigPath?: string
+  bundleDigest?: string
+  reasonCode?: string
+  items: WorkspaceHooksStatusItem[]
+}
+
 /**
  * sessions-index v4 topic 的会话摘要（官方 SessionSummary 原样字段，Java 侧已过滤
  * 子代理会话与软删）。列表活性订阅（op=sessionIndexUpdate）的行数据。
@@ -445,6 +524,23 @@ export type JavaRequest =  | { op: 'askUserPendingState' }
   | { op: 'cancelBackgroundWork'; sessionId: string; workId: string }
   /** 后台工作投影缓存查询（打开会话对账；重复订阅不重推快照的兜底）*/
   | { op: 'backgroundWorksList'; sessionId: string }
+  /** 信任所选工作区钩子条目（v4/command respondWorkspaceHookReview；
+   *  identity 为评审 payload 自带的标识字段，原样回传）*/
+  | { op: 'workspaceHookReviewRespond'; sessionId: string; reviewItemIds: string[]; identity: WorkspaceHookReviewIdentity }
+  /** 钩子管理页：拉取/授予/撤销/启停（Kotlin 经 zcode CLI hooks trust 子命令；
+   *  grant all=true=授予当前全部，否则按 hookDigests；revoke 空 hookDigests=全撤；
+   *  scope=user 走用户级配置（~/.zcode/cli/config.json，直读直写无 CLI、无信任）；
+   *  所有操作回统一形态 {op:'workspaceHooksList', status} */
+  | { op: 'workspaceHooksList'; workspace?: string; scope?: HookScope }
+  | { op: 'workspaceHooksGrant'; workspace: string; hookDigests?: string[]; all?: boolean; bundleDigest?: string }
+  | { op: 'workspaceHooksRevoke'; workspace: string; hookDigests?: string[] }
+  | { op: 'workspaceHooksToggle'; workspace?: string; reviewItemId: string; sourcePath: string; enabled: boolean; scope?: HookScope }
+  /** 删除单条钩子登记项（Kotlin 从 config 移除并逐级剪枝；脚本文件保留在磁盘；
+   *  回统一形态 {op:'workspaceHooksList', status}）*/
+  | { op: 'workspaceHooksDelete'; workspace?: string; reviewItemId: string; sourcePath: string; scope?: HookScope }
+  /** 命令行点击：在 IDE 打开钩子脚本文件（Kotlin 从 displayCommand 解析脚本路径，
+   *  解析不到/文件不存在时回退打开来源配置 sourcePath；scope=user 相对路径基准 home）*/
+  | { op: 'workspaceHooksOpenScript'; workspace?: string; displayCommand: string; sourcePath: string; scope?: HookScope }
   /** 自动归档：读共享配置（~/.zcode/v2/setting.json，与 ZCode 客户端同源）*/
   | { op: 'getAutoArchiveConfig' }
   /** 自动归档：写共享配置（客户端下次读取同样生效）*/
@@ -1200,6 +1296,10 @@ export type JavaResponse =
   | { op: 'backgroundWorkCancelled'; sessionId: string; workId: string; status: string; reasonCode?: string }
   /** 后台工作投影缓存应答（打开会话对账；值=本进程最后已知投影）*/
   | { op: 'backgroundWorksList'; sessionId: string; works: BackgroundWorkSummary[] }
+  /** 钩子信任应答（卡片由 settled 投影帧收敛，不靠本应答移除）*/
+  | { op: 'workspaceHookReviewResponded'; sessionId: string; interactionId: string; status: string }
+  /** 钩子管理页统一应答：list/grant/revoke/toggle 都回最新权威 status */
+  | { op: 'workspaceHooksList'; status: WorkspaceHooksStatus }
   | { op: 'sessionTurnPhase'; sessionId: string; phase: 'running' | 'ended' }
   /** 会话索引推送（sessions-index v4 订阅）：full=initial 快照全量；sessions 为官方 SessionSummary 过滤后的原样字段 */
   | { op: 'sessionIndexUpdate'; full: boolean; sessions: SessionIndexEntry[]; removed: string[] }
