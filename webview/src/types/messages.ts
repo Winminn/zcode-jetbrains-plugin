@@ -1488,8 +1488,10 @@ export type JavaResponse =
   | { op: 'mcpLogs'; logs: McpLogEntry[] }
   /** 模型调用轨迹（ModelIoTrajectoryReader 读 model-io jsonl；error 存在 = 读取失败）*/
   | { op: 'modelTrajectoryResult'; sessionId: string; records?: TrajectoryRecord[]; sourceFiles?: string[]; truncated?: boolean; totalCount?: number; error?: string }
-  /** envStatus 存在 = 环境前置检查失败（EnvCheckException），前端据此刷新环境提醒条 */
-  | { op: 'error'; message: string; envStatus?: EnvStatus }
+  /** envStatus 存在 = 环境前置检查失败（EnvCheckException），前端据此刷新环境提醒条；
+   *  sourceOp 存在 = 钩子族等带归属的错误，前端按域过滤（不误吞其他操作的失败）；
+   *  interactionId = workspaceHookReviewRespond 失败专属，评审卡据此匹配到具体卡片 */
+  | { op: 'error'; message: string; envStatus?: EnvStatus; sourceOp?: string; interactionId?: string }
   /** app-server stderr 解析出的后端模型 API 错误（APICallError 兜底通道）：
    *  429 配额超限等被服务端按可重试分类退避重试，turn 终止帧迟迟不发时的第一现场 */
   | { op: 'backendError'; statusCode?: number; code?: string; message: string }

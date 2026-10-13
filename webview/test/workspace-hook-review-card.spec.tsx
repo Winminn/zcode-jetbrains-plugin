@@ -179,6 +179,43 @@ describe('信任应答与收敛', () => {
     expect(screen.getByRole('button', { name: /提交中/ })).toBeTruthy()
   })
 
+  it('信任失败：归属错误复位发送态并就地提示，按钮恢复可重试', () => {
+    pushReviewEvent([makeReview()])
+    render(<WorkspaceHookReviewCard />)
+    fireEvent.click(document.querySelectorAll('.hook-review-item__checkbox')[0])
+    fireEvent.click(screen.getByRole('button', { name: /信任所选/ }))
+    expect(screen.getByRole('button', { name: /提交中/ })).toBeTruthy()
+
+    act(() => {
+      messageHandler!({
+        op: 'error', sourceOp: 'workspaceHookReviewRespond',
+        interactionId: 'workspace-hook-interaction:u1', message: '钩子信任失败：超时',
+      })
+    })
+    expect(screen.getByRole('button', { name: /信任所选/ })).toBeTruthy()
+    expect(document.querySelector('.hook-review-dialog__send-error')!.textContent)
+      .toContain('钩子信任失败：超时')
+  })
+
+  it('无关操作或他卡的失败（sourceOp/interactionId 不匹配）不波及本卡发送态', () => {
+    pushReviewEvent([makeReview()])
+    render(<WorkspaceHookReviewCard />)
+    fireEvent.click(document.querySelectorAll('.hook-review-item__checkbox')[0])
+    fireEvent.click(screen.getByRole('button', { name: /信任所选/ }))
+
+    act(() => {
+      messageHandler!({ op: 'error', sourceOp: 'workspaceHooksToggle', message: '其他失败' })
+    })
+    act(() => {
+      messageHandler!({
+        op: 'error', sourceOp: 'workspaceHookReviewRespond',
+        interactionId: 'workspace-hook-interaction:other', message: '别卡失败',
+      })
+    })
+    expect(screen.getByRole('button', { name: /提交中/ })).toBeTruthy()
+    expect(document.querySelector('.hook-review-dialog__send-error')).toBeNull()
+  })
+
   it('settled 空集合事件到达后卡片消失', () => {
     pushReviewEvent([makeReview()])
     const { container } = render(<WorkspaceHookReviewCard />)

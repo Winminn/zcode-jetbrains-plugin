@@ -79,9 +79,9 @@ function pushStatus(status: WorkspaceHooksStatus) {
   })
 }
 
-function pushError(message: string) {
+function pushError(message: string, sourceOp = 'workspaceHooksList') {
   act(() => {
-    messageHandler!({ op: 'error', message })
+    messageHandler!({ op: 'error', message, sourceOp })
   })
 }
 
@@ -258,9 +258,22 @@ describe('乐观更新', () => {
     expect(rowSwitch(1).getAttribute('aria-checked')).toBe('false')
 
     // 失败：回退为权威的开启态
-    pushError('写入失败')
+    pushError('写入失败', 'workspaceHooksToggle')
     expect(rowSwitch(1).getAttribute('aria-checked')).toBe('true')
     expect(container.textContent).toContain('写入失败')
+  })
+
+  it('无关操作的 error（sourceOp 不带 workspaceHooks 前缀）不清乐观态也不显示', () => {
+    const { container } = render(<HookListView />)
+    pushStatus(makeStatus())
+
+    // 乐观关闭第二条
+    fireEvent.click(rowSwitch(1))
+    expect(rowSwitch(1).getAttribute('aria-checked')).toBe('false')
+
+    pushError('send 失败', 'send')
+    expect(rowSwitch(1).getAttribute('aria-checked')).toBe('false')
+    expect(container.textContent).not.toContain('send 失败')
   })
 })
 
@@ -330,7 +343,7 @@ describe('删除钩子（只删登记项，脚本保留）', () => {
     fireEvent.click(document.querySelector('.modal-btn-danger')!)
     expect(rows()).toHaveLength(1)
 
-    pushError('删除失败')
+    pushError('删除失败', 'workspaceHooksDelete')
     expect(rows()).toHaveLength(2)
     expect(container.textContent).toContain('删除失败')
   })

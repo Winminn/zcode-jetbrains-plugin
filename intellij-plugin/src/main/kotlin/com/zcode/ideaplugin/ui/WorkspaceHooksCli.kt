@@ -364,7 +364,8 @@ object WorkspaceHooksCli {
      * 首 token 不是 runner（如 `./a.sh` 直跑）则它本身即目标。相对路径按 workspace
      * 解析；目标不是普通文件返回 null（调用方回退打开来源配置文件）。
      */
-    fun resolveScriptPath(workspace: String, displayCommand: String): Path? {        val tokens = tokenizeCommand(displayCommand)
+    fun resolveScriptPath(workspace: String, displayCommand: String): Path? {
+        val tokens = tokenizeCommand(displayCommand)
         if (tokens.isEmpty()) return null
 
         val runnerBase = java.io.File(tokens[0]).name.substringBeforeLast('.').lowercase()

@@ -13,11 +13,11 @@
  * reviewItemIds；卡片由 settled 投影帧（空集合）收敛，不靠应答本地移除。
  */
 
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { useTranslation } from 'react-i18next'
-import { sendToJava } from '@/ipc/bridge'
+import { onMessage, sendToJava } from '@/ipc/bridge'
 import { useStore } from '@/store/useStore'
-import type { WorkspaceHookReview, WorkspaceHookReviewItem } from '@/types/messages'
+import type { JavaResponse, WorkspaceHookReview, WorkspaceHookReviewItem } from '@/types/messages'
 import '../styles/workspace-hook-review.less'
 
 /** 稳定空数组：selector 每次返回新 [] 会被 useSyncExternalStore 判为快照变化，
@@ -54,6 +54,7 @@ function ReviewDock({ review }: { review: WorkspaceHookReview }) {
   const [collapsed, setCollapsed] = useState(false)
   const [closed, setClosed] = useState(false)
   const [sending, setSending] = useState(false)
+  const [sendError, setSendError] = useState('')
   const [selected, setSelected] = useState<Set<string>>(new Set())
   const [expanded, setExpanded] = useState<Set<string>>(new Set())
 
@@ -62,6 +63,19 @@ function ReviewDock({ review }: { review: WorkspaceHookReview }) {
     () => review.items.filter((it) => it.trustState !== 'trusted_persistent'),
     [review.items],
   )
+
+  // 信任失败反馈：respond 错误带 sourceOp+interactionId 归属（面板专用错误形状），
+  // 复位发送态并就地提示——卡片不监听无归属的全局 error，其他操作的失败不波及本卡。
+  // 挂在 early return 之前保 hooks 顺序稳定
+  useEffect(() => {
+    const off = onMessage((msg: JavaResponse) => {
+      if (msg.op !== 'error' || msg.sourceOp !== 'workspaceHookReviewRespond') return
+      if (msg.interactionId && msg.interactionId !== review.interactionId) return
+      setSending(false)
+      setSendError(msg.message)
+    })
+    return off
+  }, [review.interactionId])
 
   if (closed) return null
 
@@ -107,6 +121,7 @@ function ReviewDock({ review }: { review: WorkspaceHookReview }) {
         generation: review.generation,
       },
     })
+    setSendError('')
     setSending(true)
   }
 
@@ -238,6 +253,12 @@ function ReviewDock({ review }: { review: WorkspaceHookReview }) {
             </div>
 
             <div className="hook-review-dialog__footer">
+              {sendError && (
+                <div className="hook-review-dialog__send-error" role="alert">
+                  <span className="codicon codicon-error" />
+                  <span>{sendError}</span>
+                </div>
+              )}
               <button
                 type="button"
                 className="hook-review-dialog__trust-btn"

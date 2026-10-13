@@ -2840,14 +2840,14 @@ if (!window.__ZCODE_LOG_HOOK__) {
      */
     private fun handleWorkspaceHookReviewRespond(msg: JsonObject): JsonObject {
         val sessionId = msg["sessionId"]?.jsonPrimitive?.contentOrNull
-            ?: return errorResponse(com.zcode.ideaplugin.ZCodeBundle.message("error.missing.sessionId"))
+            ?: return errorResponseFor(msg, com.zcode.ideaplugin.ZCodeBundle.message("error.missing.sessionId"))
         val identity = msg["identity"] as? JsonObject
-            ?: return errorResponse("缺少评审标识")
+            ?: return errorResponseFor(msg, "缺少评审标识")
         val ids = (msg["reviewItemIds"] as? JsonArray)
             ?.mapNotNull { (it as? JsonPrimitive)?.contentOrNull }
             ?.filter { it.isNotBlank() }
             ?: emptyList()
-        if (ids.isEmpty()) return errorResponse("未选择钩子条目")
+        if (ids.isEmpty()) return errorResponseFor(msg, "未选择钩子条目")
         val interactionId = identity["interactionId"]?.jsonPrimitive?.contentOrNull ?: ""
         val client = project.zCodeService().getClient()
         return try {
@@ -2861,7 +2861,14 @@ if (!window.__ZCODE_LOG_HOOK__) {
             }
         } catch (e: Exception) {
             log.warn("workspaceHookReviewRespond failed: ${e.message}")
-            errorResponse("钩子信任失败：${e.message ?: ""}")
+            // 失败带 interactionId 归属：评审卡据此复位发送态并就地提示
+            // （卡片不监听全局 error，其他操作的失败不波及评审卡）
+            buildJsonObject {
+                put("op", "error")
+                put("sourceOp", "workspaceHookReviewRespond")
+                put("interactionId", interactionId)
+                put("message", "钩子信任失败：${e.message ?: ""}")
+            }
         }
     }
 
@@ -2894,7 +2901,7 @@ if (!window.__ZCODE_LOG_HOOK__) {
         }
     } catch (e: Exception) {
         log.warn("workspaceHooksList failed: ${e.message}")
-        errorResponse("读取钩子列表失败：${e.message ?: ""}")
+        errorResponseFor(msg, "读取钩子列表失败：${e.message ?: ""}")
     }
 
     private fun handleWorkspaceHooksGrant(msg: JsonObject): JsonObject = try {
@@ -2913,7 +2920,7 @@ if (!window.__ZCODE_LOG_HOOK__) {
         hooksListResponse(status)
     } catch (e: Exception) {
         log.warn("workspaceHooksGrant failed: ${e.message}")
-        errorResponse("钩子信任失败：${e.message ?: ""}")
+        errorResponseFor(msg, "钩子信任失败：${e.message ?: ""}")
     }
 
     private fun handleWorkspaceHooksRevoke(msg: JsonObject): JsonObject = try {
@@ -2923,7 +2930,7 @@ if (!window.__ZCODE_LOG_HOOK__) {
         hooksListResponse(WorkspaceHooksCli.revoke(ws, digests))
     } catch (e: Exception) {
         log.warn("workspaceHooksRevoke failed: ${e.message}")
-        errorResponse("撤销钩子信任失败：${e.message ?: ""}")
+        errorResponseFor(msg, "撤销钩子信任失败：${e.message ?: ""}")
     }
 
     private fun handleWorkspaceHooksToggle(msg: JsonObject): JsonObject = try {
@@ -2940,7 +2947,7 @@ if (!window.__ZCODE_LOG_HOOK__) {
         hooksListResponse(status)
     } catch (e: Exception) {
         log.warn("workspaceHooksToggle failed: ${e.message}")
-        errorResponse("钩子启停失败：${e.message ?: ""}")
+        errorResponseFor(msg, "钩子启停失败：${e.message ?: ""}")
     }
 
     /**
@@ -2961,7 +2968,7 @@ if (!window.__ZCODE_LOG_HOOK__) {
         hooksListResponse(status)
     } catch (e: Exception) {
         log.warn("workspaceHooksDelete failed: ${e.message}")
-        errorResponse("删除钩子失败：${e.message ?: ""}")
+        errorResponseFor(msg, "删除钩子失败：${e.message ?: ""}")
     }
 
     /**
@@ -2992,7 +2999,7 @@ if (!window.__ZCODE_LOG_HOOK__) {
         })
     } catch (e: Exception) {
         log.warn("workspaceHooksOpenScript failed: ${e.message}")
-        errorResponse("打开钩子文件失败：${e.message ?: ""}")
+        errorResponseFor(msg, "打开钩子文件失败：${e.message ?: ""}")
     }
 
     /** 写库后广播全量置顶集；读集失败按空集广播（列表退回纯时间序，不炸 UI） */
@@ -6587,6 +6594,17 @@ if (!window.__ZCODE_LOG_HOOK__) {
     private fun errorResponse(msg: String): JsonObject = buildJsonObject {
         put("op", "error")
         put("message", msg)
+    }
+
+    /**
+     * 带 sourceOp 归属的错误应答：钩子族 handler 专用。全局 error 无来源标记，
+     * 任何操作的失败都会被前端钩子域监听误吞；带 sourceOp 后前端只对钩子域
+     * 错误做乐观回退与展示。
+     */
+    private fun errorResponseFor(msg: JsonObject, text: String): JsonObject = buildJsonObject {
+        put("op", "error")
+        put("sourceOp", msg["op"]?.jsonPrimitive?.contentOrNull ?: "")
+        put("message", text)
     }
 
     /** 新建标签页（前端「新标签页」按钮）：切 EDT 创建新 Content 并选中 */

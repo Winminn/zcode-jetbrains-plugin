@@ -112,8 +112,9 @@ export function HookListView() {
         setEnabledOverride((prev) => ({ ...prev, [respondedScope]: {} }))
         setTrustOverride((prev) => ({ ...prev, [respondedScope]: new Set() }))
         setRemovedOverride((prev) => ({ ...prev, [respondedScope]: new Set() }))
-      } else if (msg.op === 'error') {
-        // 失败回退：丢弃乐观覆盖，界面回到上一份权威数据（操作必发自当前域，清两域无损正确性）
+      } else if (msg.op === 'error' && typeof msg.sourceOp === 'string' && msg.sourceOp.startsWith('workspaceHooks')) {
+        // 失败回退（仅钩子域错误，面板 errorResponseFor 带 sourceOp 归属）：丢弃乐观覆盖，
+        // 界面回到上一份权威数据；其他操作的失败与本页无关，不误吞不清态
         setLoadingScopes(new Set())
         setEnabledOverride(EMPTY_ENABLED)
         setTrustOverride(EMPTY_IDS)
