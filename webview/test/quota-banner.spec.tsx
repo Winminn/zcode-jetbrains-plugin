@@ -22,9 +22,34 @@ vi.mock('@/ipc/bridge', () => ({
 import '@/i18n/config'
 import { useStore } from '@/store/useStore'
 import { QuotaBanner } from '@/components/QuotaBanner'
+import { QUOTA_BANNER_DISMISSALS_KEY, mergeLiveQuotaBannerDismissals } from '@/utils/quotaBannerDismissals'
+
+/**
+ * 本环境 jsdom 的 window.localStorage 是无方法死对象（Node 实验 localStorage 抢占，
+ * 见 test/quota-banner-dismissals.spec.ts 头注），注入 Map 桩供持久化断言使用
+ */
+function installStorageStub(): Map<string, string> {
+  const map = new Map<string, string>()
+  Object.defineProperty(window, 'localStorage', {
+    configurable: true,
+    value: {
+      getItem: (k: string) => (map.has(k) ? map.get(k)! : null),
+      setItem: (k: string, v: string) => void map.set(k, String(v)),
+      removeItem: (k: string) => void map.delete(k),
+      clear: () => map.clear(),
+      key: (i: number) => [...map.keys()][i] ?? null,
+      get length() {
+        return map.size
+      },
+    },
+  })
+  return map
+}
 
 beforeEach(() => {
   cleanup()
+  const kvStorage = installStorageStub()
+  kvStorage.clear()
   useStore.getState().init()
   useStore.setState({
     connectionStatus: 'mock',
@@ -71,6 +96,37 @@ describe('QuotaBanner 渲染', () => {
     expect(banner.className).toContain('quota-banner--warning')
     expect(banner.textContent).toContain('本周额度')
     expect(banner.textContent).toContain('5%')
+  })
+
+  it('低额关闭落盘持久化：low: 键写入 kv、err: 键不落盘', () => {
+    const resetAt = Date.now() + 2 * 86400_000
+    useStore.setState({
+      quota: { level: 'Max', limits: [{ type: 'TOKENS_LIMIT', unit: 6, percentage: 95, nextResetTime: resetAt }] },
+    })
+    const { container, unmount } = render(<QuotaBanner />)
+    fireEvent.click(container.querySelector('.quota-banner__close')!)
+    unmount()
+    const saved = JSON.parse(window.localStorage.getItem(QUOTA_BANNER_DISMISSALS_KEY)!) as Record<string, number>
+    expect(Object.keys(saved)).toEqual([`low:weekly:${resetAt}`])
+    expect(typeof saved[`low:weekly:${resetAt}`]).toBe('number')
+
+    // 错误路键保持内存级不落盘
+    useStore.getState().dismissQuotaBanner('err:concurrent-limit:3008:x')
+    expect(window.localStorage.getItem(QUOTA_BANNER_DISMISSALS_KEY)!).not.toContain('err:')
+  })
+
+  it('持久静默跨 store 重建生效（新会话标签语义）：存活键压制低额横幅', () => {
+    const resetAt = Date.now() + 2 * 86400_000
+    window.localStorage.setItem(
+      QUOTA_BANNER_DISMISSALS_KEY,
+      JSON.stringify({ [`low:weekly:${resetAt}`]: Date.now() }),
+    )
+    useStore.setState({
+      quotaBannerDismissed: mergeLiveQuotaBannerDismissals([]),
+      quota: { level: 'Max', limits: [{ type: 'TOKENS_LIMIT', unit: 6, percentage: 95, nextResetTime: resetAt }] },
+    })
+    const { container } = render(<QuotaBanner />)
+    expect(container.querySelector('.quota-banner')).toBeNull()
   })
 
   it('刷新按钮走 loadQuota（sendToJava op=getQuota）', () => {

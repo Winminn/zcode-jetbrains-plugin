@@ -5,7 +5,9 @@
  * 并负责两条自动收口：
  *  - 窗口恢复：耗尽触发源在额度数据显示窗口已恢复（剩余 > 阈值）时清除触发源
  *    （额度拉取失败/无窗口数据时不清，横幅保守保留）
- *  - 关闭动作：dismissQuotaBanner 记录当前视图的去重键，同源触发不再打扰
+ *  - 关闭动作：dismissQuotaBanner 记录当前视图的去重键，同源触发不再打扰；
+ *    低额路（low:）键落 persist kv（utils/quotaBannerDismissals.ts），跨标签/跨重启
+ *    静默至窗口期轮转
  */
 
 import { useEffect, useMemo } from 'react'

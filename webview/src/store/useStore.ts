@@ -63,6 +63,7 @@ import { parseBackgroundTaskWorks, parseDeliveredWorkStatuses } from '@/utils/ba
 import { isHiddenSyntheticMessage, isAgentNotification } from '@/utils/parseNotification'
 import { mergeTurnMessages } from '@/utils/mergeTurnMessages'
 import { getPersisted, setPersisted, removePersisted, entriesWithPrefix, isKvHydrated, KV_HYDRATED_EVENT } from '@/utils/persist'
+import { QUOTA_BANNER_DISMISSALS_KEY, mergeLiveQuotaBannerDismissals, recordQuotaBannerDismissal } from '@/utils/quotaBannerDismissals'
 import { readStatusPanelConfig, writeStatusPanelConfig } from '@/utils/statusPanelConfig'
 import { addSteerMarkers, readSteerMarkers } from '@/utils/steerMarkers'
 import { readEnhanceConfig } from '@/utils/enhanceConfig'
@@ -1211,7 +1212,9 @@ interface StoreState {
   // 会话额度横幅错误触发源（turn.failed / backendError 分类命中时写入；展示视图由
   // useQuotaBanner 与 quota 数据派生，见 utils/quotaWindows.ts）。null = 无触发
   quotaBannerError: import('@/utils/quotaWindows').QuotaBannerTrigger | null
-  /** 已关闭的横幅去重键（内存级：本 webview 生命周期内同源错误不重复打扰）*/
+  // 已关闭的横幅去重键。低额路（low: 前缀）落 persist kv 持久化：多标签独立 store，
+  // 纯内存会让每个新会话重新点亮（关闭后须跨标签/跨重启静默，见
+  // utils/quotaBannerDismissals.ts）；错误路（err:）是会话内瞬态，保持内存级
   quotaBannerDismissed: string[]
 
   // 应用用量（usage/stats：app-server 本地聚合，含第三方模型，无 apiKey 依赖）
@@ -1801,7 +1804,9 @@ export const useStore = create<StoreState>((set, get) => ({
   customEnd: null,
   usageError: null,
   quotaBannerError: null,
-  quotaBannerDismissed: [],
+  // 初值即并入持久静默键（dev/mock 的 localStorage 直读；JCEF 冷启动此处通常为空，
+  // 由 KV 水合 reloadKvPrefs 与 storage 跨标签同步兜底）
+  quotaBannerDismissed: mergeLiveQuotaBannerDismissals([]),
   appUsage: null,
   appUsageRange: '7d',
   appUsageError: null,
@@ -1832,12 +1837,20 @@ export const useStore = create<StoreState>((set, get) => ({
           steeredMessageIds: readSteerMarkers(),
           statusPanelCollapsed: readStatusPanelConfig().collapsed,
           cuaInputButton: readCuaInputButtonConfig().showInInputBox,
+          quotaBannerDismissed: mergeLiveQuotaBannerDismissals(get().quotaBannerDismissed),
         })
         if (isKvHydrated()) {
           reloadKvPrefs()
         } else {
           window.addEventListener(KV_HYDRATED_EVENT, reloadKvPrefs, { once: true })
         }
+        // 额度横幅跨标签静默：其他标签关闭低额提醒后 storage 事件实时并入本标签
+        // （本标签写 localStorage 不触发 storage 事件，无回环；key=null 是 clear 广播，并入无害）
+        window.addEventListener('storage', (e) => {
+          if (e.key === QUOTA_BANNER_DISMISSALS_KEY || e.key === null) {
+            set({ quotaBannerDismissed: mergeLiveQuotaBannerDismissals(get().quotaBannerDismissed) })
+          }
+        })
       }
       window.onEnvStatusChanged = (status: EnvStatus) => set({ envStatus: status })
       // IDE 广播：其他标签切换 provider 启用/禁用后多标签同步（Panel broadcastModelChanges）。
@@ -2952,6 +2965,8 @@ export const useStore = create<StoreState>((set, get) => ({
     // 去重键由组件层经 deriveQuotaBanner 得出后回传（store 只存，不重复派生）
     if (quotaBannerDismissed.includes(key)) return
     set({ quotaBannerDismissed: [...quotaBannerDismissed, key] })
+    // 低额提醒路落盘：静默至窗口期轮转（key 内嵌重置时间），跨标签/跨重启生效
+    if (key.startsWith('low:')) recordQuotaBannerDismissal(key)
   },
 
   clearQuotaBannerError: () => set({ quotaBannerError: null }),
