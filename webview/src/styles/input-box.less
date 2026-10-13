@@ -620,20 +620,23 @@
     transition: width 0.3s ease;
   }
 
-  /* 套餐档位徽标（MAX 等）：标题右侧蓝色小 chip（复位标题的 uppercase/字距）*/
+  /* 套餐档位徽标（MAX→Max 等）：标题右侧灰色小 chip，对齐官方账号区徽标的中性灰
+     （2026-10-13 用户裁定：青绿仍跳，官方即灰）。必须显式 text-transform:none——
+     text-transform 可继承，__title 的 uppercase 会透进来把 Max 渲染回 MAX
+     （实踩：删掉徽标自身的 uppercase 后值改 Max 仍显示 MAX） */
   &__quota-badge {
     display: inline-block;
     margin-left: 6px;
     padding: 0 6px;
     border-radius: 4px;
     font-size: 10px;
-    font-weight: 700;
+    font-weight: 600;
     line-height: 14px;
-    text-transform: uppercase;
+    text-transform: none;
     letter-spacing: 0.4px;
-    color: #7db8ff;
-    background: rgba(74, 158, 255, 0.14);
-    border: 1px solid rgba(74, 158, 255, 0.35);
+    color: var(--text-secondary);
+    background: var(--bg-hover);
+    border: 1px solid var(--border-secondary);
     vertical-align: 1px;
   }
 

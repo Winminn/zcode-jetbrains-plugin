@@ -47,11 +47,14 @@ const OTHER_LABEL = 'usage.context.categories.other'
 const RING_TRACK_COLOR = 'rgba(43,179,163,0.30)'
 const RING_NORMAL_COLOR = '#2bb3a3'
 
-/** 额度窗口进度条颜色（对齐官方客户端：5h 蓝 / 周 绿 / 工具 紫 / 兜底行 橙）*/
+/** 额度窗口进度条颜色（对齐官方客户端 chat-input-toolbar 额度面板：
+    5h 蓝 / 周 绿 / 工具 紫 / 兜底行 橙。官方工具调用=--color-usage-chart-3，
+    暗色主题下解析到 Tailwind violet-400=#a78bfa，取同值）
+    2026-10-13 用户裁定：工具调用对齐官方紫，勿改青绿 */
 const QUOTA_WINDOW_COLORS: Record<QuotaWindowKey | 'other', string> = {
   '5h': '#4a9eff',
   weekly: '#4caf50',
-  tool: '#b478f0',
+  tool: '#a78bfa',
   other: '#e09850',
 }
 
@@ -229,14 +232,19 @@ export function ContextRing() {
             {/* GLM 额度窗口卡（仅 GLM 套餐模型）：官方客户端同构三列并排——
                 每列「窗口名 / 剩余% · 重置时间 / 彩色进度条」（5h 蓝/周 绿/工具 紫），
                 填充即剩余占比。三标准窗按 (type,unit,number) 挑选；其余形状落「通用额度」列
-                （超过 3 列自动换行）。套餐档位（MAX 等）以 chip 徽标缀标题右侧。
+                （超过 3 列自动换行）。套餐档位（MAX 等）以 chip 徽标缀标题右侧，
+                首字母大写其余小写（MAX→Max，2026-10-13 用户定稿）。
                 reset 统一到分（fmtResetTimeCompact：当日 HH:mm / 跨日 MM-dd HH:mm），
                 MCP 额度独立接口不在 quota/limit 返回内，不展示 */}
             {isGlmPlan && (
               <div className="ctx-popover__section">
                 <div className="ctx-popover__title">
                   {t('usage.context.glmQuota')}
-                  {quota?.level ? <span className="ctx-popover__quota-badge">{quota.level}</span> : null}
+                  {quota?.level ? (
+                    <span className="ctx-popover__quota-badge">
+                      {quota.level.charAt(0).toUpperCase() + quota.level.slice(1).toLowerCase()}
+                    </span>
+                  ) : null}
                 </div>
                 {quotaRows.length ? (
                   <div className="ctx-popover__quota-grid">

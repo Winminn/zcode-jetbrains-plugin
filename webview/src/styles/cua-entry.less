@@ -1,67 +1,33 @@
 /**
- * 电脑操作入口（InputBox topbar，紧贴当前文件 chip 左侧、共同钉最右）
+ * 电脑操作入口（InputBox topbar 左侧工具组，远程按钮右侧）
  *
  * 设置页「在输入框显示电脑操作按钮」开启且电脑控制启用后渲染。点击把
  * zcgui-computer-use 技能提及内联插进输入框（行为同 $ 面板选中该技能）。
  *
- * 视觉对齐 current-file-chip（2026-10-10 用户反馈定稿）：高 20px、文字 10px、
- * 图标 12px（顶栏工具键统一档）、文字 --text-muted（与「文件上下文」同灰）。
+ * 2026-10-13 用户定稿：从「图标+文字」chip（钉最右）改为 icon-only 工具键，
+ * 移入左侧工具组与远程按钮相邻。布局与 hover 由 .context-tool-btn 提供，
+ * 本文件只留增量：激活态 + 图标字号。
  *
- * 特异性纪律（实踩）：全局有 .app__body .codicon{14px}(0,2,0)，单类
- * .cua-entry__icon(0,1,0) 压不住——图标规则必须 .input-box-topbar 前缀双类
- * （(0,2,1) 压 (0,2,0)，不依赖源码顺序；status-toggle 的双类教训同源）。
- *
- * 钉最右协作：本入口 margin-left:auto 接管富余空间吸收；下方相邻规则把
- * current-file-chip 自身的 auto 让位归零——否则两个 auto 平分空隙，入口悬在
- * 中间不贴文件 chip。入口条件渲染，不在场时文件 chip 的 auto 自然恢复钉最右。
+ * 特异性纪律（实踩）：全局有 .app__body .codicon{14px}(0,2,0)，低特异性压不住
+ * ——图标规则保持 .input-box-topbar 前缀三层选择器，不依赖源码顺序。
  */
 
 .input-box-topbar {
   .cua-entry {
-    display: inline-flex;
-    align-items: center;
-    gap: 4px;
-    height: 20px;
-    padding: 0 6px;
-    font-size: 10px;
-    color: var(--text-muted);
-    background: var(--bg-hover);
-    border: 1px solid transparent;
-    border-radius: 4px;
-    cursor: pointer;
-    flex: none;
-    margin-left: auto;
-
-    &:hover {
-      color: var(--text-secondary);
-      border-color: var(--border-color, rgba(255, 255, 255, 0.12));
-    }
-
     // 常亮态（会话已进电脑控制上下文：输入框装了 CUA 技能 chip 或本会话引用过）：
-    // 视觉语言对齐 current-file-chip--active（accent 边框 + primary 文字 + 深底色），
-    // 顶栏「激活」状态的统一表达。hover 不降回 secondary（active 优先于 hover 灰）
+    // 图标着 accent 色 + 微底色，顶栏「激活」状态的统一表达。:hover 并列同写
+    // 压过 .context-tool-btn:hover:not(:disabled) 的 hover 灰（active 优先）
     &--active,
     &--active:hover {
-      color: var(--text-primary);
-      background: var(--bg-elevated);
-      border-color: var(--accent-primary, var(--border-primary));
+      color: var(--accent-primary);
+      background: var(--bg-hover);
     }
 
-    // (0,2,1) 压全局 .app__body .codicon 的 14px——device-desktop 字形撑满 em
-    // box，14px 视觉明显大于文件 chip 的 SVG 图标（用户反馈"图标太大"）
+    // device-desktop 字形撑满 em box，14px 视觉偏大；13px 对齐 remote 方形
+    // 字形定稿（phone-entry 同款考量）
     .codicon {
-      font-size: 12px;
+      font-size: 13px;
       line-height: 1;
     }
-
-    &__label {
-      white-space: nowrap;
-      line-height: 1;
-    }
-  }
-
-  // 入口在场时接管钉最右：文件 chip 的 margin-left:auto 归零，紧贴入口右侧
-  .cua-entry + .current-file-chip {
-    margin-left: 0;
   }
 }

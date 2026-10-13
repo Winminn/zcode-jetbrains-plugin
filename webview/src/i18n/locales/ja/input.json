@@ -155,7 +155,6 @@
     "goConfig": "設定する"
   },
   "cuaEntry": {
-    "label": "コンピュータ操作",
     "tip": "クリックでコンピュータ制御スキル（zcgui-computer-use）を挿入し、AI にこのデスクトップを操作させます"
   }
 }

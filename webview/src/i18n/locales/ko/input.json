@@ -155,7 +155,6 @@
     "goConfig": "설정하기"
   },
   "cuaEntry": {
-    "label": "컴퓨터 작업",
     "tip": "클릭하여 컴퓨터 제어 스킬(zcgui-computer-use)을 삽입하고 AI가 이 데스크톱을 조작하도록 합니다"
   }
 }

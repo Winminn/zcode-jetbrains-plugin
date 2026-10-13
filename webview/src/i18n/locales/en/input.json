@@ -159,7 +159,6 @@
     "goConfig": "Configure"
   },
   "cuaEntry": {
-    "label": "Computer Control",
     "tip": "Click to insert the computer control skill (zcgui-computer-use) and let AI operate this desktop"
   }
 }

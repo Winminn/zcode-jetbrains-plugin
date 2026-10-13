@@ -1979,6 +1979,21 @@ export function InputBox({ onSend, isStreaming = false, onStop, disabled = false
                 }`}
               />
             </button>
+            {/* 电脑操作入口（设置页「在输入框显示电脑操作按钮」开且电脑控制已启用）：
+                点击把 zcgui-computer-use 技能提及插进输入框。2026-10-13 用户定稿：
+                从右侧 chip（图标+文字）改为 icon-only 工具键、移到远程按钮右侧，
+                与工具组同规格（context-tool-btn），tooltip 贴左对齐。常亮=会话已进
+                电脑控制上下文（输入框装了技能 chip 或本会话引用过） */}
+            {cuaEnabled === true && cuaInputButton && (
+              <button
+                type="button"
+                className={`context-tool-btn cua-entry tip-align-left${cuaActive ? ' cua-entry--active' : ''}`}
+                data-tip={t('input.cuaEntry.tip')}
+                onClick={insertCuaSkillRef}
+              >
+                <span className="codicon codicon-device-desktop" />
+              </button>
+            )}
             {/* 引用会话（#）：不设附件栏入口（非高频），输入框 # 直接触发补全 */}
             {/* 定时任务（日历）：上下文圆环左侧排列；角标=待执行任务总数 */}
             <div className="schedule-entry">
@@ -1996,21 +2011,6 @@ export function InputBox({ onSend, isStreaming = false, onStop, disabled = false
             <ContextRing />
           </div>
           <AgentSelect onManage={onOpenAgentSettings} disabled={disabled} />
-          {/* 电脑操作入口（设置页「在输入框显示电脑操作按钮」开且电脑控制已启用）：
-              点击把 zcgui-computer-use 技能提及插进输入框。位置在当前文件 chip 左侧
-              （用户定稿），tooltip 贴右对齐防溢出。常亮=会话已进电脑控制上下文
-              （输入框装了技能 chip 或本会话引用过），视觉对齐 current-file-chip--active */}
-          {cuaEnabled === true && cuaInputButton && (
-            <button
-              type="button"
-              className={`cua-entry tip-align-right${cuaActive ? ' cua-entry--active' : ''}`}
-              data-tip={t('input.cuaEntry.tip')}
-              onClick={insertCuaSkillRef}
-            >
-              <span className="codicon codicon-device-desktop cua-entry__icon" />
-              <span className="cua-entry__label">{t('input.cuaEntry.label')}</span>
-            </button>
-          )}
           {/* 当前打开文件上下文（chip 显示 + 勾选持久化；勾选且 ref 非空时
               doSend 派生附件描述随消息隐式携带，同一取值表达式，见 doSend 末尾）。
               位置在最右（margin-left:auto 吸收富余空间，见 current-file-chip.less）：

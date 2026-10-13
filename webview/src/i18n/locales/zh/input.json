@@ -159,7 +159,6 @@
     "goConfig": "去配置"
   },
   "cuaEntry": {
-    "label": "电脑操作",
     "tip": "点击插入电脑控制技能（zcgui-computer-use），让 AI 操作本机桌面"
   }
 }
