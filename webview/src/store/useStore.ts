@@ -1459,7 +1459,7 @@ interface StoreState {
    * 保存环境路径配置：undefined=不改该项，''=清除（回退自动探测）。
    * 后端验证（node spawn --version、cli 文件存在）失败不落盘，回 error（带 envStatus）。
    */
-  saveEnvConfig: (nodePath?: string, cliPath?: string) => void
+  saveEnvConfig: (nodePath?: string, cliPath?: string, cdpPortFile?: string) => void
   /** 拉取网络代理配置（设置页环境 tab 挂载时；与 ZCode 客户端同源 setting.json） */
   loadProxyConfig: () => void
   /**
@@ -3311,10 +3311,10 @@ export const useStore = create<StoreState>((set, get) => ({
     sendToJava({ op: 'checkEnv' })
   },
 
-  saveEnvConfig: (nodePath?: string, cliPath?: string) => {
+  saveEnvConfig: (nodePath?: string, cliPath?: string, cdpPortFile?: string) => {
     set({ envSaving: true })
-    // undefined 字段 JSON.stringify 自动省略 = 后端"不改该项"约定
-    sendToJava({ op: 'envSave', nodePath, cliPath })
+    // undefined 字段 JSON.stringify 自动省略 = 后端"不改该项"约定；'' = 清除
+    sendToJava({ op: 'envSave', nodePath, cliPath, cdpPortFile })
   },
 
   loadProxyConfig: () => {

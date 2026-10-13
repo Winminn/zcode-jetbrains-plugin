@@ -63,8 +63,8 @@ describe('网络代理设置', () => {
     })
     await waitFor(() => {
       const inputs = INPUTS()
-      expect(inputs.length).toBeGreaterThanOrEqual(5) // node/cli 两行 + 代理三行
-      const proxyInputs = inputs.slice(2, 5).map((i) => i.value)
+      expect(inputs.length).toBeGreaterThanOrEqual(6) // node/cli/cdp 三行 + 代理三行
+      const proxyInputs = inputs.slice(3, 6).map((i) => i.value)
       expect(proxyInputs).toEqual(['http://127.0.0.1:7890', 'localhost', ''])
     })
   })
@@ -76,10 +76,10 @@ describe('网络代理设置', () => {
       proxyConfig: { httpProxy: '', noProxy: '', caCertPath: '', restartPending: false },
     })
     const inputs = INPUTS()
-    fireEvent.change(inputs[2], { target: { value: '  http://127.0.0.1:7890  ' } })
-    fireEvent.change(inputs[3], { target: { value: ' localhost,127.0.0.1 ' } })
+    fireEvent.change(inputs[3], { target: { value: '  http://127.0.0.1:7890  ' } })
+    fireEvent.change(inputs[4], { target: { value: ' localhost,127.0.0.1 ' } })
     // 保存按钮在代理分区第三行右侧
-    const saveBtn = inputs[4].parentElement!.querySelector('button')!
+    const saveBtn = inputs[5].parentElement!.querySelector('button')!
     fireEvent.click(saveBtn)
     const req = sent.find((m) => m.op === 'setProxyConfig')
     expect(req).toBeTruthy()
@@ -128,7 +128,7 @@ describe('网络代理设置', () => {
     })
     await waitFor(() => {
       const inputs = INPUTS()
-      expect(inputs[2].value).toBe('http://127.0.0.1:7890')
+      expect(inputs[3].value).toBe('http://127.0.0.1:7890')
     })
     expect(document.body.textContent).not.toContain('已保存')
     expect(sent.some((m) => m.op === 'restartAppServer')).toBe(false)

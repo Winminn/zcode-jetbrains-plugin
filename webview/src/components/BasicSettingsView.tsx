@@ -498,33 +498,37 @@ function EnvironmentSettings() {
   const checkEnv = useStore((s) => s.checkEnv)
   const [nodeInput, setNodeInput] = useState('')
   const [cliInput, setCliInput] = useState('')
+  const [cdpInput, setCdpInput] = useState('')
   /** 正在保存哪一项（按钮转圈定位；envSaving 复位时清除） */
-  const [savingWhich, setSavingWhich] = useState<'node' | 'cli' | null>(null)
+  const [savingWhich, setSavingWhich] = useState<'node' | 'cli' | 'cdp' | null>(null)
   const [rechecking, setRechecking] = useState(false)
   /** 上次同步进输入框的值：仅当输入框仍是上次同步值时才跟随刷新（不覆盖用户编辑） */
-  const lastSyncRef = useRef({ node: '', cli: '' })
+  const lastSyncRef = useRef({ node: '', cli: '', cdp: '' })
 
   const nodePath = envStatus?.node.path ?? ''
   const cliPath = envStatus?.cli.path ?? ''
+  const cdpPath = envStatus?.cdpPortFile ?? ''
 
   useEffect(() => {
     // 函数式 updater 由 React 延迟到渲染期执行，而 ref 赋值立即生效——
     // 必须先快照旧 ref 再更新，否则 updater 里读到的是新值，比较恒不成立，
     // 重新进入设置页时输入框永远同步不进 envStatus 的路径
     const last = lastSyncRef.current
-    lastSyncRef.current = { node: nodePath, cli: cliPath }
+    lastSyncRef.current = { node: nodePath, cli: cliPath, cdp: cdpPath }
     setNodeInput((cur) => (cur === last.node ? nodePath : cur))
     setCliInput((cur) => (cur === last.cli ? cliPath : cur))
-  }, [nodePath, cliPath])
+    setCdpInput((cur) => (cur === last.cdp ? cdpPath : cur))
+  }, [nodePath, cliPath, cdpPath])
 
   useEffect(() => {
     if (!envSaving) setSavingWhich(null)
   }, [envSaving])
 
-  const handleSave = (which: 'node' | 'cli') => {
+  const handleSave = (which: 'node' | 'cli' | 'cdp') => {
     setSavingWhich(which)
     if (which === 'node') saveEnvConfig(nodeInput.trim())
-    else saveEnvConfig(undefined, cliInput.trim())
+    else if (which === 'cli') saveEnvConfig(undefined, cliInput.trim())
+    else saveEnvConfig(undefined, undefined, cdpInput.trim())
   }
 
   const handleRecheck = () => {
@@ -633,6 +637,42 @@ function EnvironmentSettings() {
         <small className="basic-settings__hint">
           <span className="codicon codicon-info" />
           <span>{t('settings.env.cli.hint')}</span>
+        </small>
+      </section>
+
+      {/* CDP 端口文件（自定义 idea.system.path 时的覆盖配置；留空走自动检测） */}
+      <section className="basic-settings__section">
+        <div className="basic-settings__field-header">
+          <span className="codicon codicon-browser" />
+          <span className="basic-settings__field-label">{t('settings.env.cdp.label')}</span>
+          {cdpPath && (
+            <span className="basic-settings__version-badge is-ok" title={cdpPath}>
+              {t('settings.env.cdp.badge')}
+            </span>
+          )}
+        </div>
+        <div className="basic-settings__path-row">
+          <input
+            type="text"
+            className="basic-settings__path-input"
+            value={cdpInput}
+            onChange={(e) => setCdpInput(e.target.value)}
+            placeholder={t('settings.env.cdp.placeholder')}
+            spellCheck={false}
+          />
+          <button
+            type="button"
+            className="basic-settings__save-btn"
+            onClick={() => handleSave('cdp')}
+            disabled={envSaving}
+          >
+            {savingWhich === 'cdp' && <span className="codicon codicon-loading codicon-modifier-spin" />}
+            {t('settings.env.save')}
+          </button>
+        </div>
+        <small className="basic-settings__hint">
+          <span className="codicon codicon-info" />
+          <span>{t('settings.env.cdp.hint')}</span>
         </small>
       </section>
 

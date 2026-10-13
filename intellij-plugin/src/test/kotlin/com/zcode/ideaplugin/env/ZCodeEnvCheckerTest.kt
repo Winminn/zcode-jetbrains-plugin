@@ -148,6 +148,43 @@ class ZCodeEnvCheckerTest {
         assertEquals(null, ZCodeEnvChecker.configuredCliPath())
     }
 
+    @Test
+    fun `cdp 端口文件配置保存读取与清空`() {
+        val store = WritableStore()
+        ZCodeEnvChecker.setStoreForTest(store)
+
+        ZCodeEnvChecker.saveCdpPortFile("  D:\\idea\\system\\jcef_cache\\DevToolsActivePort  ")
+        assertEquals(
+            "D:\\idea\\system\\jcef_cache\\DevToolsActivePort",
+            ZCodeEnvChecker.configuredCdpPortFile(),
+            "应去除首尾空白",
+        )
+
+        ZCodeEnvChecker.saveCdpPortFile("")
+        assertEquals(null, ZCodeEnvChecker.configuredCdpPortFile(), "空串视为未配置")
+
+        ZCodeEnvChecker.saveCdpPortFile("D:\\cdp\\DevToolsActivePort")
+        ZCodeEnvChecker.clearCdpPortFile()
+        assertEquals(null, ZCodeEnvChecker.configuredCdpPortFile())
+    }
+
+    @Test
+    fun `statusJson cdpPortFile 顶层回显未配置省略`() {
+        val store = WritableStore()
+        ZCodeEnvChecker.setStoreForTest(store)
+
+        val absent = ZCodeEnvChecker.statusJson(EnvStatus(okNode(), okCli()))
+        assertTrue("cdpPortFile" !in absent, "未配置时应省略 cdpPortFile")
+
+        store.set(ZCodeEnvChecker.KEY_CDP_PORT_FILE, "D:\\idea\\system\\jcef_cache\\DevToolsActivePort")
+        val shown = ZCodeEnvChecker.statusJson(EnvStatus(okNode(), okCli()))
+        assertEquals(
+            "D:\\idea\\system\\jcef_cache\\DevToolsActivePort",
+            shown["cdpPortFile"]!!.jsonPrimitive.content,
+            "配置值应在 EnvStatus 顶层回显（不挂 browserHost）",
+        )
+    }
+
     // ============ 路径验证（不依赖本机环境） ============
 
     @Test

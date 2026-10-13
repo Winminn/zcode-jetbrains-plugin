@@ -585,7 +585,7 @@ export type JavaRequest =  | { op: 'askUserPendingState' }
   /** 环境三件套检测（node/zcode.cjs/凭证），启动时与主界面「重新检测」触发 */
   | { op: 'checkEnv' }
   /** 保存环境路径配置：字段缺席=不改该项，空串=清除（回退自动探测）；后端验证通过才落盘 */
-  | { op: 'envSave'; nodePath?: string; cliPath?: string }
+  | { op: 'envSave'; nodePath?: string; cliPath?: string; cdpPortFile?: string }
   /** 拉取当前打开文件 ref（webview mount/重连时用；Kotlin 同步回包，对应 EditorContextTracker.snapshot）*/
   | { op: 'getCurrentFile' }
   /** 拉取网络代理配置（与 ZCode 客户端共享的 setting.json 三键） */
@@ -1118,6 +1118,8 @@ export interface EnvBrowserHostStatus {
 export interface EnvStatus {
   node: EnvNodeStatus
   cli: EnvCliStatus
+  /** 用户配置的 JCEF DevToolsActivePort 文件路径（未配置/旧包缺省 = 自动检测）*/
+  cdpPortFile?: string
   /** browser-use 宿主健康（非阻断建议项；null = 未探测/未初始化，旧包兼容）*/
   browserHost?: EnvBrowserHostStatus
   allOk: boolean

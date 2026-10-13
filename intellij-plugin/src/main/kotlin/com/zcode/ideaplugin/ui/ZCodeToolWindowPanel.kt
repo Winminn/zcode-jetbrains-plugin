@@ -1517,19 +1517,23 @@ if (!window.__ZCODE_LOG_HOOK__) {
     }
 
     /**
-     * 保存环境路径配置（node / zcode.cjs）。
+     * 保存环境路径配置（node / zcode.cjs / CDP 端口文件）。
      * 字段缺席 = 不改该项；空串 = 清除该配置（回退自动探测）。
-     * 保存前验证（node spawn --version + 版本下限；cli 文件存在），
+     * 保存前验证（node spawn --version + 版本下限；cli 文件存在；CDP 端口文件 TCP 可达），
      * 验证失败不落盘（cc-gui 同策略，防缓存无效路径）。
-     * 保存成功后杀掉旧 app-server（启动参数已变），下次 getClient 按新配置拉起——
+     * node/cli 保存成功后杀掉旧 app-server（启动参数已变），下次 getClient 按新配置拉起——
      * 会话在服务端侧存续，前端 subscribe/发送会触发重连恢复。
+     * CDP 发现是宿主侧能力、与 app-server 无关：cdp-only 保存不重启 app-server，
+     * 经保存后的强制重检/「重新检测」即时生效（探针无缓存，发现失败也不缓存）。
      */
     private fun handleEnvSave(msg: JsonObject): JsonObject {
         val hasNode = "nodePath" in msg.keys
         val hasCli = "cliPath" in msg.keys
-        if (!hasNode && !hasCli) return errorResponse("envSave 缺少 nodePath/cliPath")
+        val hasCdp = "cdpPortFile" in msg.keys
+        if (!hasNode && !hasCli && !hasCdp) return errorResponse("envSave 缺少 nodePath/cliPath/cdpPortFile")
         val nodePath = msg["nodePath"]?.jsonPrimitive?.contentOrNull?.trim() ?: ""
         val cliPath = msg["cliPath"]?.jsonPrimitive?.contentOrNull?.trim() ?: ""
+        val cdpPortFile = msg["cdpPortFile"]?.jsonPrimitive?.contentOrNull?.trim() ?: ""
 
         // 先全部验证，全通过才落盘（避免半更新）
         if (hasNode && nodePath.isNotEmpty()) {
@@ -1550,6 +1554,11 @@ if (!window.__ZCODE_LOG_HOOK__) {
                 return envErrorResponse("zcode.cjs 路径无效：${probe.error}，未保存")
             }
         }
+        if (hasCdp && cdpPortFile.isNotEmpty() &&
+            ZCodeBrowserExecutor.probePortFile(java.io.File(cdpPortFile)) == null
+        ) {
+            return envErrorResponse("CDP 端口文件无效或端口不可达，未保存")
+        }
 
         if (hasNode) {
             if (nodePath.isEmpty()) com.zcode.ideaplugin.env.ZCodeEnvChecker.clearNodePath()
@@ -1559,13 +1568,23 @@ if (!window.__ZCODE_LOG_HOOK__) {
             if (cliPath.isEmpty()) com.zcode.ideaplugin.env.ZCodeEnvChecker.clearCliPath()
             else com.zcode.ideaplugin.env.ZCodeEnvChecker.saveCliPath(cliPath)
         }
+        if (hasCdp) {
+            if (cdpPortFile.isEmpty()) com.zcode.ideaplugin.env.ZCodeEnvChecker.clearCdpPortFile()
+            else com.zcode.ideaplugin.env.ZCodeEnvChecker.saveCdpPortFile(cdpPortFile)
+        }
         com.zcode.ideaplugin.env.ZCodeEnvChecker.invalidate()
 
-        try { project.zCodeService().shutdown() } catch (e: Exception) {
-            log.warn("Failed to close old app-server after env config change: ${e.message}")
+        // CDP 是宿主侧能力，与 app-server 启动参数无关：仅 node/cli 变更才重启 app-server。
+        // cdp-only 保存靠随后的 check(force=true) 强制重检 + 广播即时反映（探针本就无缓存，
+        // cdpBase 仅在发现成功时缓存——而配置无效的场景从未成功缓存过，保存正确值后下轮
+        // browserList 即重新发现，无需为此专门清缓存）
+        if (hasNode || hasCli) {
+            try { project.zCodeService().shutdown() } catch (e: Exception) {
+                log.warn("Failed to close old app-server after env config change: ${e.message}")
+            }
+            // 旧进程上的订阅与全局监听器全部作废（含其他标签），下次 subscribe 重新走完整注册
+            activePanels.forEach { it.resetSubscriptionState() }
         }
-        // 旧进程上的订阅与全局监听器全部作废（含其他标签），下次 subscribe 重新走完整注册
-        activePanels.forEach { it.resetSubscriptionState() }
 
         val status = com.zcode.ideaplugin.env.ZCodeEnvChecker.check(force = true)
         broadcastEnvStatus(status)
