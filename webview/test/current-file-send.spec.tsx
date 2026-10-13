@@ -91,6 +91,9 @@ beforeEach(() => {
   sentRequests.length = 0
   useStore.setState({
     currentSessionId: 'sess_a',
+    // 门控态跨用例复位：同文件前序用例调 resetToNewSession 会置 true，
+    // 文末「重启恢复绑定会话」用例需要 boot 态
+    skipInitialSessionRestore: false,
     currentModel: { modelId: 'GLM-5.2', providerId: 'builtin:bigmodel-coding-plan' },
     currentWorkspacePath: 'G:\\mock',
     streaming: false,

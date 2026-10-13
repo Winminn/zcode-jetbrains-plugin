@@ -755,6 +755,16 @@ interface StoreState {
   provisionalTitles: Record<string, string>
   currentSessionId: string | null
   currentWorkspacePath: string
+  /**
+   * 放弃 boot 会话恢复：listSessions 的「恢复标签绑定会话」只允许在标签启动后自动生效
+   * 一次。用户主动进入待命态（新建会话 / 删除当前会话）置 true——注入的初始会话 id
+   * 运行期不更新（clearTabSession 只清 Java 侧 TabState），而待命态下 listSessions 会被
+   * 任意会话回合 ended 的相位广播（300ms 防抖刷新，无 currentSessionId 守卫）、自动归档
+   * 扫描完成等后台触发；不放弃就会把旧绑定会话无声 selectSession 回来：待命态打字一两
+   * 分钟后跳回旧会话、输入框草稿随 scope 切换被带走（2026-10-13 真机反馈）。
+   * 首帧快照缺绑定会话时不置位（慢快照容错，后续列表继续尝试恢复）。
+   */
+  skipInitialSessionRestore: boolean
   /** 建会话请求进行中（手动 + 或懒创建），期间防重入 */
   creatingSession: boolean
   /** 懒创建暂存的首条消息：无会话时发送 → 先建会话，createSession 响应后自动发出 */
@@ -1571,6 +1581,7 @@ export const useStore = create<StoreState>((set, get) => ({
   provisionalTitles: {},
   currentSessionId: null,
   currentWorkspacePath: '',
+  skipInitialSessionRestore: false,
   creatingSession: false,
   pendingFirstMessage: null,
   pendingFirstAttachments: null,
@@ -2347,6 +2358,8 @@ export const useStore = create<StoreState>((set, get) => ({
     get().requeueScheduledQueuesFor(get().currentSessionId)
     set({
       currentSessionId: null,
+      // 用户主动进入待命态：放弃 boot 恢复，后续 listSessions 不得把旧绑定会话选回
+      skipInitialSessionRestore: true,
       // 「新会话自动点亮文件上下文」偏好（默认关）应用点之一：新建会话按钮手势
       //（另一处 = listSessions boot 待命分支，新标签=新会话）。点亮也只影响首条
       // 消息（doSend 发完即关）。切会话/删当前会话/Java 自动 newSession 均不应用
@@ -3394,6 +3407,7 @@ function rangeToTimes(
 const titleUpdatedAt: Record<string, number> = {}
 let listSessionsSentAt = 0
 
+
 /**
  * 服务端标题是否仍是占位（未生成正式标题）：
  * 空 / 会话 id 本身 / sess_ 前缀（CLI 新会话初始 title 即会话 id）。
@@ -3876,8 +3890,12 @@ export function handleResponse(
         const initialId = getInitialSessionId()
         const initial = initialId ? merged.find((s) => s.sessionId === initialId) : undefined
         if (initial) {
-          console.log(`[store] 恢复标签绑定的会话: ${initialId}`)
-          get().selectSession(initial)
+          // 门控：只服务 boot 自动恢复。用户主动进入待命态后（skipInitialSessionRestore）
+          // 绑定会话仍在列表也不得选回——后台 listSessions 刷新无时序承诺
+          if (!get().skipInitialSessionRestore) {
+            console.log(`[store] 恢复标签绑定的会话: ${initialId}`)
+            get().selectSession(initial)
+          }
         } else {
           // 待命态 = 新会话（2026-10-08 用户实测拍板"新建标签页=新建会话"）：新标签
           // 无注入绑定 / 绑定会话已被删除均落这里——应用「新会话自动点亮」设置
@@ -4067,6 +4085,8 @@ export function handleResponse(
         ...(deletedCurrent
           ? {
               currentSessionId: null,
+              // 用户主动删除：放弃 boot 恢复，防滞后/后台 listSessions 仍带该会话时被选回
+              skipInitialSessionRestore: true,
               ...sessionResetBase(),
               compacting: false,
               backgroundTasks: {},
