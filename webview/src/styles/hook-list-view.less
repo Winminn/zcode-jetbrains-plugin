@@ -14,7 +14,8 @@
   &__toolbar {
     display: flex;
     align-items: center;
-    gap: 12px;
+    flex-wrap: wrap;
+    gap: 8px 12px;
   }
 
   &__workspace {
@@ -22,7 +23,7 @@
     align-items: center;
     gap: 6px;
     padding: 5px 12px;
-    font-size: 13px;
+    font-size: var(--fs-body);
     color: var(--text-primary);
     background: var(--bg-primary);
     border: 1px solid var(--border-primary);
@@ -54,7 +55,7 @@
     gap: 5px;
     max-width: 220px;
     padding: 4px 12px;
-    font-size: 13px;
+    font-size: var(--fs-body);
     color: var(--text-secondary);
     background: transparent;
     border: none;
@@ -93,17 +94,32 @@
   }
 
   &__count {
-    font-size: 14px;
+    font-size: var(--fs-body);
     color: var(--text-primary);
+    /* 工具栏空间不足时 flex 会把无 nowrap 的文本压到逐字换行（竖排 bug），钉死不缩 */
+    white-space: nowrap;
+    flex-shrink: 0;
+  }
+
+  /* 工具行（固定第二行）：搜索撑满 + 圆形按钮右对齐 */
+  &__toolbar-tools {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+
+  /* 圆形图标按钮/刷新：换行时保持尺寸，不参与压缩 */
+  &__icon-btn,
+  &__refresh {
+    flex-shrink: 0;
   }
 
   &__search {
     position: relative;
-    margin-left: auto;
     display: flex;
     align-items: center;
-    width: 280px;
-    max-width: 40%;
+    flex: 1;
+    min-width: 150px;
 
     .codicon-search {
       position: absolute;
@@ -115,7 +131,7 @@
     input {
       width: 100%;
       padding: 6px 12px 6px 32px;
-      font-size: 13px;
+      font-size: var(--fs-body);
       color: var(--text-primary);
       background: var(--bg-primary);
       border: 1px solid var(--border-primary);
@@ -150,13 +166,13 @@
   }
 
   &__installed {
-    font-size: 13px;
+    font-size: var(--fs-section-title);
     color: var(--text-secondary);
   }
 
   &__batch-btn {
     padding: 4px 12px;
-    font-size: 12px;
+    font-size: var(--fs-body);
     color: var(--text-primary);
     background: var(--bg-primary);
     border: 1px solid var(--border-primary);
@@ -172,7 +188,7 @@
     align-items: flex-start;
     gap: 8px;
     padding: 9px 12px;
-    font-size: 12.5px;
+    font-size: var(--fs-body);
     line-height: 1.5;
     color: var(--text-primary);
     background: rgba(232, 163, 61, 0.1);
@@ -199,9 +215,25 @@
     }
   }
 
+  /* 横幅内联动作按钮（根开关缺失→打开配置） */
+  &__notice-action {
+    flex-shrink: 0;
+    margin-left: auto;
+    padding: 3px 12px;
+    font-size: var(--fs-hint);
+    color: var(--text-primary);
+    background: var(--bg-active);
+    border: 1px solid var(--border-primary);
+    border-radius: 6px;
+    cursor: pointer;
+    white-space: nowrap;
+
+    &:hover { border-color: var(--accent-primary); }
+  }
+
   &__error {
     padding: 6px 10px;
-    font-size: 12px;
+    font-size: var(--fs-body);
     color: #f48771;
   }
 
@@ -216,7 +248,7 @@
 .hook-list-empty {
   padding: 40px 0;
   text-align: center;
-  font-size: 13px;
+  font-size: var(--fs-body);
   color: var(--text-tertiary);
 }
 
@@ -225,6 +257,7 @@
 .hook-row {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: 14px;
   padding: 14px 18px;
 
@@ -241,11 +274,12 @@
   &__top {
     display: flex;
     align-items: center;
+    flex-wrap: wrap;
     gap: 10px;
   }
 
   &__name {
-    font-size: 14px;
+    font-size: var(--fs-section-title);
     font-weight: 600;
     color: var(--text-primary);
   }
@@ -266,24 +300,44 @@
     code {
       display: block;
       font-family: var(--font-mono, 'Menlo', 'Consolas', monospace);
-      font-size: 12px;
+      font-size: var(--fs-body);
       color: var(--text-tertiary);
-      white-space: nowrap;
-      overflow: hidden;
-      text-overflow: ellipsis;
+      /* 窄面板折行展示完整命令（此前 nowrap+ellipsis 截断，长路径丢信息） */
+      white-space: normal;
+      word-break: break-all;
     }
 
     &:hover code { color: var(--text-secondary); text-decoration: underline; }
   }
 
   /* 未信任行的单条信任按钮（官方 ShieldCheck 语义，图标用 codicon 非官方素材） */
+  /* 撤销信任：与信任按钮同布局的中性灰独立按钮（信任是绿色语义，撤销不沿用；
+     独立类名不带 __trust 基座，布局属性必须自带，否则回落浏览器默认按钮样式） */
+  &__revoke {
+    flex-shrink: 0;
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    padding: 4px 12px;
+    font-size: var(--fs-body);
+    color: var(--text-secondary);
+    background: var(--bg-primary);
+    border: 1px solid var(--border-primary);
+    border-radius: 6px;
+    cursor: pointer;
+
+    .codicon { font-size: 13px; }
+
+    &:hover { color: var(--text-primary); border-color: var(--text-tertiary); }
+  }
+
   &__trust {
     flex-shrink: 0;
     display: inline-flex;
     align-items: center;
     gap: 5px;
     padding: 4px 12px;
-    font-size: 12px;
+    font-size: var(--fs-body);
     color: #6fbf73;
     background: rgba(111, 191, 115, 0.1);
     border: 1px solid rgba(111, 191, 115, 0.4);
@@ -324,7 +378,7 @@
 /* 删除确认弹窗内的钩子摘要（ConfirmDialog 用 <p> 包裹，只能用 phrasing 元素 + block 化样式） */
 .hook-delete-dialog__name {
   display: block;
-  font-size: 13px;
+  font-size: var(--fs-section-title);
   font-weight: 600;
   color: var(--text-primary);
 }
@@ -334,7 +388,7 @@
   margin: 6px 0;
   padding: 6px 8px;
   font-family: var(--font-mono, 'Menlo', 'Consolas', monospace);
-  font-size: 12px;
+  font-size: var(--fs-body);
   color: var(--text-secondary);
   background: var(--bg-active);
   border-radius: 6px;
@@ -344,7 +398,7 @@
 .hook-delete-dialog__note {
   display: block;
   margin: 0;
-  font-size: 12.5px;
+  font-size: var(--fs-body);
   color: var(--text-secondary);
 }
 
@@ -354,7 +408,7 @@
   flex-shrink: 0;
   padding: 1px 9px;
   border-radius: 999px;
-  font-size: 11px;
+  font-size: var(--fs-hint);
   line-height: 17px;
 
   &--stateTrusted {

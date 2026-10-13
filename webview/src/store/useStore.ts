@@ -764,7 +764,7 @@ interface StoreState {
   /** envSave 请求进行中（设置页环境 tab 保存按钮禁用/转圈）*/
   envSaving: boolean
   /** EnvBanner「去设置」的跳转意图：App 切 settings 视图同时置位，BasicSettingsView 消费后清除 */
-  pendingSettingsSection: 'env' | 'agents' | 'models' | null
+  pendingSettingsSection: 'env' | 'agents' | 'models' | 'hooks' | null
 
   // 网络代理（与 ZCode 客户端共享 ~/.zcode/v2/setting.json，issue #12）
   /** null = 尚未拉取（进设置页环境 tab 时拉取）；restartPending=app-server 在跑、保存后需重启吃到新代理 */
@@ -877,9 +877,9 @@ interface StoreState {
   /** 后台工作投影（H7 汇总入口）：v4 帧合成的服务端权威全量数组，按会话存。
    *  会话过滤前落账（非当前会话也更新，切回不丢）；全量替换语义；跨回合存活 */
   backgroundWorksBySession: Record<string, import('@/types/messages').BackgroundWorkSummary[]>
-  /** 工作区钩子信任评审（v4 pendingInteractions 投影）：按会话存的当前待审全集，
-   *  会话过滤前落账；全量替换语义，空数组=评审已 settled 卡片收敛；跨回合存活 */
-  workspaceHookReviewsBySession: Record<string, import('@/types/messages').WorkspaceHookReview[]>
+  /** 工作区钩子准入（v4 workspaceHookAdmission 投影，官方横幅数据源）：按会话存最新值，
+   *  会话过滤前落账；null=已准入/无待审（收敛横幅）；跨回合存活 */
+  workspaceHookAdmissionBySession: Record<string, import('@/types/messages').WorkspaceHookAdmission | null>
   /** 从转录重建的历史后台任务（refreshStatus 派生，与 agents 同生命周期）；
    *  IDE 重启后运行时投影消失，靠它让「后台工作」栏不空。读取处与投影合并（投影优先）*/
   backgroundWorksFromTranscript: import('@/types/messages').BackgroundWorkSummary[]
@@ -1481,7 +1481,7 @@ interface StoreState {
   /** 清除驻留水位提醒（toast 自动消失/手动关闭）*/
   clearResidentPoolNotice: () => void
   /** 设置 EnvBanner「去设置」的跳转意图（BasicSettingsView 消费后清除）*/
-  setPendingSettingsSection: (section: 'env' | 'agents' | 'models' | null) => void
+  setPendingSettingsSection: (section: 'env' | 'agents' | 'models' | 'hooks' | null) => void
   /** 检测运行环境三件套（init 时 / 提醒条「重新检测」触发）*/
   checkEnv: () => void
   /**
@@ -1789,7 +1789,7 @@ export const useStore = create<StoreState>((set, get) => ({
   pinnedSessionIds: [],
   unreadSessionIds: [],
   backgroundWorksBySession: {},
-  workspaceHookReviewsBySession: {},
+  workspaceHookAdmissionBySession: {},
   backgroundWorksFromTranscript: [],
   deliveredWorkStatuses: new Map(),
   remoteRunningTurns: {},
@@ -6187,16 +6187,14 @@ function handleStreamBatchDirect(
       }
     }
   }
-  // 钩子信任评审：会话过滤前落账（非当前会话的评审也要记），全量替换语义——
-  // 空数组即评审 settled，卡片直接收敛
+  // 钩子准入：会话过滤前落账（非当前会话的准入也要记），全量替换语义——
+  // null 即已准入/无待审，横幅直接收敛
   for (const event of events) {
-    if (event.type === 'workspaceHookReview') {
-      const reviews = (event.payload as { reviews?: import('@/types/messages').WorkspaceHookReview[] }).reviews
-      if (Array.isArray(reviews)) {
-        set({
-          workspaceHookReviewsBySession: { ...get().workspaceHookReviewsBySession, [sessionId]: reviews },
-        })
-      }
+    if (event.type === 'workspaceHookAdmission') {
+      const admission = (event.payload as { admission?: import('@/types/messages').WorkspaceHookAdmission | null }).admission ?? null
+      set({
+        workspaceHookAdmissionBySession: { ...get().workspaceHookAdmissionBySession, [sessionId]: admission },
+      })
     }
   }
   if (sessionId !== get().currentSessionId) {

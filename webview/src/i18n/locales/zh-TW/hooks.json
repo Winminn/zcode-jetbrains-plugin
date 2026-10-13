@@ -24,5 +24,8 @@
   "stateTrusted": "已信任",
   "stateUntrusted": "未信任",
   "stateRevoked": "已撤銷",
-  "stateStale": "已變更"
+  "stateStale": "已變更",
+  "rootDisabledNotice": "鉤子設定缺少根開關 hooks.enabled:true，鉤子不會生效——補寫後重啟 IDE 生效",
+  "revoke": "撤銷信任",
+  "revokeTitle": "撤銷信任後鉤子回到被阻止狀態，可再次信任"
 }

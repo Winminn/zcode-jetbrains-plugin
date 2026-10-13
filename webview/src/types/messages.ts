@@ -323,7 +323,7 @@ export type BackgroundBashOutputResult =
     }
   | { kind: 'unavailable' | 'unsupported' | 'read_failed'; workId: string; code?: string }
 
-// ============ 工作区钩子信任评审（v4 pendingInteractions 投影） ============
+// ============ 工作区钩子准入（v4 workspaceHookAdmission 投影，官方横幅数据源） ============
 
 /** 单条钩子声明的信任状态（设计 §2.2；字符串兜底防版本漂移） */
 export type HookTrustState =
@@ -334,45 +334,13 @@ export type HookTrustState =
   | 'stale_digest'
   | (string & {})
 
-/** 评审应答需回传的标识（评审 payload 全字段自带，应答原样回传） */
-export interface WorkspaceHookReviewIdentity {
-  interactionId: string
-  taskId?: string
-  runId?: string
-  remoteSessionId?: string | null
+/** 钩子准入投影（官方会话内「N 个 Hook 待审核」横幅的数据源）；
+ *  null=已准入/无待审（收敛横幅）。官方不把待审钩子放进 pendingInteractions
+ *  评审交互（2026-10-13 客户端实测），旧评审卡路线已移除 */
+export interface WorkspaceHookAdmission {
+  pendingCount: number
+  bundleDigest?: string
   workspaceIdentity?: string
-  bundleDigest: string
-  reviewFlowId: string
-  generation: number
-}
-
-/** 评审条目（单条钩子声明） */
-export interface WorkspaceHookReviewItem {
-  reviewItemId: string
-  event: string
-  matcher?: string
-  type: 'command' | 'process' | string
-  displayName: string
-  displayCommand: string
-  sourcePath: string
-  resolvedTimeoutMs: number
-  resolvedMaxOutputBytes: number
-  /** command+async → background */
-  executionMode: 'background' | 'foreground' | string
-  configuredEnabled: boolean
-  editable: boolean
-  trustState: HookTrustState
-}
-
-/** 一次工作区钩子信任评审 */
-export interface WorkspaceHookReview extends WorkspaceHookReviewIdentity {
-  sessionId: string
-  workspaceLabel?: string
-  createdAt: number
-  deadlineAt: number
-  sourceFiles: { path: string; displayPath: string; editable: boolean }[]
-  summary: { eventCount: number; hookCount: number; pendingCount: number }
-  items: WorkspaceHookReviewItem[]
 }
 
 /** zcode CLI `hooks trust status --json` 的单条钩子 */
@@ -399,6 +367,8 @@ export interface WorkspaceHooksStatus {
   userConfigPath?: string
   bundleDigest?: string
   reasonCode?: string
+  /** 插件附加：`.zcode/config.json` 根开关 hooks.enabled（缺省 false=钩子系统未启用，条目照列但永不生效） */
+  rootEnabled?: boolean
   items: WorkspaceHooksStatusItem[]
 }
 
@@ -524,9 +494,6 @@ export type JavaRequest =  | { op: 'askUserPendingState' }
   | { op: 'cancelBackgroundWork'; sessionId: string; workId: string }
   /** 后台工作投影缓存查询（打开会话对账；重复订阅不重推快照的兜底）*/
   | { op: 'backgroundWorksList'; sessionId: string }
-  /** 信任所选工作区钩子条目（v4/command respondWorkspaceHookReview；
-   *  identity 为评审 payload 自带的标识字段，原样回传）*/
-  | { op: 'workspaceHookReviewRespond'; sessionId: string; reviewItemIds: string[]; identity: WorkspaceHookReviewIdentity }
   /** 钩子管理页：拉取/授予/撤销/启停（Kotlin 经 zcode CLI hooks trust 子命令；
    *  grant all=true=授予当前全部，否则按 hookDigests；revoke 空 hookDigests=全撤；
    *  scope=user 走用户级配置（~/.zcode/cli/config.json，直读直写无 CLI、无信任）；
@@ -1296,8 +1263,6 @@ export type JavaResponse =
   | { op: 'backgroundWorkCancelled'; sessionId: string; workId: string; status: string; reasonCode?: string }
   /** 后台工作投影缓存应答（打开会话对账；值=本进程最后已知投影）*/
   | { op: 'backgroundWorksList'; sessionId: string; works: BackgroundWorkSummary[] }
-  /** 钩子信任应答（卡片由 settled 投影帧收敛，不靠本应答移除）*/
-  | { op: 'workspaceHookReviewResponded'; sessionId: string; interactionId: string; status: string }
   /** 钩子管理页统一应答：list/grant/revoke/toggle 都回最新权威 status */
   | { op: 'workspaceHooksList'; status: WorkspaceHooksStatus }
   | { op: 'sessionTurnPhase'; sessionId: string; phase: 'running' | 'ended' }
@@ -1489,9 +1454,8 @@ export type JavaResponse =
   /** 模型调用轨迹（ModelIoTrajectoryReader 读 model-io jsonl；error 存在 = 读取失败）*/
   | { op: 'modelTrajectoryResult'; sessionId: string; records?: TrajectoryRecord[]; sourceFiles?: string[]; truncated?: boolean; totalCount?: number; error?: string }
   /** envStatus 存在 = 环境前置检查失败（EnvCheckException），前端据此刷新环境提醒条；
-   *  sourceOp 存在 = 钩子族等带归属的错误，前端按域过滤（不误吞其他操作的失败）；
-   *  interactionId = workspaceHookReviewRespond 失败专属，评审卡据此匹配到具体卡片 */
-  | { op: 'error'; message: string; envStatus?: EnvStatus; sourceOp?: string; interactionId?: string }
+   *  sourceOp 存在 = 钩子族等带归属的错误，前端按域过滤（不误吞其他操作的失败） */
+  | { op: 'error'; message: string; envStatus?: EnvStatus; sourceOp?: string }
   /** app-server stderr 解析出的后端模型 API 错误（APICallError 兜底通道）：
    *  429 配额超限等被服务端按可重试分类退避重试，turn 终止帧迟迟不发时的第一现场 */
   | { op: 'backendError'; statusCode?: number; code?: string; message: string }

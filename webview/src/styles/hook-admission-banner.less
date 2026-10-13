@@ -1,0 +1,57 @@
+/**
+ * 工作区钩子准入横幅（官方同款形态）：会话输入区上方细条，
+ * 「N 个工作区 Hook 待审核，本会话暂未启用」+ 去审核/忽略。
+ */
+
+.hook-admission-banner {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0 12px 6px;
+  padding: 7px 12px;
+  font-size: var(--fs-body);
+  color: var(--text-primary);
+  background: rgba(232, 163, 61, 0.1);
+  border: 1px solid rgba(232, 163, 61, 0.35);
+  border-radius: 8px;
+  flex-shrink: 0;
+
+  &__icon {
+    font-size: 14px;
+    color: #e8a33d;
+    flex-shrink: 0;
+  }
+
+  &__text {
+    flex: 1;
+    min-width: 0;
+  }
+
+  &__review-btn {
+    flex-shrink: 0;
+    padding: 3px 12px;
+    font-size: var(--fs-body);
+    color: var(--text-primary);
+    background: var(--bg-active);
+    border: 1px solid var(--border-primary);
+    border-radius: 6px;
+    cursor: pointer;
+    white-space: nowrap;
+
+    &:hover { border-color: var(--accent-primary); }
+  }
+
+  &__ignore-btn {
+    flex-shrink: 0;
+    padding: 3px 8px;
+    font-size: var(--fs-hint);
+    color: var(--text-tertiary);
+    background: transparent;
+    border: none;
+    border-radius: 6px;
+    cursor: pointer;
+    white-space: nowrap;
+
+    &:hover { color: var(--text-primary); }
+  }
+}

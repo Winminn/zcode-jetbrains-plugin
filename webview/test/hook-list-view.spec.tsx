@@ -113,6 +113,19 @@ describe('拉取与渲染', () => {
     expect(container.textContent).toContain('加载中')
   })
 
+  it('根开关缺失（rootEnabled:false）显示警告与打开配置入口，rootEnabled:true 不显示', () => {
+    const { container } = render(<HookListView />)
+    pushStatus(makeStatus({ rootEnabled: false }))
+    expect(container.textContent).toContain('hooks.enabled:true')
+    expect(container.querySelector('.hook-list__notice-action')).toBeTruthy()
+
+    cleanup()
+    const { container: c2 } = render(<HookListView />)
+    pushStatus(makeStatus({ rootEnabled: true }))
+    expect(c2.textContent).not.toContain('hooks.enabled:true')
+    expect(c2.querySelector('.hook-list__notice-action')).toBeNull()
+  })
+
   it('响应到达后渲染事件/匹配器/命令/信任徽标与已安装计数', () => {
     const { container } = render(<HookListView />)
     pushStatus(makeStatus())
@@ -222,6 +235,35 @@ describe('乐观更新', () => {
     expect(rows()[0].querySelector('.hook-row__trust')).toBeNull()
     expect(sw.disabled).toBe(false)
     expect(sw.getAttribute('aria-checked')).toBe('true')
+  })
+
+  it('已信任行显示撤销信任；点撤销发 revoke 并瞬间回未信任态，失败回退', () => {
+    render(<HookListView />)
+    pushStatus(makeStatus())
+
+    // 推权威已信任态（第一条）
+    const updated = makeStatus()
+    updated.items[0] = { ...updated.items[0], trustState: 'trusted_persistent' }
+    pushStatus(updated)
+    const revokeBtn = rows()[0].querySelector('.hook-row__revoke') as HTMLButtonElement
+    expect(revokeBtn).toBeTruthy()
+    expect(revokeBtn.textContent).toContain('撤销信任')
+
+    fireEvent.click(revokeBtn)
+    expect(sendToJavaMock).toHaveBeenCalledWith({
+      op: 'workspaceHooksRevoke',
+      workspace: 'G:\\mock',
+      hookDigests: ['digest-h1'],
+    })
+    // 乐观回未信任：撤销按钮消失、信任按钮回归、开关禁用
+    expect(rows()[0].querySelector('.hook-row__revoke')).toBeNull()
+    expect((rows()[0].querySelector('.hook-row__trust') as HTMLButtonElement).textContent).toContain('信任')
+    expect(rowSwitch(0).disabled).toBe(true)
+
+    // 失败回退：error 清乐观覆盖，回到权威已信任态
+    pushError('撤销失败', 'workspaceHooksRevoke')
+    expect(rows()[0].querySelector('.hook-row__revoke')).toBeTruthy()
+    expect(document.body.textContent).toContain('撤销失败')
   })
 
   it('点开关：瞬间翻转且无需等响应；响应到达后按权威值保持', () => {

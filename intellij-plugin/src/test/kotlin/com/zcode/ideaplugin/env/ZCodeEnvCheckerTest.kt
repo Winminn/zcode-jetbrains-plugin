@@ -271,6 +271,37 @@ class ZCodeEnvCheckerTest {
 
     // ============ check 全流程（真机前置） ============
 
+    // ============ resolvePaths（CLI 子进程取路径；真机前置） ============
+
+    @Test
+    fun `resolvePaths 路径健在即复用缓存不再重扫`() {
+        // 前置：本机 PATH 有 node、ZCode 标准位置安装。
+        // 注意 setBrowserHostProbe 会顺带 invalidate，探针须在填缓存前注入，
+        // 断言看 resolvePaths 前后的计数增量（全量重扫时探针必被调用）
+        ZCodeEnvChecker.setStoreForTest(WritableStore())
+        var probed = 0
+        ZCodeEnvChecker.setBrowserHostProbe { probed++; null }
+        val full = ZCodeEnvChecker.check(force = true)
+        assertTrue(full.allOk, "真机前置环境应齐备: node=${full.node.error} cli=${full.cli.error}")
+        val before = probed
+        val s = ZCodeEnvChecker.resolvePaths()
+        assertEquals(before, probed, "路径复用不应连坐运行态探测（CDP 多候选最坏 ~10s）")
+        assertEquals(full.node.path, s.node.path)
+        assertEquals(full.cli.path, s.cli.path)
+    }
+
+    @Test
+    fun `resolvePaths 缓存清空后回落全量检测`() {
+        ZCodeEnvChecker.setStoreForTest(WritableStore())
+        var probed = 0
+        ZCodeEnvChecker.setBrowserHostProbe { probed++; null }
+        ZCodeEnvChecker.check(force = true) // 填缓存
+        ZCodeEnvChecker.invalidate()
+        val s = ZCodeEnvChecker.resolvePaths()
+        assertTrue(s.allOk, "回落全量后真机环境应齐备")
+        assertTrue(probed > 0, "全量检测应包含 browserHost 探测（证明真的重扫了）")
+    }
+
     @Test
     fun `check 自动探测环境 node 与 cli`() {
         // 前置：本机 PATH 有 node、ZCode 标准位置安装

@@ -24,5 +24,8 @@
   "stateTrusted": "信頼済み",
   "stateUntrusted": "未信頼",
   "stateRevoked": "取り消し済み",
-  "stateStale": "変更あり"
+  "stateStale": "変更あり",
+  "rootDisabledNotice": "フック設定にルートスイッチ hooks.enabled:true がなく、フックは無効です。追記後、IDE を再起動してください",
+  "revoke": "信頼取り消し",
+  "revokeTitle": "取り消すとフックは再びブロックされます。再度信頼できます"
 }

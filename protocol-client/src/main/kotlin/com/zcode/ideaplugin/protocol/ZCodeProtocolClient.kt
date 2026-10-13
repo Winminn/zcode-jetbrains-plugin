@@ -879,9 +879,10 @@ class ZCodeProtocolClient private constructor(
             // delta 的 patch.backgroundWorks 全量替换（服务端投影语义）。合成
             // backgroundWorks 事件推前端，payload 原样透传不裁字段。低频（启停时各一帧）
             extractBackgroundWorks(sid, effectiveParams["frame"]?.jsonObject?.get("payload") as? JsonObject)?.let { dispatchSessionEvent(it) }
-            // 工作区钩子信任评审投影（pendingInteractions）：与 backgroundWorks 同款，
-            // 在两类订阅分流前提取——主会话标题轻订阅、子会话完整订阅都要收评审。
-            WorkspaceHookReviewExtraction.extract(
+            // 工作区钩子准入投影（workspaceHookAdmission，官方「N 个 Hook 待审核」
+            // 横幅的数据源）：与 backgroundWorks 同款，在两类订阅分流前提取——主会话
+            // 标题轻订阅、子会话完整订阅都要收。null（已准入）也透传，前端据以清横幅。
+            WorkspaceHookAdmissionExtraction.extract(
                 sid, effectiveParams["frame"]?.jsonObject?.get("payload") as? JsonObject
             )?.let { dispatchSessionEvent(it) }
             // 仅标题订阅的主会话：只抽 state.updated delta 的 meta.title 合成
@@ -1173,24 +1174,54 @@ class ZCodeProtocolClient private constructor(
     }
 
     /**
-     * v4/command respondWorkspaceHookReview — 信任所选工作区钩子条目。
-     * 评审标识（bundleDigest/reviewFlowId/generation/interactionId 等）由评审
-     * payload 全字段自带，经 [WorkspaceHookReviewExtraction.buildRespondPayload]
-     * 原样回传，叠加 trust_selected 决策。信任写入磁盘共享存储，活动会话即时生效。
-     * ACK fault 形态（条目失效等）由 requireOk 抛协议错误，面板以通用错误通道提示。
+     * workspace/hooks/trustGrant — 工作区钩子信任授予（单 hookDeclarationDigest）。
+     *
+     * 与 CLI 写盘的本质差异：RPC 成功后 app-server 会对同 workspaceKey 的全部运行中
+     * 会话重载钩子信任（会话级 admission 重算并推送投影），信任在当前会话立即生效、
+     * 待审横幅随投影消失；CLI 外部写盘只改共享 trust store，运行中会话感知不到，
+     * 只能等新会话（真机实证）。
+     *
+     * workspace 键规则（zcode.cjs workspaceKey() + superRefine 校验）：无 identity 时
+     * key = path 原样，且必须与 createSession/resume 传入的同款归一形态（原生分隔符）
+     * 一致——否则服务端 reload 的会话匹配不命中，退化为「新会话才生效」。
+     *
+     * result={accepted, reasonCode?}：accepted=false 不走 JSON-RPC error，由调用方
+     * 按 reasonCode 提示（bundle_changed/snapshot_mismatch 等）。
      */
-    fun respondWorkspaceHookReview(
-        sessionId: String,
-        identity: JsonObject,
-        reviewItemIds: List<String>,
+    fun workspaceHooksTrustGrant(
+        workspacePath: String,
+        bundleDigest: String,
+        hookDeclarationDigest: String,
         timeoutMs: Long = 15_000,
     ): JsonObject {
+        val nativePath = workspacePath.replace('/', File.separatorChar)
+        val params = buildJsonObject {
+            put("workspace", buildJsonObject {
+                put("workspacePath", nativePath)
+                put("workspaceKey", nativePath)
+            })
+            put("bundleDigest", bundleDigest)
+            put("hookDeclarationDigest", hookDeclarationDigest)
+        }
+        val r = request("workspace/hooks/trustGrant", params, timeoutMs)
+        requireOk(r)
+        return r["result"]?.jsonObject ?: JsonObject(emptyMap())
+    }
+
+    /**
+     * v4/command reloadWorkspaceHookTrust — 通知 app-server 重读共享信任存储。
+     *
+     * CLI 写盘（grant 回退路径/revoke）后追加一发：服务端以盘上最新记录替换协调器
+     * 内存态，运行中会话的下一次钩子准入评估即改用新信任态。无命令参数；信封
+     * sessionId 仅做路由，传当前活跃会话。
+     */
+    fun reloadWorkspaceHookTrust(sessionId: String, timeoutMs: Long = 15_000): JsonObject {
         val envelope = buildJsonObject {
-            put("commandId", "hooktrust-${java.util.UUID.randomUUID()}")
+            put("commandId", "hooktrust-reload-${java.util.UUID.randomUUID()}")
             put("clientId", "zcode-idea-plugin")
             put("sessionId", sessionId)
-            put("type", "respondWorkspaceHookReview")
-            put("payload", WorkspaceHookReviewExtraction.buildRespondPayload(sessionId, identity, reviewItemIds))
+            put("type", "reloadWorkspaceHookTrust")
+            put("payload", JsonObject(emptyMap()))
             put("issuedAt", System.currentTimeMillis())
         }
         val r = request("v4/command", envelope, timeoutMs)
@@ -1201,7 +1232,7 @@ class ZCodeProtocolClient private constructor(
     /**
      * session/read 完整结果（手机远程桥用：settings/runtime/消息基线一次取齐）。
      * @param messageLimit 官方语义（zcode.cjs Gpa）：>0 时仅返回最近 N 条消息（H5
-     *   readSession 请求固定带 messageLimit=1——桥此前忽略该参数返回全量，H5 渲染异常）
+     *   readSession 请求固定带 messageLimit=1——H5 渲染异常）
      */
     fun readSessionFull(sessionId: String, timeoutMs: Long = 10000, messageLimit: Int? = null): JsonObject {
         val params = buildJsonObject {

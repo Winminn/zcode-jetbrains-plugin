@@ -37,10 +37,22 @@ object WorkspaceHooksCli {
      */
     private val lock = Any()
 
-    /** `hooks trust status --json` 原始结果（workspacePath/bundleDigest/items[] 全字段） */
+    /** `hooks trust status --json` 原始结果（workspacePath/bundleDigest/items[] 全字段）
+     *  + rootEnabled（插件附加：`.zcode/config.json` 的根开关 `hooks.enabled`，缺省/未写=false。
+     *  CLI 运行时默认禁用钩子系统，根开关缺失时条目照列但永不生效，前端据字段提示补写） */
     fun status(workspace: String, timeoutMs: Long = 20_000): JsonObject = synchronized(lock) {
         val out = runCli(timeoutMs, "status", "--workspace", workspace, "--json")
-        json.parseToJsonElement(out).jsonObject
+        val obj = json.parseToJsonElement(out).jsonObject
+        JsonObject(obj + ("rootEnabled" to JsonPrimitive(readWorkspaceRootEnabled(workspace))))
+    }
+
+    private fun readWorkspaceRootEnabled(workspace: String): Boolean = try {
+        val p = Path.of(workspace, ".zcode/config.json")
+        Files.isRegularFile(p) &&
+            json.parseToJsonElement(Files.readString(p)).jsonObject["hooks"]
+                ?.jsonObject?.get("enabled")?.jsonPrimitive?.contentOrNull == "true"
+    } catch (e: Exception) {
+        false
     }
 
     /** 按 digest 授予；返回授予后的权威 status（grant 输出是人类文本，不直接消费） */
@@ -76,7 +88,9 @@ object WorkspaceHooksCli {
     }
 
     private fun runCli(timeoutMs: Long, vararg args: String): String {
-        val env = ZCodeEnvChecker.check()
+        // 路径复用不走 TTL 全量检测：browserHost 的 CDP 多候选探测最坏 ~10s，
+        // 与起 CLI 子进程无关（曾致钩子列表偶发十几秒才出）
+        val env = ZCodeEnvChecker.resolvePaths()
         val cmd = buildList {
             add(env.node.path ?: throw IllegalStateException("Node.js 路径不可用"))
             add(env.cli.path ?: throw IllegalStateException("zcode.cjs 路径不可用"))

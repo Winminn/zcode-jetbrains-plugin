@@ -61,21 +61,10 @@
     "viewFull": "計画全文を見る",
     "tipWithFeedback": "意見入力済み：「計画継続」で意見を送信し計画モードに留まる；「承認して実行」には意見は含まれません"
   },
-  "hookReview": {
-    "badge": "フック信頼",
-    "titleFallback": "ワークスペースフック",
-    "close": "閉じる（ブロックを維持）",
-    "summary": "{{eventCount}} イベント · {{hookCount}} フック · {{pendingCount}} 件が信頼待ち",
-    "sources": "設定ファイル",
-    "selectAll": "すべて選択",
-    "stateTrusted": "信頼済み",
-    "stateRevoked": "取り消し済み",
-    "stateStale": "設定変更あり",
-    "modeBackground": "バックグラウンド",
-    "modeForeground": "フォアグラウンド",
-    "commandToggle": "コマンド展開/折りたたみ",
-    "trustSelected": "選択項目を信頼（{{count}}）",
-    "sending": "送信中…"
+  "hookAdmission": {
+    "banner": "ワークスペース Hook {{count}} 件が審査待ちです。このセッションでは無効です",
+    "goReview": "審査へ",
+    "ignore": "無視"
   },
   "notification": {
     "subagent": "サブエージェント",

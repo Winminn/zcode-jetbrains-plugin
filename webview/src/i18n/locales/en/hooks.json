@@ -24,5 +24,8 @@
   "stateTrusted": "Trusted",
   "stateUntrusted": "Untrusted",
   "stateRevoked": "Revoked",
-  "stateStale": "Changed"
+  "stateStale": "Changed",
+  "rootDisabledNotice": "Hook config is missing the root switch hooks.enabled:true — hooks stay inactive. Add it, then restart the IDE",
+  "revoke": "Revoke",
+  "revokeTitle": "Revoking blocks the hook again; you can trust it again later"
 }

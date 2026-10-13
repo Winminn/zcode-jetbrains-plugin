@@ -1066,7 +1066,6 @@ if (!window.__ZCODE_LOG_HOOK__) {
                         "backgroundBashOutput" -> handleBackgroundBashOutput(msg)
                         "cancelBackgroundWork" -> handleCancelBackgroundWork(msg)
                         "backgroundWorksList" -> handleBackgroundWorksList(msg)
-                        "workspaceHookReviewRespond" -> handleWorkspaceHookReviewRespond(msg)
                         "workspaceHooksList" -> handleWorkspaceHooksList(msg)
                         "workspaceHooksGrant" -> handleWorkspaceHooksGrant(msg)
                         "workspaceHooksRevoke" -> handleWorkspaceHooksRevoke(msg)
@@ -2833,46 +2832,6 @@ if (!window.__ZCODE_LOG_HOOK__) {
     }
 
     /**
-     * op=workspaceHookReviewRespond — 信任所选工作区钩子条目。评审标识字段
-     * （interactionId/bundleDigest/reviewFlowId/generation 等）经 identity 原样
-     * 回传，应答 payload 由 protocol-client 拼装；信任成功后投影 settled 帧
-     * 自然收敛前端卡片，此处不做本地移除。
-     */
-    private fun handleWorkspaceHookReviewRespond(msg: JsonObject): JsonObject {
-        val sessionId = msg["sessionId"]?.jsonPrimitive?.contentOrNull
-            ?: return errorResponseFor(msg, com.zcode.ideaplugin.ZCodeBundle.message("error.missing.sessionId"))
-        val identity = msg["identity"] as? JsonObject
-            ?: return errorResponseFor(msg, "缺少评审标识")
-        val ids = (msg["reviewItemIds"] as? JsonArray)
-            ?.mapNotNull { (it as? JsonPrimitive)?.contentOrNull }
-            ?.filter { it.isNotBlank() }
-            ?: emptyList()
-        if (ids.isEmpty()) return errorResponseFor(msg, "未选择钩子条目")
-        val interactionId = identity["interactionId"]?.jsonPrimitive?.contentOrNull ?: ""
-        val client = project.zCodeService().getClient()
-        return try {
-            val result = client.respondWorkspaceHookReview(sessionId, identity, ids)
-            log.info("workspaceHookReviewRespond: interaction=$interactionId items=${ids.size}")
-            buildJsonObject {
-                put("op", "workspaceHookReviewResponded")
-                put("sessionId", sessionId)
-                put("interactionId", interactionId)
-                put("status", result["status"]?.jsonPrimitive?.contentOrNull ?: "accepted")
-            }
-        } catch (e: Exception) {
-            log.warn("workspaceHookReviewRespond failed: ${e.message}")
-            // 失败带 interactionId 归属：评审卡据此复位发送态并就地提示
-            // （卡片不监听全局 error，其他操作的失败不波及评审卡）
-            buildJsonObject {
-                put("op", "error")
-                put("sourceOp", "workspaceHookReviewRespond")
-                put("interactionId", interactionId)
-                put("message", "钩子信任失败：${e.message ?: ""}")
-            }
-        }
-    }
-
-    /**
      * op=workspaceHooksList — 当前工作区钩子清单（经 zcode CLI hooks trust status）。
      * 应答统一形态：{op, status:<status JSON 原文>}；所有变更类操作也回同一形态，
      * 前端只认 status 为权威。
@@ -2912,10 +2871,15 @@ if (!window.__ZCODE_LOG_HOOK__) {
             val bundle = msg["bundleDigest"]?.jsonPrimitive?.contentOrNull
                 ?: WorkspaceHooksCli.status(ws)["bundleDigest"]?.jsonPrimitive?.content
                 ?: throw IllegalStateException("缺少 bundleDigest")
-            WorkspaceHooksCli.grantAllCurrent(ws, bundle)
+            WorkspaceHooksCli.grantAllCurrent(ws, bundle).also { reloadRuntimeHookTrust() }
         } else {
             if (digests.isEmpty()) throw IllegalStateException("未选择钩子")
-            WorkspaceHooksCli.grant(ws, digests)
+            if (grantHookTrustViaRuntime(ws, digests)) {
+                // RPC 已写共享 trust store 并触发服务端会话级重载，CLI 回读做权威对账
+                WorkspaceHooksCli.status(ws)
+            } else {
+                WorkspaceHooksCli.grant(ws, digests).also { reloadRuntimeHookTrust() }
+            }
         }
         hooksListResponse(status)
     } catch (e: Exception) {
@@ -2927,10 +2891,65 @@ if (!window.__ZCODE_LOG_HOOK__) {
         val ws = requireWorkspace(msg)
         val digests = (msg["hookDigests"] as? JsonArray)
             ?.mapNotNull { (it as? JsonPrimitive)?.contentOrNull } ?: emptyList()
-        hooksListResponse(WorkspaceHooksCli.revoke(ws, digests))
+        val status = WorkspaceHooksCli.revoke(ws, digests)
+        reloadRuntimeHookTrust()
+        hooksListResponse(status)
     } catch (e: Exception) {
         log.warn("workspaceHooksRevoke failed: ${e.message}")
         errorResponseFor(msg, "撤销钩子信任失败：${e.message ?: ""}")
+    }
+
+    /**
+     * 经运行中 app-server 授予钩子信任（workspace/hooks/trustGrant，单 digest 一发）：
+     * 除写共享 trust store 外，服务端会对同工作区全部运行中会话重载钩子信任——当前
+     * 会话即时生效、待审横幅随投影消失。CLI 外部写盘没有这条会话级链路，运行中
+     * 会话只能等新建才读到新信任态（真机实证）。
+     *
+     * 无 client（app-server 未起）或任一失败返回 false，调用方回退 CLI 写盘。
+     */
+    private fun grantHookTrustViaRuntime(ws: String, digests: List<String>): Boolean {
+        val client = try {
+            project.zCodeService().getClient()
+        } catch (_: Exception) {
+            null
+        } ?: return false
+        val bundleDigest = try {
+            WorkspaceHooksCli.status(ws)["bundleDigest"]?.jsonPrimitive?.content
+        } catch (_: Exception) {
+            null
+        } ?: return false
+        return try {
+            for (d in digests) {
+                val r = client.workspaceHooksTrustGrant(ws, bundleDigest, d)
+                if (r["accepted"]?.jsonPrimitive?.contentOrNull != "true") {
+                    val reason = r["reasonCode"]?.jsonPrimitive?.contentOrNull ?: "unknown"
+                    throw IllegalStateException("信任被拒绝（$reason）")
+                }
+            }
+            true
+        } catch (e: Exception) {
+            log.warn("trustGrant RPC failed, falling back to CLI: ${e.message}")
+            false
+        }
+    }
+
+    /**
+     * CLI 写盘后通知运行中 app-server 重读信任存储（v4/command reloadWorkspaceHookTrust）：
+     * 服务端以盘上记录替换协调器内存态，运行中会话的下一次钩子准入评估即改用新信任
+     * 态（不 reload 则要等新会话）。失败静默——reload 只是加速生效，不改变落盘事实。
+     */
+    private fun reloadRuntimeHookTrust() {
+        val sessionId = currentSessionId ?: return
+        val client = try {
+            project.zCodeService().getClient()
+        } catch (_: Exception) {
+            null
+        } ?: return
+        try {
+            client.reloadWorkspaceHookTrust(sessionId)
+        } catch (e: Exception) {
+            log.warn("reloadWorkspaceHookTrust failed: ${e.message}")
+        }
     }
 
     private fun handleWorkspaceHooksToggle(msg: JsonObject): JsonObject = try {
@@ -6156,9 +6175,9 @@ if (!window.__ZCODE_LOG_HOOK__) {
         // backgroundWorks 同款豁免（H7）：投影按会话落前端 map、badge 随 currentSessionId
         // 切换即读——不豁免则切回会话后要等下一次启停帧才有数据（badge 长时间缺失）；
         // 事件仅在后台工作启停时出现（低频），全量放行无风暴风险
-        // workspaceHookReview 同款豁免：主会话走标题轻订阅、评审帧按会话落前端 map，
-        // 不豁免则晚开面板/切回会话要等下一帧才有评审（评审为低频事件，放行无风暴风险）
-        if (sessionId !in subscribedSessions && event.type != "session.titleUpdated" && event.type != "turn.fileChanges" && event.type != "backgroundWorks" && event.type != "workspaceHookReview") {
+        // workspaceHookAdmission 同款豁免：主会话走标题轻订阅、准入帧按会话落前端 map，
+        // 不豁免则晚开面板/切回会话要等下一帧才有横幅数据（准入为低频事件，放行无风暴风险）
+        if (sessionId !in subscribedSessions && event.type != "session.titleUpdated" && event.type != "turn.fileChanges" && event.type != "backgroundWorks" && event.type != "workspaceHookAdmission") {
             // 诊断（子会话实时流停更追查）：子会话被门禁挡住的首次打点——
             // 持续打点说明订阅簿记在任务中途被清（invalidateStaleSubscriptions 等）
             if (sessionId.startsWith("sess_subagent")) {

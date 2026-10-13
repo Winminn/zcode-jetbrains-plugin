@@ -80,6 +80,8 @@ export function HookListView() {
   const [enabledOverride, setEnabledOverride] = useState<EnabledOverrides>(EMPTY_ENABLED)
   /** 乐观信任（仅工作区）：点击信任后到权威响应前按已信任渲染 */
   const [trustOverride, setTrustOverride] = useState<IdOverrides>(EMPTY_IDS)
+  /** 乐观撤销（仅工作区）：点击撤销信任后到权威响应前按未信任渲染 */
+  const [revokeOverride, setRevokeOverride] = useState<IdOverrides>(EMPTY_IDS)
   /** 乐观删除：确认后到权威响应前隐藏该行；权威列表到达清该域，error 回退重现 */
   const [removedOverride, setRemovedOverride] = useState<IdOverrides>(EMPTY_IDS)
   /** 待确认删除的钩子（ConfirmDialog）；null=弹窗关闭 */
@@ -111,6 +113,7 @@ export function HookListView() {
         // 权威数据到达：只清该作用域的乐观覆盖
         setEnabledOverride((prev) => ({ ...prev, [respondedScope]: {} }))
         setTrustOverride((prev) => ({ ...prev, [respondedScope]: new Set() }))
+        setRevokeOverride((prev) => ({ ...prev, [respondedScope]: new Set() }))
         setRemovedOverride((prev) => ({ ...prev, [respondedScope]: new Set() }))
       } else if (msg.op === 'error' && typeof msg.sourceOp === 'string' && msg.sourceOp.startsWith('workspaceHooks')) {
         // 失败回退（仅钩子域错误，面板 errorResponseFor 带 sourceOp 归属）：丢弃乐观覆盖，
@@ -118,6 +121,7 @@ export function HookListView() {
         setLoadingScopes(new Set())
         setEnabledOverride(EMPTY_ENABLED)
         setTrustOverride(EMPTY_IDS)
+        setRevokeOverride(EMPTY_IDS)
         setRemovedOverride(EMPTY_IDS)
         setError(msg.message)
       }
@@ -138,6 +142,7 @@ export function HookListView() {
       setStatusCache((prev) => ({ ...prev, workspace: null }))
       setEnabledOverride((prev) => ({ ...prev, workspace: {} }))
       setTrustOverride((prev) => ({ ...prev, workspace: new Set() }))
+      setRevokeOverride((prev) => ({ ...prev, workspace: new Set() }))
       setRemovedOverride((prev) => ({ ...prev, workspace: new Set() }))
       requestScope('workspace')
     }
@@ -152,7 +157,9 @@ export function HookListView() {
     return (status?.items ?? [])
       .filter((item) => !removedOverride[scope].has(item.reviewItemId))
       .map((item) => {
-        const trusted = isUser || trustOverride[scope].has(item.reviewItemId) || item.trustState === TRUSTED_STATE
+        const trusted =
+          !revokeOverride[scope].has(item.reviewItemId) &&
+          (isUser || trustOverride[scope].has(item.reviewItemId) || item.trustState === TRUSTED_STATE)
         const enabled = enabledOverride[scope][item.reviewItemId] ?? item.configuredEnabled
         return { item, trusted, enabled }
       })
@@ -164,7 +171,7 @@ export function HookListView() {
           (v.item.matcher ?? '').toLowerCase().includes(q)
         )
       })
-  }, [status, query, trustOverride, enabledOverride, removedOverride, isUser, scope])
+  }, [status, query, trustOverride, revokeOverride, enabledOverride, removedOverride, isUser, scope])
 
   /** 信任（仅工作区）：乐观置信任态，响应对账；并发安全由 Kotlin 锁保证 */
   const grant = (it: WorkspaceHooksStatusItem) => {
@@ -172,6 +179,18 @@ export function HookListView() {
     setTrustOverride((prev) => ({ ...prev, workspace: new Set(prev.workspace).add(it.reviewItemId) }))
     sendToJava({
       op: 'workspaceHooksGrant',
+      workspace,
+      hookDigests: [it.hookDeclarationDigest],
+    })
+  }
+
+  /** 撤销信任（仅工作区，UI 既有信任无撤销的缺口补齐）：乐观回未信任态，
+   *  权威列表（Kotlin 同步回读）到达清该域覆盖；钩子随即回到被阻止状态 */
+  const revoke = (it: WorkspaceHooksStatusItem) => {
+    setError('')
+    setRevokeOverride((prev) => ({ ...prev, workspace: new Set(prev.workspace).add(it.reviewItemId) }))
+    sendToJava({
+      op: 'workspaceHooksRevoke',
       workspace,
       hookDigests: [it.hookDeclarationDigest],
     })
@@ -223,6 +242,8 @@ export function HookListView() {
   }
 
   const hasUntrusted = !isUser && (status?.items ?? []).some((it) => requiresTrust(it.trustState))
+  // 根开关缺失（插件附加字段）：CLI 运行时默认禁用钩子系统，条目照列但永不生效
+  const rootDisabled = !isUser && status?.rootEnabled === false
   const configOpenable = isUser ? Boolean(statusCache.user?.userConfigPath) : Boolean(workspace)
   // 工作区作用域但当前无项目：列表区给提示（不发请求），工具栏仍允许切到用户级
   const showNoWorkspace = !isUser && !workspace
@@ -258,6 +279,9 @@ export function HookListView() {
         <span className="hook-list__count">
           {t('hooks.titleCount', { count: status?.items.length ?? 0 })}
         </span>
+      </div>
+      {/* 工具行（固定第二行）：搜索撑满 + 打开配置 + 刷新——窄面板不挤第一行 */}
+      <div className="hook-list__toolbar-tools">
         <div className="hook-list__search">
           <span className="codicon codicon-search" />
           <input
@@ -287,11 +311,19 @@ export function HookListView() {
         </button>
       </div>
 
-      {/* 横幅：工作区=未信任安全警告（与官方同一判定）；用户级=全局生效说明（中性） */}
+      {/* 横幅：工作区=根开关缺失警告（条目照列但钩子系统未启用）/未信任安全警告（与官方同一判定）；用户级=全局生效说明（中性） */}
       {isUser ? (
         <div className="hook-list__notice hook-list__notice--info" role="note">
           <span className="codicon codicon-info" />
           <span>{t('hooks.userNotice')}</span>
+        </div>
+      ) : rootDisabled && (status?.items.length ?? 0) > 0 ? (
+        <div className="hook-list__notice" role="note">
+          <span className="codicon codicon-warning" />
+          <span>{t('hooks.rootDisabledNotice')}</span>
+          <button type="button" className="hook-list__notice-action" onClick={openConfig}>
+            {t('hooks.openConfig')}
+          </button>
         </div>
       ) : hasUntrusted ? (
         <div className="hook-list__notice" role="note">
@@ -361,6 +393,18 @@ export function HookListView() {
                   >
                     <span className="codicon codicon-shield" />
                     {t('hooks.trust')}
+                  </button>
+                )}
+                {/* 已信任（仅工作区）：撤销信任入口（CLI revoke 通道；撤销后钩子回到被阻止态，可重授） */}
+                {!isUser && trusted && (
+                  <button
+                    type="button"
+                    className="hook-row__revoke"
+                    onClick={() => revoke(it)}
+                    title={t('hooks.revokeTitle')}
+                  >
+                    <span className="codicon codicon-unlock" />
+                    {t('hooks.revoke')}
                   </button>
                 )}
                 <button

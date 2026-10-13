@@ -254,6 +254,17 @@ object ZCodeEnvChecker {
         cachedAt = 0
     }
 
+    /**
+     * CLI 子进程取 node/cli 路径专用：缓存里两路径健在即直接复用，不受 TTL 约束。
+     * 路径一旦探测成功不会随时间漂移；browserHost 等运行态探测（CDP 多候选，最坏
+     * ~10s）与起子进程无关，稀疏的钩子操作不该每次连坐全量重扫。缓存为空/缺路径/
+     * invalidate 后回落 [check] 全量检测。
+     */
+    fun resolvePaths(): EnvStatus = synchronized(cacheLock) {
+        cached?.takeIf { it.node.path != null && it.cli.path != null }
+            ?: check()
+    }
+
     private fun detectNode(configured: String?): NodeStatus {
         if (configured != null) {
             val probe = probeNode(configured)

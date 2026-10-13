@@ -62,21 +62,10 @@
     "viewFull": "View full plan",
     "tipWithFeedback": "Feedback entered: \"Keep Planning\" submits it and stays in planning; \"Approve & Run\" will not include it"
   },
-  "hookReview": {
-    "badge": "Hook Trust",
-    "titleFallback": "Workspace Hooks",
-    "close": "Close (stay blocked)",
-    "summary": "{{eventCount}} events · {{hookCount}} hooks · {{pendingCount}} pending",
-    "sources": "Source files",
-    "selectAll": "Select all",
-    "stateTrusted": "Trusted",
-    "stateRevoked": "Revoked",
-    "stateStale": "Config changed",
-    "modeBackground": "Background",
-    "modeForeground": "Foreground",
-    "commandToggle": "Expand/collapse command",
-    "trustSelected": "Trust selected ({{count}})",
-    "sending": "Submitting…"
+  "hookAdmission": {
+    "banner": "{{count}} workspace hook(s) pending review — hooks stay disabled in this session",
+    "goReview": "Review",
+    "ignore": "Ignore"
   },
   "notification": {
     "subagent": "Subagent",

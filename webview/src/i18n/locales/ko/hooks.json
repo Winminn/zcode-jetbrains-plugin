@@ -24,5 +24,8 @@
   "stateTrusted": "신뢰됨",
   "stateUntrusted": "불신뢰",
   "stateRevoked": "취소됨",
-  "stateStale": "변경됨"
+  "stateStale": "변경됨",
+  "rootDisabledNotice": "훅 설정에 루트 스위치 hooks.enabled:true 이(가) 없어 훅이 작동하지 않습니다. 추가 후 IDE를 재시작하세요",
+  "revoke": "신뢰 철회",
+  "revokeTitle": "철회하면 훅이 다시 차단됩니다. 나중에 다시 신뢰할 수 있습니다"
 }
