@@ -1102,6 +1102,20 @@ function mockResponse(req: JavaRequest): JavaResponse | null {
       })
       return { op: 'modelToggled', changes }
     }
+    case 'modelToggleModel': {
+      // mock：账号渠道只读（生产 handler 同口径拒绝），个人渠道就地翻转模型 enabled
+      if (req.providerId.startsWith('account:')) {
+        return { op: 'error', message: '账号渠道的模型开关暂不支持，请在 ZCode 客户端中切换后回来刷新' }
+      }
+      const changes = [{ providerId: req.providerId, modelId: req.modelId, enabled: req.enabled }]
+      mockModelProviders().forEach((p) => {
+        if (p.providerId !== req.providerId) return
+        p.models.forEach((m) => {
+          if (m.modelId === req.modelId) m.enabled = req.enabled
+        })
+      })
+      return { op: 'modelToggled', changes }
+    }
     case 'modelSetProviderKey': {
       // mock：与生产同口径——写覆盖表（内存模拟 ~/.zcgui/config.json），内置渠道生效
       mockModelProviders().forEach((p) => {

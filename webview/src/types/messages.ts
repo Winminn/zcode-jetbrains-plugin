@@ -485,6 +485,8 @@ export type JavaRequest =  | { op: 'askUserPendingState' }
   | { op: 'modelTestConnectivity'; providerId: string; modelId: string }
   /** 切换 provider 启用/禁用（Kotlin 备份+原子写回 config.json 的 enabled 字段）*/
   | { op: 'modelToggleProvider'; providerId: string; enabled: boolean }
+  /** 切换单个模型启用/禁用（NEW 代；写 provider_config.json providerModelRules[].config.enabled）*/
+  | { op: 'modelToggleModel'; providerId: string; modelId: string; enabled: boolean }
   /** 设置/清除内置渠道自定义 apiKey 覆盖（apiKey 空串=清除），写 ~/.zcgui/config.json 并触发注册表推送 */
   | { op: 'modelSetProviderKey'; providerId: string; apiKey: string }
   /** 添加自定义模型渠道（写 config.json provider 注册表，UUID 作 providerId）*/
@@ -692,6 +694,9 @@ export interface ModelManageModel {
   /** 输入类型位（modalities.input 含 video/pdf），编辑弹窗回填 */
   supportsVideo?: boolean
   supportsPdf?: boolean
+  /** 模型级开关（config.enabled；缺省 true=启用，仅显式 false 停用）。
+   *  停用模型：聊天下拉隐藏，管理页仍显示（弱化+可原地重开） */
+  enabled?: boolean
 }
 
 /** 自定义渠道编辑弹窗的模型行草稿（context 必填：autocompact 阈值依赖 limit.context）*/

@@ -1129,6 +1129,7 @@ if (!window.__ZCODE_LOG_HOOK__) {
                         "listModels" -> handleListModels(msg)
                         "modelManageList" -> handleModelManageList(msg)
                         "modelToggleProvider" -> handleModelToggleProvider(msg)
+                        "modelToggleModel" -> handleModelToggleModel(msg)
                         "modelAddProvider" -> handleModelAddProvider(msg)
                         "modelUpdateProvider" -> handleModelUpdateProvider(msg)
                         "modelRemoveProvider" -> handleModelRemoveProvider(msg)
@@ -3413,13 +3414,19 @@ if (!window.__ZCODE_LOG_HOOK__) {
         newCliModelRules().mapNotNull { (k, v) -> v.contextWindow?.let { k to it } }.toMap()
 
     /** v2 启用渠道的模型清单（providerId to 模型 ids；激活账号渠道（overlay 合并序）置顶，
-     *  自定义渠道随后；modelOrder 优先 personalModelIds 兜底） */
-    private fun newCliEnabledProviderModels(): List<Pair<String, List<String>>> =
+     *  自定义渠道随后；modelOrder 优先 personalModelIds 兜底；渠道停用整组排除、
+     *  模型级 config.enabled:false 逐项排除——与 registry executable 口径对齐） */
+    private fun newCliEnabledProviderModels(): List<Pair<String, List<String>>> {
+        val modelRules = newCliModelRules()
+        val enabled = { pid: String, mid: String -> modelRules[pid to mid]?.modelEnabled != false }
         // 账号渠道置顶（订阅套餐是主用渠道，与下拉 accountModelRows 置顶同序）：此前
         // 本清单只读 provider_config.json 规则——渠道无 personal 覆盖规则时账号模型
         // 全部判无效（newCliValidModel），generateText/标题透传被误回退；纯账号环境下
         // 首选回退模型也与官方 defaultModelSelection（账号渠道首模型）同向
-        newCliAccountChannelModels() + readNewCliProviderRules()
+        val account = newCliAccountChannelModels().map { (pid, mids) ->
+            pid to mids.filter { enabled(pid, it) }
+        }.filter { it.second.isNotEmpty() }
+        val self = readNewCliProviderRules()
             .filter { it["enabled"]?.jsonPrimitive?.contentOrNull != "false" }
             .mapNotNull { rule ->
                 val pid = rule["providerId"]?.jsonPrimitive?.contentOrNull ?: return@mapNotNull null
@@ -3431,8 +3438,10 @@ if (!window.__ZCODE_LOG_HOOK__) {
                 val mids = (cfg?.get("modelOrder")?.jsonArray ?: cfg?.get("personalModelIds")?.jsonArray)
                     ?.mapNotNull { (it as? JsonPrimitive)?.contentOrNull?.takeIf { m -> m.isNotBlank() } }
                     ?.distinct() ?: return@mapNotNull null
-                pid to mids
-            }
+                pid to mids.filter { enabled(pid, it) }
+            }.filter { it.second.isNotEmpty() }
+        return account + self
+    }
 
     /** (pid, mid) 是否为 v2 启用渠道的已登记模型（generateText/标题生成透传前的校验） */
     private fun newCliValidModel(pid: String?, mid: String?): Boolean =
@@ -3502,10 +3511,13 @@ if (!window.__ZCODE_LOG_HOOK__) {
             val brand = com.zcode.ideaplugin.protocol.AccountProviderBridge.brandOf(e.providerId, e.providerName)
             val mids = com.zcode.ideaplugin.protocol.AccountProviderBridge
                 .overlayModelIds(overlay[e.providerId], e.builtinModelIds)
-            mids.map { mid ->
+            mids.mapNotNull { mid ->
                 val caps = com.zcode.ideaplugin.protocol.BuiltinModelCatalog.modelCaps(mid, zcodePath)
                 // per-model 规则字段级覆盖（声明才覆盖，sparse 未声明保持目录值）
                 val pr = perModelRules[e.providerId to mid]
+                // 客户端/插件停用的模型不进下拉与兜底链（registry 同口径过滤）；
+                // 设置页管理清单走 modelManageListNewCli，保留停用模型供原地重开
+                if (!asProviderCards && pr?.modelEnabled == false) return@mapNotNull null
                 val ctx = pr?.contextWindow ?: caps?.contextWindow
                 val img = pr?.supportsImages ?: (caps?.supportsImage == true)
                 val vid = pr?.supportsVideo ?: (caps?.supportsVideo == true)
@@ -3516,6 +3528,8 @@ if (!window.__ZCODE_LOG_HOOK__) {
                         put("providerName", brand)
                         put("modelId", mid)
                         put("modelName", mid)
+                        // 模型级开关（缺省启用；账号卡只读展示，不可在插件内切）
+                        put("enabled", pr?.modelEnabled ?: true)
                         plan?.let { put("plan", it) }
                         ctx?.let { put("contextWindow", it) }
                         if (img) put("supportsImages", true)
@@ -3560,6 +3574,9 @@ if (!window.__ZCODE_LOG_HOOK__) {
         val supportsImages: Boolean?,
         val supportsVideo: Boolean?,
         val supportsPdf: Boolean?,
+        // 模型级开关（config.enabled 顶层键，非 properties 内）：null/true=启用，
+        // 仅显式 false=停用（zcode-builtin 的 .* 通配规则兜底 true，缺省即启用）
+        val modelEnabled: Boolean?,
     )
 
     /** provider_config.json 的 per-model rules（inputFormat 三键 sparse：缺省 null=未声明） */
@@ -3573,13 +3590,15 @@ if (!window.__ZCODE_LOG_HOOK__) {
                 val o = el as? JsonObject ?: return@mapNotNull null
                 val pid = o["providerId"]?.jsonPrimitive?.contentOrNull ?: return@mapNotNull null
                 val mid = o["modelId"]?.jsonPrimitive?.contentOrNull ?: return@mapNotNull null
-                val props = o["config"]?.jsonObject?.get("properties")?.jsonObject
+                val cfg = o["config"]?.jsonObject
+                val props = cfg?.get("properties")?.jsonObject
                 val input = props?.get("inputFormat")?.jsonObject
                 NewCliModelRule(
                     contextWindow = props?.get("contextWindow")?.jsonPrimitive?.contentOrNull?.toLongOrNull(),
                     supportsImages = input?.get("supportsImage")?.jsonPrimitive?.contentOrNull?.toBooleanStrictOrNull(),
                     supportsVideo = input?.get("supportsVideo")?.jsonPrimitive?.contentOrNull?.toBooleanStrictOrNull(),
                     supportsPdf = input?.get("supportsPdf")?.jsonPrimitive?.contentOrNull?.toBooleanStrictOrNull(),
+                    modelEnabled = cfg?.get("enabled")?.jsonPrimitive?.contentOrNull?.toBooleanStrictOrNull(),
                 ).let { (pid to mid) to it }
             }.toMap()
         } catch (e: Exception) {
@@ -3604,7 +3623,10 @@ if (!window.__ZCODE_LOG_HOOK__) {
             val mids = (cfg?.get("modelOrder")?.jsonArray ?: cfg?.get("personalModelIds")?.jsonArray)
                 ?.mapNotNull { (it as? JsonPrimitive)?.contentOrNull?.takeIf { m -> m.isNotBlank() } }
                 ?.distinct() ?: return@flatMap emptyList()
-            mids.map { mid ->
+            mids.mapNotNull { mid ->
+                // 模型级停用（config.enabled:false）：registry 已排除，下拉同步隐藏，
+                // 防选中即 ModelNotFound；设置页管理清单仍显示（modelManageListNewCli）
+                if (rules[pid to mid]?.modelEnabled == false) return@mapNotNull null
                 buildJsonObject {
                     put("providerId", pid)
                     put("providerName", pname)
@@ -3679,6 +3701,8 @@ if (!window.__ZCODE_LOG_HOOK__) {
                         buildJsonObject {
                             put("modelId", mid)
                             put("modelName", mid)
+                            // 模型级开关（缺省启用；账号卡只读，开关不开放，见 handler 门控）
+                            put("enabled", pr?.modelEnabled ?: true)
                             ctx?.let { put("contextWindow", it) }
                             if (img) put("supportsImages", true)
                             if (vid) put("supportsVideo", true)
@@ -3724,6 +3748,8 @@ if (!window.__ZCODE_LOG_HOOK__) {
                     buildJsonObject {
                         put("modelId", mid)
                         put("modelName", mid)
+                        // 模型级开关（缺省启用；停用模型管理页仍显示，可原地重开）
+                        put("enabled", rule?.modelEnabled ?: true)
                         rule?.contextWindow?.let { put("contextWindow", it) }
                         // 输入能力位（providerModelRules inputFormat，编辑弹窗三选回填 +
                         // 设置页视觉徽章）；sparse 语义：缺省即 false
@@ -3872,6 +3898,52 @@ if (!window.__ZCODE_LOG_HOOK__) {
         }))
         // 多标签同步：发起标签由下方 modelToggled 应答合并，其余已开标签靠
         // window.onModelsChanged 广播就地合并 + 重拉下拉（同 broadcastAppearance 模式）
+        broadcastModelChanges(changesJson.toString())
+        return buildJsonObject {
+            put("op", "modelToggled")
+            put("changes", changesJson)
+        }
+    }
+
+    /**
+     * op=modelToggleModel — 单模型启用/停用（NEW 代专属；写
+     * provider_config.json 的 providerModelRules[].config.enabled，app-server
+     * 1s 轮询 sha256 热加载，扁平行 JSON-RPC 面无 provider-settings 写 RPC）。
+     *
+     * 账号渠道（account:*）M1 拒绝：官方机制上开关与个人渠道同文件，但插件侧
+     * AccountProviderBridge overlay 叠加未做真机验证（开发机无可用账号），读侧
+     * 已支持停用态显示/下拉过滤，写侧待后续放开 handler 门控 + 账号卡 UI。
+     *
+     * 写后双出口刷新：onModelManageChanged（管理页重拉，含发起标签）+
+     * modelToggled changes（发起标签下拉合并，其余标签走 broadcastModelChanges）。
+     */
+    private fun handleModelToggleModel(msg: JsonObject): JsonObject {
+        val providerId = msg["providerId"]?.jsonPrimitive?.contentOrNull
+            ?: return errorResponse("缺少 providerId")
+        val modelId = msg["modelId"]?.jsonPrimitive?.contentOrNull
+            ?: return errorResponse("缺少 modelId")
+        val enabled = msg["enabled"]?.jsonPrimitive?.contentOrNull?.toBooleanStrictOrNull()
+            ?: return errorResponse("缺少 enabled")
+        if (cliGeneration != com.zcode.ideaplugin.protocol.ProtocolGeneration.NEW) {
+            return errorResponse("当前 ZCode CLI 版本不支持单模型开关，请升级后重试")
+        }
+        if (providerId.startsWith(com.zcode.ideaplugin.protocol.AccountProviderBridge.ACCOUNT_RULE_PREFIX)) {
+            return errorResponse("账号渠道的模型开关暂不支持，请在 ZCode 客户端中切换后回来刷新")
+        }
+        val err = com.zcode.ideaplugin.protocol.ProviderConfigWriterV2
+            .toggleModel(Credentials.personalProviderConfigPath(), providerId, modelId, enabled)
+        if (err != null) {
+            log.warn("modelToggleModel(v2) failed: $err")
+            return errorResponse(err)
+        }
+        log.info("modelToggleModel(v2): $providerId/$modelId=$enabled written back")
+        com.zcode.ideaplugin.env.ZCodeEnvChecker.invalidate()
+        afterProviderStructureChange("toggle-model(v2)", "$providerId/$modelId")
+        val changesJson = JsonArray(listOf(buildJsonObject {
+            put("providerId", providerId)
+            put("modelId", modelId)
+            put("enabled", enabled)
+        }))
         broadcastModelChanges(changesJson.toString())
         return buildJsonObject {
             put("op", "modelToggled")

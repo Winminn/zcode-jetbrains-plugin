@@ -82,6 +82,50 @@ describe('modelToggled 应答（发起标签）', () => {
   })
 })
 
+describe('modelToggled 模型级 change（单模型开关，2026-10-12）', () => {
+  it('只改对应 models 元素的 enabled、清 modelTogglingKey、渠道 enabled 不动', () => {
+    useStore.setState({
+      modelProviders: [
+        provider({
+          providerId: 'custom:ds',
+          providerName: 'DeepSeek',
+          enabled: true,
+          models: [
+            { modelId: 'm1', modelName: 'm1', enabled: true },
+            { modelId: 'm2', modelName: 'm2', enabled: true },
+          ],
+        }),
+      ],
+      modelTogglingKey: 'custom:ds|m2',
+    })
+    messageHandler!({
+      op: 'modelToggled',
+      changes: [{ providerId: 'custom:ds', modelId: 'm2', enabled: false }],
+    })
+    const s = useStore.getState()
+    const p = s.modelProviders![0]
+    expect(p.enabled).toBe(true)
+    expect(p.models.map((m) => m.enabled)).toEqual([true, false])
+    expect(s.modelTogglingKey).toBeNull()
+    expect(sentRequests.some((r) => r.op === 'listModels')).toBe(true)
+  })
+
+  it('广播模型级 change 时不碰本标签 toggling 态', () => {
+    useStore.setState({
+      modelProviders: [
+        provider({
+          providerId: 'custom:ds',
+          models: [{ modelId: 'm1', modelName: 'm1', enabled: true }],
+        }),
+      ],
+      modelTogglingKey: 'custom:ds|m1',
+    })
+    window.onModelsChanged!([{ providerId: 'custom:ds', modelId: 'm1', enabled: false }])
+    expect(useStore.getState().modelProviders![0].models[0].enabled).toBe(false)
+    expect(useStore.getState().modelTogglingKey).toBe('custom:ds|m1')
+  })
+})
+
 describe('onModelsChanged 广播（其他已开标签）', () => {
   it('合并 changes + 重拉下拉，不动 modelTogglingId', () => {
     useStore.setState({ modelTogglingId: 'custom:my' }) // 本标签自己的切换进行中（异常并发场景）

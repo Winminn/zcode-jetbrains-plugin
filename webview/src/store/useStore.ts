@@ -26,6 +26,28 @@ import { mergeSessionsIndex } from '@/utils/sessionIndexMerge'
 import type { SessionIndexEntry } from '@/types/messages'
 import i18n from '@/i18n/config'
 
+/** 渠道/模型启停变更（modelToggled 应答与 onModelsChanged 广播同源）合并进管理页清单。
+ *  change 含 modelId=模型级（改 models[].enabled），不含=渠道级（改 provider.enabled）。
+ *  providers 未加载（null）时原样返回 null，不凭空初始化管理页列表。 */
+export function applyModelToggleChanges(
+  providers: ModelManageProvider[] | null,
+  changes: { providerId: string; enabled: boolean; modelId?: string }[],
+): ModelManageProvider[] | null {
+  if (!providers) return null
+  return providers.map((p) => {
+    const provChange = changes.find((c) => c.providerId === p.providerId && c.modelId == null)
+    const modelChanges = changes.filter((c) => c.providerId === p.providerId && c.modelId != null)
+    if (!provChange && modelChanges.length === 0) return p
+    const models = modelChanges.length
+      ? p.models.map((m) => {
+          const c = modelChanges.find((x) => x.modelId === m.modelId)
+          return c ? { ...m, enabled: c.enabled } : m
+        })
+      : p.models
+    return provChange ? { ...p, enabled: provChange.enabled, models } : { ...p, models }
+  })
+}
+
 /** 前端诊断日志直落 idea.log（Java __jsLog 通道——console.warn 不被 JCEF 转发，
  *  2026-09-01 缺陷AO 追查踩坑：诊断必须走此通道才可见） */
 function diagWarn(text: string): void {
@@ -1148,6 +1170,8 @@ interface StoreState {
   modelRemigrateResult: { names: string[]; error?: string } | null
   /** 正在切换启用状态的 providerId（开关 loading + 防重复点击）*/
   modelTogglingId: string | null
+  /** 正在切换启用状态的「providerId|modelId」组合键（单模型开关 loading + 防重复点击）*/
+  modelTogglingKey: string | null
   /** 渠道编辑弹窗保存中（防重复提交，保存按钮 loading）*/
   providerSaving: boolean
   /** 渠道排序写回中（拖拽落位 → providerOrder 保存期间禁再次拖拽）*/
@@ -1417,6 +1441,8 @@ interface StoreState {
   setProviderKey: (providerId: string, apiKey: string) => void
   /** 切换 provider 启用/禁用（写 config.json enabled 字段，回包 modelToggled）*/
   toggleModelProvider: (providerId: string, enabled: boolean) => void
+  /** 单模型启用/停用切换（个人渠道；账号渠道 Kotlin 侧拒绝）*/
+  toggleModel: (providerId: string, modelId: string, enabled: boolean) => void
   /** 添加自定义模型渠道（写 config.json provider 注册表，UUID 作 providerId）*/
   addModelProvider: (draft: ProviderSaveDraft) => void
   /** 编辑自定义渠道（apiKey null=不变 空串=清除；models 整表替换），providerId 不变 */
@@ -1751,6 +1777,7 @@ export const useStore = create<StoreState>((set, get) => ({
   modelRemigrating: false,
   modelRemigrateResult: null,
   modelTogglingId: null,
+  modelTogglingKey: null,
   providerSaving: false,
   providerSaveError: null,
   connectivityTestingId: null,
@@ -1813,11 +1840,9 @@ export const useStore = create<StoreState>((set, get) => ({
       // 与 modelToggled 应答同款合并，但不碰 modelTogglingId（由本标签自己的应答清除）；
       // modelProviders 未加载（null，未开过模型管理页）时不初始化列表、仍重拉下拉；
       // 幂等（发起标签应答后广播再达一次无害）
-      window.onModelsChanged = (changes: { providerId: string; enabled: boolean }[]) => {
-        const byId = new Map(changes.map((c) => [c.providerId, c.enabled]))
-        const providers = get().modelProviders?.map((p) =>
-          byId.has(p.providerId) ? { ...p, enabled: byId.get(p.providerId)! } : p,
-        )
+      window.onModelsChanged = (changes: { providerId: string; enabled: boolean; modelId?: string }[]) => {
+        // 与 modelToggled 应答同款合并（含模型级 changes），但不碰本标签的 toggling 态
+        const providers = applyModelToggleChanges(get().modelProviders, changes)
         if (providers) set({ modelProviders: providers })
         get().loadModels()
       }
@@ -3237,6 +3262,13 @@ export const useStore = create<StoreState>((set, get) => ({
     if (get().modelTogglingId) return
     set({ modelTogglingId: providerId, modelManageError: null })
     sendToJava({ op: 'modelToggleProvider', providerId, enabled })
+  },
+
+  /** 单模型启用/停用（NEW 代；modelToggleModel → modelToggled 回包清单飞态） */
+  toggleModel: (providerId, modelId, enabled) => {
+    if (get().modelTogglingKey) return
+    set({ modelTogglingKey: `${providerId}|${modelId}`, modelManageError: null })
+    sendToJava({ op: 'modelToggleModel', providerId, modelId, enabled })
   },
 
   addModelProvider: (draft) => {
@@ -4783,6 +4815,7 @@ export function handleResponse(
         trajectoryLoading: false,
         modelManageLoading: false,
         modelTogglingId: null,
+        modelTogglingKey: null,
         forkBusy: false,
         // 浏览器设置请求失败（如插件未安装）：页面内联提示（browserBusy 在途时才归属该页）
         ...(get().browserBusy ? { browserBusy: null, browserError: msg.message } : {}),
@@ -5658,12 +5691,9 @@ export function handleResponse(
       break
 
     case 'modelToggled': {
-      // provider 启用/禁用写回成功（changes 含互斥联动项）：本地更新 + 重拉下拉
-      const byId = new Map(msg.changes.map((c) => [c.providerId, c.enabled]))
-      const providers = get().modelProviders?.map((p) =>
-        byId.has(p.providerId) ? { ...p, enabled: byId.get(p.providerId)! } : p,
-      )
-      set({ modelProviders: providers ?? null, modelTogglingId: null })
+      // 渠道/模型启用禁用写回成功（changes 元素含 modelId 时为模型级）：本地更新 + 重拉下拉
+      const providers = applyModelToggleChanges(get().modelProviders, msg.changes ?? [])
+      set({ modelProviders: providers, modelTogglingId: null, modelTogglingKey: null })
       get().loadModels()
       break
     }

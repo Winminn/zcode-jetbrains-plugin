@@ -64,6 +64,10 @@ function ModelRow({
   testing = false,
   connResult,
   onShowConnError,
+  onToggleModel,
+  modelToggling = false,
+  toggleDisabled = false,
+  testDisabledByModel = false,
 }: {
   model: ModelManageModel
   onDelete?: () => void
@@ -71,16 +75,26 @@ function ModelRow({
   deleteBlockedTitle?: string
   /** 连通性测试入口（缺省不渲染——newCli 未接线时整列隐藏）*/
   onTestConnectivity?: () => void
+  /** 模型自身停用：测试按钮保留占位但禁用（避免行内动作区横向跳动）*/
+  testDisabledByModel?: boolean
   /** 该模型测试进行中（按钮 loading 常驻）*/
   testing?: boolean
   /** 最近一次本模型测试结果（行尾徽章；失败可点开错误详情弹窗）*/
   connResult?: { ok: boolean; error?: string }
   /** 失败徽章点击回调（打开错误详情弹窗）；缺省不可点 */
   onShowConnError?: () => void
+  /** 单模型启停入口（缺省不渲染——内置/账号渠道只读，开关在客户端）*/
+  onToggleModel?: () => void
+  /** 本模型开关请求在途（loading + 防连点）*/
+  modelToggling?: boolean
+  /** 渠道停用等场景禁用开关（渠道停用时整卡模型不可用）*/
+  toggleDisabled?: boolean
 }) {
   const { t } = useTranslation()
+  // enabled 缺省（undefined/true）= 启用，仅显式 false 停用（与 Kotlin 读侧同口径）
+  const enabled = model.enabled !== false
   return (
-    <div className="model-list-view__model">
+    <div className={cx('model-list-view__model', !enabled && 'is-disabled')}>
       <span className="codicon codicon-symbol-method model-list-view__model-icon" />
       <span className="model-list-view__model-name" title={model.modelName}>
         {model.modelName}
@@ -103,6 +117,11 @@ function ModelRow({
           {t('models.outputBadge', { size: formatTokens(model.maxOutput) })}
         </span>
       )}
+      {!enabled && (
+        <span className="model-list-view__model-badge model-list-view__model-badge--off">
+          {t('models.modelDisabled')}
+        </span>
+      )}
       {connResult && !testing && (
         <span
           className={cx(
@@ -120,12 +139,37 @@ function ModelRow({
           {connResult.ok ? t('models.testOk') : t('models.testFail')}
         </span>
       )}
+      {onToggleModel && (
+        <button
+          className={cx(
+            'model-list-view__toggle',
+            'model-list-view__model-toggle',
+            enabled && 'on',
+          )}
+          onClick={onToggleModel}
+          disabled={modelToggling || toggleDisabled}
+          title={enabled ? t('models.disableModelHint') : t('models.enableModelHint')}
+        >
+          <span
+            className={cx(
+              'codicon',
+              modelToggling ? 'codicon-loading spin' : enabled ? 'codicon-check' : 'codicon-circle-slash',
+            )}
+          />
+        </button>
+      )}
       {onTestConnectivity && (
         <button
-          className={cx('model-list-view__model-test', testing && 'is-testing')}
+          className={cx(
+            'model-list-view__model-test',
+            testing && 'is-testing',
+            // 模型停用：隐藏但保留 DOM 占位（动作区不横向跳动），禁用且不响应悬停
+            testDisabledByModel && 'is-hidden-placeholder',
+          )}
           onClick={onTestConnectivity}
-          disabled={testing}
-          title={t('models.testTitle')}
+          disabled={testing || testDisabledByModel}
+          title={testDisabledByModel ? t('models.modelDisabled') : t('models.testTitle')}
+          aria-hidden={testDisabledByModel || undefined}
         >
           <span className={cx('codicon', testing ? 'codicon-loading spin' : 'codicon-plug')} />
         </button>
@@ -193,6 +237,9 @@ function ProviderCard({
   const { t } = useTranslation()
   const modelTogglingId = useStore((s) => s.modelTogglingId)
   const toggleModelProvider = useStore((s) => s.toggleModelProvider)
+  const modelTogglingKey = useStore((s) => s.modelTogglingKey)
+  const toggleModel = useStore((s) => s.toggleModel)
+  const newCli = useStore((s) => s.modelManageNewCli)
   const toggling = modelTogglingId === provider.providerId
   // 激活 key 眼睛切换（常态脱敏，点开看全）
   const [keyVisible, setKeyVisible] = useState(false)
@@ -372,6 +419,18 @@ function ProviderCard({
             <ModelRow
               key={m.modelId}
               model={m}
+              onToggleModel={
+                // 内置/账号渠道只读（builtin=true 不传）；OLD 代 CLI 无模型级开关不渲染；
+                // 渠道停用则禁用模型开关（整卡不可用）
+                builtin || !newCli
+                  ? undefined
+                  : () => {
+                      if (modelTogglingKey) return
+                      toggleModel(provider.providerId, m.modelId, m.enabled === false)
+                    }
+              }
+              modelToggling={modelTogglingKey === `${provider.providerId}|${m.modelId}`}
+              toggleDisabled={!provider.enabled}
               onDelete={
                 onDeleteModel
                   ? () => {
@@ -386,8 +445,11 @@ function ProviderCard({
                 onDeleteModel && provider.models.length <= 1 ? t('models.lastModelTitle') : undefined
               }
               onTestConnectivity={
+                // 渠道停用时整卡不可测（不渲染）；模型停用时按钮保留占位但禁用，
+                // 避免右侧删除按钮随开关状态横向跳动（停用模型 registry 不可达，测必失败）
                 onTestModel && provider.enabled ? () => onTestModel(provider, m) : undefined
               }
+              testDisabledByModel={m.enabled === false}
               testing={testingKey === `${provider.providerId}|${m.modelId}`}
               connResult={connResults?.[`${provider.providerId}|${m.modelId}`]}
               onShowConnError={

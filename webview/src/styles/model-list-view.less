@@ -718,6 +718,10 @@
       .model-list-view__model-test {
         opacity: 1;
       }
+      // 停用模型的测试按钮：hover 也保持隐藏（占位规则须比上面的显形规则更具体）
+      .model-list-view__model-test.is-hidden-placeholder {
+        opacity: 0;
+      }
     }
   }
 
@@ -808,6 +812,12 @@
     &.is-testing {
       opacity: 1;
     }
+    /* 模型停用：视觉隐藏但保留 DOM 占位（动作区宽度稳定、删除按钮不横跳）；
+       同特异性且声明在行 hover 显形规则之后，hover 也不揭示 */
+    &.is-hidden-placeholder {
+      opacity: 0;
+      pointer-events: none;
+    }
   }
 
   &__model-delete {
@@ -824,6 +834,56 @@
     &:hover {
       color: var(--status-error, #f44336);
     }
+  }
+
+  /* 单模型启停开关：尺寸缩到与模型行动作按钮同高；常驻显示（与 delete/test 的
+     hover 弱化不同——开关本身就是行主要状态）。
+     停用态（非 on）：中性亮灰边+淡灰底+灰色圆圈斜杠（比旧的 border-primary 醒目，
+     又不占用红色——红色语义保留给删除按钮）；启用态（.on）沿用渠道开关绿色系 */
+  &__model-toggle {
+    width: 20px;
+    height: 20px;
+    border-radius: 4px;
+    opacity: 1;
+    color: var(--text-secondary);
+    border-color: rgba(150, 150, 150, 0.75);
+    background: rgba(150, 150, 150, 0.12);
+
+    &:hover:not(:disabled) {
+      color: var(--text-primary);
+      border-color: rgba(170, 170, 170, 0.95);
+      background: rgba(150, 150, 150, 0.22);
+    }
+
+    &.on {
+      color: #10b981;
+      border-color: rgba(16, 185, 129, 0.4);
+      background: rgba(16, 185, 129, 0.1);
+
+      &:hover:not(:disabled) {
+        border-color: rgba(16, 185, 129, 0.65);
+        background: rgba(16, 185, 129, 0.18);
+      }
+    }
+
+    .codicon {
+      font-size: 12px;
+    }
+  }
+
+  /* 停用模型行：名称/id/图标弱化，徽章与开关仍清晰可点（原地重开入口）*/
+  &__model.is-disabled {
+    .model-list-view__model-icon,
+    .model-list-view__model-name,
+    .model-list-view__model-id {
+      color: var(--text-tertiary);
+    }
+  }
+
+  /* 「已停用」徽章：中性灰，区别于蓝色能力徽章与红色失败徽章 */
+  &__model-badge--off {
+    background: rgba(128, 128, 128, 0.14);
+    color: var(--text-tertiary);
   }
 
   /* 提示对话框正文（ConfirmDialog message 插槽）*/
