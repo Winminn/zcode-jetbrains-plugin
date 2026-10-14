@@ -121,6 +121,41 @@ export function insertSkillChipAtCursor(el: HTMLElement, name: string, path?: st
 }
 
 /**
+ * convertCompletedXxx 系列的就地转换钉光标（缺陷DY 同族）：deleteContents 删除
+ * 被转换文本时，恰好落在该文本边界上的光标（粘贴后光标停在粘贴文本末尾=中招
+ * 形态）会被浏览器规范化到删除点，随后插入的 chip 恰在该点之后——光标被拖到
+ * chip 前面。检测到光标恰在 chip 前时钉回 chip 之后：尾随空格是文本节点首字符
+ * 时跳过该空格（convert 场景尾随空白可能是原文保留的混合文本节点，不能整节点
+ * setStartAfter）。光标不在 chip 前（打字场景光标在路径后空白处、回填场景光标
+ * 不在编辑器内）则不动，保持原语义位置。
+ *
+ * 导出仅为单测：jsdom 保留删空文本节点、光标规范化结果与 Chromium 不同，端到端
+ * 复现不了「光标在 chip 前」形态，只能直接构造两种形态单测。
+ */
+export function pinCaretAfterChip(chip: Element): void {
+  const sel = window.getSelection()
+  if (!sel || sel.rangeCount === 0) return
+  const r = sel.getRangeAt(0)
+  const parent = chip.parentNode
+  if (!r.collapsed || !parent) return
+  // 光标恰在 chip 前的两种规范化形态：父节点 offset 命中 chip 下标；或被收进
+  // chip 前文本节点的末尾
+  const idx = Array.prototype.indexOf.call(parent.childNodes, chip)
+  const prev = chip.previousSibling
+  const beforeChip =
+    (r.startContainer === parent && r.startOffset === idx) ||
+    (prev instanceof Text && r.startContainer === prev && r.startOffset === (prev.textContent?.length ?? -1))
+  if (!beforeChip) return
+  const next = chip.nextSibling
+  const after = document.createRange()
+  if (next instanceof Text && /^\s/.test(next.textContent ?? '')) after.setStart(next, 1)
+  else after.setStartAfter(chip)
+  after.collapse(true)
+  sel.removeAllRanges()
+  sel.addRange(after)
+}
+
+/**
  * 把编辑器里"已结束"的 $ 技能提及文本转成内联 chip（粘贴/历史回填/队列回填场景）。
  * markdown 链接形态（[$名称](路径)）任意位置可转；裸 token $名称 要求词边界且
  * 命中 skillNames 白名单（$5/成本$100 这类金额不转）。
@@ -171,6 +206,7 @@ export function convertCompletedSkillRefs(
     if (!chip) break
     range.insertNode(chip)
     chip.after(document.createTextNode(' '))
+    pinCaretAfterChip(chip)
     converted = true
   }
   return converted
@@ -411,6 +447,7 @@ export function convertCompletedSessionRefs(
     if (!chip) break
     range.insertNode(chip)
     chip.after(document.createTextNode(' '))
+    pinCaretAfterChip(chip)
     converted = true
   }
   return converted
@@ -632,6 +669,7 @@ export function convertCompletedPaths(el: HTMLElement, includeTrailing = false):
     range.insertNode(chip)
     // 路径原本以空白结束时空白已保留；落在文本末尾时补一个空格便于继续输入
     if (hit.atEnd) chip.after(document.createTextNode(' '))
+    pinCaretAfterChip(chip)
     converted = true
   }
   return converted
