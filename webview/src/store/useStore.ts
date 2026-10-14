@@ -16,7 +16,7 @@ import { create } from 'zustand'
 import { onMessage, onStreamEvent, onStreamBatch, sendToJava, initBridge, isInJcef, getWorkspacePath, getInitialSessionId } from '@/ipc/bridge'
 import { parseGoalCommand } from '@/utils/goalCommand'
 import { extractTitleExcerpt } from '@/utils/titleExcerpt'
-import type { JavaResponse, SessionInfo, ZCodeMessage, StreamEvent, ModelOption, ModelManageProvider, ProviderSaveDraft, TodoItem, AgentItem, FileChangeItem, QuotaData, ModelUsageData, ToolUsageData, UsageRange, AppUsageData, AppUsageRange, ContextBreakdownItem, ThoughtLevelInfo, SubagentActivity, SubagentInfo, ToolUpdatedPayload, MemoryFileInfo, MemoryDirInfo, MemorySearchHitInfo, SkillInfo, McpServerInfo, McpToolsState, McpLogEntry, TrajectoryRecord, EnvStatus, BrowserClearedSite, BrowserDataOverview, AgentDef, AgentDefInput, ImageAttachmentInput, CurrentFileAttachmentInput, SendAttachmentInput, GoalState, AutoArchiveRecord, ToolPart, SlashCommand, MessagePart, TurnFileChangesMap, TurnFileChangeSummary } from '@/types/messages'
+import type { JavaResponse, SessionInfo, ZCodeMessage, StreamEvent, ModelOption, ModelManageProvider, ProviderSaveDraft, TodoItem, AgentItem, FileChangeItem, QuotaData, ModelUsageData, ToolUsageData, UsageRange, AppUsageData, AppUsageRange, ContextBreakdownItem, ContextSource, ThoughtLevelInfo, SubagentActivity, SubagentInfo, ToolUpdatedPayload, MemoryFileInfo, MemoryDirInfo, MemorySearchHitInfo, SkillInfo, McpServerInfo, McpToolsState, McpLogEntry, TrajectoryRecord, EnvStatus, BrowserClearedSite, BrowserDataOverview, AgentDef, AgentDefInput, ImageAttachmentInput, CurrentFileAttachmentInput, SendAttachmentInput, GoalState, AutoArchiveRecord, ToolPart, SlashCommand, MessagePart, TurnFileChangesMap, TurnFileChangeSummary } from '@/types/messages'
 import { applyStreamEvent, isSubagentToolEvent, applySubagentToolEvent, markActivityOutcome, finalizeActivitiesFromNotifications, asSubagentLifecycle, asGoalTargetPayload, looksLikeQuotaError, asSteerDrainedInputs, appendSteerUserMessages } from '@/utils/streamReducer'
 import type { TurnErrorInfo, SubagentLifecyclePayload } from '@/utils/streamReducer'
 import { classifyQuotaError, bannerTriggerKey, providerLimitedMessage } from '@/utils/quotaWindows'
@@ -1363,8 +1363,6 @@ interface StoreState {
   billingKeySource: 'custom' | 'config' | 'oauth' | null
   /** 客户端选中团队套餐但未配覆盖 → 输入框黄色提醒（配好覆盖后刷新复位） */
   teamPlanNoOverride: boolean
-  /** v2 代际标记（listModels 响应 newCli）：上下文构成明细在 v2 无协议数据源，悬浮窗据此隐藏 */
-  chatModelsNewCli: boolean
   /** 切换当前会话模型（session/setModel）*/
   setModel: (modelId: string, providerId: string) => void
   /** 把 persist 记忆的模型下发给指定会话（models 列表已就绪时才生效）*/
@@ -1712,7 +1710,6 @@ export const useStore = create<StoreState>((set, get) => ({
   modelsRefreshing: false,
   billingKeySource: null,
   teamPlanNoOverride: false,
-  chatModelsNewCli: false,
   currentModel: null,
   modelInvalidated: false,
   modelAppliedSessions: new Map<string, number>(),
@@ -4980,9 +4977,6 @@ export function handleResponse(
         modelsRefreshing: false,
         billingKeySource: msg.billingKeySource ?? null,
         teamPlanNoOverride: msg.teamPlanNoOverride ?? false,
-        // v2 代际标记：上下文构成明细在 v2 协议面无数据源（session/read runtime 无
-        // breakdown、事件流与 v4 帧均不携带，diag-v2-breakdown.py 实证），悬浮窗据此隐藏
-        chatModelsNewCli: msg.newCli === true,
       })
       // 模型清单变更后（设置页禁用 provider / Zcode 侧增删模型），已选模型若已不在
       // 列表 → 取消选择，下拉回占位提示让用户重新选；persist 记忆一并清除（防下次水合复活）。
@@ -5966,6 +5960,60 @@ function applyContextWindowEvent(
   set({ contextUsage: { used: prev.used, size: window, hitRate: prev.hitRate } })
 }
 
+/** NEW 代（v2 zcode.cjs）session/read 认可的 7 种构成分类（model_complete 投影实证）*/
+const CONTEXT_BREAKDOWN_SOURCES: ReadonlySet<ContextSource> = new Set<ContextSource>([
+  'system_prompt',
+  'meta_user_context',
+  'skills',
+  'tool_prompt',
+  'system_tool_schemas',
+  'mcp_tool_schemas',
+  'messages',
+])
+
+/**
+ * session.updated 的上下文构成通道（NEW 代唯一活通道）：主回合 model_complete
+ * 投影（legacy 事件面 type=session.updated，querySource=main_turn，cjs 侧硬条件）
+ * 携带 contextUsageBreakdown [{source, chars}]。NEW 代 runtime 装配要求事件
+ * contextWindow === runtime.size 才把 breakdown 并进 session/read，而 runtime 模板
+ * 默认 200000 与模型真值恒不等（缺陷BX 同因），故 session/read 永远拿不到，
+ * 只能在事件流这里消费。不随消息落盘：resume 到新进程后丢失，由 saveBreakdownCache
+ * 持久化 + usage 响应的 loadBreakdownCache 兜底（used 取 usage.totalTokens，与
+ * session/read 的 contextUsage.used 同口径）。
+ * 非法 source/chars 逐项过滤；非主回合、非当前会话、空数组一律忽略。
+ */
+function applyContextBreakdownEvent(
+  event: StreamEvent,
+  set: (partial: Partial<StoreState>) => void,
+  get: () => StoreState,
+): void {
+  if (event.type !== 'session.updated') return
+  const p = event.payload as { querySource?: unknown; contextUsageBreakdown?: unknown }
+  if (p.querySource !== 'main_turn') return
+  const sid = event.sessionId
+  if (sid && get().currentSessionId && sid !== get().currentSessionId) return
+  const raw = p.contextUsageBreakdown
+  if (!Array.isArray(raw) || raw.length === 0) return
+  const items: ContextBreakdownItem[] = []
+  for (const el of raw) {
+    const source = (el as { source?: unknown })?.source
+    const chars = (el as { chars?: unknown })?.chars
+    if (typeof source !== 'string' || !CONTEXT_BREAKDOWN_SOURCES.has(source as ContextSource)) continue
+    if (typeof chars !== 'number' || !Number.isFinite(chars) || chars < 0) continue
+    items.push({ source: source as ContextSource, chars })
+  }
+  if (items.length === 0) return
+  const used = (p as { usage?: { totalTokens?: unknown } }).usage
+  const usedTokens = typeof used?.totalTokens === 'number' ? used.totalTokens : get().contextUsage?.used ?? 0
+  saveBreakdownCache(sid ?? '', items, usedTokens)
+  // 同值不 set：事件重放（v4 快照回放等）避免无谓引用变化
+  const prev = get().contextBreakdown
+  const same = prev !== null
+    && prev.length === items.length
+    && prev.every((it, i) => it.source === items[i].source && it.chars === items[i].chars)
+  if (!same) set({ contextBreakdown: items })
+}
+
 /**
  * 批量处理流式事件（Java 端 16ms 节流合并的一批）。
  * 逐个归约但只 set 一次，避免每个 delta 都触发 React 重渲染。
@@ -6319,6 +6367,8 @@ function handleStreamBatchDirect(
     if (event.type === 'session.updated') {
       // 事件权威上下文窗口（切模/主回合），先于其他形态判定；不拦截后续识别
       applyContextWindowEvent(event, set, get)
+      // NEW 代构成明细唯一活通道（主回合 model_complete 投影），同先消费不拦截
+      applyContextBreakdownEvent(event, set, get)
       const lc = asSubagentLifecycle(event.payload)
       if (lc) {
         applySubagentLifecycle(lc, event.timestamp, set, get)
@@ -6760,6 +6810,8 @@ function handleStreamEvent(
   if (event.type === 'session.updated') {
     // 事件权威上下文窗口（切模/主回合），同批量路径
     applyContextWindowEvent(event, set, get)
+    // NEW 代构成明细事件通道，同批量路径
+    applyContextBreakdownEvent(event, set, get)
     const lc = asSubagentLifecycle(event.payload)
     if (lc) {
       applySubagentLifecycle(lc, event.timestamp, set, get)

@@ -114,11 +114,8 @@ export function ContextRing() {
   // 第三方 provider 不显示也不拉取）
   const isGlmPlan = isBigmodelProvider(currentModel?.providerId)
 
-  // v2 代际标记：构成明细在 v2 协议面无数据源（session/read runtime 无 breakdown、
-  // legacy 事件与 v4 帧均不携带，diag-v2-breakdown.py 实证），隐藏「上下文构成」区块
-  const chatModelsNewCli = useStore((s) => s.chatModelsNewCli)
-
-  // 分类明细聚合
+  // 分类明细聚合（v1：session/read 的 runtime.breakdown；NEW 代：主回合完成事件的
+  // contextUsageBreakdown，见 applyContextBreakdownEvent）
   const categoryRows = breakdown && breakdown.length > 0 ? aggregateBreakdown(breakdown) : []
 
   // 额度窗口行（三标准窗 + 兜底行），弹窗额度区渲染唯一输入
@@ -200,34 +197,32 @@ export function ContextRing() {
               </div>
             </div>
 
-            {/* 上下文构成（model_complete 的 contextUsageBreakdown，仅主 turn 有数据）。
-                v2 无数据源：整块隐藏 */}
-            {!chatModelsNewCli && (
-              <div className="ctx-popover__section">
-                <div className="ctx-popover__title">{t('usage.context.titleBreakdown')}</div>
-                {categoryRows.length > 0 ? (
-                  categoryRows.map((row, i) => (
-                    <div className="ctx-popover__row ctx-popover__cat" key={i}>
-                      <span className="ctx-popover__dot" style={{ background: row.color }} />
-                      <span className="ctx-popover__label">{t(row.label)}</span>
-                      <span className="ctx-popover__bar-mini">
-                        <span style={{ width: `${Math.max(2, row.pct)}%`, background: row.color }} />
-                      </span>
-                      <span className="ctx-popover__num">{row.pct.toFixed(1)}%</span>
-                    </div>
-                  ))
-                ) : (
-                  <div className="ctx-popover__muted">{t('usage.context.noBreakdown')}</div>
-                )}
-                <div className="ctx-popover__row ctx-popover__row--highlight">
-                  <span className="ctx-popover__label">{t('usage.context.hitRate')}</span>
-                  {/* hitRate=null 表示本 turn 暂无统计（新 turn 首次模型调用完成前），显示"—"而非误导性的 0% */}
-                  <span className="ctx-popover__num">
-                    {hasData && ctx!.hitRate != null ? `${(ctx!.hitRate * 100).toFixed(1)}%` : '—'}
-                  </span>
-                </div>
+            {/* 上下文构成（v1：session/read runtime.breakdown；NEW 代：主回合完成事件
+                payload.contextUsageBreakdown，仅主 turn 有数据；新会话首回合前显空态）*/}
+            <div className="ctx-popover__section">
+              <div className="ctx-popover__title">{t('usage.context.titleBreakdown')}</div>
+              {categoryRows.length > 0 ? (
+                categoryRows.map((row, i) => (
+                  <div className="ctx-popover__row ctx-popover__cat" key={i}>
+                    <span className="ctx-popover__dot" style={{ background: row.color }} />
+                    <span className="ctx-popover__label">{t(row.label)}</span>
+                    <span className="ctx-popover__bar-mini">
+                      <span style={{ width: `${Math.max(2, row.pct)}%`, background: row.color }} />
+                    </span>
+                    <span className="ctx-popover__num">{row.pct.toFixed(1)}%</span>
+                  </div>
+                ))
+              ) : (
+                <div className="ctx-popover__muted">{t('usage.context.noBreakdown')}</div>
+              )}
+              <div className="ctx-popover__row ctx-popover__row--highlight">
+                <span className="ctx-popover__label">{t('usage.context.hitRate')}</span>
+                {/* hitRate=null 表示本 turn 暂无统计（新 turn 首次模型调用完成前），显示"—"而非误导性的 0% */}
+                <span className="ctx-popover__num">
+                  {hasData && ctx!.hitRate != null ? `${(ctx!.hitRate * 100).toFixed(1)}%` : '—'}
+                </span>
               </div>
-            )}
+            </div>
 
             {/* GLM 额度窗口卡（仅 GLM 套餐模型）：官方客户端同构三列并排——
                 每列「窗口名 / 剩余% · 重置时间 / 彩色进度条」（5h 蓝/周 绿/工具 紫），
