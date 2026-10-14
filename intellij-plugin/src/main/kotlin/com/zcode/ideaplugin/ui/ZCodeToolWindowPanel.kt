@@ -1131,6 +1131,7 @@ if (!window.__ZCODE_LOG_HOOK__) {
                         "scheduledFired" -> handleScheduledFired(msg)
                         "gotoSession" -> handleGotoSession(msg)
                         "locateSession" -> handleLocateSession(msg)
+                        "listOpenSessions" -> handleListOpenSessions()
                         "listArchivedSessions" -> handleListArchivedSessions(msg)
                         "listModels" -> handleListModels(msg)
                         "modelManageList" -> handleModelManageList(msg)
@@ -3161,6 +3162,20 @@ if (!window.__ZCODE_LOG_HOOK__) {
             put("op", "sessionTabLocated")
             put("sessionId", sessionId)
             put("found", found)
+        }
+    }
+
+    /** 已打开会话快照（历史列表「已在会话N打开」标注用，纯读 ContentManager，无副作用）*/
+    private fun handleListOpenSessions(): JsonObject {
+        val tabs = ZCodeToolWindowFactory.listOpenSessions(project)
+        return buildJsonObject {
+            put("op", "openSessions")
+            put("tabs", JsonArray(tabs.map { (sid, name) ->
+                buildJsonObject {
+                    put("sessionId", sid)
+                    put("tabName", name)
+                }
+            }))
         }
     }
 

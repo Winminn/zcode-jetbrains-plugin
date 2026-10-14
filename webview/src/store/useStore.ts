@@ -16,7 +16,7 @@ import { create } from 'zustand'
 import { onMessage, onStreamEvent, onStreamBatch, sendToJava, initBridge, isInJcef, getWorkspacePath, getInitialSessionId } from '@/ipc/bridge'
 import { parseGoalCommand } from '@/utils/goalCommand'
 import { extractTitleExcerpt } from '@/utils/titleExcerpt'
-import type { JavaResponse, SessionInfo, ZCodeMessage, StreamEvent, ModelOption, ModelManageProvider, ProviderSaveDraft, TodoItem, AgentItem, FileChangeItem, QuotaData, ModelUsageData, ToolUsageData, UsageRange, AppUsageData, AppUsageRange, ContextBreakdownItem, ThoughtLevelInfo, SubagentActivity, SubagentInfo, ToolUpdatedPayload, MemoryFileInfo, MemoryDirInfo, MemorySearchHitInfo, SkillInfo, McpServerInfo, McpToolsState, McpLogEntry, TrajectoryRecord, EnvStatus, BrowserClearedSite, BrowserDataOverview, AgentDef, AgentDefInput, ImageAttachmentInput, CurrentFileAttachmentInput, SendAttachmentInput, GoalState, AutoArchiveRecord, ToolPart, SlashCommand, MessagePart, TurnFileChangesMap, TurnFileChangeSummary } from '@/types/messages'
+import type { JavaResponse, SessionInfo, OpenTabInfo, ZCodeMessage, StreamEvent, ModelOption, ModelManageProvider, ProviderSaveDraft, TodoItem, AgentItem, FileChangeItem, QuotaData, ModelUsageData, ToolUsageData, UsageRange, AppUsageData, AppUsageRange, ContextBreakdownItem, ThoughtLevelInfo, SubagentActivity, SubagentInfo, ToolUpdatedPayload, MemoryFileInfo, MemoryDirInfo, MemorySearchHitInfo, SkillInfo, McpServerInfo, McpToolsState, McpLogEntry, TrajectoryRecord, EnvStatus, BrowserClearedSite, BrowserDataOverview, AgentDef, AgentDefInput, ImageAttachmentInput, CurrentFileAttachmentInput, SendAttachmentInput, GoalState, AutoArchiveRecord, ToolPart, SlashCommand, MessagePart, TurnFileChangesMap, TurnFileChangeSummary } from '@/types/messages'
 import { applyStreamEvent, isSubagentToolEvent, applySubagentToolEvent, markActivityOutcome, finalizeActivitiesFromNotifications, asSubagentLifecycle, asGoalTargetPayload, looksLikeQuotaError, asSteerDrainedInputs, appendSteerUserMessages } from '@/utils/streamReducer'
 import type { TurnErrorInfo, SubagentLifecyclePayload } from '@/utils/streamReducer'
 import { classifyQuotaError, bannerTriggerKey, providerLimitedMessage } from '@/utils/quotaWindows'
@@ -625,6 +625,8 @@ let serverActiveTurnId: string | null = null
 let lastCompletedTurnId: string | null = null
 /** locateSession 在途应答的解析器（单槽，见 locateSessionTab）*/
 let pendingTabLocate: ((found: boolean) => void) | null = null
+/** listOpenSessions 在途应答解析器（单槽瞬态查询，不入 store state）*/
+let pendingOpenTabs: ((tabs: OpenTabInfo[]) => void) | null = null
 /** goal set 乐观插入的用户消息（error 回执时回滚删除用；成功开轮后由全量
  *  重拉的服务端真身自然替换，槽位随下一次 set 覆盖） */
 let optimisticGoalUserMsg: { sid: string; msgId: string } | null = null
@@ -1343,6 +1345,8 @@ interface StoreState {
    * false = 没有任何标签打开过它（调用方决定覆盖当前标签页还是新开）
    */
   locateSessionTab: (sessionId: string) => Promise<boolean>
+  /** 当前各标签已绑定的会话快照（历史列表标注「已在会话N打开」用，瞬态查询不入 state）*/
+  listOpenTabs: () => Promise<OpenTabInfo[]>
   /** 历史列表「新标签页打开」：走 Java gotoSession 统一路径（定位已确认无宿主 → 必然新建标签）*/
   openSessionNewTab: (sessionId: string) => void
   stopStreaming: () => void
@@ -2512,6 +2516,13 @@ export const useStore = create<StoreState>((set, get) => ({
       pendingTabLocate?.(false)
       pendingTabLocate = resolve
       sendToJava({ op: 'locateSession', sessionId })
+    }),
+
+  listOpenTabs: () =>
+    new Promise<OpenTabInfo[]>((resolve) => {
+      pendingOpenTabs?.([])
+      pendingOpenTabs = resolve
+      sendToJava({ op: 'listOpenSessions' })
     }),
 
   openSessionNewTab: (sessionId) => {
@@ -4329,6 +4340,14 @@ export function handleResponse(
       const resolve = pendingTabLocate
       pendingTabLocate = null
       resolve?.(msg.found)
+      break
+    }
+
+    case 'openSessions': {
+      // 历史列表已打开标签快照（纯展示/点击确认用，不入 state）
+      const resolve = pendingOpenTabs
+      pendingOpenTabs = null
+      resolve?.(Array.isArray(msg.tabs) ? msg.tabs : [])
       break
     }
 
