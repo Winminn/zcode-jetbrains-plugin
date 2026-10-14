@@ -3761,7 +3761,8 @@ if (!window.__ZCODE_LOG_HOOK__) {
         }
     }
 
-    /** providerModelRules 条目的模型级覆盖（contextWindow + 输入能力位，编辑弹窗回填同源） */
+    /** providerModelRules/manualProviderModelRules 条目的模型级覆盖
+     *  （contextWindow + 输入能力位，编辑弹窗回填同源） */
     private class NewCliModelRule(
         val contextWindow: Long?,
         // Boolean? null = 规则未声明该键：overlay 到目录链能力位时「未声明」保持目录值，
@@ -3775,32 +3776,15 @@ if (!window.__ZCODE_LOG_HOOK__) {
         val modelEnabled: Boolean?,
     )
 
-    /** provider_config.json 的 per-model rules（inputFormat 三键 sparse：缺省 null=未声明） */
-    private fun newCliModelRules(): Map<Pair<String, String>, NewCliModelRule> {
-        val path = Credentials.personalProviderConfigPath()
-        if (!java.nio.file.Files.isRegularFile(path)) return emptyMap()
-        return try {
-            val root = json.parseToJsonElement(path.toFile().readText()).jsonObject
-            (root["config"]?.jsonObject?.get("modelConfigRules")?.jsonObject?.get("providerModelRules")?.jsonArray
-                ?: return emptyMap()).mapNotNull { el ->
-                val o = el as? JsonObject ?: return@mapNotNull null
-                val pid = o["providerId"]?.jsonPrimitive?.contentOrNull ?: return@mapNotNull null
-                val mid = o["modelId"]?.jsonPrimitive?.contentOrNull ?: return@mapNotNull null
-                val cfg = o["config"]?.jsonObject
-                val props = cfg?.get("properties")?.jsonObject
-                val input = props?.get("inputFormat")?.jsonObject
-                NewCliModelRule(
-                    contextWindow = props?.get("contextWindow")?.jsonPrimitive?.contentOrNull?.toLongOrNull(),
-                    supportsImages = input?.get("supportsImage")?.jsonPrimitive?.contentOrNull?.toBooleanStrictOrNull(),
-                    supportsVideo = input?.get("supportsVideo")?.jsonPrimitive?.contentOrNull?.toBooleanStrictOrNull(),
-                    supportsPdf = input?.get("supportsPdf")?.jsonPrimitive?.contentOrNull?.toBooleanStrictOrNull(),
-                    modelEnabled = cfg?.get("enabled")?.jsonPrimitive?.contentOrNull?.toBooleanStrictOrNull(),
-                ).let { (pid to mid) to it }
-            }.toMap()
-        } catch (e: Exception) {
-            emptyMap()
-        }
-    }
+    /** provider_config.json 的两组个人精确规则（inputFormat 三键 sparse：缺省 null=未声明；
+     *  解析规则与官方 composeEffective 对齐，见 [com.zcode.ideaplugin.protocol.PersonalModelConfigRules]） */
+    private fun newCliModelRules(): Map<Pair<String, String>, NewCliModelRule> =
+        com.zcode.ideaplugin.protocol.PersonalModelConfigRules
+            .load(Credentials.personalProviderConfigPath())
+            .associate { r ->
+                (r.providerId to r.modelId) to
+                    NewCliModelRule(r.contextWindow, r.supportsImage, r.supportsVideo, r.supportsPdf, r.enabled)
+            }
 
     /** 新版：模型清单（providerRules 展平；模型 = modelOrder/personalModelIds，显示名即 id） */
     private fun listModelsNewCli(): JsonObject {
@@ -5328,17 +5312,23 @@ if (!window.__ZCODE_LOG_HOOK__) {
                 put("sessionId", sessionId)
                 var used = ctx["used"]?.jsonPrimitive?.content?.toLongOrNull() ?: 0L
                 var size = ctx["size"]?.jsonPrimitive?.content?.toLongOrNull() ?: 0L
-                // v2 上下文总量换轨（缺陷BX）：app-server 的 contextUsage.size 固定走模板
-                // 默认 200k（逆向 U2e：config.contextWindow 缺省回落 T7=2e5），与模型真实
-                // 上下文脱节。真实值取 BuiltinModelCatalog.modelCaps（与模型下拉/设置页
-                // 同一规则链：GLM-5.3→1M、GLM-5.3-Flash→1M，`.*` 兜底 200K）——账号渠道
-                //（account:*）与自定义渠道同名模型能力一致；无规则命中时保持服务端原值
+                // v2 上下文总量换轨（缺陷BX；2026-10 补个人层）：app-server legacy 面的
+                // contextUsage.size 被 contracts 投影初值锁死为 200k（zcode main + 0.16.9
+                // 实证：live 会话从不 append SessionCreated，projection.contextWindow 恒为
+                // 2e5），与模型真实/用户自定义窗口脱节。官方桌面端已迁 v4 投影，由
+                // model_selected / main_turn model_complete 事件的 contextWindow（注册表
+                // composeEffective 真值）驱动；legacy 面不会修。插件按同一注册表口径本地
+                // 合成：个人精确规则（provider_config.json 的 providerModelRules /
+                // manualProviderModelRules——用户在设置里改的 256k 落此，缺这层是
+                // 「自定义 256k 仍显 20 万」根因）逐叶子覆盖内置目录正则规则
+                // （GLM-5.3→1M、`.*` 兜底 200K）；两层都无声明时保持服务端原值
                 if (cliGeneration == com.zcode.ideaplugin.protocol.ProtocolGeneration.NEW) {
                     currentSessionModelRef()?.let { (pid, mid) ->
-                        val caps = com.zcode.ideaplugin.protocol.BuiltinModelCatalog.modelCaps(
-                            mid, com.zcode.ideaplugin.env.ZCodeEnvChecker.resolveCliPathForOps(),
-                        )
-                        caps?.contextWindow?.let { size = it }
+                        val resolved = newCliModelRules()[pid to mid]?.contextWindow
+                            ?: com.zcode.ideaplugin.protocol.BuiltinModelCatalog.modelCaps(
+                                mid, com.zcode.ideaplugin.env.ZCodeEnvChecker.resolveCliPathForOps(),
+                            )?.contextWindow
+                        resolved?.let { size = it }
                     }
                 }
                 put("used", used)

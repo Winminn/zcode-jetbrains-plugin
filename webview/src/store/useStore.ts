@@ -5938,6 +5938,35 @@ function applyModeEventToPatch(
 }
 
 /**
+ * session.updated 的事件权威上下文窗口（对齐官方 v4 投影 touchedByEvent）：
+ * model_selected 切模即时带 contextWindow（payload 无 querySource），主回合
+ * model_complete 逐回合带（querySource=main_turn），值=注册表
+ * model.properties.contextWindow（composeEffective 真值，用户自定义 256k 在此），
+ * 与 handleGetUsage 的 Kotlin 侧合成同源同值。legacy session/read 的 size 被服务端
+ * 投影初值锁死 200k，消费此事件让「切模后、首次 usage 轮询前」圆环分母也即时正确。
+ * 仅在已有用量读数时就地替换分母（新会话保持空环占位契约，loadUsage 会带 Kotlin
+ * 合成值）；used/hitRate 保持 session/read 读数；同值不 set。
+ * 非主回合 querySource（session_title 等）不带可信窗口，忽略。
+ */
+function applyContextWindowEvent(
+  event: StreamEvent,
+  set: (partial: Partial<StoreState>) => void,
+  get: () => StoreState,
+): void {
+  if (event.type !== 'session.updated') return
+  const p = event.payload as { querySource?: unknown; contextWindow?: unknown }
+  if (p.querySource !== undefined && p.querySource !== 'main_turn') return
+  const sid = event.sessionId
+  if (sid && get().currentSessionId && sid !== get().currentSessionId) return
+  const raw = p.contextWindow
+  if (typeof raw !== 'number' || !Number.isFinite(raw) || raw <= 0) return
+  const window = Math.floor(raw)
+  const prev = get().contextUsage
+  if (!prev || prev.size === window) return
+  set({ contextUsage: { used: prev.used, size: window, hitRate: prev.hitRate } })
+}
+
+/**
  * 批量处理流式事件（Java 端 16ms 节流合并的一批）。
  * 逐个归约但只 set 一次，避免每个 delta 都触发 React 重渲染。
  */
@@ -6288,6 +6317,8 @@ function handleStreamBatchDirect(
     // 子代理生命周期通知（session.updated / kind=subagent.lifecycle）：
     // spawned 携带 childSessionId → 注册子会话；stopped → 收尾活动 + 拉权威全量
     if (event.type === 'session.updated') {
+      // 事件权威上下文窗口（切模/主回合），先于其他形态判定；不拦截后续识别
+      applyContextWindowEvent(event, set, get)
       const lc = asSubagentLifecycle(event.payload)
       if (lc) {
         applySubagentLifecycle(lc, event.timestamp, set, get)
@@ -6727,6 +6758,8 @@ function handleStreamEvent(
 
   // 子代理生命周期通知（spawned/stopped）：注册子会话，stop 时收尾活动 + 拉权威
   if (event.type === 'session.updated') {
+    // 事件权威上下文窗口（切模/主回合），同批量路径
+    applyContextWindowEvent(event, set, get)
     const lc = asSubagentLifecycle(event.payload)
     if (lc) {
       applySubagentLifecycle(lc, event.timestamp, set, get)
