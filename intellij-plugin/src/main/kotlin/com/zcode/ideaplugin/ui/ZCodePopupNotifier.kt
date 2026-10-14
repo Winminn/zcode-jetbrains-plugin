@@ -7,7 +7,6 @@ import com.intellij.openapi.util.IconLoader
 import com.intellij.openapi.util.text.StringUtil
 import com.intellij.openapi.wm.WindowManager
 import com.intellij.ui.JBColor
-import com.intellij.util.IconUtil
 import java.awt.BasicStroke
 import java.awt.BorderLayout
 import java.awt.Color
@@ -25,16 +24,14 @@ import java.awt.event.MouseEvent
 import java.awt.geom.RoundRectangle2D
 import java.awt.image.BufferedImage
 import java.awt.image.ConvolveOp
-import java.awt.image.FilteredImageSource
 import java.awt.image.Kernel
-import java.awt.image.RGBImageFilter
 import javax.swing.BorderFactory
 import javax.swing.Icon
-import javax.swing.ImageIcon
 import javax.swing.JComponent
 import javax.swing.JLabel
 import javax.swing.JPanel
 import javax.swing.JWindow
+import javax.swing.SwingConstants
 import javax.swing.SwingUtilities
 import javax.swing.Timer
 
@@ -46,8 +43,8 @@ import javax.swing.Timer
  *   Windows 前台锁不适用（前台权随输入自动获得），不依赖 shell 渲染的通知通道；
  * - 单实例：新弹窗替换旧弹窗（审批与完成连发不叠罗汉）；
  * - 触发方仅在 IDE 主窗口非激活时调用（人在 IDE 内时有 webview 对话框可见）；
- * - 视觉（样式 v1）：透明通道下绕卡片绘柔和投影；标题行带插件 logo；
- *   卡片 hover 提亮、× 按钮 hover 底圈——纯视觉反馈，不改任何点击行为。
+ * - 视觉（样式 v2，参考 WorkBuddy 系统弹窗）：行1=应用名行（logo + 插件名 + ×），行2=标题，行3=正文（次级色），
+ *   三行同左缘；透明通道下绕卡片绘柔和投影；卡片 hover 提亮、× 按钮 hover 底圈——纯视觉反馈，不改任何点击行为。
  */
 object ZCodePopupNotifier {
 
@@ -94,32 +91,18 @@ object ZCodePopupNotifier {
     private val titleForeground: Color
         get() = JBColor(Color(0x14171A), Color(0xF2F3F4))
 
-    /** 正文前景（比主题默认 label 亮一档）*/
+    /** 正文前景（比标题弱一档的次级文本色，参考系统 toast 的 body 层级）*/
     private val bodyForeground: Color
-        get() = JBColor(Color(0x3C3F41), Color(0xDFE1E4))
+        get() = JBColor(Color(0x5F6368), Color(0xB8BCC2))
 
-    /** 标题行插件 logo（16px；原 SVG 偏暗（#1E293B→#312E81），暗色卡片上发闷，渲染时提亮一档）*/
+    /** 应用名行文案：ZC GUI（用户指定；与产物/Marketplace 名一致，不用工具窗短名 ZCode）*/
+    private const val APP_NAME = "ZC GUI"
+
+    /** 标题行 logo（20px，用户定稿"比原 16 大一点即可"）：popupLogo.svg = 官方 pluginIcon.svg 原样嵌入，仅声明内在尺寸 20。
+     *  官方像素画 Z 在 16px 下每根条不足 1 物理像素必糊成马赛克（缺陷EW）；放大后笔画可辨。
+     *  IconLoader 矢量图标按设备缩放光栅化（IDE 全部图标同款管线），不做任何运行时像素后处理。 */
     private val pluginIcon: Icon by lazy {
-        val raw = IconLoader.getIcon("/META-INF/pluginIcon.svg", ZCodePopupNotifier::class.java)
-        brighten(IconUtil.scale(raw, null, 16f / raw.iconWidth))
-    }
-
-    /** 纯 JDK 提亮：RGB 线性放大 + 抬底，alpha 通道不动（只用于弹窗内 logo，不改共享图标资源）*/
-    private fun brighten(icon: Icon): Icon {
-        val img = BufferedImage(icon.iconWidth, icon.iconHeight, BufferedImage.TYPE_INT_ARGB)
-        val g = img.createGraphics()
-        icon.paintIcon(JPanel(), g, 0, 0)
-        g.dispose()
-        val filter = object : RGBImageFilter() {
-            override fun filterRGB(x: Int, y: Int, rgb: Int): Int {
-                val a = rgb shr 24 and 0xFF
-                val r = ((rgb shr 16 and 0xFF) * 1.35f + 24).toInt().coerceAtMost(255)
-                val gg = ((rgb shr 8 and 0xFF) * 1.35f + 24).toInt().coerceAtMost(255)
-                val b = ((rgb and 0xFF) * 1.35f + 24).toInt().coerceAtMost(255)
-                return (a shl 24) or (r shl 16) or (gg shl 8) or b
-            }
-        }
-        return ImageIcon(Toolkit.getDefaultToolkit().createImage(FilteredImageSource(img.source, filter)))
+        IconLoader.getIcon("/META-INF/popupLogo.svg", ZCodePopupNotifier::class.java)
     }
 
     /**
@@ -283,7 +266,7 @@ object ZCodePopupNotifier {
             addMouseListener(clickHandler)
         }
         val iconLabel = object : JComponent() {
-            override fun getPreferredSize(): Dimension = Dimension(16, 16)
+            override fun getPreferredSize(): Dimension = Dimension(20, 20)
             override fun paintComponent(g: Graphics) {
                 pluginIcon.paintIcon(this, g, 0, (height - pluginIcon.iconHeight) / 2)
             }
@@ -328,7 +311,7 @@ object ZCodePopupNotifier {
             })
         }
         val bodyLabel = object : JLabel(
-            "<html><div style='width:300px'>${StringUtil.escapeXmlEntities(body)}</div></html>"
+            "<html><div style='width:240px'>${StringUtil.escapeXmlEntities(body)}</div></html>"
         ) {
             override fun paintComponent(g: Graphics) {
                 (g as Graphics2D).apply {
@@ -349,21 +332,27 @@ object ZCodePopupNotifier {
             cursor = hand
             addMouseListener(clickHandler)
         }
+        // 行1 应用名：logo + 插件名（样式 v2 参考 WorkBuddy 系统弹窗：行1=应用名，行2=标题，行3=正文，三行同左缘）
+        val appNameLabel = JLabel(StringUtil.escapeXmlEntities(APP_NAME)).apply {
+            foreground = titleForeground
+            horizontalAlignment = SwingConstants.LEFT
+            cursor = hand
+            addMouseListener(clickHandler)
+        }
 
-        val titleWrap = JPanel(BorderLayout(6, 0)).apply {
+        val appNameWrap = JPanel(BorderLayout(8, 0)).apply {
             isOpaque = false
             add(iconLabel, BorderLayout.WEST)
-            add(titleLabel, BorderLayout.CENTER)
+            add(appNameLabel, BorderLayout.CENTER)
         }
         val topRow = JPanel(BorderLayout()).apply {
             isOpaque = false
-            add(titleWrap, BorderLayout.CENTER)
+            add(appNameWrap, BorderLayout.CENTER)
             add(closeButton, BorderLayout.EAST)
         }
-        // 正文缩进与标题文字对齐（图标 16 + 间距 6）
-        val bodyWrap = JPanel(BorderLayout()).apply {
+        val textStack = JPanel(BorderLayout(0, 4)).apply {
             isOpaque = false
-            border = BorderFactory.createEmptyBorder(0, 22, 0, 0)
+            add(titleLabel, BorderLayout.NORTH)
             add(bodyLabel, BorderLayout.CENTER)
         }
 
@@ -382,7 +371,7 @@ object ZCodePopupNotifier {
         if (translucentOk) {
             pad = SHADOW_PAD
             win.background = Color(0, 0, 0, 0)
-            val card = object : JPanel(BorderLayout(0, 5)) {
+            val card = object : JPanel(BorderLayout(0, 6)) {
                 var hover = false
 
                 override fun paintComponent(g: Graphics) {
@@ -421,12 +410,13 @@ object ZCodePopupNotifier {
                 }
             }
             card.addMouseListener(hoverTracker)
+            appNameLabel.addMouseListener(hoverTracker)
             titleLabel.addMouseListener(hoverTracker)
             iconLabel.addMouseListener(hoverTracker)
             bodyLabel.addMouseListener(hoverTracker)
             closeButton.addMouseListener(hoverTracker)
             card.add(topRow, BorderLayout.NORTH)
-            card.add(bodyWrap, BorderLayout.CENTER)
+            card.add(textStack, BorderLayout.CENTER)
 
             // 柔和投影：模糊贴图按尺寸缓存（弹窗尺寸 pack 后不变，只算一次）
             content = object : JPanel(BorderLayout()) {
@@ -458,7 +448,7 @@ object ZCodePopupNotifier {
                 cursor = hand
                 addMouseListener(clickHandler)
                 add(topRow, BorderLayout.NORTH)
-                add(bodyWrap, BorderLayout.CENTER)
+                add(textStack, BorderLayout.CENTER)
             }
         }
         win.contentPane.add(content)
