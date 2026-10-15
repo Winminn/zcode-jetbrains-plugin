@@ -20,6 +20,7 @@ import { useStore, isBigmodelProvider } from '@/store/useStore'
 import { fmtTokens, limitTitle, fmtResetTimeCompact, fmtTime } from '@/utils/format'
 import { quotaWindowRows, remainingPercent, formatRemainPct, WINDOW_LABEL_I18N } from '@/utils/quotaWindows'
 import type { QuotaWindowKey } from '@/utils/quotaWindows'
+import { lastTpsRound, weightedAvgTps } from '@/utils/tps'
 import type { ContextBreakdownItem, ContextSource } from '@/types/messages'
 import { ConfirmDialog } from './ConfirmDialog'
 import '../styles/input-box.less'
@@ -92,6 +93,8 @@ export function ContextRing() {
   const quotaFetchedAt = useStore((s) => s.quotaFetchedAt)
   const usageError = useStore((s) => s.usageError)
   const loadQuota = useStore((s) => s.loadQuota)
+  const sessionDebug = useStore((s) => s.sessionDebug)
+  const loadSessionDebug = useStore((s) => s.loadSessionDebug)
   const sendMessage = useStore((s) => s.sendMessage)
 
   const [hovered, setHovered] = useState(false)
@@ -121,8 +124,19 @@ export function ContextRing() {
   // 额度窗口行（三标准窗 + 兜底行），弹窗额度区渲染唯一输入
   const quotaRows = quotaWindowRows(quota?.limits)
 
+  // 生成速度聚合（session/debug 真值；空 = agent 进程内尚无完成请求，重启后从新回合累计）
+  const tpsRounds = sessionDebug?.rounds ?? []
+  const tpsLast = lastTpsRound(tpsRounds)
+  const tpsAvg = weightedAvgTps(tpsRounds)
+  // 有任一真值才渲染速度行（无数据不占行，弹窗不因本功能变长）——并成命中率下的
+  // 单行而非独立区块：弹窗纵向已很长，独立区块（标题+3行+明细）真机反馈过长
+  const hasTps = tpsLast != null || tpsAvg != null
+
   const onEnter = () => {
     setHovered(true)
+    // 生成速度懒加载：每次 hover 拉一次（单请求 RPC，官方客户端常态 1s 轮询，
+    // hover 触发量可忽略）；streaming 期间 WaitingIndicator 的 2s 轮询会让本区跟着活
+    loadSessionDebug()
     // 额度懒加载：仅 GLM 套餐模型才拉取；无数据或超过 5 分钟则拉取
     if (isGlmPlan) {
       const stale = !quota || Date.now() - quotaFetchedAt > 5 * 60 * 1000
@@ -215,13 +229,31 @@ export function ContextRing() {
               ) : (
                 <div className="ctx-popover__muted">{t('usage.context.noBreakdown')}</div>
               )}
+              {/* 缓存命中在上（用户定稿排序），生成速度在下；hitRate=null 表示本 turn
+                  暂无统计（新 turn 首次模型调用完成前），显示"—"而非误导性的 0% */}
               <div className="ctx-popover__row ctx-popover__row--highlight">
                 <span className="ctx-popover__label">{t('usage.context.hitRate')}</span>
-                {/* hitRate=null 表示本 turn 暂无统计（新 turn 首次模型调用完成前），显示"—"而非误导性的 0% */}
                 <span className="ctx-popover__num">
                   {hasData && ctx!.hitRate != null ? `${(ctx!.hitRate * 100).toFixed(1)}%` : '—'}
                 </span>
               </div>
+              {/* 生成速度（session/debug 真值，官方开发者工具面板同源）；明细（输出/耗时/累计）
+                  不进弹窗保长度 */}
+              {hasTps && (
+                <div className="ctx-popover__row">
+                  <span className="ctx-popover__label">{t('usage.speed.title')}</span>
+                  <span className="ctx-popover__num">
+                    {tpsLast?.tokensPerSecond != null
+                      ? t('usage.speed.live', { tps: tpsLast.tokensPerSecond.toFixed(1) })
+                      : '—'}
+                    {tpsAvg != null && (
+                      <span className="ctx-popover__num-suffix">
+                        {t('usage.speed.avgSuffix', { tps: tpsAvg.toFixed(1) })}
+                      </span>
+                    )}
+                  </span>
+                </div>
+              )}
             </div>
 
             {/* GLM 额度窗口卡（仅 GLM 套餐模型）：官方客户端同构三列并排——

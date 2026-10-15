@@ -72,7 +72,7 @@
     "waitingData": "Waiting for session data…",
     "titleBreakdown": "Context breakdown",
     "noBreakdown": "No breakdown yet (shown after chatting)",
-    "hitRate": "Avg. cache hit rate",
+    "hitRate": "Cache hit rate",
     "glmQuota": "GLM quota remaining",
     "quotaLoading": "Loading quota…",
     "noQuota": "No quota data",
@@ -87,6 +87,12 @@
       "mcpTools": "MCP tools",
       "other": "Other"
     }
+  },
+  "speed": {
+    "title": "Generation speed",
+    "live": "{{tps}} tok/s",
+    "avgSuffix": "avg {{tps}}",
+    "estimate": "~{{tps}} tok/s (est.)"
   },
   "windows": {
     "fiveHours": "5-hour pool",

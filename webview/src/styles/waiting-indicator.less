@@ -7,14 +7,15 @@
 .waiting {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 6px;
   padding: 12px 4px;
-  font-size: 13px;
+  // 12px（原 13px）：加速率后窄面板整行会折行（真机反馈），整体降一档
+  font-size: 12px;
   color: var(--text-tertiary);
 
   &__spinner {
-    width: 16px;
-    height: 16px;
+    width: 14px;
+    height: 14px;
     border: 2px solid var(--border-primary);
     border-top-color: var(--accent-primary);
     border-radius: 50%;
@@ -26,9 +27,29 @@
     color: var(--text-tertiary);
   }
 
+  // 跳动省略号容器定宽（≈3 个点）：点数循环增减时后续速率/计时不被推挤
+  &__dots {
+    display: inline-block;
+    min-width: 1.2em;
+    text-align: left;
+  }
+
   &__time {
     color: var(--text-muted);
-    font-size: 11px;
+    font-size: 10px;
+  }
+
+  // 生成速度真值（session/debug 轮询）：等宽字体与计时同级，弱化不抢焦点
+  &__rate {
+    color: var(--text-muted);
+    font-size: 10px;
+    font-family: var(--font-mono, monospace);
+    white-space: nowrap;
+
+    // 估算兜底（~ 前缀）：比真值再降一档存在感，提示这是近似值
+    &--estimate {
+      opacity: 0.75;
+    }
   }
 }
 

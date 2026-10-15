@@ -3478,6 +3478,21 @@ class ZCodeProtocolClient private constructor(
     }
 
     /**
+     * session/debug — 调试快照（官方开发者工具 TPS 面板数据源）。
+     *
+     * 返回 { sessionId, rounds[], networkEntries[], cache }：rounds 每模型请求一条，
+     * 含 usage 六字段 / hitRate / generationDurationMs / tokensPerSecond（服务端已算好）。
+     * 数据是 app-server 进程内存（agent 重启清零、只收 main_turn、rounds≤200），
+     * 会话须 active（resume/订阅后）。读类幂等 → 走重试。
+     */
+    fun sessionDebug(sessionId: String, timeoutMs: Long = 5000): JsonObject {
+        val params = buildJsonObject { put("sessionId", sessionId) }
+        val r = requestWithRetry("session/debug", params, timeoutMs, maxAttempts = 2, backoffMs = longArrayOf(500))
+        requireOk(r)
+        return r["result"]?.jsonObject ?: JsonObject(emptyMap())
+    }
+
+    /**
      * session/read → 提取 runtime（含 contextUsage + 可能的 breakdown 构成明细）
      * 返回完整 runtime JsonObject，调用者按需提取 contextUsage / breakdown 子字段。
      * 需要会话处于 active 状态（subscribe/resume 后即可）。

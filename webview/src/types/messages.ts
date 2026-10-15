@@ -571,6 +571,7 @@ export type JavaRequest =  | { op: 'askUserPendingState' }
   | { op: 'goalManage'; sessionId: string; action: 'set' | 'replace' | 'pause' | 'resume' | 'clear' | 'show'; objective?: string }
   | { op: 'pickFiles' }
   | { op: 'getUsage'; sessionId: string }
+  | { op: 'getSessionDebug'; sessionId: string }
   | { op: 'getQuota' }
   | { op: 'getAppUsage'; range: AppUsageRange }
   | { op: 'getModelUsage'; startTime: string; endTime: string }
@@ -870,6 +871,37 @@ export type ContextSource =
 export interface ContextBreakdownItem {
   source: ContextSource
   chars: number
+}
+
+/**
+ * session/debug 调试快照（官方开发者工具 TPS 面板数据源，服务端算好 tokensPerSecond）。
+ * rounds 每模型请求一条（只收 main_turn）；app-server 进程内存快照，agent 重启清零。
+ */
+export interface SessionDebugRound {
+  requestIndex: number
+  requestId: string
+  recordedAt: number
+  usage: {
+    inputTokens?: number
+    outputTokens?: number
+    totalTokens?: number
+    reasoningTokens?: number
+    cachedInputTokens?: number
+    cachedWriteInputTokens?: number
+  }
+  hitRate: number | null
+  generationDurationMs: number | null
+  tokensPerSecond: number | null
+}
+
+export interface SessionDebugSummary {
+  rounds: SessionDebugRound[]
+  cache: {
+    hitRateRequestCount: number
+    totalInputTokens: number
+    totalCacheReadTokens: number
+    hitRate: number | null
+  } | null
 }
 
 /** 斜杠命令项（输入框 / 快捷选择，Kotlin 端磁盘扫描）*/
@@ -1408,6 +1440,10 @@ export type JavaResponse =
   // activeTurnKind/activeTurnId：当前回合类型与 id（'compact' = 上下文压缩中，前端
   // 压缩状态条依据；turnId 供滞后读数比对——见 useStore case 'usage'）
   | { op: 'usage'; sessionId?: string; used: number; size: number; hitRate?: number; breakdown?: ContextBreakdownItem[]; activeTurnKind?: string; activeTurnId?: string }
+  /** session/debug 快照（networkEntries Java 侧剥掉，只透传 rounds + cache）*/
+  | { op: 'sessionDebug'; sessionId: string; rounds?: SessionDebugRound[]; cache?: SessionDebugSummary['cache'] }
+  /** P2 同 usageError：streaming 期轮询失败静默（会话未 active / agent 刚重启快照为空）*/
+  | { op: 'sessionDebugError'; sessionId: string; message: string }
   // providerId/providerName：monitor 三路 HTTP 实际取 key 的渠道（回退链不筛身份，
   // 可能落到非 coding-plan 渠道，用量页据此提示数据口径）
   | { op: 'quota'; data?: QuotaData | null; error?: string; providerId?: string; providerName?: string; providerKeyMasked?: string }

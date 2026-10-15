@@ -71,7 +71,7 @@
     "waitingData": "等待會話資料…",
     "titleBreakdown": "上下文構成",
     "noBreakdown": "暫無構成明細（對話後將顯示）",
-    "hitRate": "平均快取命中率",
+    "hitRate": "快取命中",
     "glmQuota": "GLM 額度剩餘",
     "quotaLoading": "額度載入中…",
     "noQuota": "暫無額度資料",
@@ -86,6 +86,12 @@
       "mcpTools": "MCP 工具",
       "other": "其他"
     }
+  },
+  "speed": {
+    "title": "生成速度",
+    "live": "{{tps}} tok/s",
+    "avgSuffix": "平均 {{tps}}",
+    "estimate": "~{{tps}} tok/s（估算）"
   },
   "windows": {
     "fiveHours": "5 小時池",

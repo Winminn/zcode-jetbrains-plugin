@@ -174,6 +174,50 @@ function createAssistantMessage(event: StreamEvent, id: string): ZCodeMessage {
 // ============ model.streaming：累加 text_delta / reasoning_delta / 工具输入流 ============
 
 /**
+ * 最近一次 model.streaming 事件到达时间（任意 kind 到达即刷新，含工具输入流）。
+ * 状态行速率的「正在生成」判据：工具执行/构建等静默期超过约 3s 即隐藏速率——
+ * rounds 只在请求完成时落账，构建/执行工具期间挂着的旧值会被误读成实时速度
+ * （真机反馈）。模块级可变量：WaitingIndicator 自带 500ms 重渲染直接读，
+ * 不入 zustand 避免每个 delta 都触发全局订阅。
+ */
+export const modelStreamActivity = { lastAt: 0 }
+
+// ---- 生成节奏滑动窗口（估算兜底用）----
+// 纯生成轮第一笔请求没有真值 TPS 可挂（rounds 只在请求完成时落账，完成即回合结束），
+// 用户拍板用流式 delta 字符数做窄场景估算（仅真值缺位且正在生成时显示 ~ 前缀）。
+// 模块级可变量不入 zustand：每个 delta 只推一个样本，WaitingIndicator 500ms 自刷读取。
+const PACE_WINDOW_MS = 5000
+const paceSamples: { t: number; chars: number }[] = []
+// 单调累计计数器：自校准取"两次真值落账之间的字符增量"用
+let charsTotal = 0
+
+/** 记一笔流式 delta 的字符数（text/reasoning/tool_input 三类产出型 delta）*/
+export function noteStreamChars(chars: number, now = Date.now()): void {
+  if (chars <= 0) return
+  charsTotal += chars
+  paceSamples.push({ t: now, chars })
+  // 硬上限防极端高频 delta 撑爆数组；过期样本读取时惰性剔除
+  if (paceSamples.length > 120) paceSamples.splice(0, paceSamples.length - 120)
+}
+
+/** 流式字符单调累计值（自校准的增量取样锚点）*/
+export function streamCharsTotal(): number {
+  return charsTotal
+}
+
+/** 滑动窗口内字符速率（chars/s）；样本跨度不足 1.5s 时返回 null（防瞬时毛刺）*/
+export function streamCharsPerSec(now = Date.now()): number | null {
+  const cutoff = now - PACE_WINDOW_MS
+  while (paceSamples.length > 0 && paceSamples[0].t < cutoff) paceSamples.shift()
+  if (paceSamples.length === 0) return null
+  const span = now - paceSamples[0].t
+  if (span < 1500) return null
+  let chars = 0
+  for (const s of paceSamples) chars += s.chars
+  return (chars * 1000) / span
+}
+
+/**
  * 思考耗时的收尾点：非思考内容（正文/工具输入/工具调度）出现时，
  * 最后一个未收尾的 reasoning part 在此结束——补上 time.end。
  * 只看末位 part：更早的 reasoning 早在它后续内容到达时就已收尾。
@@ -191,9 +235,14 @@ function handleModelStreaming(
   event: StreamEvent,
   payload: StreamEvent['payload'],
 ): { messages: ZCodeMessage[]; streamingMessageId: string | null; turnEnded: boolean; modeEvent?: ModeEvent } {
+  modelStreamActivity.lastAt = Date.now()
   const p = payload as { kind: string; delta?: string; assistantMessageId?: string }
   const kind = p.kind
   const delta = p.delta || ''
+  // 产出型 delta 计入生成节奏窗口（估算兜底；tool_input 参数也是模型输出）
+  if (kind === 'text_delta' || kind === 'reasoning_delta' || kind === 'tool_input_delta') {
+    noteStreamChars(delta.length)
+  }
 
   if (!streamingMessageId) {
     // turn.started 未建壳而产出型 delta 已到达 = 实际工作轮，就地补建流式壳

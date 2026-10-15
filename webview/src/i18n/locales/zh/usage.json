@@ -72,7 +72,7 @@
     "waitingData": "等待会话数据…",
     "titleBreakdown": "上下文构成",
     "noBreakdown": "暂无构成明细（对话后将显示）",
-    "hitRate": "平均缓存命中率",
+    "hitRate": "缓存命中",
     "glmQuota": "GLM 额度剩余",
     "quotaLoading": "额度加载中…",
     "noQuota": "暂无额度数据",
@@ -87,6 +87,12 @@
       "mcpTools": "MCP 工具",
       "other": "其他"
     }
+  },
+  "speed": {
+    "title": "生成速度",
+    "live": "{{tps}} tok/s",
+    "avgSuffix": "平均 {{tps}}",
+    "estimate": "~{{tps}} tok/s（估算）"
   },
   "windows": {
     "fiveHours": "5 小时池",

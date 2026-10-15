@@ -16,7 +16,7 @@ import { create } from 'zustand'
 import { onMessage, onStreamEvent, onStreamBatch, sendToJava, initBridge, isInJcef, getWorkspacePath, getInitialSessionId } from '@/ipc/bridge'
 import { parseGoalCommand } from '@/utils/goalCommand'
 import { extractTitleExcerpt } from '@/utils/titleExcerpt'
-import type { JavaResponse, SessionInfo, ZCodeMessage, StreamEvent, ModelOption, ModelManageProvider, ProviderSaveDraft, TodoItem, AgentItem, FileChangeItem, QuotaData, ModelUsageData, ToolUsageData, UsageRange, AppUsageData, AppUsageRange, ContextBreakdownItem, ContextSource, ThoughtLevelInfo, SubagentActivity, SubagentInfo, ToolUpdatedPayload, MemoryFileInfo, MemoryDirInfo, MemorySearchHitInfo, SkillInfo, McpServerInfo, McpToolsState, McpLogEntry, TrajectoryRecord, EnvStatus, BrowserClearedSite, BrowserDataOverview, AgentDef, AgentDefInput, ImageAttachmentInput, CurrentFileAttachmentInput, SendAttachmentInput, GoalState, AutoArchiveRecord, ToolPart, SlashCommand, MessagePart, TurnFileChangesMap, TurnFileChangeSummary } from '@/types/messages'
+import type { JavaResponse, SessionInfo, ZCodeMessage, StreamEvent, ModelOption, ModelManageProvider, ProviderSaveDraft, TodoItem, AgentItem, FileChangeItem, QuotaData, ModelUsageData, ToolUsageData, UsageRange, AppUsageData, AppUsageRange, ContextBreakdownItem, ContextSource, SessionDebugSummary, ThoughtLevelInfo, SubagentActivity, SubagentInfo, ToolUpdatedPayload, MemoryFileInfo, MemoryDirInfo, MemorySearchHitInfo, SkillInfo, McpServerInfo, McpToolsState, McpLogEntry, TrajectoryRecord, EnvStatus, BrowserClearedSite, BrowserDataOverview, AgentDef, AgentDefInput, ImageAttachmentInput, CurrentFileAttachmentInput, SendAttachmentInput, GoalState, AutoArchiveRecord, ToolPart, SlashCommand, MessagePart, TurnFileChangesMap, TurnFileChangeSummary } from '@/types/messages'
 import { applyStreamEvent, isSubagentToolEvent, applySubagentToolEvent, markActivityOutcome, finalizeActivitiesFromNotifications, asSubagentLifecycle, asGoalTargetPayload, looksLikeQuotaError, asSteerDrainedInputs, appendSteerUserMessages } from '@/utils/streamReducer'
 import type { TurnErrorInfo, SubagentLifecyclePayload } from '@/utils/streamReducer'
 import { classifyQuotaError, bannerTriggerKey, providerLimitedMessage } from '@/utils/quotaWindows'
@@ -1066,6 +1066,10 @@ interface StoreState {
   /** 上下文构成明细（session/read → runtime.breakdown）*/
   contextBreakdown: ContextBreakdownItem[] | null
 
+  // 生成速度（session/debug → 官方开发者工具 TPS 面板数据源，服务端算好真值）
+  /** 进程内存快照：agent 重启清零、只收 main_turn；WaitingIndicator 2s 轮询 + 圆环弹窗懒加载 */
+  sessionDebug: SessionDebugSummary | null
+
   // 额度（glm plan usage API → 设置视图 + 圆环 popover 用）
   quota: QuotaData | null
   quotaLoading: boolean
@@ -1385,6 +1389,8 @@ interface StoreState {
   applyThoughtLevelIfReady: (sessionId: string) => void
   /** 拉取当前会话的上下文用量 */
   loadUsage: () => void
+  /** 拉取当前会话调试快照（生成速度真值；WaitingIndicator 流式轮询 + 圆环弹窗懒加载共用）*/
+  loadSessionDebug: () => void
   /** 拉取额度（设置视图 + 圆环 popover 用）*/
   loadQuota: () => void
   /** 关闭当前额度横幅（记录去重键，同源触发不再展示）*/
@@ -1730,6 +1736,7 @@ export const useStore = create<StoreState>((set, get) => ({
   pendingThoughtLevel: null,
   contextUsage: null,
   contextBreakdown: null,
+  sessionDebug: null,
   quota: null,
   quotaLoading: false,
   quotaFetchedAt: 0,
@@ -2022,6 +2029,7 @@ export const useStore = create<StoreState>((set, get) => ({
       compacting: false,
       backgroundTasks: {},
       contextUsage: null, // 清空旧会话数据，等 getUsage 回来更新
+      sessionDebug: null,
       contextBreakdown: null,
       thoughtLevel: null, // 清空旧会话设置，等 getSettings 回来更新（currentMode 由 messages 推断兜底）
       subagentReport: null,
@@ -2448,6 +2456,7 @@ export const useStore = create<StoreState>((set, get) => ({
       compacting: false,
       backgroundTasks: {},
       contextUsage: null,
+      sessionDebug: null,
       contextBreakdown: null,
       thoughtLevel: null,
       currentMode: null,
@@ -2963,6 +2972,12 @@ export const useStore = create<StoreState>((set, get) => ({
     const sid = get().currentSessionId
     if (!sid) return
     sendToJava({ op: 'getUsage', sessionId: sid })
+  },
+
+  loadSessionDebug: () => {
+    const sid = get().currentSessionId
+    if (!sid) return
+    sendToJava({ op: 'getSessionDebug', sessionId: sid })
   },
 
   loadQuota: () => {
@@ -4065,9 +4080,10 @@ export function handleResponse(
           ...sessionResetBase(),
           compacting: false,
           backgroundTasks: {},
-          contextUsage: null, // 清空旧会话数据，等 getUsage 回来更新
-          contextBreakdown: null,
-          // 保留待命态的级别集（与当前模型同源缓存）与预选模式，避免选择器/按钮闪回默认；
+      contextUsage: null, // 清空旧会话数据，等 getUsage 回来更新
+      sessionDebug: null,
+      contextBreakdown: null,
+      // 保留待命态的级别集（与当前模型同源缓存）与预选模式，避免选择器/按钮闪回默认；
           // 服务端权威值由下方 loadSettings → settings 响应校准
           thoughtLevel: standbyThought,
           currentMode: preselectedMode,
@@ -4203,6 +4219,7 @@ export function handleResponse(
               compacting: false,
               backgroundTasks: {},
               contextUsage: null,
+              sessionDebug: null,
               contextBreakdown: null,
               thoughtLevel: null,
               currentMode: null,
@@ -5416,6 +5433,20 @@ export function handleResponse(
           ...(cached ? { contextBreakdown: cached } : {}),
         })
       }
+      break
+    }
+
+    case 'sessionDebug': {
+      // 流式轮询期间切会话：旧会话的迟到响应直接丢弃（同 usage）
+      if (msg.sessionId && msg.sessionId !== get().currentSessionId) break
+      set({ sessionDebug: { rounds: msg.rounds ?? [], cache: msg.cache ?? null } })
+      break
+    }
+
+    case 'sessionDebugError': {
+      // P2 静默降级（同 usageError）：会话未 active / agent 刚重启（快照进程内存清零）
+      // 是常态而非故障，保留旧读数，仅记日志
+      console.warn('[store] session debug query failed:', msg.message)
       break
     }
 

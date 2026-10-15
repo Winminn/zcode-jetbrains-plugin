@@ -1151,6 +1151,7 @@ if (!window.__ZCODE_LOG_HOOK__) {
                         "goalManage" -> handleGoalManage(msg)
                         "pickFiles" -> handlePickFiles(msg)
                         "getUsage" -> handleGetUsage(msg)
+                        "getSessionDebug" -> handleGetSessionDebug(msg)
                         "getQuota" -> handleGetQuota(msg)
                         "getAppUsage" -> handleGetAppUsage(msg)
                         "getModelUsage" -> handleGetModelUsage(msg)
@@ -5359,6 +5360,38 @@ if (!window.__ZCODE_LOG_HOOK__) {
             // 流式轮询/回合结束刷新等自愈路径，无需用户感知
             buildJsonObject {
                 put("op", "usageError")
+                put("sessionId", sessionId)
+                put("message", e.message ?: "查询失败")
+            }
+        }
+    }
+
+    /**
+     * op=getSessionDebug — 调试快照（session/debug，官方开发者工具 TPS 面板数据源）。
+     *
+     * 前端两个消费位共用：WaitingIndicator 流式状态行（实时"最近请求 TPS"）与
+     * ContextRing 弹窗「生成速度」汇总区。会话未 active / agent 刚重启（快照进程内存）
+     * 时 RPC 报 -32004 等错误——同 handleGetUsage 走 P2 静默降级（streaming 期 2s
+     * 轮询，errorResponse 会顶栏弹错并复位 streaming）。networkEntries（含请求响应头、
+     * 最多 100 条）本功能不用，Java 侧剥掉控制轮询桥接流量；rounds 全量透传由前端聚合。
+     */
+    private fun handleGetSessionDebug(msg: JsonObject): JsonObject {
+        val sessionId = msg["sessionId"]?.jsonPrimitive?.content
+            ?: return errorResponse("缺少 sessionId")
+        val client = project.zCodeService().getClient()
+        return try {
+            val snap = client.sessionDebug(sessionId)
+            buildJsonObject {
+                put("op", "sessionDebug")
+                // 响应回带会话 id：切会话后前端靠它丢弃旧会话的迟到响应（同 usage）
+                put("sessionId", sessionId)
+                snap["rounds"]?.let { put("rounds", it) }
+                snap["cache"]?.let { put("cache", it) }
+            }
+        } catch (e: Exception) {
+            log.warn("Failed to fetch session debug: ${e.message}")
+            buildJsonObject {
+                put("op", "sessionDebugError")
                 put("sessionId", sessionId)
                 put("message", e.message ?: "查询失败")
             }
