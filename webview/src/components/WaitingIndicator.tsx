@@ -7,12 +7,10 @@
  *   - 三个跳动省略号（500ms 切换 . → .. → ...）
  *   - 计时器用绝对时间差算（跨视图切换不重置）
  *
- * 生成速度（2026-10-14）：streaming 期 2s 轮询 session/debug，显示最近完成的
- * 模型请求真值 TPS（服务端算好，官方开发者工具面板同源）。单请求进行中数值
- * 不动，工具循环长回合里每完成一次请求跳新值；数据是 agent 进程内存，重启后
- * 从新回合开始积累。组件卸载（回合结束）轮询即停。
- * 显示门控：模型流式静默超 3s（工具执行/构建中）即隐藏速率，防陈旧值被误读
- * 为实时速度；毛刺样本（生成窗口塌缩/超物理上限）由 tps.ts 采样门槛过滤。
+ * 生成速度（2026-10-14）：streaming 期 2s 轮询 session/debug。显示规则（用户定稿）：
+ * 有真值就显示——非生成期（工具执行/请求间隙）恒显最近真值；生成期真值 8s 新鲜，
+ * 过期交估算接管（流式字符速率×自校准系数，~ 前缀）。数据是 agent 进程内存，
+ * 重启后从新回合开始积累；组件卸载（回合结束）轮询即停。
  */
 
 import { useEffect, useRef, useState } from 'react'
@@ -23,13 +21,11 @@ import { lastTpsRound, estimateTpsFromChars, calibrateCharsPerToken } from '@/ut
 import { modelStreamActivity, streamCharsPerSec, streamCharsTotal } from '@/utils/streamReducer'
 import '../styles/waiting-indicator.less'
 
-/** 模型流式静默超过该时长即认为不在生成（工具执行/构建中），隐藏速率只留转圈计时 */
+/** 流式静默超过该时长视为"非生成期"（工具执行/请求间隙）：生成期判定用。
+ *  速率不因它隐藏——用户定稿：工具执行期间恒显最近的 zcode 真值 */
 const STREAM_ACTIVE_MS = 3000
-/** 工具忙碌持续超过该时长才隐藏速率：快速工具（Read/Grep 等亚秒~几秒）不闪隐，
- *  长执行（构建/子代理走查）3s 后照旧隐藏（真机反馈快速工具调用速率闪隐不合理） */
-const TOOL_BUSY_GRACE_MS = 3000
-/** 真值新鲜期：rounds 按请求完成落账（服务端统计周期=每请求完成，无周期性推送），
- *  长生成期间旧真值会冻结挂屏（真机反馈"真实数据很久不变"）——落账超 8s 即交估算接管 */
+/** 真值新鲜期：rounds 按请求完成落账（服务端统计周期=每请求完成，无周期性推送）。
+ *  生成期超过 8s 未落新账即交估算接管（防冻结观感）；非生成期不限，恒显最近真值 */
 const REAL_FRESH_MS = 8000
 /** 估算显示值保持时长：500ms 自刷会令估算数字跳太快（真机反馈），屏上数字 2s 一更新 */
 const EST_HOLD_MS = 2000
@@ -47,8 +43,6 @@ export function WaitingIndicator({ since }: Props) {
   const sessionDebug = useStore((s) => s.sessionDebug)
   const loadSessionDebug = useStore((s) => s.loadSessionDebug)
   const [, force] = useState(0)
-  // 工具忙碌起点（宽限计时锚点）：组件 500ms 自刷，ref 记录不触发重渲染
-  const toolBusySince = useRef(0)
   // 自校准取样锚点：上次观察到的真值回合 id 与当时的字符累计值
   const lastRoundIdRef = useRef<string | null>(null)
   const charsMarkRef = useRef(0)
@@ -83,10 +77,7 @@ export function WaitingIndicator({ since }: Props) {
   // 挂出来会被误读成实时速度（真机反馈"构建中为何还有值"）；500ms 自刷保证
   // 静默 3s 后即消失、恢复输出即回归
   const streamActive = Date.now() - modelStreamActivity.lastAt < STREAM_ACTIVE_MS
-  // 流式消息上有执行中/待执行的工具（Agent 子代理并行走查、Bash 构建等）即视为
-  // "模型没在出字"：v4 面子代理内容帧会重映射进父流刷新 lastAt，单靠时间门控
-  // 拦不住（真机反馈"子代理执行中速率一直不变"——挂的是派发轮的静态值）。
-  // 但快速工具亚秒即完，立即隐藏会闪隐（真机反馈）——持续超宽限期才隐藏
+  // 工具忙碌起点仅用于自校准取样门控（子代理重映射帧污染防护），不再隐藏速率
   const toolBusy = (() => {
     const msg = streamingMessageId ? messages.find((m) => m.info.id === streamingMessageId) : null
     if (!msg) return false
@@ -94,31 +85,27 @@ export function WaitingIndicator({ since }: Props) {
       (p) => p.type === 'tool' && (p.state.status === 'running' || p.state.status === 'pending'),
     )
   })()
-  if (toolBusy) {
-    if (!toolBusySince.current) toolBusySince.current = Date.now()
-  } else {
-    toolBusySince.current = 0
-  }
-  const toolBusyLong =
-    toolBusy && toolBusySince.current > 0 && Date.now() - toolBusySince.current > TOOL_BUSY_GRACE_MS
-  const generating = streamActive && !toolBusyLong
-  const lastRound = generating && sessionDebug ? lastTpsRound(sessionDebug.rounds) : null
+  const lastRound = sessionDebug ? lastTpsRound(sessionDebug.rounds) : null
   // 自校准：新真值回合落账 → 用"两次落账间的流式字符增量 ÷ 服务端 outputTokens"
   // 反推实测 chars/token，EMA 进估算除数（首回合仅记锚点不校准——那笔回合的字符
-  // 不在本进程计数里）。generating 门控防止工具/子代理期间的重映射帧污染样本
+  // 不在本进程计数里）。取样仅在"主会话真在流式产出"时进行，防工具/子代理期污染
   if (lastRound && lastRound.requestId !== lastRoundIdRef.current) {
-    if (lastRoundIdRef.current !== null) {
+    if (lastRoundIdRef.current !== null && streamActive && !toolBusy) {
       calibrateCharsPerToken(streamCharsTotal() - charsMarkRef.current, lastRound.usage.outputTokens ?? 0)
     }
     lastRoundIdRef.current = lastRound.requestId
     charsMarkRef.current = streamCharsTotal()
   }
-  // 估算兜底：真值新鲜期内不介入；真值落账超 8s（长生成中旧值冻结）即接管，
-  // 新真值落账自动让位。显示值 2s 保持一更新
+  // 速率显示（用户定稿）：有真值就显示——非生成期（工具执行/请求间隙）恒显最近真值
+  // 不隐藏；生成期真值新鲜（落账 8s 内）恒显，过期则交估算接管防冻结观感
   const realFresh = lastRound != null && Date.now() - lastRound.recordedAt < REAL_FRESH_MS
-  const realTps = realFresh ? (lastRound?.tokensPerSecond ?? null) : null
+  const realTps = lastRound
+    ? realFresh || !streamActive
+      ? lastRound.tokensPerSecond
+      : null
+    : null
   const estRaw =
-    generating && realTps == null ? estimateTpsFromChars(streamCharsPerSec()) : null
+    streamActive && realTps == null ? estimateTpsFromChars(streamCharsPerSec()) : null
   const estHold = estHoldRef.current
   if (estRaw == null) {
     if (estHold.v != null) estHoldRef.current = { v: null, at: 0 }
