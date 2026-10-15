@@ -20,7 +20,7 @@
 
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
-import type { SessionInfo } from '@/types/messages'
+import type { SessionInfo, OpenTabInfo } from '@/types/messages'
 import { SessionItem } from './SessionItem'
 import { ConfirmDialog } from './ConfirmDialog'
 import { AutoArchivePanel } from './AutoArchivePanel'
@@ -37,6 +37,8 @@ interface Props {
    * （本标签只需切回聊天视图）；false = 没有任何标签打开过它
    */
   onLocate: (sessionId: string) => Promise<boolean>
+  /** 当前各标签已绑定的会话快照（行标「会话N」+ 点击已开项先确认再跳；瞬态查询不入 state）*/
+  onLoadOpenTabs: () => Promise<OpenTabInfo[]>
   /** 「新标签页打开」选择：Java gotoSession 统一路径（定位已确认无宿主 → 必然新建标签）*/
   onOpenNewTab: (sessionId: string) => void
   onSelect: (session: SessionInfo) => void
@@ -84,6 +86,7 @@ export function HistoryView({
   archivedLoading,
   currentSessionId,
   onLocate,
+  onLoadOpenTabs,
   onOpenNewTab,
   onSelect,
   onBack,
@@ -109,8 +112,25 @@ export function HistoryView({
   const [confirmAction, setConfirmAction] = useState<ConfirmAction | null>(null)
   // 切换确认 modal（当前标签有会话时的打开方式选择，null = 不显示）
   const [switchTarget, setSwitchTarget] = useState<SessionInfo | null>(null)
+  // 跳转确认 modal（点击已在其他标签打开的会话：先确认再跳，防标题相似误点）
+  const [jumpTarget, setJumpTarget] = useState<SessionInfo | null>(null)
   // 定位应答在途标记：模态未开前的 IPC 往返窗口内拦截重复点击
   const locatingRef = useRef(false)
+
+  // 各标签已绑定会话的瞬态快照（sessionId → 标签名）：仅本组件局部 state，挂载/手动刷新时查一次
+  const [openTabMap, setOpenTabMap] = useState<Map<string, string>>(new Map())
+  useEffect(() => {
+    let cancelled = false
+    onLoadOpenTabs().then((tabs) => {
+      if (!cancelled) setOpenTabMap(new Map(tabs.map((x) => [x.sessionId, x.tabName])))
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [onLoadOpenTabs])
+  const refreshOpenTabs = () => {
+    onLoadOpenTabs().then((tabs) => setOpenTabMap(new Map(tabs.map((x) => [x.sessionId, x.tabName]))))
+  }
 
   // 切到已归档 tab 时拉取列表（每次切换都刷新，保证归档项新鲜）
   useEffect(() => {
@@ -183,19 +203,9 @@ export function HistoryView({
     setSelectedIds(new Set())
   }
 
-  const handleItemClick = async (session: SessionInfo) => {
-    if (selectionMode) {
-      toggleSelection(session.sessionId)
-      return
-    }
-    // 已归档会话：点击不进入会话，恢复走专属「还原」按钮（防止误触进入归档会话）
-    if (tab === 'archived') return
-    // 点当前会话：无操作，切回 chat 视图
-    if (session.sessionId === currentSessionId) {
-      onSelect(session)
-      onBack()
-      return
-    }
+  // 定位+打开的实际流程：已开项确认后与未开项共用（found 路径只激活目标标签，不向其 webview 推送，
+  // 目标页输入草稿与进行中的回合都不受影响）
+  const proceedOpen = async (session: SessionInfo) => {
     // 防抖：定位应答在途时忽略重复点击
     if (locatingRef.current) return
     locatingRef.current = true
@@ -218,6 +228,27 @@ export function HistoryView({
     }
     // 当前标签已有会话 → 让用户选：覆盖当前标签页 / 新标签页打开
     setSwitchTarget(session)
+  }
+
+  const handleItemClick = async (session: SessionInfo) => {
+    if (selectionMode) {
+      toggleSelection(session.sessionId)
+      return
+    }
+    // 已归档会话：点击不进入会话，恢复走专属「还原」按钮（防止误触进入归档会话）
+    if (tab === 'archived') return
+    // 点当前会话：无操作，切回 chat 视图
+    if (session.sessionId === currentSessionId) {
+      onSelect(session)
+      onBack()
+      return
+    }
+    // 已在其他标签打开：先确认再跳（列表行有同名标签标记，双重防标题相似误点）
+    if (openTabMap.has(session.sessionId)) {
+      setJumpTarget(session)
+      return
+    }
+    await proceedOpen(session)
   }
 
   // ============ 批量操作确认 ============
@@ -376,7 +407,11 @@ export function HistoryView({
                 </button>
                 <button
                   className="history-toolbar-btn"
-                  onClick={tab === 'archived' ? onLoadArchived : onRefresh}
+                  onClick={() => {
+                    if (tab === 'archived') onLoadArchived()
+                    else onRefresh()
+                    refreshOpenTabs()
+                  }}
                   title={t('history.refresh')}
                 >
                   <span className="codicon codicon-refresh" />
@@ -431,6 +466,7 @@ export function HistoryView({
                   onDelete={tab === 'archived' ? requestDeleteArchived : undefined}
                   pinned={pinned}
                   unread={tab === 'active' && unreadSessionIds.includes(s.sessionId)}
+                  openTabName={tab === 'active' ? openTabMap.get(s.sessionId) : undefined}
                   onTogglePin={tab === 'active' ? onTogglePin : undefined}
                   renderTitle={(title) => <Highlight text={title} query={debouncedQuery} />}
                   selectionMode={selectionMode}
@@ -476,6 +512,24 @@ export function HistoryView({
             onBack()
           }}
           onCancel={() => setSwitchTarget(null)}
+        />
+      )}
+
+      {/* 跳转确认 modal（会话已在其他标签打开：确认后才激活那个标签）*/}
+      {jumpTarget && (
+        <ConfirmDialog
+          title={t('history.openTabConfirmTitle')}
+          message={t('history.openTabConfirmMessage', {
+            tabName: openTabMap.get(jumpTarget.sessionId) ?? '',
+            title: jumpTarget.title.slice(0, 30),
+          })}
+          confirmText={t('history.jumpToTab')}
+          onConfirm={() => {
+            const target = jumpTarget
+            setJumpTarget(null)
+            void proceedOpen(target)
+          }}
+          onCancel={() => setJumpTarget(null)}
         />
       )}
     </div>

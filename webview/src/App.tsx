@@ -90,6 +90,7 @@ export default function App() {
   const restoreSession = useStore((s) => s.restoreSession)
   const deleteArchivedSession = useStore((s) => s.deleteArchivedSession)
   const locateSessionTab = useStore((s) => s.locateSessionTab)
+  const listOpenTabs = useStore((s) => s.listOpenTabs)
   const openSessionNewTab = useStore((s) => s.openSessionNewTab)
   const setPendingSettingsSection = useStore((s) => s.setPendingSettingsSection)
   const changelogOpen = useStore((s) => s.changelogOpen)
@@ -363,6 +364,7 @@ export default function App() {
             archivedLoading={archivedLoading}
             currentSessionId={currentSessionId}
             onLocate={locateSessionTab}
+            onLoadOpenTabs={listOpenTabs}
             onOpenNewTab={openSessionNewTab}
             onSelect={selectSession}
             onBack={() => setCurrentView('chat')}

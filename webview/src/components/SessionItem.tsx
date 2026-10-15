@@ -42,6 +42,8 @@ interface Props {
   pinned?: boolean
   /** 未读标记（tasks-index unread_at：后台终态且无标签在看；标题前蓝点，打开即清）*/
   unread?: boolean
+  /** 已在该名称的标签打开（历史列表行内标记，undefined 不渲染；点击确认由父级承担）*/
+  openTabName?: string
   /** active=历史会话（默认）/ archived=已归档（回收站）*/
   variant?: 'active' | 'archived'
   /** 自定义标题渲染（搜索高亮用）*/
@@ -53,7 +55,8 @@ interface Props {
 }
 
 function SessionItemInner({
-  session, active, onSelect, onArchive, onRestore, onDelete, onTogglePin, pinned = false, unread = false, renderTitle,
+  session, active, onSelect, onArchive, onRestore, onDelete, onTogglePin, pinned = false, unread = false, openTabName,
+  renderTitle,
   variant = 'active',
   selectionMode = false, selected = false, onToggle,
 }: Props) {
@@ -152,6 +155,7 @@ function SessionItemInner({
               {pendingCount > 9 ? '9+' : pendingCount}
             </span>
           )}
+          {openTabName && <span className="session-item__open-tab">{openTabName}</span>}
         </div>
         <span className="session-item__time">
           {relativeTime(variant === 'archived' ? (session.archivedAt ?? session.updatedAt) : session.updatedAt)}

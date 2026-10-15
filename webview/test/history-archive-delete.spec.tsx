@@ -46,6 +46,7 @@ function setupArchivedTab() {
     archivedLoading: false,
     currentSessionId: null,
     onLocate: vi.fn().mockResolvedValue(false),
+    onLoadOpenTabs: vi.fn().mockResolvedValue([]),
     onOpenNewTab: vi.fn(),
     onSelect: vi.fn(),
     onBack: vi.fn(),

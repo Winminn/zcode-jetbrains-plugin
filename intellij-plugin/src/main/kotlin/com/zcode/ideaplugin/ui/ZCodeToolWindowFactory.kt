@@ -87,6 +87,19 @@ class ZCodeToolWindowFactory : ToolWindowFactory, DumbAware {
             toolWindow.show(null)
         }
 
+        /**
+         * 当前各聊天标签已绑定的会话（只读快照，供历史列表标注「已在会话N打开」）：
+         * 返回 sessionId → 标签名。浏览器标签与待命态（无绑定）不计入。
+         */
+        fun listOpenSessions(project: Project): List<Pair<String, String>> {
+            val toolWindow = getToolWindow(project) ?: return emptyList()
+            return toolWindow.contentManager.contents.mapNotNull { c ->
+                val p = c.component as? ZCodeToolWindowPanel ?: return@mapNotNull null
+                val sid = p.getCurrentSessionIdForPersist() ?: return@mapNotNull null
+                sid to p.getBaseTabTitle().ifBlank { c.displayName ?: "" }
+            }
+        }
+
         /** 生成下一个标签名：从 1 起取最小未被占用的编号（最后一个标签禁关、编号只增不减，故不复用 max+1）*/
         private fun getNextTabName(cm: ContentManager): String {
             val pattern = tabNamePattern()

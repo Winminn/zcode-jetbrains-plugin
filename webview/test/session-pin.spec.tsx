@@ -86,6 +86,7 @@ describe('HistoryView 置顶排序', () => {
         archivedLoading={false}
         currentSessionId={null}
         onLocate={vi.fn().mockResolvedValue(false)}
+        onLoadOpenTabs={vi.fn().mockResolvedValue([])}
         onOpenNewTab={vi.fn()}
         onSelect={vi.fn()}
         onBack={vi.fn()}
