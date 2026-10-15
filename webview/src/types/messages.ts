@@ -269,6 +269,12 @@ export interface TokenBreakdown {
 
 // ============ 会话 ============
 
+/** 历史列表用：某会话当前已在哪个标签打开（listOpenSessions 应答元素）*/
+export interface OpenTabInfo {
+  sessionId: string
+  tabName: string
+}
+
 export interface SessionInfo {
   sessionId: string
   title: string
@@ -714,6 +720,8 @@ export type JavaRequest =  | { op: 'askUserPendingState' }
   | { op: 'turnFileDiff'; filePath: string; path: string; patches: TurnFileDiffHunk[]; title?: string }
   /** 历史列表打开前定位：查所有标签是否已绑定该会话（有则 Java 直接激活宿主标签跳转，无副作用）*/
   | { op: 'locateSession'; sessionId: string }
+  /** 历史列表快照：查所有已绑定真实会话的标签（元素含标签名；只读，无副作用）*/
+  | { op: 'listOpenSessions' }
   /** mermaid 复制图片：PNG 纯 base64 → Java 系统剪贴板（JCEF 的 clipboard.write 图片不可靠的降级通道）*/
   | { op: 'copyImage'; dataBase64: string }
   /** 调系统浏览器打开外链。无 url = 打开本项目 GitHub 仓库（设置页开源支持区块）；
@@ -1325,6 +1333,8 @@ export type JavaResponse =
   | { op: 'gotoSessionOpened' }
   /** 定位应答：found=true 时 Java 已激活宿主标签（发起标签只需切回聊天视图）；false=无宿主标签 */
   | { op: 'sessionTabLocated'; sessionId: string; found: boolean }
+  /** 当前各标签已绑定的会话快照（listOpenSessions 应答，历史列表「已在会话N打开」标注用）*/
+  | { op: 'openSessions'; tabs: OpenTabInfo[] }
   | { op: 'messages'; sessionId: string; messages: ZCodeMessage[]; reconcile?: boolean; goalRefresh?: boolean; goalTarget?: unknown; goalStats?: unknown }
   | { op: 'subagents'; sessionId: string; data: SubagentsResult; error?: string }
   | { op: 'subagentMessages'; sessionId: string; messages: ZCodeMessage[]; error?: string }

@@ -1068,6 +1068,9 @@ function mockResponse(req: JavaRequest): JavaResponse | null {
     case 'locateSession':
       // mock：固定无宿主标签，让「覆盖当前标签页 / 新标签页打开」弹窗在 dev 可验收
       return { op: 'sessionTabLocated', sessionId: req.sessionId, found: false }
+    case 'listOpenSessions':
+      // mock：dev 单标签环境，无"已在其他标签打开"项
+      return { op: 'openSessions', tabs: [] }
     case 'copyImage':
       // mock：模拟 Java 系统剪贴板写入成功
       return { op: 'imageCopied', ok: true }

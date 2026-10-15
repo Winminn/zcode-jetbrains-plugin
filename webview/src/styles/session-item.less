@@ -120,6 +120,23 @@
     opacity: 1;
   }
 
+  /* 已开标签标记（历史列表：该会话已在名为 X 的标签打开）：neutral 弱化小胶囊，
+     提示"点了是切标签不是新开"，不抢标题焦点 */
+  &__open-tab {
+    flex-shrink: 0;
+    margin-left: 4px;
+    padding: 0 6px;
+    height: 16px;
+    border-radius: 8px;
+    background: var(--bg-tertiary, rgba(128, 128, 128, 0.16));
+    color: var(--text-secondary);
+    font-size: 10px;
+    line-height: 16px;
+    font-weight: 500;
+    white-space: nowrap;
+    cursor: default;
+  }
+
   &__title-text {
     overflow: hidden;
     text-overflow: ellipsis;
