@@ -6,6 +6,56 @@
 
 最新版本块的中文段会被 `patchPluginXml` 提取为插件 change-notes（展示在 Marketplace 与 IDE 插件详情页，行内 Markdown 转换为 HTML），保持格式：`## [版本] - 日期` + `### 节` + `- ` 列表。
 
+## [0.4.0] - 2026-10-15
+
+中文:
+
+### 新增
+
+- **电脑操作**：AI 可截屏、点击、键入直接操作本机桌面——打开应用、窗口管理、批量操作、区域放大截图等；输入框新增「电脑操作」开关，设置页可随时停用，关闭后已开启会话的工具调用也会被立即拒绝。
+- **模型调用轨迹**：新增「轨迹」面板，可查看会话内每次模型请求 / 响应的完整明细（读取本地 CLI 落盘记录），支持搜索定位。
+- **钩子管理**（#37，@Winminn）：设置页新增「钩子」tab，可查看、启停、删除工作区级与用户级钩子；会话遇到未信任钩子时顶部弹准入横幅，一键授予、当前会话即时生效。
+- **模型停用开关**（#36，@Winminn）：模型管理支持单个模型启用 / 停用，停用后不再出现在模型切换列表。
+- **悬浮提醒弹窗**（#33，@Winminn）：IDE 不在前台时，任务完成 / 等待输入 / 计划与权限审批弹全局置顶小卡片，点击回 IDE 并定位会话；显示时长与屏幕位置可配，与 IDE 内气泡通知独立开关。
+- **标签页完成标记**（#31，@Winminn）：回合结束时未选中的标签页名字亮 ✔，点进即清；与生成中 ● 互斥。
+- **生成速率显示**：AI 回复时状态行实时显示生成速率（token/s）。
+- **@文件补全模糊匹配**（issue #38）：@ 补全不再要求连续前缀，路径分段也能命中（如输入 `srcuti` 可命中 `src/utils`）。
+- **新会话免确认开关**（#34，@Winminn）：行为设置新增「直接覆盖当前标签页」，开启后工具栏新会话按钮跳过确认直接开新会话。
+- **已开会话标记**（#43，@Winminn）：历史列表中已在某个标签打开的会话显示标签名，点击先确认再切换，避免多标签下标题相似误点。
+- **其他**：额度横幅手动关闭后不再重复弹出；顶栏与额度弹窗视觉对齐官方客户端。
+
+### 修复
+
+- 修复新建会话后偶发无声跳回旧会话、输入草稿被带走的问题（#39，@Winminn）。
+- 修复上下文圆环两处口径问题：自定义模型上下文窗口被内置 200K 兜底覆盖（漏读个人模型规则）；新版 CLI 下构成明细与缓存命中率不显示（#42，@Winminn）。
+- 修复自定义 idea.system.path 时浏览器工具失效的问题（#35，@Winminn），设置 → 环境现可指定端口文件。
+- 修复消息内带行号的裸文件名（如 `App.kt:1606`）与目录路径不可点击的问题（#32，@Winminn）。
+- 修复粘贴文件路径 / 会话 / 技能引用转 chip 后光标落到 chip 前的问题。
+
+<h3>English</h3>
+
+### Added
+
+- **Computer use**: the AI can screenshot, click and type to operate local desktop apps directly — launching apps, window management, batch actions, cropped zoom-in screenshots and more. A new "Computer use" toggle sits in the input box; it can also be disabled in settings, and tool calls in already-enabled sessions are rejected immediately once off.
+- **Model call trajectory**: a new "Trajectory" panel shows the full request / response detail of every model call in a session (read from local CLI logs), with search.
+- **Hooks management** (#37, @Winminn): a new "Hooks" tab in settings lists, enables/disables and deletes workspace-level and user-level hooks; when a session meets an untrusted hook, a banner appears at the top for one-click trust grant, effective in the current session immediately.
+- **Per-model disable toggle** (#36, @Winminn): model management supports enabling/disabling a single model; disabled models no longer show up in the model switcher.
+- **Floating reminder popup** (#33, @Winminn): when the IDE is not in the foreground, task completion / input requests / plan & permission approvals pop up an always-on-top card; clicking it returns to the IDE and locates the session. Display duration and screen position are configurable, with an independent switch from the in-IDE bubble notification.
+- **Tab completion marker** (#31, @Winminn): when a turn finishes, unselected tab names show a ✔ mark, cleared on click; mutually exclusive with the ● generating marker.
+- **Generation speed**: the status line shows the live generation speed (tokens/s) while the AI is replying.
+- **Fuzzy @file completion** (issue #38): the @ completion no longer requires a contiguous prefix — path segments match too (e.g. typing `srcuti` matches `src/utils`).
+- **New-session confirmation toggle** (#34, @Winminn): a new "Overwrite current tab directly" option in behavior settings makes the toolbar new-session button skip confirmation.
+- **Opened-session marker** (#43, @Winminn): sessions already open in a tab show the tab name in the history list; clicking asks for confirmation first to avoid accidental switches between similarly-titled tabs.
+- **Others**: the quota banner stays dismissed after being closed manually; the topbar and quota popup visually align with the official client.
+
+### Fixed
+
+- Fixed occasionally jumping back to the previous session right after creating a new one, taking the input draft away (#39, @Winminn).
+- Fixed two context-ring inaccuracies: custom model context windows being overridden by the built-in 200K fallback (personal model rules ignored); context breakdown and cache-hit rate missing on newer CLI versions (#42, @Winminn).
+- Fixed browser tools failing when a custom idea.system.path is set (#35, @Winminn); the port file can now be specified in Settings → Environment.
+- Fixed bare file names with line numbers (e.g. `App.kt:1606`) and directory paths not being clickable in messages (#32, @Winminn).
+- Fixed the caret landing before the chip after pasting a file path / session / skill reference converted into a chip.
+
 ## [0.3.9] - 2026-10-09
 
 中文:
